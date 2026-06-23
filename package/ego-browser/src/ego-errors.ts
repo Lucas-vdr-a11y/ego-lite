@@ -51,7 +51,8 @@ const EGO_ERROR_MESSAGES: Record<EgoErrorCode, string> = {
   EGO_RESULT_CONVERSION_FAILED: "Failed to convert the browser result.",
   EGO_SNAPSHOT_FAILED: "Failed to capture the page snapshot.",
   EGO_TASK_HOST_DISCONNECTED: "The task host is no longer available.",
-  EGO_TASK_SPACE_INACTIVE: "The task space is inactive.",
+  EGO_TASK_SPACE_INACTIVE:
+    "The task space is inactive or not assigned to this agent.",
   EGO_TASK_SPACE_NOT_FOUND: "Task space not found.",
   EGO_TASK_SPACE_NOT_SELECTED: "Task space not selected.",
   EGO_TASK_SPACE_UNAVAILABLE: "The task space is unavailable.",
@@ -107,6 +108,16 @@ export function resolveEgoError(err: unknown): {
 /** Whether an ego error means the task is currently under user control. */
 export function isEgoUserControlError(err: unknown): boolean {
   return egoErrorCode(err) === "EGO_TASK_SPACE_USER_IN_CONTROL";
+}
+
+/** Whether claiming the task space would cross a user-owned permission boundary. */
+export function isEgoTaskSpaceInactiveError(err: unknown): boolean {
+  return egoErrorCode(err) === "EGO_TASK_SPACE_INACTIVE";
+}
+
+/** Whether an ego error must stop the current agent script immediately. */
+export function isEgoHardStopError(err: unknown): boolean {
+  return isEgoUserControlError(err) || isEgoTaskSpaceInactiveError(err);
 }
 
 export function assertNoEgoError(result, op: string) {

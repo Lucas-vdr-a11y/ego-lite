@@ -88,10 +88,12 @@ export async function listTaskSpaces() {
  * latter is the agent's own space with control temporarily handed to the user
  * (handoff or GUI takeover). The user-control boundary is enforced at the native
  * bridge when real commands run, not here. The rows below describe what each helper
- * does when the target space is user-owned:
+ * does when the target space is user-owned. Calling a helper that claims a
+ * user-owned or inactive space crosses a hard permission boundary; agent-facing
+ * instructions must require explicit user confirmation before doing so.
  *
  *   switchTaskSpace                     -> throws (agent-owned only)
- *   useOrCreateTaskSpace                -> claims it (ownership transfers to the agent)
+ *   useOrCreateTaskSpace                -> claims it (ownership transfers to the agent; only after confirmation)
  *   handOffTaskSpace                    -> skipped, resolves { done: false, skipped: "user-owned" }
  *   completeTaskSpace { keep: true }    -> skipped, resolves { done: false, skipped: "user-owned" }
  *   completeTaskSpace { keep: false }   -> claims it, then closes it

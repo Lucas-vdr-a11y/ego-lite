@@ -1,4 +1,5 @@
 import { state } from "./state.js";
+import { assertNoEgoError } from "./ego-errors.js";
 
 const RESPONSE_TIMEOUT_MS = 15000;
 const SESSION_TTL_MS = 2000;
@@ -104,10 +105,10 @@ export async function ensureSession() {
   }
   state.sessionInflight = (async () => {
     try {
-      const result = await browserEgo().listTabs();
-      if (result?.error) {
-        throw new Error(result.error);
-      }
+      const result = assertNoEgoError(
+        await browserEgo().listTabs(),
+        "listTabs",
+      );
       const tabs = result?.tabs || result?.targetInfos || [];
       const preferred = state.preferredTargetId
         ? tabs.find((t) => t.targetId === state.preferredTargetId)

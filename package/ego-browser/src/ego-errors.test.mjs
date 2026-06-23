@@ -5,6 +5,7 @@ import {
   assertNoEgoError,
   egoErrorCode,
   isEgoErrorCode,
+  isEgoHardStopError,
   isEgoUserControlError,
   resolveEgoError,
 } from "../dist/src/ego-errors.js";
@@ -86,6 +87,30 @@ test("isEgoUserControlError keys on the stable code, not wording", () => {
   );
   assert.equal(
     isEgoUserControlError({ error_code: "EGO_SNAPSHOT_FAILED" }),
+    false,
+  );
+});
+
+test("hard-stop classification includes user-control and inactive task spaces", () => {
+  assert.equal(
+    isEgoHardStopError({
+      error_code: "EGO_TASK_SPACE_USER_IN_CONTROL",
+      error: "user has control",
+    }),
+    true,
+  );
+  assert.equal(
+    isEgoHardStopError({
+      error_code: "EGO_TASK_SPACE_INACTIVE",
+      error: "not assigned",
+    }),
+    true,
+  );
+  assert.equal(
+    isEgoHardStopError({
+      error_code: "EGO_TASK_SPACE_NOT_FOUND",
+      error: "not found",
+    }),
     false,
   );
 });
