@@ -3,7 +3,10 @@ import assert from "node:assert/strict";
 
 import { setOverrides } from "../../dist/src/state.js";
 import { cdp } from "../../dist/src/cdp-eval.js";
-import { waitForNetworkIdle } from "../../dist/src/driver/waits.js";
+import {
+  waitForElement,
+  waitForNetworkIdle,
+} from "../../dist/src/driver/waits.js";
 
 test("waitForNetworkIdle enables the Network domain and disables it afterwards", async () => {
   // Regression: nothing used to enable the Network domain, so the helper could
@@ -85,4 +88,66 @@ test("waitForNetworkIdle survives a bridge that rejects Network.enable", async (
   } finally {
     restore();
   }
+});
+
+test("waitForNetworkIdle propagates hard-stop errors from Network.enable", async () => {
+  let t = 0;
+  const restore = setOverrides({
+    cdpOverride: async (method) => {
+      if (method === "Network.enable") {
+        throw Object.assign(new Error("user has control"), {
+          error_code: "EGO_TASK_SPACE_USER_IN_CONTROL",
+        });
+      }
+      return {};
+    },
+    now: () => t,
+    sleep: async (ms) => {
+      t += ms;
+    },
+  });
+  try {
+    await assert.rejects(
+      () => waitForNetworkIdle({ timeout: 5 }),
+      (err) => err.error_code === "EGO_TASK_SPACE_USER_IN_CONTROL",
+    );
+  } finally {
+    restore();
+  }
+});
+
+test("waitForElement propagates hard-stop errors from visibility checks", async () => {
+  let t = 0;
+  const calls = [];
+  const restore = setOverrides({
+    cdpOverride: async (method) => {
+      calls.push(method);
+      if (method === "Runtime.evaluate") {
+        return { result: { objectId: "node-1" } };
+      }
+      if (method === "Runtime.callFunctionOn") {
+        throw Object.assign(new Error("not assigned"), {
+          error_code: "EGO_TASK_SPACE_INACTIVE",
+        });
+      }
+      return {};
+    },
+    now: () => t,
+    sleep: async (ms) => {
+      t += ms;
+    },
+  });
+  try {
+    await assert.rejects(
+      () => waitForElement("#ready", { visible: true, timeout: 5 }),
+      (err) => err.error_code === "EGO_TASK_SPACE_INACTIVE",
+    );
+  } finally {
+    restore();
+  }
+  assert.deepEqual(calls, [
+    "Runtime.evaluate",
+    "Runtime.callFunctionOn",
+    "Runtime.releaseObject",
+  ]);
 });

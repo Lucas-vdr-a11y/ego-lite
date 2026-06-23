@@ -225,13 +225,15 @@ test("taskspace e2e useOrCreateTaskSpace selects user-owned spaces without claim
     },
   ]);
 
-  // Native rejects with error_code EGO_TASK_SPACE_USER_IN_CONTROL, so the agent
-  // sees ego-browser's owned guidance block, not the raw native text.
-  await assert.rejects(
-    () =>
-      runTaskspaceScript(ego, `await useOrCreateTaskSpace("checkout-flow")`),
-    /has taken control of this task space/,
+  // Native rejects with error_code EGO_TASK_SPACE_USER_IN_CONTROL, so the runner
+  // reports a hard-stop pause with ego-browser's owned guidance block.
+  const result = await runTaskspaceScript(
+    ego,
+    `await useOrCreateTaskSpace("checkout-flow")`,
   );
+  assert.equal(result.exitCode, 75);
+  assert.equal(result.stdout, "");
+  assert.match(result.stderr, /has taken control of this task space/);
   assert.deepEqual(ego.calls, [["listTaskSpaces"], ["useTaskSpace", 7]]);
 });
 

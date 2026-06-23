@@ -4,8 +4,10 @@ import assert from "node:assert/strict";
 import {
   assertNoEgoError,
   egoErrorCode,
+  isEgoHardStopError,
   isEgoErrorCode,
   isEgoUserControlError,
+  rethrowIfEgoHardStop,
   resolveEgoError,
 } from "../dist/src/ego-errors.js";
 
@@ -48,6 +50,7 @@ test("resolveEgoError overrides the native error message with the owned wording 
   });
   assert.equal(code, "EGO_TASK_SPACE_INACTIVE");
   // Owned id-less guidance replaces the native "Task space 7 ..." text.
+  assert.match(message, /inactive or not assigned to this agent/);
   assert.match(message, /claimTaskSpace\(id\)/);
   assert.doesNotMatch(message, /\b7\b/);
 });
@@ -128,6 +131,30 @@ test("isEgoUserControlError keys on the stable code, not wording", () => {
   );
 });
 
+test("hard-stop classification includes user-control and inactive task spaces", () => {
+  const userControl = {
+    error_code: "EGO_TASK_SPACE_USER_IN_CONTROL",
+    error: "user has control",
+  };
+  const inactive = {
+    error_code: "EGO_TASK_SPACE_INACTIVE",
+    error: "not assigned",
+  };
+  const notFound = {
+    error_code: "EGO_TASK_SPACE_NOT_FOUND",
+    error: "not found",
+  };
+
+  assert.equal(isEgoHardStopError(userControl), true);
+  assert.equal(isEgoHardStopError(inactive), true);
+  assert.equal(isEgoHardStopError(notFound), false);
+  assert.throws(
+    () => rethrowIfEgoHardStop(userControl),
+    (err) => err === userControl,
+  );
+  assert.doesNotThrow(() => rethrowIfEgoHardStop(notFound));
+});
+
 test("assertNoEgoError resolves the message via the code and attaches error_code", () => {
   try {
     assertNoEgoError(
@@ -153,7 +180,7 @@ test("assertNoEgoError omits the prefix when no op is given", () => {
     assert.fail("expected assertNoEgoError to throw");
   } catch (err) {
     // No op given, so no "<op>: " prefix — the owned block starts the message.
-    assert.match(err.message, /^The user has taken control/);
+    assert.match(err.message, /^This task space is inactive/);
     assert.match(err.message, /claimTaskSpace\(id\)/);
     assert.doesNotMatch(err.message, /\b10\b/);
     assert.equal(err.error_code, "EGO_TASK_SPACE_INACTIVE");

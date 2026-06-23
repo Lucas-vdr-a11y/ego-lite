@@ -8,7 +8,7 @@ import {
   setPreferredTarget,
 } from "../browser-runtime.js";
 import { cdp, js } from "../cdp-eval.js";
-import { assertNoEgoError } from "../ego-errors.js";
+import { assertNoEgoError, rethrowIfEgoHardStop } from "../ego-errors.js";
 import { state } from "../state.js";
 import { waitForDocumentLoad } from "./load.js";
 
@@ -231,7 +231,10 @@ export async function ensureRealTab() {
   if (tabs.length === 0) {
     return null;
   }
-  const current = await currentTab().catch(() => null);
+  const current = await currentTab().catch((err) => {
+    rethrowIfEgoHardStop(err);
+    return null;
+  });
   if (
     current?.url &&
     !INTERNAL_URL_PREFIXES.some((prefix) => current.url.startsWith(prefix))

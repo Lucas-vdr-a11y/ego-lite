@@ -1,5 +1,9 @@
 import { state } from "./state.js";
-import { assertNoEgoError, buildEgoError } from "./ego-errors.js";
+import {
+  assertNoEgoError,
+  buildEgoError,
+  rethrowIfEgoHardStop,
+} from "./ego-errors.js";
 
 const RESPONSE_TIMEOUT_MS = 15000;
 const SESSION_TTL_MS = 2000;
@@ -173,7 +177,8 @@ async function enablePageEvents(sessionId) {
   try {
     await rawCdp("Page.enable", {}, sessionId);
     pageEnabledSessions.add(sessionId);
-  } catch {
+  } catch (err) {
+    rethrowIfEgoHardStop(err);
     // Dialog tracking is best-effort. Do not make all helpers fail on targets
     // that reject Page.enable, such as unusual internal pages.
   }

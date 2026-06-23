@@ -45,8 +45,8 @@ export type EgoErrorCode = (typeof EGO_ERROR_CODES)[number];
  */
 const EGO_ERROR_MESSAGES: Partial<Record<EgoErrorCode, string>> = {
   EGO_TASK_SPACE_INACTIVE: [
-    "The user has taken control of this task space and ended the task, so it is no longer assigned to the agent and browser commands are paused.",
-    "This is a hard stop, not an obstacle to route around — do not retry and do not take ownership back on your own.",
+    "This task space is inactive or not assigned to this agent, so browser commands are paused.",
+    "This is a hard permission boundary, not an obstacle to route around — do not retry and do not claim the space on your own.",
     "Wait until the user explicitly asks you to continue, then claim the space and resume:",
     "  await claimTaskSpace(id)",
     "",
@@ -111,6 +111,23 @@ export function resolveEgoError(err: unknown): {
 /** Whether an ego error means the task is currently under user control. */
 export function isEgoUserControlError(err: unknown): boolean {
   return egoErrorCode(err) === "EGO_TASK_SPACE_USER_IN_CONTROL";
+}
+
+/** Whether claiming the task space would cross a user-owned permission boundary. */
+export function isEgoTaskSpaceInactiveError(err: unknown): boolean {
+  return egoErrorCode(err) === "EGO_TASK_SPACE_INACTIVE";
+}
+
+/** Whether an ego error must stop the current agent script immediately. */
+export function isEgoHardStopError(err: unknown): boolean {
+  return isEgoUserControlError(err) || isEgoTaskSpaceInactiveError(err);
+}
+
+/** Re-throw hard-stop errors before a broad fallback path can swallow them. */
+export function rethrowIfEgoHardStop(err: unknown): void {
+  if (isEgoHardStopError(err)) {
+    throw err;
+  }
 }
 
 /**

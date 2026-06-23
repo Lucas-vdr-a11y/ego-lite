@@ -1,5 +1,6 @@
 import { cdp, js } from "../cdp-eval.js";
 import { state } from "../state.js";
+import { rethrowIfEgoHardStop } from "../ego-errors.js";
 
 export type WaitForLoadOptions = {
   timeout?: number;
@@ -14,7 +15,8 @@ export async function waitForDocumentLoad(options: WaitForLoadOptions = {}) {
       const tree = await cdp("Page.getFrameTree");
       const url = tree.frameTree?.frame?.url || "";
       committed = url !== "" && url !== ":" && url !== "about:blank";
-    } catch {
+    } catch (err) {
+      rethrowIfEgoHardStop(err);
       // Page.getFrameTree may not be supported in some sessions; fall back to readyState only.
     }
     if (committed && (await js("document.readyState")) === "complete") {

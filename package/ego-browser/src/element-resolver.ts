@@ -1,4 +1,5 @@
 import { parseRef } from "./ref-map.js";
+import { rethrowIfEgoHardStop } from "./ego-errors.js";
 
 export class ElementResolutionError extends Error {
   kind: "transient" | "permanent";
@@ -51,6 +52,7 @@ export async function resolveElementCenter(
           sessionId: effectiveSessionId,
         };
       } catch (error) {
+        rethrowIfEgoHardStop(error);
         if (error instanceof ElementResolutionError) {
           // The node resolved but has no usable box model (not rendered yet).
           // Propagate the retryable state instead of falling back to role/name,
@@ -142,7 +144,8 @@ export async function resolveElementObjectId(
         if (objectId) {
           return { objectId, sessionId: effectiveSessionId };
         }
-      } catch {
+      } catch (error) {
+        rethrowIfEgoHardStop(error);
         // The backend node can become stale after DOM updates; fall back to role/name lookup below.
       }
     }

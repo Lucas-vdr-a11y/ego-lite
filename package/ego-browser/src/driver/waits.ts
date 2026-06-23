@@ -4,6 +4,7 @@ import { resolveHandle, releaseHandle } from "./element-ops.js";
 import { ElementResolutionError } from "../element-resolver.js";
 import { type WaitForLoadOptions, waitForDocumentLoad } from "./load.js";
 import { drainEvents } from "./observe.js";
+import { rethrowIfEgoHardStop } from "../ego-errors.js";
 
 type WaitForElementOptions = {
   timeout?: number;
@@ -72,7 +73,8 @@ export async function waitForElement(
         handle.sessionId,
       );
       if (response.result?.value) return true;
-    } catch {
+    } catch (err) {
+      rethrowIfEgoHardStop(err);
       // visibility check failed (element raced away); treat as not-ready, keep polling.
     } finally {
       await releaseHandle(handle.objectId, handle.sessionId);
@@ -102,7 +104,8 @@ export async function waitForNetworkIdle(
   let lastActivity = state.now();
   const inflight = new Set();
   const ownsNetworkDomain = !state.networkDomainEnabled;
-  await cdp("Network.enable").catch(() => {
+  await cdp("Network.enable").catch((err) => {
+    rethrowIfEgoHardStop(err);
     // Domain may be unsupported by the bridge; fall back to passive observation.
   });
   try {
@@ -131,7 +134,8 @@ export async function waitForNetworkIdle(
     return false;
   } finally {
     if (ownsNetworkDomain) {
-      await cdp("Network.disable").catch(() => {
+      await cdp("Network.disable").catch((err) => {
+        rethrowIfEgoHardStop(err);
         // Best-effort cleanup; keeps the event buffer from accumulating after the wait.
       });
     }
