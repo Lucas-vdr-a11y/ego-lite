@@ -4,7 +4,6 @@ import {
   pendingDialog,
 } from "../browser-runtime.js";
 import { js } from "../cdp-eval.js";
-import { state } from "../state.js";
 
 export type PageInfo =
   | {
@@ -18,14 +17,6 @@ export type PageInfo =
       ph: number;
     }
   | { dialog: object };
-
-type WaitForValidViewportOptions = {
-  timeoutMs?: number;
-  intervalMs?: number;
-};
-
-const DEFAULT_VIEWPORT_READY_TIMEOUT_MS = 5000;
-const VIEWPORT_READY_INTERVAL_MS = 100;
 
 export async function readPageInfo(): Promise<PageInfo> {
   if (isBrowserRuntime()) {
@@ -64,36 +55,4 @@ export function assertValidViewport(info: PageInfo, context: string) {
   if (!hasValidViewport(info)) {
     throw invalidViewportError(info, context);
   }
-}
-
-export async function waitForValidViewport(
-  context: string,
-  options: WaitForValidViewportOptions = {},
-) {
-  const timeoutMs = options.timeoutMs ?? DEFAULT_VIEWPORT_READY_TIMEOUT_MS;
-  const intervalMs = options.intervalMs ?? VIEWPORT_READY_INTERVAL_MS;
-  const deadline = state.now() + timeoutMs;
-  let lastInfo: PageInfo | null = null;
-
-  while (state.now() <= deadline) {
-    lastInfo = await readPageInfo();
-    if (hasDialog(lastInfo) || hasValidViewport(lastInfo)) {
-      return lastInfo;
-    }
-    await state.sleep(intervalMs);
-  }
-
-  throw invalidViewportError(
-    lastInfo ?? {
-      url: "",
-      title: "",
-      w: 0,
-      h: 0,
-      sx: 0,
-      sy: 0,
-      pw: 0,
-      ph: 0,
-    },
-    context,
-  );
 }

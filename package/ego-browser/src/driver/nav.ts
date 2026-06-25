@@ -8,7 +8,7 @@ import { cdp } from "../cdp-eval.js";
 import { assertNoEgoError } from "../ego-errors.js";
 import { state } from "../state.js";
 import { waitForDocumentLoad } from "./load.js";
-import { readPageInfo, waitForValidViewport } from "./viewport.js";
+import { readPageInfo } from "./viewport.js";
 
 export const INTERNAL_URL_PREFIXES = [
   "chrome://",
@@ -62,9 +62,10 @@ async function callNativeTabReady(targetId: string) {
   }
 }
 
-async function ensureTabReady(targetId: string, context = "tab") {
+async function ensureTabReady(targetId: string) {
+  // Keep viewport assertions in viewport-dependent helpers. Navigation should
+  // not abort the whole task just because the renderer currently reports 0x0.
   await callNativeTabReady(targetId);
-  return waitForValidViewport(`${context} ${targetId}`);
 }
 
 /**
@@ -94,9 +95,6 @@ export async function gotoAndWait(
   const settle = Number(options.settle ?? 0);
   if (settle > 0) {
     await state.sleep(settle * 1000);
-  }
-  if (options.wait !== false) {
-    await waitForValidViewport("gotoAndWait");
   }
   return { navigation, loaded };
 }
@@ -158,7 +156,7 @@ export async function currentTab() {
 export async function switchTab(target: string | { targetId: string }) {
   const targetId = typeof target === "object" ? target.targetId : target;
   await activateTabTarget(targetId);
-  await ensureTabReady(targetId, "switchTab");
+  await ensureTabReady(targetId);
   return targetId;
 }
 
@@ -209,9 +207,6 @@ export async function openOrReuseTab(
   if (settle > 0) {
     await state.sleep(settle * 1000);
   }
-  if (waited || settle > 0) {
-    await ensureTabReady(targetId, "openOrReuseTab");
-  }
   return { targetId, url, title: "", active: true, reused: false };
 }
 
@@ -252,7 +247,6 @@ export async function ensureRealTab() {
     current?.url &&
     !INTERNAL_URL_PREFIXES.some((prefix) => current.url.startsWith(prefix))
   ) {
-    await ensureTabReady(current.targetId, "ensureRealTab");
     return current;
   }
   await switchTab(tabs[0].targetId);

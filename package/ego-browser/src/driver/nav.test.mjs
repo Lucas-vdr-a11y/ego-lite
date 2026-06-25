@@ -16,20 +16,6 @@ import {
 } from "../../dist/src/driver/nav.js";
 import { setOverrides, state } from "../../dist/src/state.js";
 
-function pageInfoPayload(overrides = {}) {
-  return JSON.stringify({
-    url: "https://example.com/",
-    title: "Example",
-    w: 800,
-    h: 600,
-    sx: 0,
-    sy: 0,
-    pw: 800,
-    ph: 1200,
-    ...overrides,
-  });
-}
-
 function runtimeValue(value) {
   return { result: { value } };
 }
@@ -158,14 +144,8 @@ test("newTab throws when the binding returns no targetId", async () => {
   );
 });
 
-test("openOrReuseTab activates newly created tabs and waits for a non-zero viewport", async () => {
+test("openOrReuseTab activates newly created tabs without forcing viewport validation", async () => {
   const calls = [];
-  const sleeps = [];
-  let now = 0;
-  const viewportResponses = [
-    pageInfoPayload({ w: 0, h: 0, pw: 320, ph: 180 }),
-    pageInfoPayload({ w: 640, h: 480, pw: 640, ph: 900 }),
-  ];
 
   await withEgo(
     {
@@ -179,19 +159,8 @@ test("openOrReuseTab activates newly created tabs and waits for a non-zero viewp
     },
     async () => {
       const restore = setOverrides({
-        now: () => now,
-        async sleep(ms) {
-          sleeps.push(ms);
-          now += ms;
-        },
         cdpOverride(method, params, sessionId) {
           calls.push({ method, params, sessionId });
-          if (method === "Runtime.evaluate") {
-            return runtimeValue(
-              viewportResponses.shift() ??
-                pageInfoPayload({ w: 640, h: 480, pw: 640, ph: 900 }),
-            );
-          }
           return {};
         },
       });
@@ -221,10 +190,9 @@ test("openOrReuseTab activates newly created tabs and waits for a non-zero viewp
     params: { targetId: "target-2" },
     sessionId: undefined,
   });
-  assert.deepEqual(sleeps, [100]);
   assert.equal(
     calls.filter((call) => call.method === "Runtime.evaluate").length,
-    2,
+    0,
   );
 });
 
@@ -253,9 +221,6 @@ test("openOrReuseTab calls native ensureTabReady when the bridge provides it", a
       const restore = setOverrides({
         cdpOverride(method, params, sessionId) {
           calls.push({ method, params, sessionId });
-          if (method === "Runtime.evaluate") {
-            return runtimeValue(pageInfoPayload());
-          }
           return {};
         },
       });
@@ -272,7 +237,7 @@ test("openOrReuseTab calls native ensureTabReady when the bridge provides it", a
 
   assert.deepEqual(
     calls.map((call) => call.method),
-    ["Target.activateTarget", "ensureTabReady", "Runtime.evaluate"],
+    ["Target.activateTarget", "ensureTabReady"],
   );
 });
 
@@ -301,9 +266,6 @@ test("openOrReuseTab falls back to native ensureViewport when ensureTabReady is 
       const restore = setOverrides({
         cdpOverride(method, params, sessionId) {
           calls.push({ method, params, sessionId });
-          if (method === "Runtime.evaluate") {
-            return runtimeValue(pageInfoPayload());
-          }
           return {};
         },
       });
@@ -320,7 +282,7 @@ test("openOrReuseTab falls back to native ensureViewport when ensureTabReady is 
 
   assert.deepEqual(
     calls.map((call) => call.method),
-    ["Target.activateTarget", "ensureViewport", "Runtime.evaluate"],
+    ["Target.activateTarget", "ensureViewport"],
   );
 });
 
@@ -370,10 +332,8 @@ test("openOrReuseTab surfaces native ensureTabReady errors", async () => {
   assert.equal(caught?.error_code, "EGO_INVALID_VIEWPORT");
 });
 
-test("openOrReuseTab rejects zero-viewport tabs with a structured error", async () => {
-  let now = 0;
-  let caught;
-
+test("openOrReuseTab leaves viewport validation to viewport-dependent helpers", async () => {
+  const calls = [];
   await withEgo(
     {
       async listTabs() {
@@ -385,49 +345,37 @@ test("openOrReuseTab rejects zero-viewport tabs with a structured error", async 
     },
     async () => {
       const restore = setOverrides({
-        now: () => now,
-        async sleep(ms) {
-          now += ms;
-        },
-        cdpOverride(method) {
-          if (method === "Runtime.evaluate") {
-            return runtimeValue(
-              pageInfoPayload({
-                url: "https://example.com/zero",
-                w: 0,
-                h: 0,
-                pw: 320,
-                ph: 180,
-              }),
-            );
-          }
+        cdpOverride(method, params, sessionId) {
+          calls.push({ method, params, sessionId });
           return {};
         },
       });
       try {
-        await openOrReuseTab("https://example.com/zero", { wait: false });
-      } catch (error) {
-        caught = error;
+        assert.deepEqual(
+          await openOrReuseTab("https://example.com/zero", { wait: false }),
+          {
+            targetId: "target-2",
+            url: "https://example.com/zero",
+            title: "",
+            active: true,
+            reused: false,
+          },
+        );
       } finally {
         restore();
       }
     },
   );
 
-  assert.equal(caught?.code, "EGO_INVALID_VIEWPORT");
-  assert.match(caught?.message || "", /viewport=0x0/);
-  assert.match(caught?.message || "", /https:\/\/example\.com\/zero/);
+  assert.equal(
+    calls.some((call) => call.method === "Runtime.evaluate"),
+    false,
+  );
 });
 
-test("gotoAndWait rejects when navigation finishes with an invalid viewport", async () => {
-  let now = 0;
-  let caught;
+test("gotoAndWait does not turn invalid viewport into a navigation failure", async () => {
   const calls = [];
   const restore = setOverrides({
-    now: () => now,
-    async sleep(ms) {
-      now += ms;
-    },
     cdpOverride(method, params, sessionId) {
       calls.push({ method, params, sessionId });
       if (method === "Page.navigate") {
@@ -440,30 +388,27 @@ test("gotoAndWait rejects when navigation finishes with an invalid viewport", as
         if (params.expression === "document.readyState") {
           return runtimeValue("complete");
         }
-        return runtimeValue(
-          pageInfoPayload({
-            url: "https://example.com/zero",
-            w: 0,
-            h: 0,
-            pw: 320,
-            ph: 180,
-          }),
-        );
       }
       return {};
     },
   });
   try {
-    await gotoAndWait("https://example.com/zero", { timeout: 1 });
-  } catch (error) {
-    caught = error;
+    assert.deepEqual(
+      await gotoAndWait("https://example.com/zero", { timeout: 1 }),
+      {
+        navigation: { frameId: "frame-1" },
+        loaded: true,
+      },
+    );
   } finally {
     restore();
   }
 
-  assert.equal(caught?.code, "EGO_INVALID_VIEWPORT");
-  assert.match(caught?.message || "", /gotoAndWait/);
   assert.equal(calls[0].method, "Page.navigate");
+  assert.equal(
+    calls.filter((call) => call.method === "Runtime.evaluate").length,
+    1,
+  );
 });
 
 test("closeTab closes an explicit target and returns its id", async () => {
