@@ -8,6 +8,7 @@ import {
   flushSink,
   markHardStop,
   resetSink,
+  setNoticeTrailer,
 } from "../dist/src/output-sink.js";
 
 function fakeStream() {
@@ -90,6 +91,43 @@ test("output boundaries isolate hard stops between REPL cells", () => {
   assert.deepEqual(first, { hardStop: true, wrote: true });
   assert.deepEqual(second, { hardStop: false, wrote: true });
   assert.equal(out.text(), "CELL ONE HARD STOP\ncell two normal output\n");
+});
+
+test("a notice trailer set before the boundary begins flushes once, as a footer", () => {
+  resetSink();
+  // The fire-and-forget probe typically resolves during REPL bootstrap, long before
+  // the first cell arrives — the pending trailer must survive the per-cell reset.
+  setNoticeTrailer("[ego-browser:notice] update available");
+  const out = fakeStream();
+
+  beginOutputBoundary();
+  bufferOutput("cell one output\n");
+  finishOutputBoundary(out, false);
+
+  beginOutputBoundary();
+  bufferOutput("cell two output\n");
+  finishOutputBoundary(out, false);
+
+  assert.equal(
+    out.text(),
+    "cell one output\n[ego-browser:notice] update available\ncell two output\n",
+  );
+});
+
+test("the notice trailer still trails the owned message on a hard stop", () => {
+  resetSink();
+  setNoticeTrailer("[ego-browser:notice] update available\n");
+  const out = fakeStream();
+
+  beginOutputBoundary();
+  bufferOutput("business output to discard\n");
+  markHardStop("HARD STOP MESSAGE");
+  finishOutputBoundary(out, false);
+
+  assert.equal(
+    out.text(),
+    "HARD STOP MESSAGE\n[ego-browser:notice] update available\n",
+  );
 });
 
 test("output boundaries flush host stdout capture on clean completion", () => {

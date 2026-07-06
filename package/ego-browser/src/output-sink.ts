@@ -66,7 +66,12 @@ export function markHardStop(message: string): void {
 /** Start an output boundary for one stdin script or one REPL cell. */
 export function beginOutputBoundary(capture?: OutputCapture | null): void {
   if (boundaryDepth === 0) {
+    // The update-notice probe is fire-and-forget and typically resolves between
+    // boundaries (REPL bootstrap runs it long before the first cell arrives), so a
+    // pending trailer belongs to the next flush and must survive the per-cell reset.
+    const pendingNotice = noticeTrailer;
     resetSink();
+    noticeTrailer = pendingNotice;
     boundaryCapture = capture || null;
     boundaryCapture?.clear();
   }
@@ -125,10 +130,14 @@ export function flushSink(stream: WritableLike, thrown: boolean): FlushResult {
   }
   // The update hint is independent of the run's own output (and of a hard stop), so it
   // is appended last in every case — after the business output or the owned guidance.
+  // Cleared once written: a long-lived REPL process flushes once per cell, and the
+  // hint must not repeat as a footer on every subsequent cell.
   if (noticeTrailer !== null) {
     stream.write(
       noticeTrailer.endsWith("\n") ? noticeTrailer : `${noticeTrailer}\n`,
     );
+    noticeTrailer = null;
+    wrote = true;
   }
   const hardStop = hardStopMessage !== null;
   buffer = [];
