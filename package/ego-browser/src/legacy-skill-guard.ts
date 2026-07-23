@@ -97,7 +97,7 @@ export class EgoBrowserSkillStaleError extends Error {
     super(
       [
         `${STALE_SKILL_PREFIX} The loaded ego-browser skill uses the removed global helper "${legacyHelper}".`,
-        "The ego-browser skill in this conversation no longer matches the installed runtime. Stop this script, re-read the current ego-browser skill in this same session, then retry with:",
+        "The ego-browser skill in this conversation no longer matches the installed runtime. Stop this script, re-read the current ego-browser skill, then retry with:",
         `  await ${replacement}`,
         "This is a skill-context mismatch, not an app-update notice.",
       ].join("\n"),
