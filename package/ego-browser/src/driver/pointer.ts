@@ -553,13 +553,32 @@ async function dispatchSyntheticWheel(
 /**
  * Scroll an element into view only if it is not already fully visible,
  * mirroring Playwright's locator.scrollIntoViewIfNeeded.
+ *
+ * The scroll is forced to be instant: under CSS `scroll-behavior: smooth` it is
+ * animated instead, and callers that read the element's position right after
+ * this — click() resolving its point, for one — would aim at where the element
+ * used to be. The override covers nested scroll containers too and is removed
+ * before returning.
  * @param {string} selector CSS selector or @ref of the element to reveal.
  * @returns {Promise<void>}
  */
 export async function scrollIntoViewIfNeeded(selector: string) {
   await resolveAndCall(
     selector,
-    "function(){ if (typeof this.scrollIntoViewIfNeeded === 'function') { this.scrollIntoViewIfNeeded(true); } else { this.scrollIntoView({ block: 'center', inline: 'center' }); } }",
+    `function(){
+      const override = document.createElement("style");
+      override.textContent = "*{scroll-behavior:auto !important}";
+      (document.head || document.documentElement).appendChild(override);
+      try {
+        if (typeof this.scrollIntoViewIfNeeded === "function") {
+          this.scrollIntoViewIfNeeded(true);
+        } else {
+          this.scrollIntoView({ block: "center", inline: "center" });
+        }
+      } finally {
+        override.remove();
+      }
+    }`,
   );
 }
 
