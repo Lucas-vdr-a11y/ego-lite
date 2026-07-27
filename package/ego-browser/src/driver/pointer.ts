@@ -1,7 +1,7 @@
 import { cdp, evaluate } from "../cdp-eval.js";
 import { browserCdp } from "../browser-runtime.js";
 import { elementCenter } from "./observe.js";
-import { resolveAndCall } from "./element-ops.js";
+import { resolveAndCall, withHandle } from "./element-ops.js";
 import { waitForSelector } from "./waits.js";
 
 type MouseButton = "left" | "middle" | "right";
@@ -554,15 +554,32 @@ async function dispatchSyntheticWheel(
  * Scroll an element into view only if it is not already fully visible,
  * mirroring Playwright's locator.scrollIntoViewIfNeeded.
  *
- * The scroll is forced to be instant: under CSS `scroll-behavior: smooth` it is
- * animated instead, and callers that read the element's position right after
- * this — click() resolving its point, for one — would aim at where the element
- * used to be. The override covers nested scroll containers too and is removed
- * before returning.
+ * Scrolls browser-side through CDP DOM.scrollIntoViewIfNeeded, as Playwright
+ * does: the scroll must be instant — under an animated scroll, callers that
+ * read the element's position right after this (click() resolving its point,
+ * for one) would aim at where the element used to be — and the browser-side
+ * scroll stays instant regardless of CSS `scroll-behavior: smooth`, is not
+ * subject to the page's CSP, and moves scroll containers in ancestor
+ * documents. When the CDP method fails (bridge without the DOM domain, no
+ * layout box), it falls back to an in-page scroll under a temporary
+ * scroll-behavior override; a strict `style-src` CSP can reject that override,
+ * which is why the CDP path comes first.
  * @param {string} selector CSS selector or @ref of the element to reveal.
  * @returns {Promise<void>}
  */
 export async function scrollIntoViewIfNeeded(selector: string) {
+  const scrolled = await withHandle(
+    selector,
+    async ({ objectId, sessionId }) => {
+      try {
+        await cdp("DOM.scrollIntoViewIfNeeded", { objectId }, sessionId);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+  );
+  if (scrolled) return;
   await resolveAndCall(
     selector,
     `function(){
