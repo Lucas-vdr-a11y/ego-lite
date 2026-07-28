@@ -17,6 +17,7 @@ async function defaultSend(req) {
     req.method,
     req.params || {},
     req.session_id,
+    req.timeout_ms,
   );
   return { result: response.result || {} };
 }
@@ -34,7 +35,8 @@ export const state = {
   sessionAt: 0,
   sessionInflight: null,
   preferredTargetId: null,
-  defaultTimeout: 10000,
+  defaultTimeout: 30000,
+  defaultNavigationTimeout: null,
   // Last observed Network domain state on the default session (tracked in cdp()).
   networkDomainEnabled: false,
 };

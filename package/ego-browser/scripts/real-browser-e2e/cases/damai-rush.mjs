@@ -57,6 +57,11 @@ export const damaiRushCase = caseBody(`
     'document.querySelector("#order-result")?.textContent.includes("EGO-0001")',
     "ticket rush renders the electronic ticket receipt",
   );
+  await waitForJsValue(
+    "document.querySelector('[data-testid=remaining]')?.textContent",
+    "1",
+    "ticket rush refreshes inventory after the confirmed order",
+  );
   assertEqual(
     await page.getByTestId("remaining").innerText(),
     "1",

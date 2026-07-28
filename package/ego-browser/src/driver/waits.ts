@@ -2,18 +2,38 @@ import { state } from "../state.js";
 import { cdp, runtimeValue } from "../cdp-eval.js";
 import { resolveHandle, releaseHandle } from "./element-ops.js";
 import { ElementResolutionError } from "../element-resolver.js";
+import { isEgoHardStopError } from "../ego-errors.js";
 import { waitForDocumentLoad } from "./load.js";
 import { drainEvents } from "./observe.js";
-import { waitForBrowserEvent } from "../browser-runtime.js";
+import {
+  ensureSession,
+  isBrowserRuntime,
+  waitForBrowserEvent,
+} from "../browser-runtime.js";
+import { createJSHandle, remotePrimitiveValue } from "../js-handle.js";
+import {
+  normalizeTimeout,
+  normalizeWaitUntil,
+  operationTimeout,
+  remainingTimeout,
+  timeoutDeadline,
+} from "../playwright-errors.js";
+import {
+  createRequestFacade,
+  createResponseFacade,
+  responseLifecycleInfo,
+} from "../network-facades.js";
+import { acquireNetworkEvents } from "../network-events.js";
+import { createNetworkLifecycleMonitor } from "../network-lifecycle.js";
 
 type WaitForSelectorOptions = {
   timeout?: number;
-  state?: "visible" | "attached";
+  state?: "visible" | "attached" | "hidden" | "detached";
 };
 
 type WaitForFunctionOptions = {
   timeout?: number;
-  polling?: number;
+  polling?: number | "raf";
 };
 
 type WaitForURLOptions = {
@@ -32,10 +52,6 @@ type WaitForNetworkOptions = {
 
 type LoadState = "load" | "domcontentloaded" | "networkidle";
 
-let networkEventUsers = 0;
-let networkEventsOwnDomain = false;
-let networkEnableInFlight: Promise<void> | null = null;
-
 /**
  * Sleep for a fixed number of milliseconds.
  * @param {number} [ms=1000] Milliseconds to wait.
@@ -48,37 +64,49 @@ export async function waitForTimeout(ms = 1000) {
 /**
  * Poll a page function or expression until it returns a truthy value.
  * @param {string|Function} pageFunction Browser-side expression or function.
- * @param {unknown|{timeout?: number, polling?: number}} [argOrOptions] Optional function argument, or options.
- * @param {{timeout?: number, polling?: number}} [options] timeout and polling in milliseconds.
- * @returns {Promise<unknown|false>} The first truthy return value, or false on timeout.
+ * @param {unknown} [arg] Optional function argument.
+ * @param {{timeout?: number, polling?: number|"raf"}} [options] timeout in milliseconds; polling is a positive interval or "raf".
+ * @returns {Promise<object>} JSHandle for the first truthy return value.
  */
 export async function waitForFunction(
   pageFunction,
-  argOrOptions: unknown | WaitForFunctionOptions = undefined,
+  arg: unknown = undefined,
   options: WaitForFunctionOptions = {},
 ) {
-  const [arg, effectiveOptions] = normalizeWaitForFunctionArgs(
-    arguments.length,
-    argOrOptions,
-    options,
+  const timeout = normalizeTimeout(
+    "page.waitForFunction",
+    options.timeout ?? state.defaultTimeout,
   );
-  const timeout = effectiveOptions.timeout ?? state.defaultTimeout;
-  const polling = effectiveOptions.polling ?? 100;
-  const deadline = state.now() + timeout;
+  const polling =
+    options.polling === "raf" || options.polling === undefined
+      ? 16
+      : Number(options.polling);
+  if (!Number.isFinite(polling) || polling <= 0) {
+    throw new TypeError(
+      'page.waitForFunction polling must be "raf" or a positive number',
+    );
+  }
+  const deadline = timeoutDeadline(timeout, state.now());
   const expression = buildWaitForFunctionExpression(pageFunction, arg);
   while (state.now() < deadline) {
     const response = await cdp("Runtime.evaluate", {
       expression,
-      returnByValue: true,
+      returnByValue: false,
       awaitPromise: true,
     });
-    const value = runtimeValue(response, expression);
+    if (response.exceptionDetails || response.result?.subtype === "error") {
+      runtimeValue(response, expression);
+    }
+    const remoteObject = response.result || {};
+    const value = remoteObject.objectId
+      ? true
+      : remotePrimitiveValue(remoteObject);
     if (value) {
-      return value;
+      return createJSHandle(remoteObject);
     }
     await state.sleep(polling);
   }
-  return false;
+  throw operationTimeout("page.waitForFunction", timeout);
 }
 
 /**
@@ -86,11 +114,15 @@ export async function waitForFunction(
  * @param {string|RegExp|Function} url URL matcher. Predicate functions receive a URL object. Strings with * are treated as globs; other strings are exact.
  * @param {{timeout?: number, waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit"}} [options]
  *   `waitUntil` defaults to `"load"`.
- * @returns {Promise<boolean>} True when matched before timeout.
+ * @returns {Promise<void>}
  */
 export async function waitForURL(url, options: WaitForURLOptions = {}) {
-  const timeout = options.timeout ?? state.defaultTimeout;
-  const deadline = state.now() + timeout;
+  const waitUntil = normalizeWaitUntil("page.waitForURL", options.waitUntil);
+  const timeout = normalizeTimeout(
+    "page.waitForURL",
+    options.timeout ?? state.defaultTimeout,
+  );
+  const deadline = timeoutDeadline(timeout, state.now());
   while (state.now() < deadline) {
     const current = runtimeValue(
       await cdp("Runtime.evaluate", {
@@ -101,25 +133,29 @@ export async function waitForURL(url, options: WaitForURLOptions = {}) {
       "location.href",
     );
     if (urlMatches(current, url)) {
-      const waitUntil = options.waitUntil ?? "load";
       // waitForDocumentLoad treats about:blank as an uncommitted transient,
       // so skip document-load states for a matched blank page. Explicit
       // networkidle still needs to observe its idle window.
-      return waitUntil === "commit" ||
-        (current === "about:blank" && waitUntil !== "networkidle")
-        ? true
-        : waitForLoadState(waitUntil, {
-            timeout: Math.max(0, deadline - state.now()),
-          });
+      if (
+        waitUntil !== "commit" &&
+        !(current === "about:blank" && waitUntil !== "networkidle")
+      ) {
+        const remaining = remainingTimeout(deadline, state.now());
+        const reached = await waitForLoadStateCore(waitUntil, {
+          timeout: remaining,
+        });
+        if (!reached) throw operationTimeout("page.waitForURL", timeout);
+      }
+      return;
     }
     await state.sleep(100);
   }
-  return false;
+  throw operationTimeout("page.waitForURL", timeout);
 }
 
 /**
  * Wait for a network request whose URL or request facade matches.
- * @param {string|RegExp|Function} urlOrPredicate Exact URL, RegExp, or synchronous request predicate.
+ * @param {string|RegExp|Function} urlOrPredicate Exact URL, RegExp, or synchronous/async request predicate.
  * @param {{timeout?: number}} [options] timeout in milliseconds; 0 disables timeout.
  * @returns {Promise<object>} Playwright-style request facade.
  */
@@ -132,7 +168,7 @@ export async function waitForRequest(
 
 /**
  * Wait for a network response whose URL or response facade matches.
- * @param {string|RegExp|Function} urlOrPredicate Exact URL, RegExp, or synchronous response predicate.
+ * @param {string|RegExp|Function} urlOrPredicate Exact URL, RegExp, or synchronous/async response predicate.
  * @param {{timeout?: number}} [options] timeout in milliseconds; 0 disables timeout.
  * @returns {Promise<object>} Playwright-style response facade.
  */
@@ -149,7 +185,7 @@ export async function waitForResponse(
  * document.readyState is complete.
  * @param {"load"|"domcontentloaded"|"networkidle"|{timeout?: number, idleMs?: number}} [loadState="load"] Load state to wait for, or options for the default "load" state.
  * @param {{timeout?: number, idleMs?: number}} [options] timeout in milliseconds; idleMs only applies to "networkidle".
- * @returns {Promise<boolean>} True when the state was reached before timeout.
+ * @returns {Promise<void>}
  */
 export async function waitForLoadState(
   loadState: LoadState | WaitForLoadStateOptions = "load",
@@ -159,11 +195,27 @@ export async function waitForLoadState(
     loadState,
     options,
   );
+  if (!["load", "domcontentloaded", "networkidle"].includes(stateName)) {
+    throw new TypeError(`unsupported load state: ${JSON.stringify(stateName)}`);
+  }
+  const reached = await waitForLoadStateCore(stateName, effectiveOptions);
+  if (!reached) {
+    throw operationTimeout(
+      "page.waitForLoadState",
+      effectiveOptions.timeout ?? state.defaultTimeout,
+    );
+  }
+}
+
+async function waitForLoadStateCore(
+  stateName: LoadState,
+  options: WaitForLoadStateOptions,
+) {
   if (stateName === "networkidle") {
-    return waitForNetworkIdle(effectiveOptions);
+    return waitForNetworkIdle(options);
   }
   return waitForDocumentLoad({
-    timeout: effectiveOptions.timeout,
+    timeout: options.timeout,
     until: stateName === "domcontentloaded" ? "domcontentloaded" : "load",
   });
 }
@@ -178,27 +230,6 @@ function normalizeLoadStateArgs(
   return [(loadState || "load") as LoadState, options];
 }
 
-function normalizeWaitForFunctionArgs(
-  length: number,
-  argOrOptions: unknown | WaitForFunctionOptions,
-  options: WaitForFunctionOptions,
-): [unknown, WaitForFunctionOptions] {
-  if (length >= 3) {
-    return [argOrOptions, options];
-  }
-  if (isWaitForFunctionOptions(argOrOptions)) {
-    return [undefined, argOrOptions];
-  }
-  return [argOrOptions, {}];
-}
-
-function isWaitForFunctionOptions(value): value is WaitForFunctionOptions {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return false;
-  }
-  return "timeout" in value || "polling" in value;
-}
-
 function buildWaitForFunctionExpression(pageFunction, arg) {
   if (typeof pageFunction === "function") {
     return `(${pageFunction.toString()})(${JSON.stringify(arg)})`;
@@ -208,11 +239,14 @@ function buildWaitForFunctionExpression(pageFunction, arg) {
       `waitForFunction expects a string expression or function, got ${pageFunction === null ? "null" : typeof pageFunction}`,
     );
   }
-  return `(${pageFunction})`;
+  return arg === undefined
+    ? `(${pageFunction})`
+    : `(${pageFunction})(${JSON.stringify(arg)})`;
 }
 
 function urlMatches(current, matcher) {
   if (matcher instanceof RegExp) {
+    matcher.lastIndex = 0;
     return matcher.test(current);
   }
   if (typeof matcher === "function") {
@@ -253,73 +287,111 @@ async function waitForNetworkMatch(
   options: WaitForNetworkOptions,
 ) {
   const timeout = networkTimeout(options);
-  const requests = new Map();
-  const networkEvents = acquireNetworkEvents();
-  let matched;
-  try {
-    void networkEvents.ready;
-    await waitForBrowserEvent((event) => {
-      matched = processNetworkEvent(kind, matcher, event, requests, timeout);
+  const networkEvents = acquireNetworkEvents(networkSession(), timeout);
+  const monitor = createNetworkLifecycleMonitor(networkEvents);
+  const abortController = new AbortController();
+  let matched: any;
+  let retained = false;
+  let timedOut = false;
+  const eventPromise = waitForBrowserEvent(
+    async (event) => {
+      const expectedSessionId = await networkEvents.sessionId;
+      if (
+        expectedSessionId &&
+        event?.sessionId &&
+        event.sessionId !== expectedSessionId
+      ) {
+        return false;
+      }
+      matched = await processNetworkEvent(kind, matcher, event, monitor);
       return Boolean(matched);
-    }, browserEventTimeout(timeout));
-    return matched;
+    },
+    browserEventTimeout(timeout),
+    abortController.signal,
+  );
+  // The event waiter is registered before Network.enable completes so an
+  // immediate request cannot race setup. Handle its rejection while setup is
+  // pending; the original promise remains awaitable below.
+  void eventPromise.catch(() => {});
+  try {
+    await Promise.all([networkEvents.ready, eventPromise]);
+    await monitor.retain(matched.request);
+    retained = true;
+    return matched.facade;
   } catch (error) {
     if (/page\.waitForEvent timed out/i.test(error?.message || "")) {
-      throw new Error(
-        `page.waitFor${kind === "request" ? "Request" : "Response"} timed out after ${timeout}ms`,
+      timedOut = true;
+      throw operationTimeout(
+        `page.waitFor${kind === "request" ? "Request" : "Response"}`,
+        timeout,
       );
     }
     throw error;
   } finally {
-    await networkEvents.release();
+    abortController.abort();
+    await eventPromise.catch(() => {});
+    if (!retained) {
+      const release = monitor.release();
+      if (timedOut) {
+        // A hung Network.enable belongs to transport cleanup, not the public
+        // wait budget. It remains guarded by the same CDP timeout while the
+        // caller receives the requested TimeoutError immediately.
+        void release.catch(() => {});
+      } else {
+        await release;
+      }
+    }
   }
 }
 
-function processNetworkEvent(kind, matcher, event, requests, timeout) {
+async function processNetworkEvent(kind, matcher, event, monitor) {
   const method = event?.method;
   const params = event?.params || {};
   if (method === "Network.requestWillBeSent") {
-    const previousRequest = requests.get(params.requestId);
+    const request = monitor.requestForEvent(event);
     if (kind === "response" && params.redirectResponse) {
-      const response = createResponseFacade(
-        {
-          requestId: params.requestId,
-          response: params.redirectResponse,
-          request: previousRequest,
-        },
-        timeout,
-      );
-      if (networkMatches(response, matcher, kind)) {
-        return response;
+      const previousRequest = request?.redirectedFrom;
+      const response = createResponseFacade({
+        requestId: params.requestId,
+        response: params.redirectResponse,
+        request: previousRequest,
+        sessionId: event?.sessionId,
+        finished: true,
+      });
+      if (await networkMatches(response, matcher, kind)) {
+        return {
+          facade: response,
+          request: request || responseLifecycleInfo(response)?.request,
+        };
       }
     }
-    const request = createRequestInfo(params);
-    requests.set(params.requestId, request);
     if (kind === "request") {
       const facade = createRequestFacade(request);
-      if (networkMatches(facade, matcher, kind)) {
-        return facade;
+      if (await networkMatches(facade, matcher, kind)) {
+        return { facade, request };
       }
     }
     return null;
   }
   if (kind === "response" && method === "Network.responseReceived") {
-    const response = createResponseFacade(
-      {
-        requestId: params.requestId,
-        response: params.response || {},
-        request: requests.get(params.requestId),
-      },
-      timeout,
-    );
-    if (networkMatches(response, matcher, kind)) {
-      return response;
+    const request = monitor.requestForEvent(event);
+    const response = createResponseFacade({
+      requestId: params.requestId,
+      response: params.response || {},
+      request,
+      sessionId: event?.sessionId,
+    });
+    if (await networkMatches(response, matcher, kind)) {
+      return {
+        facade: response,
+        request: request || responseLifecycleInfo(response)?.request,
+      };
     }
   }
   return null;
 }
 
-function networkMatches(facade, matcher, kind) {
+async function networkMatches(facade, matcher, kind) {
   if (typeof matcher === "string") {
     return facade.url() === matcher;
   }
@@ -328,181 +400,57 @@ function networkMatches(facade, matcher, kind) {
     return matcher.test(facade.url());
   }
   if (typeof matcher === "function") {
-    const result = matcher(facade);
-    if (result && typeof result.then === "function") {
-      throw new Error(
-        `page.waitFor${kind === "request" ? "Request" : "Response"} does not support async predicates`,
-      );
-    }
-    return Boolean(result);
+    return Boolean(await matcher(facade));
   }
   throw new TypeError(
     `page.waitFor${kind === "request" ? "Request" : "Response"} expects a string, RegExp, or function matcher, got ${matcher === null ? "null" : typeof matcher}`,
   );
 }
 
-function createRequestInfo(params) {
-  const request = params.request || {};
-  return {
-    requestId: params.requestId,
-    url: request.url || "",
-    method: request.method || "",
-    headers: normalizeHeaders(request.headers),
-    postData: request.postData ?? null,
-    resourceType: String(params.type || "").toLowerCase(),
-  };
-}
-
-function createRequestFacade(info) {
-  return {
-    url: () => info.url,
-    method: () => info.method,
-    headers: () => ({ ...info.headers }),
-    postData: () => info.postData,
-    resourceType: () => info.resourceType,
-  };
-}
-
-function createResponseFacade(info, timeout) {
-  const response = info.response || {};
-  const request =
-    info.request ||
-    createRequestInfo({
-      requestId: info.requestId,
-      request: {
-        url: response.url || "",
-        method: "",
-        headers: response.requestHeaders || {},
-      },
-      type: response.type,
-    });
-  const status = Number(response.status || 0);
-  const headers = normalizeHeaders(response.headers);
-  const facade: any = {
-    url: () => response.url || request.url || "",
-    status: () => status,
-    statusText: () => response.statusText || "",
-    ok: () => status >= 200 && status <= 299,
-    headers: () => ({ ...headers }),
-    request: () => createRequestFacade(request),
-    body: async () => {
-      const body = await readResponseBody(info.requestId, timeout);
-      return body.base64Encoded
-        ? Buffer.from(body.body || "", "base64")
-        : Buffer.from(body.body || "", "utf8");
-    },
-    text: async () => {
-      const body = await readResponseBody(info.requestId, timeout);
-      return body.base64Encoded
-        ? Buffer.from(body.body || "", "base64").toString("utf8")
-        : body.body || "";
-    },
-  };
-  facade.json = async () => JSON.parse(await facade.text());
-  return facade;
-}
-
-async function readResponseBody(requestId, timeout) {
-  if (!requestId) {
-    throw new Error("response body is unavailable without a requestId");
-  }
-  try {
-    return await cdp("Network.getResponseBody", { requestId });
-  } catch (firstError) {
-    await waitForBrowserEvent(
-      (event) =>
-        (event?.method === "Network.loadingFinished" ||
-          event?.method === "Network.loadingFailed") &&
-        event?.params?.requestId === requestId,
-      browserEventTimeout(timeout),
-    ).catch(() => null);
-    try {
-      return await cdp("Network.getResponseBody", { requestId });
-    } catch (error) {
-      throw new Error(
-        `response body is unavailable for request ${requestId}: ${error?.message || firstError?.message || error}`,
-      );
-    }
-  }
-}
-
-function normalizeHeaders(headers = {}) {
-  const out: Record<string, string> = {};
-  for (const [name, value] of Object.entries(headers || {})) {
-    out[String(name).toLowerCase()] = String(value);
-  }
-  return out;
-}
-
 function networkTimeout(options: WaitForNetworkOptions) {
-  const timeout = options.timeout ?? state.defaultTimeout;
-  if (!Number.isFinite(timeout) || timeout < 0) {
-    throw new Error("network wait timeout must be a non-negative number");
-  }
+  const timeout = normalizeTimeout(
+    "network wait",
+    options.timeout ?? state.defaultTimeout,
+  );
   return timeout;
 }
 
 function browserEventTimeout(timeout) {
-  return timeout === 0 ? 2147483647 : Math.min(timeout, 2147483647);
-}
-
-function acquireNetworkEvents() {
-  if (networkEventUsers === 0 && !state.networkDomainEnabled) {
-    networkEnableInFlight = cdp("Network.enable")
-      .then(() => {
-        networkEventsOwnDomain = true;
-      })
-      .catch(() => {
-        // Some bridges do not expose the Network domain. The waiter will time out
-        // with the normal waitForRequest/waitForResponse error.
-      })
-      .finally(() => {
-        networkEnableInFlight = null;
-      });
-  }
-  networkEventUsers += 1;
-  let released = false;
-  return {
-    ready: networkEnableInFlight || Promise.resolve(),
-    release: async () => {
-      if (released) return;
-      released = true;
-      networkEventUsers = Math.max(0, networkEventUsers - 1);
-      if (networkEventUsers > 0) return;
-      if (networkEnableInFlight) {
-        await networkEnableInFlight;
-      }
-      if (networkEventsOwnDomain) {
-        networkEventsOwnDomain = false;
-        await cdp("Network.disable").catch(() => {
-          // Best-effort cleanup; the next wait can enable the domain again.
-        });
-      }
-    },
-  };
+  return Math.min(timeout, 2147483647);
 }
 
 /**
  * Wait until an element exists, optionally requiring visibility.
  * @param {string} selector CSS selector / @ref / loc= / xpath= to poll.
- * @param {{timeout?: number, state?: "visible"|"attached"}} [options] timeout in milliseconds; state defaults to "attached".
- * @returns {Promise<boolean>} True when found before timeout.
+ * @param {{timeout?: number, state?: "visible"|"attached"|"hidden"|"detached"}} [options] timeout in milliseconds; state defaults to "visible".
+ * @returns {Promise<true|null>} True for attached/visible, null for hidden/detached.
  */
 export async function waitForSelector(
   selector: string,
   options: WaitForSelectorOptions = {},
 ) {
-  const timeout = options.timeout ?? state.defaultTimeout;
-  const requireVisible = options.state === "visible";
-  const deadline = state.now() + timeout;
+  const timeout = normalizeTimeout(
+    "page.waitForSelector",
+    options.timeout ?? state.defaultTimeout,
+  );
+  const targetState = options.state ?? "visible";
+  if (!["visible", "attached", "hidden", "detached"].includes(targetState)) {
+    throw new TypeError(
+      `unsupported waitForSelector state: ${JSON.stringify(targetState)}`,
+    );
+  }
+  const requireVisible = targetState === "visible" || targetState === "hidden";
+  const waitForAbsence = targetState === "hidden" || targetState === "detached";
+  const deadline = timeoutDeadline(timeout, state.now());
   const visibilityFn =
-    "function(){if(typeof this.checkVisibility==='function')return this.checkVisibility({checkOpacity:true,checkVisibilityCSS:true});const s=getComputedStyle(this);return s.display!=='none'&&s.visibility!=='hidden'&&s.opacity!=='0';}";
+    "function(){const r=this.getBoundingClientRect();if(typeof this.checkVisibility==='function')return r.width>0&&r.height>0&&this.checkVisibility({checkOpacity:false,checkVisibilityCSS:true});const s=getComputedStyle(this);return r.width>0&&r.height>0&&s.display!=='none'&&s.visibility!=='hidden';}";
   while (state.now() < deadline) {
     let handle;
     try {
       handle = await resolveHandle(selector);
     } catch (err) {
       if (err instanceof ElementResolutionError && err.kind === "transient") {
+        if (waitForAbsence) return null;
         await state.sleep(300);
         continue; // not found / not ready yet — keep polling.
       }
@@ -520,15 +468,18 @@ export async function waitForSelector(
         },
         handle.sessionId,
       );
-      if (response.result?.value) return true;
-    } catch {
+      const visible = Boolean(response.result?.value);
+      if (targetState === "visible" && visible) return true;
+      if (targetState === "hidden" && !visible) return null;
+    } catch (error) {
+      if (isEgoHardStopError(error)) throw error;
       // visibility check failed (element raced away); treat as not-ready, keep polling.
     } finally {
       await releaseHandle(handle.objectId, handle.sessionId);
     }
     await state.sleep(300);
   }
-  return false;
+  throw operationTimeout("page.waitForSelector", timeout);
 }
 
 /**
@@ -544,16 +495,27 @@ export async function waitForSelector(
  * @returns {Promise<boolean>} True when idle before timeout.
  */
 async function waitForNetworkIdle(options: WaitForLoadStateOptions = {}) {
-  const timeout = options.timeout ?? 10000;
+  const timeout = normalizeTimeout(
+    "page.waitForLoadState",
+    options.timeout ?? state.defaultTimeout,
+  );
   const idleMs = options.idleMs ?? 500;
-  const deadline = state.now() + timeout;
+  const deadline = timeoutDeadline(timeout, state.now());
   let lastActivity = state.now();
   const inflight = new Set();
-  const networkEvents = acquireNetworkEvents();
-  await networkEvents.ready;
+  const networkEvents = acquireNetworkEvents(networkSession(), timeout);
   try {
+    await networkEvents.ready;
+    const expectedSessionId = await networkEvents.sessionId;
     while (state.now() < deadline) {
       for (const event of await drainEvents()) {
+        if (
+          expectedSessionId &&
+          event?.sessionId &&
+          event.sessionId !== expectedSessionId
+        ) {
+          continue;
+        }
         const method = event.method || "";
         const params = event.params || {};
         if (method === "Network.requestWillBeSent") {
@@ -578,4 +540,8 @@ async function waitForNetworkIdle(options: WaitForLoadStateOptions = {}) {
   } finally {
     await networkEvents.release();
   }
+}
+
+function networkSession() {
+  return isBrowserRuntime() ? ensureSession() : state.sessionId || undefined;
 }

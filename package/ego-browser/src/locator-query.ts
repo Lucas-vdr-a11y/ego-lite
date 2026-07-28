@@ -18,6 +18,23 @@ type InternalFilter = {
   hasNot?: string;
 };
 
+type InternalBinary = {
+  left: string;
+  right: string;
+};
+
+type InternalRole = {
+  role: string;
+  name?: TextMatcher;
+  checked?: boolean;
+  disabled?: boolean;
+  expanded?: boolean;
+  includeHidden?: boolean;
+  level?: number;
+  pressed?: boolean;
+  selected?: boolean;
+};
+
 export function queryAllExpression(selector, rootExpression = "document") {
   const raw = String(selector);
   const nth = parseInternalNth(raw);
@@ -43,6 +60,24 @@ export function queryAllExpression(selector, rootExpression = "document") {
       const elements = ${queryAllExpression(filter.base, rootExpression)};
       return elements.filter((element) => ${filterCondition(filter, "element")});
     })()`;
+  }
+  const intersection = parseInternalJson<InternalBinary>(raw, "and");
+  if (intersection) {
+    return `(() => {
+      const right = new Set(${queryAllExpression(intersection.right, rootExpression)});
+      return ${queryAllExpression(intersection.left, rootExpression)}.filter((element) => right.has(element));
+    })()`;
+  }
+  const union = parseInternalJson<InternalBinary>(raw, "or");
+  if (union) {
+    return `Array.from(new Set([
+      ...${queryAllExpression(union.left, rootExpression)},
+      ...${queryAllExpression(union.right, rootExpression)}
+    ]))`;
+  }
+  const internalRole = parseInternalJson<InternalRole>(raw, "role");
+  if (internalRole) {
+    return roleElementsExpression(internalRole, rootExpression);
   }
   const normalized = raw.startsWith("loc=") ? raw.slice(4) : raw;
   if (raw.startsWith("xpath=")) {
@@ -355,7 +390,10 @@ function parseRoleLocator(value: string) {
   };
 }
 
-function roleElementsExpression(locator, rootExpression = "document") {
+function roleElementsExpression(
+  locator: InternalRole,
+  rootExpression = "document",
+) {
   return `(() => {
     const accessibleName = (el) => {
       const labelledBy = (el.getAttribute('aria-labelledby') || '')
@@ -386,6 +424,7 @@ function roleElementsExpression(locator, rootExpression = "document") {
         if (tag === 'a' && el.hasAttribute('href')) return 'link';
         if (tag === 'textarea') return 'textbox';
         if (tag === 'select') return 'combobox';
+        if (tag === 'option') return 'option';
         if (tag === 'img' && el.hasAttribute('alt')) return 'img';
         if (/^h[1-6]$/.test(tag)) return 'heading';
         if (tag === 'input') {
@@ -399,9 +438,50 @@ function roleElementsExpression(locator, rootExpression = "document") {
       })();
       const role = explicitRole || implicitRole;
       if (role !== ${JSON.stringify(locator.role)}) return false;
+      if (!${JSON.stringify(Boolean(locator.includeHidden))}) {
+        if (el.hidden || el.closest('[hidden], [aria-hidden="true"]')) return false;
+        const style = getComputedStyle(el);
+        if (style.display === 'none' || style.visibility === 'hidden') return false;
+      }
+      ${roleStateConditions(locator)}
       ${roleNameCondition(locator.name)}
     });
   })()`;
+}
+
+function roleStateConditions(locator: InternalRole) {
+  const checks: string[] = [];
+  if (locator.checked !== undefined) {
+    checks.push(
+      `((el instanceof HTMLInputElement && (el.type === 'checkbox' || el.type === 'radio')) ? el.checked : el.getAttribute('aria-checked') === 'true') === ${JSON.stringify(locator.checked)}`,
+    );
+  }
+  if (locator.disabled !== undefined) {
+    checks.push(
+      `Boolean(el.closest('[aria-disabled="true"], :disabled')) === ${JSON.stringify(locator.disabled)}`,
+    );
+  }
+  if (locator.expanded !== undefined) {
+    checks.push(
+      `el.hasAttribute('aria-expanded') && (el.getAttribute('aria-expanded') === 'true') === ${JSON.stringify(locator.expanded)}`,
+    );
+  }
+  if (locator.level !== undefined) {
+    checks.push(
+      `(Number(el.getAttribute('aria-level') || (/^H[1-6]$/.test(el.tagName) ? el.tagName.slice(1) : 0))) === ${JSON.stringify(locator.level)}`,
+    );
+  }
+  if (locator.pressed !== undefined) {
+    checks.push(
+      `el.hasAttribute('aria-pressed') && (el.getAttribute('aria-pressed') === 'true') === ${JSON.stringify(locator.pressed)}`,
+    );
+  }
+  if (locator.selected !== undefined) {
+    checks.push(
+      `((el instanceof HTMLOptionElement) ? el.selected : el.getAttribute('aria-selected') === 'true') === ${JSON.stringify(locator.selected)}`,
+    );
+  }
+  return checks.map((check) => `if (!(${check})) return false;`).join("\n");
 }
 
 function roleNameCondition(name) {
@@ -442,5 +522,5 @@ function isTextMatcher(value): value is TextMatcher {
 }
 
 function roleCandidateSelector() {
-  return "button, a[href], input, textarea, select, img[alt], h1, h2, h3, h4, h5, h6, [role]";
+  return "button, a[href], input, textarea, select, option, img[alt], h1, h2, h3, h4, h5, h6, [role]";
 }

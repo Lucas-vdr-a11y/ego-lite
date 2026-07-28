@@ -8,7 +8,7 @@ export function environmentCase() {
     const artifactStat = await stat(artifactDir);
     assert(artifactStat.isDirectory(), "artifact directory exists");
 
-    const healthText = await fetch.server(baseUrl + "/healthz", { timeout: 5 });
+    const healthText = await fetch.server(baseUrl + "/healthz", { timeout: 5_000 });
     const health = JSON.parse(healthText);
     assertEqual(health.ok, true, "fixture health endpoint is ok through serverFetch");
     assertEqual(health.taskName, taskName, "fixture health endpoint carries the current task name");
@@ -24,11 +24,11 @@ export function environmentCase() {
     assertIncludes(info.url, baseUrl + "/", "environment page URL is fixture root");
     assert(info.w > 0 && info.h > 0, "environment viewport is usable");
 
-    const browserHealthText = await fetch.browser("/healthz", { timeout: 5 });
+    const browserHealthText = await fetch.browser("/healthz", { timeout: 5_000 });
     const browserHealth = JSON.parse(browserHealthText);
     assertEqual(browserHealth.ok, true, "fixture health endpoint is ok through browserFetch");
 
-    const jsonText = await fetch.server(baseUrl + "/api/json", { timeout: 5 });
+    const jsonText = await fetch.server(baseUrl + "/api/json", { timeout: 5_000 });
     assertEqual(JSON.parse(jsonText).value, "json fixture", "JSON fixture route is deterministic");
 
     const runtimeProbe = await cdp("Runtime.evaluate", {
@@ -49,8 +49,8 @@ export function environmentCase() {
     assertEqual(await page.evaluate(() => document.querySelector('#text-input').value), "initial", "resetHome restores deterministic fixture state");
 
     const envShot = await page.screenshot({ path: environmentScreenshotPath, fullPage: false });
-    assertEqual(envShot, environmentScreenshotPath, "environment screenshot uses artifact path");
-    const envShotStat = await stat(envShot);
+    assert(envShot.length > 0, "environment screenshot returns a Buffer");
+    const envShotStat = await stat(environmentScreenshotPath);
     assert(envShotStat.size > 0, "environment screenshot artifact is non-empty");
 
     const tabs = await browser.listTabs({ includeChrome: false });

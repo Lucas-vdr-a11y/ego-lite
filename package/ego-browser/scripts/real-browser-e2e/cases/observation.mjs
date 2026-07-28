@@ -82,31 +82,66 @@ export function observationCase() {
       "elementCenter reports missing elements"
     );
 
-    const screenshotPath = await page.screenshot({ path: undefined, fullPage: false });
-    const screenshotStat = await stat(screenshotPath);
-    assert(screenshotStat.size > 100, "screenshot writes a non-trivial png");
-    const screenshotBuf = await readFile(screenshotPath);
+    const screenshotBuf = await page.screenshot({ fullPage: false });
+    assert(screenshotBuf.length > 100, "screenshot returns a non-trivial png Buffer");
     assertEqual(screenshotBuf[0], 137, "screenshot starts with PNG magic byte 137");
     assertEqual(screenshotBuf[1], 80, "screenshot has PNG header byte P (80)");
 
-    const explicitPath = await page.screenshot({ path: explicitScreenshotPath, fullPage: false });
-    assertEqual(explicitPath, explicitScreenshotPath, "screenshot returns explicit path");
-    const explicitStat = await stat(explicitPath);
+    const explicitBuffer = await page.screenshot({ path: explicitScreenshotPath, fullPage: false });
+    assert(explicitBuffer.length > 100, "screenshot returns Buffer when writing an explicit path");
+    const explicitStat = await stat(explicitScreenshotPath);
     assert(explicitStat.size > 0, "screenshot writes explicit path");
 
-    const fullScreenshotPath = await page.screenshot({ path: undefined, fullPage: true });
-    const fullScreenshotStat = await stat(fullScreenshotPath);
-    assert(fullScreenshotStat.size > 0, "screenshot supports full page");
+    const fullScreenshot = await page.screenshot({ fullPage: true });
+    assert(fullScreenshot.length > 0, "screenshot supports full page");
 
-    const rawScreenshotPath = await page.screenshot({ path: undefined,
+    await page.evaluate(() => window.scrollTo(17, 1200));
+    await page.waitForTimeout(100);
+    const scrolledInfo = await page.info();
+    assert(scrolledInfo.sy > 0, "screenshot regression page is scrolled");
+    const scrolledViewportScreenshot = await page.screenshot();
+    const explicitScrolledScreenshot = await page.screenshot({
+      clip: {
+        x: scrolledInfo.sx,
+        y: scrolledInfo.sy,
+        width: scrolledInfo.w,
+        height: scrolledInfo.h,
+      },
+    });
+    assert(
+      scrolledViewportScreenshot.equals(explicitScrolledScreenshot),
+      "viewport screenshot uses the current scroll offset"
+    );
+
+    const markerScreenshot = await page.locator("#bottom-marker").screenshot();
+    const markerBox = await page.locator("#bottom-marker").boundingBox();
+    const markerInfo = await page.info();
+    const explicitMarkerScreenshot = await page.screenshot({
+      clip: {
+        x: markerBox.x + markerInfo.sx,
+        y: markerBox.y + markerInfo.sy,
+        width: markerBox.width,
+        height: markerBox.height,
+      },
+    });
+    assert(
+      markerScreenshot.equals(explicitMarkerScreenshot),
+      "locator screenshot converts viewport coordinates after scrolling"
+    );
+    await page.evaluate(() => window.scrollTo(0, 0));
+
+    const rawScreenshot = await page.screenshot({
       raw: true,
       clip: { x: 0, y: 0, width: 120, height: 120, scale: 1 },
     });
-    const rawScreenshotStat = await stat(rawScreenshotPath);
-    assert(rawScreenshotStat.size > 0, "screenshot supports raw clips");
+    assert(rawScreenshot.length > 0, "screenshot supports raw clips");
+
+    const savedScreenshotPath = await page.saveScreenshot({ fullPage: false });
+    const savedScreenshotStat = await stat(savedScreenshotPath);
+    assert(savedScreenshotStat.size > 0, "saveScreenshot returns a generated path");
 
     await cdp("Network.enable");
-    await fetch.browser("/api/text", { timeout: 5 });
+    await fetch.browser("/api/text", { timeout: 5000 });
     const events = await page.drainEvents();
     assert(Array.isArray(events), "drainEvents returns an array");
     const eventsAfterDrain = await page.drainEvents();
@@ -129,14 +164,17 @@ export function observationCase() {
     console.log(JSON.stringify({ observationStep: "iframe" }));
     const frameTarget = await browser.iframeTarget("/frame.html");
     if (frameTarget) {
-      const iframeMarkerText = await page.evaluate(
+      const iframeMarkerText = await browser.evaluateInTab(
+        frameTarget,
         "return document.querySelector('#iframe-marker')?.textContent",
-        frameTarget
       );
-      assertEqual(iframeMarkerText, "iframe target", "js evaluates inside iframe using targetId");
+      assertEqual(iframeMarkerText, "iframe target", "evaluateInTab evaluates inside iframe using targetId");
 
-      const iframeTitle = await page.evaluate("return document.title", frameTarget);
-      assertEqual(iframeTitle, "ego-lite iframe", "js reads iframe page title via targetId");
+      const iframeTitle = await browser.evaluateInTab(
+        frameTarget,
+        "return document.title"
+      );
+      assertEqual(iframeTitle, "ego-lite iframe", "evaluateInTab reads iframe page title via targetId");
     } else {
       console.log(JSON.stringify({ iframeWarning: "iframe target not available, skipping iframe tests" }));
     }

@@ -30,7 +30,13 @@ function internalSelector(kind, data) {
 
 test("locator read helpers call a resolved element", async () => {
   const calls = [];
-  const values = ["text content", "inner text", "input value", true, "button"];
+  const values = [
+    "text content",
+    "inner text",
+    "input value",
+    { checked: true, type: "checkbox" },
+    "button",
+  ];
   const restore = setOverrides({
     cdpOverride(method, params, sessionId) {
       calls.push({ method, params, sessionId });
@@ -182,6 +188,82 @@ test("filter locators support hasText, hasNotText, has, and hasNot", async () =>
   } finally {
     restore();
   }
+});
+
+test("and/or locators build intersection and ordered union queries", async () => {
+  const selectors = [
+    internalSelector("and", { left: ".item", right: ".enabled" }),
+    internalSelector("or", { left: ".primary", right: ".fallback" }),
+  ];
+  const expressions = [];
+  const restore = setOverrides({
+    cdpOverride(method, params) {
+      assert.equal(method, "Runtime.evaluate");
+      expressions.push(params.expression);
+      return { result: { value: 1 } };
+    },
+  });
+  try {
+    assert.equal(await count(selectors[0]), 1);
+    assert.equal(await count(selectors[1]), 1);
+  } finally {
+    restore();
+  }
+  assert.match(expressions[0], /new Set/);
+  assert.match(
+    expressions[0],
+    /\.filter\(\(element\) => right\.has\(element\)\)/,
+  );
+  assert.match(expressions[1], /Array\.from\(new Set/);
+});
+
+test("role state locators filter Playwright role options in the page", async () => {
+  const selector = internalSelector("role", {
+    role: "checkbox",
+    name: { text: "Updates", exact: true },
+    checked: true,
+    disabled: false,
+    includeHidden: true,
+  });
+  let expression;
+  const restore = setOverrides({
+    cdpOverride(method, params) {
+      assert.equal(method, "Runtime.evaluate");
+      expression = params.expression;
+      return { result: { value: 1 } };
+    },
+  });
+  try {
+    assert.equal(await count(selector), 1);
+  } finally {
+    restore();
+  }
+  assert.match(expression, /aria-checked/);
+  assert.match(expression, /aria-disabled/);
+  assert.match(expression, /accessibleName\(el\)/);
+  assert.match(expression, /if \(!true\)/);
+});
+
+test("role locators do not treat zero-size elements as ARIA-hidden", async () => {
+  const selector = internalSelector("role", {
+    role: "option",
+    selected: false,
+  });
+  let expression;
+  const restore = setOverrides({
+    cdpOverride(method, params) {
+      assert.equal(method, "Runtime.evaluate");
+      expression = params.expression;
+      return { result: { value: 1 } };
+    },
+  });
+  try {
+    assert.equal(await count(selector), 1);
+  } finally {
+    restore();
+  }
+  assert.match(expression, /aria-hidden/);
+  assert.doesNotMatch(expression, /getBoundingClientRect/);
 });
 
 test("role locators use AX regex accessible names in collection queries", async () => {
@@ -455,6 +537,9 @@ test("evaluateAll supports refs as a single-element array", async () => {
         return { object: { objectId: "node-1" } };
       }
       if (method === "Runtime.callFunctionOn") {
+        if (params.functionDeclaration.includes("this.isConnected")) {
+          return { result: { value: true } };
+        }
         assert.match(
           params.functionDeclaration,
           /pageFunction\(\[this\], arg\)/,

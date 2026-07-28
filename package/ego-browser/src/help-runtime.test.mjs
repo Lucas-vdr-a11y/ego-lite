@@ -7,10 +7,10 @@ import { fileURLToPath } from "node:url";
 
 import { help, formatHelp } from "../dist/src/help-runtime.js";
 
-// Regression test for GitHub issue #84: the runtime used to build its docs map
-// by reading its own source, which produced an empty map whenever the SDK was
-// not loaded from a real file (the shipped .pak resource). Docs are now
-// embedded at build time, so these assertions exercise the injected data.
+// Regression test for GitHub issue #84: fallback implementation docs are
+// embedded at build time because the shipped .pak resource has no readable
+// source path. Public facade-path docs are static and share their source of
+// truth with structured CLI output.
 
 test("help(name) returns the embedded doc instead of an empty result", () => {
   const doc = help({ click: () => {} }, "click");
@@ -54,7 +54,11 @@ test("help works when the shipped bundle runs as an eval module", () => {
   // globalThis, not a bare identifier: appended source shares the bundle's
   // module scope, where the raw help(helpers, ...names) export would shadow
   // the installed global wrapper.
-  const probe = 'console.log(globalThis.help("click"))';
+  const probe = [
+    'console.log(globalThis.help("click"))',
+    'console.log(globalThis.help("page.mouse.move"))',
+    'console.log(globalThis.help("taskSpaces.switch"))',
+  ].join(";\n");
   const result = spawnSync(process.execPath, ["--input-type=module"], {
     input: `${bundle}\n${probe}\n`,
     encoding: "utf-8",
@@ -66,7 +70,17 @@ test("help works when the shipped bundle runs as an eval module", () => {
     `docs map was empty under eval loading:\n${result.stdout}`,
   );
   assert.ok(
-    result.stdout.includes("click("),
-    `expected the click signature in:\n${result.stdout}`,
+    result.stdout.includes("Ambiguous helper name") &&
+      result.stdout.includes("locator.click") &&
+      result.stdout.includes("page.mouse.click"),
+    `expected ambiguous bare-name guidance in:\n${result.stdout}`,
+  );
+  assert.ok(
+    result.stdout.includes("page.mouse.move("),
+    `expected facade-path mouse help in:\n${result.stdout}`,
+  );
+  assert.ok(
+    result.stdout.includes("taskSpaces.switch("),
+    `expected facade-path task-space help in:\n${result.stdout}`,
   );
 });

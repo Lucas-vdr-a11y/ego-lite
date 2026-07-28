@@ -67,6 +67,40 @@ export function pointerHoverDragCase() {
     await page.evaluate(() => { window.__fixtureState.dragged = false; });
     await page.mouse.drag(["#drag-source", "#drag-target"], { delay: 10 });
     await waitForJsValue("window.__fixtureState.dragged", true, "drag fires drag source and target events");
+
+    const dndSource = await page.elementCenter("#dnd-source");
+    const dndTarget = await page.elementCenter("#dnd-target");
+    await page.evaluate(() => {
+      window.__mouseButtonTrace = [];
+      document.addEventListener("mousemove", (event) => {
+        window.__mouseButtonTrace.push(event.buttons);
+      }, true);
+    });
+    const nativeDndAvailable = await page.evaluate(
+      () => document.visibilityState === "visible" && document.hasFocus()
+    );
+    await page.mouse.move(dndSource.x, dndSource.y);
+    await page.mouse.down();
+    await page.mouse.move(dndTarget.x, dndTarget.y, { steps: 8 });
+    await page.mouse.up();
+    await page.mouse.move(dndSource.x, dndSource.y);
+    const buttonTrace = await page.evaluate(() => window.__mouseButtonTrace);
+    assert(
+      buttonTrace.includes(1),
+      "mouse move keeps the left button pressed after mouse.down"
+    );
+    assertEqual(
+      buttonTrace.at(-1),
+      0,
+      "mouse move clears the button state after mouse.up"
+    );
+    if (nativeDndAvailable) {
+      await waitForJsValue(
+        "window.__fixtureState.dndDropped",
+        true,
+        "foreground mouse down/move/up completes native HTML5 drag and drop"
+      );
+    }
   `;
 }
 

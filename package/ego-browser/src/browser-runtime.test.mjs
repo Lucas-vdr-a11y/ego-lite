@@ -396,6 +396,75 @@ test("waitForBrowserEvent ignores events that happened before waiting", async ()
   }
 });
 
+test("waitForBrowserEvent serializes async predicates in event order", async () => {
+  installAutoEgo();
+  try {
+    await browserCdp("Runtime.evaluate", { expression: "1" });
+    const observed = [];
+    const promise = waitForBrowserEvent(async (event) => {
+      await new Promise((resolve) =>
+        setTimeout(resolve, event.params.order === 1 ? 10 : 0),
+      );
+      observed.push(event.params.order);
+      return event.params.match;
+    }, 500);
+    fireEvent("Network.requestWillBeSent", { order: 1, match: false });
+    fireEvent("Network.requestWillBeSent", { order: 2, match: true });
+    const event = await promise;
+    assert.equal(event.params.order, 2);
+    assert.deepEqual(observed, [1, 2]);
+  } finally {
+    cleanup();
+  }
+});
+
+test("waitForBrowserEvent treats timeout 0 as no timeout", async () => {
+  installAutoEgo();
+  try {
+    await browserCdp("Runtime.evaluate", { expression: "1" });
+    const outcome = waitForBrowserEvent(
+      (event) => event.params?.ready === true,
+      0,
+    ).then(
+      (event) => ({ event }),
+      (error) => ({ error }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    fireEvent("Runtime.consoleAPICalled", { ready: true });
+    const result = await outcome;
+    assert.equal(result.error, undefined);
+    assert.equal(result.event.params.ready, true);
+  } finally {
+    cleanup();
+  }
+});
+
+test("waitForBrowserEvent aborts and removes its pending waiter", async () => {
+  installAutoEgo();
+  try {
+    await browserCdp("Runtime.evaluate", { expression: "1" });
+    const controller = new AbortController();
+    let predicateCalls = 0;
+    const promise = waitForBrowserEvent(
+      () => {
+        predicateCalls += 1;
+        return true;
+      },
+      0,
+      controller.signal,
+    );
+    const reason = new Error("setup failed");
+    controller.abort(reason);
+
+    await assert.rejects(promise, reason);
+    fireEvent("Runtime.consoleAPICalled", { ready: true });
+    await Promise.resolve();
+    assert.equal(predicateCalls, 0);
+  } finally {
+    cleanup();
+  }
+});
+
 test("drainBrowserEvents caps at MAX_BUFFERED_EVENTS (10000)", async () => {
   const calls = installManualEgo();
   try {
@@ -606,6 +675,19 @@ test("invalidateSession clears session state and dialog tracking", async () => {
       "dialog cleared by invalidation",
     );
   } finally {
+    cleanup();
+  }
+});
+
+test("invalidateSession clears Network domain state for the old session", () => {
+  try {
+    state.sessionId = "sess-network";
+    state.sessionTargetId = "target-network";
+    state.networkDomainEnabled = true;
+    invalidateSession();
+    assert.equal(state.networkDomainEnabled, false);
+  } finally {
+    state.networkDomainEnabled = false;
     cleanup();
   }
 });

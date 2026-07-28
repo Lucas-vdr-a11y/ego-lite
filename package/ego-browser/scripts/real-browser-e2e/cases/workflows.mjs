@@ -17,7 +17,7 @@ export const workflowCases = [
 
       /* Step 2: click the nav link to navigate within the current tab. */
       await page.locator("#nav-link").click();
-      assert(await page.waitForLoadState("load", { timeout: 10000 }), "workflow: nav-target page loads");
+      await page.waitForLoadState("load", { timeout: 10000 });
       const navInfo = await page.info();
       assertEqual(navInfo.title, "ego-lite nav target", "workflow: page title changes after navigation");
       assertIncludes(navInfo.url, "/nav-target", "workflow: URL reflects nav-target");
@@ -42,7 +42,7 @@ export const workflowCases = [
 
       /* Step 5: navigate back home via goto and verify clean state. */
       await page.goto(baseUrl + "/", { waitUntil: "commit" });
-      assert(await page.waitForLoadState("load", { timeout: 10000 }), "workflow: home page reloads");
+      await page.waitForLoadState("load", { timeout: 10000 });
       const backHomeInfo = await page.info();
       assertEqual(backHomeInfo.title, "ego-lite helper e2e", "workflow: home title restored after multi-tab navigation");
 
@@ -60,7 +60,7 @@ export const workflowCases = [
       assert(remaining.length < tabsBeforeClose, "workflow: tab count decreased after closing secondary");
 
       /* Step 7: verify browserFetch still works after all the navigation. */
-      const text = await fetch.browser("/api/text", { timeout: 5 });
+      const text = await fetch.browser("/api/text", { timeout: 5_000 });
       assertEqual(text, "server text fixture", "workflow: browserFetch works after multi-page navigation");
     `),
   },
@@ -125,14 +125,12 @@ export const workflowCases = [
 
       /* Step 7: interact with dynamic DOM — add element, verify, remove, verify. */
       await page.locator("#add-element").click();
-      const appeared = await page.waitForSelector("#dynamic-element", { timeout: 3000, state: "visible" });
-      assertEqual(appeared, true, "workflow: dynamically added element becomes visible");
+      await page.waitForSelector("#dynamic-element", { timeout: 3000, state: "visible" });
       const dynText = await page.evaluate(() => document.querySelector('#dynamic-element')?.textContent);
       assertIncludes(dynText, "Dynamic", "workflow: dynamic element has expected text");
 
       await page.locator("#remove-element").click();
-      const gone = await page.waitForSelector("#dynamic-element", { timeout: 3000 });
-      assertEqual(gone, false, "workflow: dynamically removed element disappears");
+      await page.waitForSelector("#dynamic-element", { timeout: 3000, state: "detached" });
 
       /* Step 8: verify the click counter tracked only #click-button clicks (none in this workflow). */
       const totalClicks = await page.evaluate(() => window.__fixtureState.clicks);
@@ -170,7 +168,7 @@ export const workflowCases = [
 
       /* Step 5: remove the dynamic element and verify the ref becomes stale. */
       await page.locator("#remove-element").click();
-      await page.waitForSelector("#dynamic-element", { timeout: 3000 });
+      await page.waitForSelector("#dynamic-element", { timeout: 3000, state: "detached" });
       // The dynamic element is gone; trying to click its stale ref should
       // either fall back (if another element matches the role/name) or fail.
       // We just verify the element is truly removed.
@@ -204,10 +202,7 @@ export const workflowCases = [
       assertEqual(await page.getByLabel("Text input").inputValue(), "status ready", "workflow: label locator fills input without fixed sleeps");
 
       await page.getByText("Add element", { exact: true }).click();
-      assert(
-        await page.locator("#dynamic-element").waitFor({ timeout: 3000, state: "visible" }),
-        "workflow: locator.waitFor observes dynamic element"
-      );
+      await page.locator("#dynamic-element").waitFor({ timeout: 3000, state: "visible" });
       assertIncludes(
         await page.locator("#dynamic-element").textContent(),
         "Dynamic!",
@@ -215,11 +210,7 @@ export const workflowCases = [
       );
 
       await page.getByText("Remove element", { exact: true }).click();
-      assertEqual(
-        await page.locator("#dynamic-element").waitFor({ timeout: 3000 }),
-        false,
-        "workflow: locator.waitFor observes element removal"
-      );
+      await page.locator("#dynamic-element").waitFor({ timeout: 3000, state: "detached" });
     `),
   },
 ];

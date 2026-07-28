@@ -49,10 +49,10 @@ export function navigationCase() {
       timeout: 10000,
     });
     await browser.switchTab(secondary);
-    assert(await page.waitForLoadState("load", { timeout: 10000 }), "secondary tab loads before target-id evaluation");
-    const secondaryTitleViaTarget = await page.evaluate("return document.title", secondary.targetId);
+    await page.waitForLoadState("load", { timeout: 10000 });
+    const secondaryTitleViaTarget = await browser.evaluateInTab(secondary.targetId, "document.title");
     assertEqual(secondaryTitleViaTarget, "ego-lite secondary", "js evaluates against explicit target id");
-    const homeTitleViaTarget = await page.evaluate("return document.title", home.targetId);
+    const homeTitleViaTarget = await browser.evaluateInTab(home.targetId, "document.title");
     assertEqual(homeTitleViaTarget, "ego-lite helper e2e", "js target id leaves current tab independent");
 
     const secondaryByIncludes = await browser.openOrReuseTab("/secondary", {
@@ -87,18 +87,18 @@ export function navigationCase() {
     );
 
     await page.goto(baseUrl + "/nav-target", { waitUntil: "commit" });
-    assert(await page.waitForLoadState("load", { timeout: 10000 }), "waitForLoadState observes goto navigation");
+    await page.waitForLoadState("load", { timeout: 10000 });
     const navInfo = await page.info();
     assertEqual(navInfo.title, "ego-lite nav target", "goto navigates current tab");
 
     const noWaitNav = await page.goto(baseUrl + "/nav-target?no-wait=1", {
       waitUntil: "commit",
     });
-    assertEqual(noWaitNav.loaded, false, "goto supports waitUntil:commit");
-    assert(await page.waitForLoadState("load", { timeout: 10000 }), "waitForLoadState can follow waitUntil:commit navigation");
+    assert(noWaitNav === null || typeof noWaitNav.status === "function", "goto waitUntil:commit returns Response or null");
+    await page.waitForLoadState("load", { timeout: 10000 });
 
     const nav = await page.goto(baseUrl + "/", { timeout: 10000, settle: 100 });
-    assert(nav.loaded, "goto returns loaded true");
+    assert(nav === null || typeof nav.status === "function", "goto returns Response or null");
 
     const frame = await browser.iframeTarget("/frame.html");
     assert(frame === null || (typeof frame === "string" && frame.length > 0), "iframeTarget returns a non-empty session id or null");

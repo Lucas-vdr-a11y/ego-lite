@@ -6,9 +6,24 @@ import {
   isBrowserRuntime,
   pendingDialog,
   setPreferredTarget,
+  subscribeBrowserEvent,
 } from "../browser-runtime.js";
 import { cdp, evaluate } from "../cdp-eval.js";
-import { assertNoEgoError } from "../ego-errors.js";
+import { assertNoEgoError, isEgoHardStopError } from "../ego-errors.js";
+import {
+  createRequestInfo,
+  createResponseFacade,
+  linkRedirect,
+} from "../network-facades.js";
+import {
+  normalizeTimeout,
+  normalizeWaitUntil,
+  operationTimeout,
+  remainingTimeout,
+  timeoutDeadline,
+} from "../playwright-errors.js";
+import { acquireNetworkEvents } from "../network-events.js";
+import { retainResponseLifecycle } from "../network-lifecycle.js";
 import { state } from "../state.js";
 import { waitForDocumentLoad } from "./load.js";
 
@@ -29,7 +44,7 @@ type TabInfo = {
 };
 
 type GotoOptions = {
-  waitUntil?: "load" | "domcontentloaded" | "commit";
+  waitUntil?: "load" | "domcontentloaded" | "networkidle" | "commit";
   timeout?: number;
   settle?: number;
 };
@@ -52,28 +67,266 @@ type TabTarget = string | { targetId: string };
 /**
  * Navigate the current tab to a URL and, by default, wait for it to load.
  * @param {string} url Absolute or browser-supported URL to load.
- * @param {{waitUntil?: "load"|"domcontentloaded"|"commit", timeout?: number, settle?: number}} [options]
+ * @param {{waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit", timeout?: number, settle?: number}} [options]
  *   `waitUntil: "commit"` returns once navigation is issued without waiting for the document to load.
  *   `timeout` and `settle` are in milliseconds.
- * @returns {Promise<{navigation: object, loaded: boolean}>}
+ * @returns {Promise<object|null>} Main-document Response facade, or null for a navigation without a network response.
  */
 export async function goto(url: string, options: GotoOptions = {}) {
-  const navigation = await cdp("Page.navigate", { url });
-  const loaded =
-    options.waitUntil === "commit"
-      ? false
-      : await waitForDocumentLoad({
-          timeout: options.timeout ?? 20000,
-          until:
-            options.waitUntil === "domcontentloaded"
-              ? "domcontentloaded"
-              : "load",
+  return navigateAndTrack(
+    (commandTimeout) =>
+      cdp("Page.navigate", { url }, undefined, commandTimeout),
+    options,
+    "page.goto",
+    url,
+  );
+}
+
+/**
+ * Reload the current page and return the main-document response.
+ * @param {{waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit", timeout?: number, ignoreCache?: boolean}} [options]
+ * @returns {Promise<object|null>}
+ */
+export async function reload(
+  options: GotoOptions & { ignoreCache?: boolean } = {},
+) {
+  const current = await currentTab();
+  return navigateAndTrack(
+    (commandTimeout) =>
+      cdp(
+        "Page.reload",
+        { ignoreCache: Boolean(options.ignoreCache) },
+        undefined,
+        commandTimeout,
+      ),
+    options,
+    "page.reload",
+    undefined,
+    isImmediateNavigationUrl(current.url),
+  );
+}
+
+async function navigateAndTrack(
+  invoke,
+  options: GotoOptions,
+  apiName,
+  expectedUrl?,
+  skipDocumentLifecycle = false,
+) {
+  const waitUntil = normalizeWaitUntil(apiName, options.waitUntil);
+  const timeout = navigationTimeout(options.timeout);
+  const deadline = timeoutDeadline(timeout, state.now());
+  const sessionId = await ensureSession();
+  const mainFrameId = await currentMainFrameId(sessionId, remaining(deadline));
+  const networkEvents = acquireNetworkEvents(sessionId, remaining(deadline));
+  let tracker;
+  let retained = false;
+  try {
+    await networkEvents.ready;
+    tracker = createNavigationTracker(sessionId, expectedUrl, mainFrameId);
+    tracker.start();
+    let navigation;
+    try {
+      navigation = await invoke(remaining(deadline));
+    } catch (error) {
+      if (
+        /CDP request timed out: Page\.(?:navigate|reload)/.test(
+          error?.message || "",
+        )
+      ) {
+        throw operationTimeout(apiName, timeout);
+      }
+      throw error;
+    }
+    if (navigation?.errorText) {
+      throw new Error(`Navigation failed: ${navigation.errorText}`);
+    }
+    tracker.setNavigationResult(navigation);
+
+    const immediateNavigation =
+      skipDocumentLifecycle ||
+      Boolean(expectedUrl && isImmediateNavigationUrl(expectedUrl));
+    const response = immediateNavigation
+      ? null
+      : await tracker.waitForResponse(remaining(deadline), timeout, apiName);
+    if (
+      waitUntil !== "commit" &&
+      !navigation?.isDownload &&
+      !immediateNavigation
+    ) {
+      if (waitUntil === "networkidle") {
+        await tracker.waitForNetworkIdle(remaining(deadline), timeout, apiName);
+      } else {
+        const loaded = await waitForDocumentLoad({
+          timeout: remaining(deadline),
+          until: waitUntil === "domcontentloaded" ? "domcontentloaded" : "load",
         });
-  const settle = Number(options.settle ?? 0);
-  if (settle > 0) {
-    await state.sleep(settle);
+        if (!loaded) throw operationTimeout(apiName, timeout);
+      }
+    }
+    const settle = Number(options.settle ?? 0);
+    if (settle > 0) await state.sleep(settle);
+    if (response) {
+      await retainResponseLifecycle(response, networkEvents);
+      retained = true;
+    }
+    return response;
+  } finally {
+    tracker?.dispose();
+    if (!retained) await networkEvents.release();
   }
-  return { navigation, loaded };
+}
+
+function createNavigationTracker(sessionId, expectedUrl?, mainFrameId?) {
+  const requests = new Map();
+  const requestsByLoader = new Map();
+  const responses = new Map();
+  const failures = new Map();
+  const inflight = new Set();
+  let lastActivity = state.now();
+  let navigationResult: any = null;
+  let started = false;
+  let reloadLoaderId: string | null = null;
+
+  const onRequest = (event) => {
+    if (!started) return;
+    const params = event.params || {};
+    inflight.add(params.requestId);
+    lastActivity = state.now();
+    if (String(params.type || "").toLowerCase() !== "document") return;
+    if (mainFrameId && params.frameId && params.frameId !== mainFrameId) {
+      return;
+    }
+    const previous = requests.get(params.requestId);
+    const request = createRequestInfo(params, event.sessionId);
+    linkRedirect(previous, request);
+    requests.set(params.requestId, request);
+    if (params.loaderId) {
+      requestsByLoader.set(params.loaderId, request);
+    }
+    if (
+      !reloadLoaderId &&
+      (!expectedUrl || urlsEquivalent(request.url, expectedUrl))
+    ) {
+      reloadLoaderId = params.loaderId || null;
+    }
+  };
+  const onResponse = (event) => {
+    if (
+      !started ||
+      String(event?.params?.type || "").toLowerCase() !== "document" ||
+      (mainFrameId &&
+        event?.params?.frameId &&
+        event.params.frameId !== mainFrameId)
+    )
+      return;
+    const params = event.params || {};
+    responses.set(params.loaderId || "", {
+      requestId: params.requestId,
+      response: params.response || {},
+      request: requests.get(params.requestId),
+      sessionId: event.sessionId,
+    });
+  };
+  const onFailure = (event) => {
+    if (!started) return;
+    inflight.delete(event?.params?.requestId);
+    lastActivity = state.now();
+    const request = requests.get(event?.params?.requestId);
+    if (!request?.isNavigationRequest) return;
+    request.failureText =
+      event?.params?.errorText || "Navigation request failed";
+    failures.set(event?.params?.requestId, request.failureText);
+  };
+  const onFinished = (event) => {
+    if (!started) return;
+    inflight.delete(event?.params?.requestId);
+    lastActivity = state.now();
+  };
+  const unsubscribe = [
+    subscribeBrowserEvent("Network.requestWillBeSent", sessionId, onRequest),
+    subscribeBrowserEvent("Network.responseReceived", sessionId, onResponse),
+    subscribeBrowserEvent("Network.loadingFailed", sessionId, onFailure),
+    subscribeBrowserEvent("Network.loadingFinished", sessionId, onFinished),
+  ];
+  return {
+    start() {
+      started = true;
+    },
+    setNavigationResult(result) {
+      navigationResult = result || {};
+    },
+    async waitForResponse(available, originalTimeout, apiName) {
+      if (navigationResult?.isDownload) return null;
+      // Page.navigate omits loaderId for same-document navigations. Page.reload
+      // has no loaderId in its command result, so its loader must arrive later
+      // through Network.requestWillBeSent.
+      if (expectedUrl !== undefined && !navigationResult?.loaderId) return null;
+      const localDeadline =
+        available === 0 ? Number.POSITIVE_INFINITY : state.now() + available;
+      while (state.now() < localDeadline) {
+        const loaderId = navigationResult?.loaderId || reloadLoaderId;
+        if (loaderId) {
+          const info = responses.get(loaderId);
+          if (info) return createResponseFacade(info);
+          const request = requestsByLoader.get(loaderId) as any;
+          if (request && failures.has(request.requestId)) {
+            throw new Error(
+              `Navigation failed: ${failures.get(request.requestId)}`,
+            );
+          }
+        }
+        await state.sleep(20);
+      }
+      throw operationTimeout(apiName, originalTimeout);
+    },
+    async waitForNetworkIdle(available, originalTimeout, apiName) {
+      const localDeadline =
+        available === 0 ? Number.POSITIVE_INFINITY : state.now() + available;
+      while (state.now() < localDeadline) {
+        if (inflight.size === 0 && state.now() - lastActivity >= 500) return;
+        await state.sleep(50);
+      }
+      throw operationTimeout(apiName, originalTimeout);
+    },
+    dispose() {
+      for (const remove of unsubscribe) remove();
+    },
+  };
+}
+
+async function currentMainFrameId(sessionId: string, timeout: number) {
+  try {
+    const result = await cdp("Page.getFrameTree", {}, sessionId, timeout);
+    return result.frameTree?.frame?.id || undefined;
+  } catch (error) {
+    if (isEgoHardStopError(error)) throw error;
+    // Navigation response correlation can still fall back to loader ids on
+    // bridges that do not expose Page.getFrameTree.
+    return undefined;
+  }
+}
+
+function navigationTimeout(explicit) {
+  const value =
+    explicit ?? state.defaultNavigationTimeout ?? state.defaultTimeout;
+  return normalizeTimeout("navigation", value);
+}
+
+function remaining(deadline) {
+  return remainingTimeout(deadline, state.now());
+}
+
+function urlsEquivalent(left, right) {
+  try {
+    return new URL(left).href === new URL(right).href;
+  } catch {
+    return left === right;
+  }
+}
+
+function isImmediateNavigationUrl(url) {
+  return /^(about:|data:|javascript:)/i.test(String(url));
 }
 
 /**
@@ -107,7 +360,7 @@ export async function pageInfo() {
 /**
  * List open page targets known to the browser.
  * @param {{includeChrome?: boolean}} [options]
- * @returns {Promise<Array<{targetId:string,title:string,url:string}>>}
+ * @returns {Promise<Array<{targetId:string,title:string,url:string,active:boolean,index?:number}>>}
  */
 export async function listTabs(
   options: ListTabsOptions = {},
@@ -189,7 +442,9 @@ export async function openOrReuseTab(
   if (existing) {
     await switchTab(existing.targetId);
     if (options.wait) {
-      await waitForDocumentLoad({ timeout: options.timeout ?? 20000 });
+      await waitForDocumentLoad({
+        timeout: options.timeout ?? navigationTimeout(undefined),
+      });
     }
     const settle = Number(options.settle ?? 0);
     if (settle > 0) {
@@ -199,7 +454,9 @@ export async function openOrReuseTab(
   }
   const targetId = await newTab(url);
   if (options.wait !== false) {
-    await waitForDocumentLoad({ timeout: options.timeout ?? 20000 });
+    await waitForDocumentLoad({
+      timeout: options.timeout ?? navigationTimeout(undefined),
+    });
   }
   const settle = Number(options.settle ?? 0);
   if (settle > 0) {

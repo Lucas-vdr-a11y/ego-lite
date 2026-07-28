@@ -7,14 +7,27 @@ class TimeoutError extends Error {}
  * @param {string} method CDP method name, for example Runtime.evaluate.
  * @param {object} [params] CDP command parameters.
  * @param {string} [sessionId] Optional attached target session id.
+ * @param {number} [timeoutMs] Optional command timeout in milliseconds; 0 disables it.
  * @returns {Promise<object>} CDP result object.
  */
-export async function cdp(method, params: any = {}, sessionId = undefined) {
+export async function cdp(
+  method,
+  params: any = {},
+  sessionId = undefined,
+  timeoutMs = undefined,
+) {
   const result = state.cdpOverride
-    ? await state.cdpOverride(method, params, sessionId)
-    : (await send({ method, params, session_id: sessionId })).result || {};
+    ? await state.cdpOverride(method, params, sessionId, timeoutMs)
+    : (
+        await send({
+          method,
+          params,
+          session_id: sessionId,
+          timeout_ms: timeoutMs,
+        })
+      ).result || {};
   if (
-    !sessionId &&
+    (!sessionId || sessionId === state.sessionId) &&
     (method === "Network.enable" || method === "Network.disable")
   ) {
     // Mirror the default session's Network domain state so helpers like
@@ -29,39 +42,46 @@ export async function cdp(method, params: any = {}, sessionId = undefined) {
  * Evaluate JavaScript in the current page, Playwright-style.
  * @param {string | Function} pageFunction JavaScript expression string or function called with arg.
  *   String expressions with top-level return statements are auto-wrapped in an IIFE for compatibility.
- * @param {unknown} [arg] Optional serializable argument passed to function pageFunctions.
- *   For legacy string expressions, a string second argument is treated as a target id to evaluate in.
+ * @param {unknown} [arg] Optional serializable argument passed to pageFunctions.
  * @returns {Promise<any>} Runtime.evaluate return-by-value result.
  */
 export async function evaluate(pageFunction, arg = undefined) {
-  let expression;
-  let sessionId;
-  if (typeof pageFunction === "function") {
-    expression = `(${pageFunction.toString()})(${serializedArg(arg)})`;
-  } else if (typeof pageFunction === "string") {
-    if (arg !== undefined && typeof arg !== "string") {
-      throw new TypeError(
-        "page.evaluate string form only accepts a legacy target id as its second argument; pass a function pageFunction to use args",
-      );
-    }
-    expression = pageFunction;
-    if (arg !== undefined) {
-      sessionId = (
-        await cdp("Target.attachToTarget", {
-          targetId: arg,
-          flatten: true,
-        })
-      ).sessionId;
-    }
-  } else {
-    throw new TypeError(
-      `page.evaluate expects a string expression or function pageFunction, got ${pageFunction === null ? "null" : typeof pageFunction}`,
-    );
-  }
+  const expression = evaluationExpression(pageFunction, arg);
   if (hasReturnStatement(expression) && !expression.trim().startsWith("(")) {
-    expression = `(function(){${expression}})()`;
+    return runtimeEvaluate(`(function(){${expression}})()`, undefined, true);
   }
-  return runtimeEvaluate(expression, sessionId, true);
+  return runtimeEvaluate(expression, undefined, true);
+}
+
+/**
+ * Evaluate in an explicit target. Kept outside page.evaluate so its second
+ * argument remains Playwright-compatible.
+ */
+export async function evaluateInTarget(
+  targetId,
+  pageFunction,
+  arg = undefined,
+) {
+  if (typeof targetId !== "string" || !targetId) {
+    throw new TypeError("evaluateInTarget requires a target id");
+  }
+  const attached = await cdp("Target.attachToTarget", {
+    targetId,
+    flatten: true,
+  });
+  const sessionId = attached.sessionId;
+  if (!sessionId) {
+    throw new Error(`evaluateInTarget could not attach to target ${targetId}`);
+  }
+  try {
+    let expression = evaluationExpression(pageFunction, arg);
+    if (hasReturnStatement(expression) && !expression.trim().startsWith("(")) {
+      expression = `(function(){${expression}})()`;
+    }
+    return await runtimeEvaluate(expression, sessionId, true);
+  } finally {
+    await cdp("Target.detachFromTarget", { sessionId }).catch(() => {});
+  }
 }
 
 async function runtimeEvaluate(
@@ -111,6 +131,9 @@ export function runtimeValue(response, expression) {
   }
   if (Object.hasOwn(result, "unserializableValue")) {
     return decodeUnserializableJsValue(result.unserializableValue);
+  }
+  if (result.type === "undefined") {
+    return undefined;
   }
   return null;
 }
@@ -221,4 +244,18 @@ export function hasReturnStatement(expression) {
 
 function serializedArg(arg) {
   return arg === undefined ? "" : JSON.stringify(arg);
+}
+
+function evaluationExpression(pageFunction, arg) {
+  if (typeof pageFunction === "function") {
+    return `(${pageFunction.toString()})(${serializedArg(arg)})`;
+  }
+  if (typeof pageFunction === "string") {
+    return arg === undefined
+      ? pageFunction
+      : `(${pageFunction})(${serializedArg(arg)})`;
+  }
+  throw new TypeError(
+    `page.evaluate expects a string expression or function pageFunction, got ${pageFunction === null ? "null" : typeof pageFunction}`,
+  );
 }

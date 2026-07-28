@@ -5,6 +5,11 @@ import {
 } from "../element-resolver.js";
 import { queryAllExpression as buildQueryAllExpression } from "../locator-query.js";
 import { parseRef } from "../ref-map.js";
+import {
+  normalizeTimeout,
+  operationTimeout,
+  timeoutDeadline,
+} from "../playwright-errors.js";
 import { state } from "../state.js";
 import { releaseHandle, resolveAndCall, resolveHandle } from "./element-ops.js";
 
@@ -72,9 +77,26 @@ export async function inputValue(selector) {
 /**
  * Return checked state for a checkbox or radio.
  * @param {string} selector CSS selector / @ref / loc= / xpath= for the input.
+ * @param {{timeout?: number}} [options] timeout in milliseconds.
  * @returns {Promise<boolean>}
  */
-export async function isChecked(selector) {
+export async function isChecked(selector, options: { timeout?: number } = {}) {
+  return (await checkedInputState(selector, options)).checked;
+}
+
+/**
+ * Read checkbox/radio state and input type in one auto-waiting lookup.
+ * Kept separate from the public boolean helper so setChecked can reject an
+ * impossible radio uncheck before dispatching a click.
+ */
+export async function checkedInputState(
+  selector,
+  options: { timeout?: number } = {},
+) {
+  const timeout = normalizeTimeout(
+    "locator.isChecked",
+    options.timeout ?? state.defaultTimeout,
+  );
   return readElement(
     selector,
     `function(){
@@ -82,8 +104,11 @@ export async function isChecked(selector) {
       if (!(target instanceof HTMLInputElement) || (target.type !== "checkbox" && target.type !== "radio")) {
         throw new Error("isChecked target must be a checkbox or radio input");
       }
-      return target.checked;
+      return { checked: target.checked, type: target.type };
     }`,
+    [],
+    timeout,
+    "locator.isChecked",
   );
 }
 
@@ -98,10 +123,12 @@ export async function isVisible(selector) {
     `function(){
       if (!(this instanceof Element)) return false;
       if (typeof this.checkVisibility === "function") {
-        return this.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true });
+        const rect = this.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0
+          && this.checkVisibility({ checkOpacity: false, checkVisibilityCSS: true });
       }
       const style = getComputedStyle(this);
-      if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") return false;
+      if (style.display === "none" || style.visibility === "hidden") return false;
       const rect = this.getBoundingClientRect();
       return rect.width > 0 && rect.height > 0;
     }`,
@@ -301,8 +328,14 @@ export async function evaluateAll(selector, pageFunction, arg = undefined) {
   return evaluateQueryAll(selector, functionSource, arg);
 }
 
-async function readElement(selector, functionDeclaration, args = []) {
-  const deadline = state.now() + state.defaultTimeout;
+async function readElement(
+  selector,
+  functionDeclaration,
+  args = [],
+  timeout = state.defaultTimeout,
+  apiName: string | null = null,
+) {
+  const deadline = timeoutDeadline(timeout, state.now());
   while (true) {
     try {
       return await readElementOnce(selector, functionDeclaration, args);
@@ -312,6 +345,14 @@ async function readElement(selector, functionDeclaration, args = []) {
         error.kind !== "transient" ||
         state.now() >= deadline
       ) {
+        if (
+          apiName &&
+          error instanceof ElementResolutionError &&
+          error.kind === "transient" &&
+          state.now() >= deadline
+        ) {
+          throw operationTimeout(apiName, timeout, error.message);
+        }
         throw error;
       }
       await state.sleep(Math.min(100, deadline - state.now()));

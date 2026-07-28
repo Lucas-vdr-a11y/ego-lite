@@ -52,7 +52,7 @@ for (const file of paths) {
     /document\.querySelectorAll/.test(content)
   ) {
     failures.push(
-      `${rel}: prefer locator.extractAll/evaluateAll over page.evaluate(String.raw + querySelectorAll) in agent-facing docs`,
+      `${rel}: prefer locator.evaluateAll over page.evaluate(String.raw + querySelectorAll) in agent-facing docs`,
     );
   }
 }

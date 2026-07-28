@@ -55,9 +55,9 @@ export const adversarialCases = [
     name: "adversarial fetch origin follows current page",
     body: homeCase(`
       await page.goto(baseUrl + "/nav-target", { timeout: 10000 });
-      assertEqual(await fetch.browser("/api/text", { timeout: 5 }), "server text fixture", "browserFetch resolves relative URLs against current page origin after navigation");
+      assertEqual(await fetch.browser("/api/text", { timeout: 5_000 }), "server text fixture", "browserFetch resolves relative URLs against current page origin after navigation");
       await page.goto(baseUrl + "/", { timeout: 10000 });
-      assertEqual(await fetch.browser("/api/text", { timeout: 5 }), "server text fixture", "browserFetch still resolves after navigating back home");
+      assertEqual(await fetch.browser("/api/text", { timeout: 5_000 }), "server text fixture", "browserFetch still resolves after navigating back home");
     `),
   },
 ];

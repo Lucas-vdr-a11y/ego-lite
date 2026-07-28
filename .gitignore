@@ -80,5 +80,5 @@ test-e2e/
 test/
 !package/ego-browser/test/
 !package/ego-browser/test/*.test.js
-# Translated skill (local only)
-skills/ego-browser/SKILL.zh.md
+# Local skill drafts and reference material
+skills/ego-browser/workbench/

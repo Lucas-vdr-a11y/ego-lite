@@ -8,7 +8,11 @@ import {
   browserCdp,
   invalidateSession,
 } from "../../dist/src/browser-runtime.js";
-import { drainEvents, screenshot } from "../../dist/src/driver/observe.js";
+import {
+  drainEvents,
+  saveScreenshot,
+  screenshot,
+} from "../../dist/src/driver/observe.js";
 import { setOverrides } from "../../dist/src/state.js";
 
 function withCdpRuntime(fn) {
@@ -105,11 +109,95 @@ test("screenshot creates a missing parent directory", async () => {
   const tempDir = await mkdtemp(join(tmpdir(), "ego-browser-observe-"));
   const path = join(tempDir, "nested", "shot.png");
   try {
-    await withCdpRuntime(() => screenshot({ path, raw: true }));
+    const buffer = await withCdpRuntime(() => screenshot({ path, raw: true }));
+    assert.ok(Buffer.isBuffer(buffer));
+    assert.equal(buffer.toString(), "png");
     assert.equal((await readFile(path)).toString(), "png");
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
+});
+
+test("saveScreenshot keeps the path-oriented ego-browser extension", async () => {
+  const firstPath = await withCdpRuntime(() =>
+    saveScreenshot({ raw: true, type: "webp" }),
+  );
+  const secondPath = await withCdpRuntime(() =>
+    saveScreenshot({ raw: true, type: "webp" }),
+  );
+  assert.match(firstPath, /\.webp$/);
+  assert.notEqual(firstPath, secondPath);
+  assert.equal((await readFile(firstPath)).toString(), "png");
+  await rm(firstPath, { force: true });
+  await rm(secondPath, { force: true });
+});
+
+test("screenshot forwards common CDP format and quality options", async () => {
+  await withCdpRuntime(async ({ sent }) => {
+    const buffer = await screenshot({
+      raw: true,
+      type: "jpeg",
+      quality: 82,
+    });
+    assert.ok(Buffer.isBuffer(buffer));
+    const capture = sent.find(
+      (request) => request.method === "Page.captureScreenshot",
+    );
+    assert.equal(capture.params.format, "jpeg");
+    assert.equal(capture.params.quality, 82);
+  });
+});
+
+test("viewport screenshot clips from the current scroll position", async () => {
+  const calls = [];
+  const restore = setOverrides({
+    cdpOverride(method, params) {
+      calls.push({ method, params });
+      if (method === "Runtime.evaluate") {
+        if (params.expression === "window.devicePixelRatio") {
+          return { result: { value: 2 } };
+        }
+        return {
+          result: {
+            value: JSON.stringify({
+              url: "https://example.com/scrolled",
+              title: "Scrolled",
+              w: 800,
+              h: 600,
+              sx: 17,
+              sy: 625,
+              pw: 1200,
+              ph: 2400,
+            }),
+          },
+        };
+      }
+      if (method === "Page.captureScreenshot") {
+        return { data: Buffer.from("png").toString("base64") };
+      }
+      return {};
+    },
+  });
+  try {
+    await screenshot();
+  } finally {
+    restore();
+  }
+
+  const capture = calls.find(
+    (request) => request.method === "Page.captureScreenshot",
+  );
+  assert.deepEqual(capture.params, {
+    format: "png",
+    captureBeyondViewport: false,
+    clip: {
+      x: 17,
+      y: 625,
+      width: 800,
+      height: 600,
+      scale: 0.5,
+    },
+  });
 });
 
 test("drainEvents returns the current event array synchronously", () => {

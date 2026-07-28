@@ -1,15 +1,13 @@
 import { parse } from "acorn";
 
-// Build-time helper-doc extraction.
+// Build-time implementation-doc extraction.
 //
-// Historically this ran at runtime inside help-runtime.ts by reading the
-// module's own source (fileURLToPath(import.meta.url) + readFileSync). That
-// only works when the SDK is loaded from a real file. In the shipped browser
-// the SDK is loaded from a compiled .pak resource whose import.meta.url is
-// "ego://services/node/resources/index.js", so fileURLToPath throws and the
-// docs map was permanently empty. The extraction now happens at build time
-// against the emitted bundle and the result is embedded as data, so the
-// runtime never touches its own source. See GitHub issue #84.
+// Public facade paths such as page.mouse.move and taskSpaces.switch are
+// documented by PUBLIC_API_DOCS. These extracted JSDoc records are retained as
+// a compatibility fallback for top-level extension helpers that are genuinely
+// present in helperContext but do not belong to the built-in facade. Extraction
+// happens at build time because the shipped browser loads the SDK from a .pak
+// resource whose import.meta.url is not a readable file. See GitHub issue #84.
 
 /**
  * Parse bundled JS source and return the helper docs used by help()/formatHelp().
