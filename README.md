@@ -2,7 +2,7 @@
 
 <img src="docs/assets/banner.png" alt="ego lite" width="100%" />
 
-**The best browser for both you and your AI agents work in parallel.**
+**The fastest browser for AI agents to run web automation**
 
 [English](README.md) | [简体中文](README.zh-CN.md) | [日本語](README.ja.md)
 
