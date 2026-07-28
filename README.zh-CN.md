@@ -2,9 +2,11 @@
 
 <img src="docs/assets/banner.png" alt="ego lite" width="100%" />
 
-**让你和 AI 智能体并行工作的最佳浏览器。**
+**AI 智能体执行浏览器自动化任务的最快浏览器。**
 
 [English](README.md) | [简体中文](README.zh-CN.md) | [日本語](README.ja.md)
+
+<a href="https://trendshift.io/repositories/42334?utm_source=repository-badge&amp;utm_medium=badge&amp;utm_campaign=badge-repository-42334" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/repositories/42334" alt="citrolabs%2Fego-lite | Trendshift" width="250" height="55"/></a>
 
 <p>
   <a href="https://cdn.ego.app/channel/github_github_referral/setup/macos/arm64/egolite.dmg"><img src="https://img.shields.io/badge/Download-Apple%20Silicon-000000?style=for-the-badge&logo=apple&logoColor=white" alt="下载 Apple Silicon 版本" /></a>
@@ -128,9 +130,9 @@ ego-browser follow @ego_agent on x.com for me
 
 <a href="https://www.star-history.com/?repos=citrolabs%2Fego-lite&type=date&legend=top-left">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=citrolabs/ego-lite&type=Date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=citrolabs/ego-lite&type=Date&legend=top-left" />
-   <img alt="Star 历史图表" src="https://api.star-history.com/svg?repos=citrolabs/ego-lite&type=Date&legend=top-left" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=citrolabs/ego-lite&type=date&theme=dark&legend=top-left&sealed_token=REc3U13uyXA_SL88c2BU0N5DOPw40Uiufp-RaA8pQS-JIMVaaxcGBjHmFV3Vwn9GMMIiL5e40DXSqHNcDjtXItvqvpMr013AaU6OkphU5o60GjasXVoXTQRR4TkWQSCPrPIxmKHehNll1TAsdoQ8rD3wPyRaj-Z_iHXqDDWf9b0gSWHxkyYoMUj6yWxY" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=citrolabs/ego-lite&type=date&legend=top-left&sealed_token=REc3U13uyXA_SL88c2BU0N5DOPw40Uiufp-RaA8pQS-JIMVaaxcGBjHmFV3Vwn9GMMIiL5e40DXSqHNcDjtXItvqvpMr013AaU6OkphU5o60GjasXVoXTQRR4TkWQSCPrPIxmKHehNll1TAsdoQ8rD3wPyRaj-Z_iHXqDDWf9b0gSWHxkyYoMUj6yWxY" />
+   <img alt="Star 历史图表" src="https://api.star-history.com/chart?repos=citrolabs/ego-lite&type=date&legend=top-left&sealed_token=REc3U13uyXA_SL88c2BU0N5DOPw40Uiufp-RaA8pQS-JIMVaaxcGBjHmFV3Vwn9GMMIiL5e40DXSqHNcDjtXItvqvpMr013AaU6OkphU5o60GjasXVoXTQRR4TkWQSCPrPIxmKHehNll1TAsdoQ8rD3wPyRaj-Z_iHXqDDWf9b0gSWHxkyYoMUj6yWxY" />
  </picture>
 </a>
 
