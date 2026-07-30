@@ -399,15 +399,16 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
       "const res = await page.waitForResponse(r => r.url().includes('/api') && r.status() === 200)",
   },
   "page.waitForEvent": {
-    signature: "page.waitForEvent('download', options?) => Promise<Download>",
+    signature:
+      'page.waitForEvent("console"|"dialog"|"download"|"filechooser"|"pageerror"|"popup"|"requestfailed", options?) => Promise<ConsoleMessage|Dialog|Download|FileChooser|Error|Popup|Request>',
     description:
-      "Wait for a download event. Download is currently the only supported page event.",
+      "Wait for a supported page event. Register the wait before the action that triggers the event.",
     params: [
       {
         name: "eventName",
-        type: "string",
+        type: '"console" | "dialog" | "download" | "filechooser" | "pageerror" | "popup" | "requestfailed"',
         required: true,
-        description: "Event name, such as download.",
+        description: "Supported page event name.",
       },
       {
         name: "options",
@@ -416,8 +417,9 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
       },
     ],
     returns:
-      "Promise<Download> with suggestedFilename(), url(), path(), saveAs(), failure(), cancel(), delete(), and createReadStream()",
-    example: "const download = await page.waitForEvent('download')",
+      "Promise<ConsoleMessage|Dialog|Download|FileChooser|Error|Popup|Request>. Facades expose their Playwright-style subset; Popup includes targetId and bringToFront().",
+    example:
+      "const popupPromise = page.waitForEvent('popup'); await page.getByText('Open').click(); const popup = await popupPromise",
   },
   "page.evaluate": {
     signature: "page.evaluate(pageFunction, arg?) => Promise<any>",

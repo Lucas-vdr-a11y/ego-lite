@@ -132,8 +132,12 @@ test("formatCliLogValue keeps facade signatures and returned subsets current", (
   const parsed = JSON.parse(formatted);
   assert.doesNotMatch(parsed.helpers.page.evaluate.description, /extractAll/);
   assert.match(
+    parsed.helpers.page.waitForEvent.signature,
+    /"console".*"dialog".*"download".*"filechooser".*"pageerror".*"popup".*"requestfailed"/,
+  );
+  assert.match(
     parsed.helpers.page.waitForEvent.returns,
-    /suggestedFilename\(\).*createReadStream\(\)/,
+    /ConsoleMessage.*Dialog.*Download.*FileChooser.*Error.*Popup.*Request/,
   );
   assert.match(
     parsed.helpers.page.waitForFunction.returns,

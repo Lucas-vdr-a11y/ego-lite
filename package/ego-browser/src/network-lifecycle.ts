@@ -56,7 +56,10 @@ export function createNetworkLifecycleMonitor(lease: NetworkEventLease) {
   function complete(event, errorText: string | null) {
     const key = requestKey(event?.params?.requestId, event?.sessionId);
     const request = requests.get(key);
-    if (request && errorText) request.failureText = errorText;
+    if (request) {
+      eventRequests.set(event, request);
+      if (errorText) request.failureText = errorText;
+    }
     completions.set(key, { errorText });
     if (retainedKey === key) void stopAndRelease();
   }
