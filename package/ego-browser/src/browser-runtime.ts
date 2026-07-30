@@ -3,6 +3,7 @@ import { assertNoEgoError, buildEgoError } from "./ego-errors.js";
 
 const RESPONSE_TIMEOUT_MS = 15000;
 const SESSION_TTL_MS = 2000;
+const KEEP_ALIVE_INTERVAL_MS = 2147483647;
 // Upper bound for buffered CDP events. The runtime can be long-lived (installEgoSdk
 // inside the browser); without a cap, undrained events grow without bound.
 const MAX_BUFFERED_EVENTS = 10000;
@@ -22,6 +23,7 @@ const eventWaiters = [];
 const eventSubscribers = new Set<BrowserEventSubscriber>();
 const pageEnabledSessions = new Set();
 const pendingDialogs = new Map();
+const networkCompletions = new Map();
 export function isBrowserRuntime() {
   return Boolean(
     globalThis.ego && typeof globalThis.ego.sendCDPMessage === "function",
@@ -52,24 +54,27 @@ function rawCdp(
     ...(sessionId ? { sessionId } : {}),
   });
   return new Promise<any>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      pending.delete(id);
-      reject(new Error(`CDP request timed out: ${method}`));
-    }, timeoutMs);
+    const cancelTimer =
+      timeoutMs === 0
+        ? keepProcessAlive()
+        : timeoutCancellation(timeoutMs, () => {
+            pending.delete(id);
+            reject(new Error(`CDP request timed out: ${method}`));
+          });
     pending.set(id, {
       resolve: (response) => {
-        clearTimeout(timer);
+        cancelTimer();
         resolve(response);
       },
       reject: (error) => {
-        clearTimeout(timer);
+        cancelTimer();
         reject(error);
       },
     });
     try {
       runtime.sendCDPMessage(payload);
     } catch (error) {
-      clearTimeout(timer);
+      cancelTimer();
       pending.delete(id);
       reject(error);
     }
@@ -84,7 +89,7 @@ export async function browserCdp(
 ) {
   // Test mock: cdpOverride bypasses everything including session injection.
   if (state.cdpOverride) {
-    return state.cdpOverride(method, params, sessionId);
+    return state.cdpOverride(method, params, sessionId, timeoutMs);
   }
   const explicit = sessionId !== undefined;
   let effective = sessionId;
@@ -124,7 +129,12 @@ export async function ensureSession() {
         throw new Error("no active tab to attach session");
       }
       const targetId = active.targetId;
-      if (targetId !== state.sessionTargetId || !state.sessionId) {
+      if (targetId !== state.sessionTargetId) {
+        // CDP domains are scoped to a target session. Discard all cached
+        // session-local state before attaching to a different tab.
+        invalidateSession();
+      }
+      if (!state.sessionId) {
         const attached = await rawCdp(
           "Target.attachToTarget",
           { targetId, flatten: true },
@@ -151,6 +161,7 @@ export function invalidateSession() {
   state.sessionId = null;
   state.sessionTargetId = null;
   state.sessionAt = 0;
+  state.networkDomainEnabled = false;
 }
 
 export function setPreferredTarget(targetId) {
@@ -169,18 +180,41 @@ export function drainBrowserEvents() {
 export function waitForBrowserEvent(
   predicate,
   timeoutMs = state.defaultTimeout,
+  signal: AbortSignal | undefined = undefined,
 ) {
   return new Promise((resolve, reject) => {
-    const waiter = {
+    const onAbort = () => {
+      const reason = signal?.reason;
+      rejectEventWaiter(
+        waiter,
+        reason instanceof Error
+          ? reason
+          : new Error("Browser event wait was aborted"),
+      );
+    };
+    const waiter: any = {
       predicate,
       resolve,
       reject,
-      timer: setTimeout(() => {
-        const index = eventWaiters.indexOf(waiter);
-        if (index >= 0) eventWaiters.splice(index, 1);
-        reject(new Error("page.waitForEvent timed out"));
-      }, timeoutMs),
+      processing: Promise.resolve(),
+      cancelTimer: () => {},
+      cleanup: () => signal?.removeEventListener("abort", onAbort),
     };
+    if (signal?.aborted) {
+      reject(
+        signal.reason instanceof Error
+          ? signal.reason
+          : new Error("Browser event wait was aborted"),
+      );
+      return;
+    }
+    signal?.addEventListener("abort", onAbort, { once: true });
+    waiter.cancelTimer =
+      timeoutMs === 0
+        ? keepProcessAlive()
+        : timeoutCancellation(timeoutMs, () => {
+            rejectEventWaiter(waiter, new Error("page.waitForEvent timed out"));
+          });
     eventWaiters.push(waiter);
   });
 }
@@ -200,6 +234,10 @@ export function pendingDialog(sessionId = state.sessionId) {
     return { ...pendingDialogs.get(sessionId) };
   }
   return null;
+}
+
+export function networkCompletion(requestId, sessionId = undefined) {
+  return networkCompletions.get(networkCompletionKey(requestId, sessionId));
 }
 
 async function enablePageEvents(sessionId) {
@@ -263,6 +301,27 @@ function handleMessage(message) {
       invalidateSession();
     }
   }
+  if (data.method === "Network.requestWillBeSent") {
+    networkCompletions.delete(
+      networkCompletionKey(data.params?.requestId, data.sessionId),
+    );
+  } else if (
+    data.method === "Network.loadingFinished" ||
+    data.method === "Network.loadingFailed"
+  ) {
+    networkCompletions.set(
+      networkCompletionKey(data.params?.requestId, data.sessionId),
+      data.method === "Network.loadingFailed"
+        ? {
+            errorText: data.params?.errorText || "Request failed",
+          }
+        : { errorText: null },
+    );
+    if (networkCompletions.size > 1000) {
+      const oldest = networkCompletions.keys().next().value;
+      networkCompletions.delete(oldest);
+    }
+  }
   if (data.method === "Page.javascriptDialogOpening") {
     const sessionId = data.sessionId || state.sessionId;
     if (sessionId) {
@@ -281,7 +340,11 @@ function handleMessage(message) {
       continue;
     }
     deliveredToSubscriber = true;
-    subscriber.listener(data);
+    try {
+      subscriber.listener(data);
+    } catch (error) {
+      console.error("Browser event subscriber failed:", error);
+    }
   }
   if (!(deliveredToSubscriber && data.method === "Page.screencastFrame")) {
     events.push(data);
@@ -290,20 +353,48 @@ function handleMessage(message) {
     }
   }
   for (const waiter of [...eventWaiters]) {
-    let matched = false;
-    try {
-      matched = waiter.predicate(data);
-    } catch (error) {
-      clearTimeout(waiter.timer);
-      eventWaiters.splice(eventWaiters.indexOf(waiter), 1);
-      waiter.reject(error);
-      continue;
-    }
-    if (!matched) continue;
-    clearTimeout(waiter.timer);
-    eventWaiters.splice(eventWaiters.indexOf(waiter), 1);
-    waiter.resolve(data);
+    waiter.processing = waiter.processing
+      .then(async () => {
+        if (!eventWaiters.includes(waiter)) return;
+        if (await waiter.predicate(data)) resolveEventWaiter(waiter, data);
+      })
+      .catch((error) => rejectEventWaiter(waiter, error));
   }
+}
+
+function networkCompletionKey(requestId, sessionId) {
+  return `${sessionId || ""}:${requestId || ""}`;
+}
+
+function resolveEventWaiter(waiter, data) {
+  const index = eventWaiters.indexOf(waiter);
+  if (index < 0) return;
+  waiter.cancelTimer?.();
+  eventWaiters.splice(index, 1);
+  waiter.cleanup?.();
+  waiter.resolve(data);
+}
+
+function rejectEventWaiter(waiter, error) {
+  const index = eventWaiters.indexOf(waiter);
+  if (index < 0) return;
+  waiter.cancelTimer?.();
+  eventWaiters.splice(index, 1);
+  waiter.cleanup?.();
+  waiter.reject(error);
+}
+
+function timeoutCancellation(timeoutMs: number, onTimeout: () => void) {
+  const timer = setTimeout(onTimeout, timeoutMs);
+  return () => clearTimeout(timer);
+}
+
+function keepProcessAlive() {
+  // Native bridge callbacks do not hold Node's event loop open. A disabled
+  // timeout still needs one inert handle so a top-level await can receive a
+  // future CDP response or event instead of exiting with code 13.
+  const timer = setInterval(() => {}, KEEP_ALIVE_INTERVAL_MS);
+  return () => clearInterval(timer);
 }
 
 export function browserSnapshotRefsToRefMap(refMap, refs = []) {

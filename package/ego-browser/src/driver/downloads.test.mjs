@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
   clearPreferredTarget,
@@ -17,6 +20,12 @@ function installAutoEgo(options = {}) {
     sendCDPMessage(payload) {
       const parsed = JSON.parse(payload);
       calls.push(parsed);
+      if (
+        options.deferDownloadBehavior &&
+        parsed.method === "Browser.setDownloadBehavior"
+      ) {
+        return;
+      }
       setTimeout(() => {
         if (
           options.browserSetDownloadBehaviorError &&
@@ -81,7 +90,7 @@ test("waitForEvent('download') returns a Playwright-style download facade", asyn
   }
 });
 
-test("waitForEvent('download') rejects when the download is canceled", async () => {
+test("waitForEvent('download') resolves at start and exposes cancellation through the facade", async () => {
   installAutoEgo();
   try {
     const promise = waitForEvent("download", { timeout: 1000 });
@@ -94,9 +103,41 @@ test("waitForEvent('download') rejects when the download is canceled", async () 
       guid: "download-1",
       state: "canceled",
     });
-    await assert.rejects(promise, /Download canceled: file\.png/);
+    const download = await promise;
+    assert.equal(await download.failure(), "Download canceled: file.png");
+    await assert.rejects(() => download.path(), /Download canceled: file\.png/);
   } finally {
     cleanup();
+  }
+});
+
+test("download.path resolves from Chromium's final file when progress is not forwarded", async () => {
+  const prefix = `ego-browser-downloads-${process.pid}-`;
+  const before = new Set(
+    (await readdir(tmpdir())).filter((name) => name.startsWith(prefix)),
+  );
+  installAutoEgo();
+  let downloadDir;
+  try {
+    const promise = waitForEvent("download", { timeout: 1000 });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    fireEvent("Page.downloadWillBegin", {
+      guid: "download-without-progress",
+      suggestedFilename: "completed.txt",
+    });
+    const download = await promise;
+    const created = (await readdir(tmpdir())).filter(
+      (name) => name.startsWith(prefix) && !before.has(name),
+    );
+    assert.equal(created.length, 1);
+    downloadDir = join(tmpdir(), created[0]);
+    const finalPath = join(downloadDir, "completed.txt");
+    await writeFile(finalPath, "complete");
+    assert.equal(await download.path(), finalPath);
+    assert.equal(await download.failure(), null);
+  } finally {
+    cleanup();
+    if (downloadDir) await rm(downloadDir, { recursive: true, force: true });
   }
 });
 
@@ -117,6 +158,53 @@ test("waitForEvent('download') falls back to Page.setDownloadBehavior", async ()
     assert.ok(
       calls.some((call) => call.method === "Page.setDownloadBehavior"),
       "uses page-level download behavior when browser-level command is missing",
+    );
+  } finally {
+    cleanup();
+  }
+});
+
+test("waitForEvent('download') treats timeout 0 as no timeout", async () => {
+  installAutoEgo();
+  try {
+    const promise = waitForEvent("download", { timeout: 0 });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    fireEvent("Page.downloadWillBegin", {
+      guid: "download-no-timeout",
+      suggestedFilename: "later.txt",
+    });
+    fireEvent("Page.downloadProgress", {
+      guid: "download-no-timeout",
+      state: "completed",
+    });
+    const download = await promise;
+    assert.equal(download.suggestedFilename(), "later.txt");
+  } finally {
+    cleanup();
+  }
+});
+
+test("waitForEvent timeout is not delayed by download setup", async () => {
+  const calls = installAutoEgo({ deferDownloadBehavior: true });
+  try {
+    const outcome = waitForEvent("download", { timeout: 20 }).then(
+      () => "resolved",
+      (error) => error,
+    );
+    const result = await Promise.race([
+      outcome,
+      new Promise((resolve) => setTimeout(() => resolve("still-pending"), 80)),
+    ]);
+    assert.notEqual(result, "still-pending");
+    assert.match(result.message, /timed out after 20ms/);
+
+    // Resolve the intentionally deferred transport request so the raw CDP
+    // guard does not keep this test process alive.
+    const behavior = calls.find(
+      (call) => call.method === "Browser.setDownloadBehavior",
+    );
+    globalThis.ego.onCDPMessage(
+      JSON.stringify({ id: behavior.id, result: {} }),
     );
   } finally {
     cleanup();

@@ -1,3 +1,5 @@
+import { PUBLIC_API_DOCS, type FunctionDoc } from "./format.js";
+
 type ParamInfo = {
   name: string;
   type: string | null;
@@ -14,15 +16,22 @@ type HelperDoc = {
   params: ParamInfo[];
   returns: string | null;
   async: boolean;
+  example?: string;
 };
 
-// Helper docs are extracted from the bundle at build time and injected here by
-// scripts/build.mjs, which replaces the placeholder below with a JSON string.
-// The runtime must never introspect its own source: in the shipped browser the
-// SDK is loaded from a compiled .pak resource whose import.meta.url is
-// "ego://services/node/resources/index.js", which is not a readable file, so
-// the previous readFileSync(fileURLToPath(import.meta.url)) approach silently
-// produced an empty docs map. See GitHub issue #84.
+const PUBLIC_HELP_ALIASES: Record<string, string> = {
+  keyboard: "page.keyboard",
+  mouse: "page.mouse",
+  screencast: "page.screencast",
+};
+
+// Implementation docs are extracted from the bundle at build time and injected
+// here as a compatibility fallback for exposed top-level extension helpers.
+// Built-in facade paths use PUBLIC_API_DOCS above, which avoids collisions such
+// as keyboard.down vs mouse.down and documents the names agents actually call.
+// The runtime must never introspect its own source: the shipped browser loads
+// the SDK from a compiled .pak resource with an unreadable import.meta.url. See
+// GitHub issue #84.
 const EMBEDDED_DOCS_JSON = "__EGO_EMBEDDED_HELP_DOCS__";
 
 let cache: Map<string, HelperDoc> | null = null;
@@ -30,28 +39,16 @@ let cache: Map<string, HelperDoc> | null = null;
 export function help(
   helpers: Record<string, unknown>,
   ...names: string[]
-): HelperDoc | HelperDoc[] | string {
+): HelperDoc | Array<HelperDoc | string> | string {
   const docs = getDocsMap();
   if (names.length === 0) {
     const all = [...docs.values()].filter((d) => d.name in helpers);
     return all;
   }
   if (names.length === 1) {
-    const doc = docs.get(names[0]);
-    if (!doc) return `Unknown helper: ${names[0]}`;
-    return doc;
+    return resolveHelpName(helpers, docs, names[0]);
   }
-  return names.map(
-    (n) =>
-      docs.get(n) || {
-        name: n,
-        signature: n,
-        description: null,
-        params: [],
-        returns: null,
-        async: false,
-      },
-  );
+  return names.map((name) => resolveHelpName(helpers, docs, name));
 }
 
 export function formatHelp(doc: HelperDoc): string {
@@ -71,9 +68,95 @@ export function formatHelp(doc: HelperDoc): string {
   if (doc.returns) {
     lines.push(`@returns ${doc.returns}`);
   }
+  if (doc.example) {
+    lines.push(`@example ${doc.example}`);
+  }
   lines.push("");
   lines.push(doc.signature);
   return lines.join("\n");
+}
+
+function resolveHelpName(
+  helpers: Record<string, unknown>,
+  embeddedDocs: Map<string, HelperDoc>,
+  requestedName: string,
+): HelperDoc | string {
+  const name = PUBLIC_HELP_ALIASES[requestedName] || requestedName;
+  const publicDoc = PUBLIC_API_DOCS[name];
+  if (publicDoc) {
+    return publicDocToHelperDoc(name, publicDoc);
+  }
+
+  const namespaceDocs = Object.entries(PUBLIC_API_DOCS)
+    .filter(([path]) => path.startsWith(`${name}.`))
+    .sort(([left], [right]) => left.localeCompare(right));
+  if (namespaceDocs.length > 0) {
+    const aliasNote =
+      name === requestedName ? "" : `${requestedName} → ${name}\n`;
+    return `${aliasNote}${name}:\n${namespaceDocs
+      .map(([, doc]) => `- ${doc.signature} — ${doc.description}`)
+      .join("\n")}`;
+  }
+
+  if (typeof helpers[requestedName] === "function") {
+    return (
+      embeddedDocs.get(requestedName) || `Unknown helper: ${requestedName}`
+    );
+  }
+
+  const suffixMatches = Object.entries(PUBLIC_API_DOCS)
+    .filter(([path]) => path.endsWith(`.${requestedName}`))
+    .sort(([left], [right]) => left.localeCompare(right));
+  if (suffixMatches.length === 1) {
+    const [path, doc] = suffixMatches[0];
+    return `${requestedName} → ${path}\n${formatHelp(publicDocToHelperDoc(path, doc))}`;
+  }
+  if (suffixMatches.length > 1) {
+    return `Ambiguous helper name ${JSON.stringify(requestedName)}. Query one public path:\n${suffixMatches
+      .map(([path]) => `- ${path}`)
+      .join("\n")}`;
+  }
+
+  const parentNamespace = nearestPublicNamespace(requestedName);
+  if (parentNamespace) {
+    return `Unknown helper: ${requestedName}. Use help('${parentNamespace}') to list its available methods.`;
+  }
+  return `Unknown helper: ${requestedName}`;
+}
+
+function publicDocToHelperDoc(name: string, doc: FunctionDoc): HelperDoc {
+  return {
+    name,
+    signature: doc.signature,
+    description: doc.description,
+    params: (doc.params || []).map((param) => ({
+      name: param.name,
+      type: param.type,
+      description: param.description || null,
+      optional: param.required !== true,
+      rest: false,
+      default: null,
+    })),
+    returns: doc.returns || null,
+    async: /(?:^|[<(])Promise(?:<|[>)]|$)/.test(doc.signature),
+    ...(doc.example ? { example: doc.example } : {}),
+  };
+}
+
+function nearestPublicNamespace(name: string) {
+  const parts = name.split(".");
+  while (parts.length > 0) {
+    const candidate = parts.join(".");
+    if (
+      Object.keys(PUBLIC_API_DOCS).some((path) =>
+        path.startsWith(`${candidate}.`),
+      )
+    ) {
+      return candidate;
+    }
+    parts.pop();
+  }
+  return null;
 }
 
 function getDocsMap(): Map<string, HelperDoc> {

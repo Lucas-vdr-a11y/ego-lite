@@ -94,11 +94,11 @@ try {
 }
 
 async function embedHelpDocs(...files) {
-  // The docs are extracted from the emitted bundle (it carries every helper's
-  // JSDoc with comments preserved) and injected into each build artifact that
-  // ships help-runtime, replacing the placeholder string constant. Doing this
-  // at build time means the runtime never has to read its own source. See
-  // GitHub issue #84.
+  // Implementation-level fallback docs are extracted from the emitted bundle
+  // (which preserves JSDoc) and injected into each artifact that ships
+  // help-runtime. Built-in public facade docs come from PUBLIC_API_DOCS; this
+  // fallback keeps top-level extension helpers usable without runtime source
+  // introspection. See GitHub issue #84.
   const bundleSource = await readFile(files[0], "utf-8");
   const docs = extractHelpDocs(bundleSource);
   if (docs.length === 0) {

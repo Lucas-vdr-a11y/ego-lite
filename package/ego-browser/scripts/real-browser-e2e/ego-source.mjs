@@ -15,6 +15,8 @@ export function egoSource(body, context) {
     uploadPathTwo,
     explicitScreenshotPath,
     environmentScreenshotPath,
+    ffmpegPath,
+    ffprobePath,
     metadataPath,
     keepTaskSpace,
   } = context;
@@ -33,8 +35,12 @@ export function egoSource(body, context) {
     const uploadPathTwo = ${JSON.stringify(uploadPathTwo)};
     const explicitScreenshotPath = ${JSON.stringify(explicitScreenshotPath)};
     const environmentScreenshotPath = ${JSON.stringify(environmentScreenshotPath)};
+    const ffmpegPath = ${JSON.stringify(ffmpegPath)};
+    const ffprobePath = ${JSON.stringify(ffprobePath)};
     const metadataPath = ${JSON.stringify(metadataPath)};
     const keepTaskSpace = ${JSON.stringify(keepTaskSpace)};
+    if (ffmpegPath) process.env.EGO_BROWSER_FFMPEG_PATH = ffmpegPath;
+    if (ffprobePath) process.env.EGO_BROWSER_FFPROBE_PATH = ffprobePath;
 
     try {
       ${body}

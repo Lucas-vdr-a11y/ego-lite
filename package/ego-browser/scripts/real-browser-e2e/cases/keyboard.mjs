@@ -95,17 +95,17 @@ export function keyboardCase() {
 
     await assertRejects(
       () => page.locator("#missing-input").fill("nope", { timeout: 200 }),
-      "element not found",
+      "timed out",
       "fill reports missing elements"
     );
     await assertRejects(
-      () => page.locator("#missing-file-input").setInputFiles(uploadPath),
-      "Element not found",
+      () => page.locator("#missing-file-input").setInputFiles(uploadPath, { timeout: 200 }),
+      "timed out",
       "setInputFiles reports missing file inputs"
     );
     await assertRejects(
-      () => page.locator("#missing-input").dispatchEvent("keypress", { key: "Enter" }),
-      "Element not found",
+      () => page.locator("#missing-input").dispatchEvent("keypress", { key: "Enter" }, { timeout: 200 }),
+      "timed out",
       "dispatchEvent reports missing targets"
     );
 

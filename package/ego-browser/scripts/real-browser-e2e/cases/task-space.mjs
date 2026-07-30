@@ -20,9 +20,9 @@ export function taskSpaceCase() {
     const switchedByNumericString = await taskSpaces.switch(String(task.id));
     assertEqual(switchedByNumericString.id, task.id, "taskSpaces.switch selects by numeric string id");
 
-    await taskSpaces.waitForAgentControl(taskName, { interval: 0.1, timeout: 3 });
+    await taskSpaces.waitForAgentControl(taskName, { interval: 100, timeout: 3_000 });
     await taskSpaces.takeOver(taskName);
-    await taskSpaces.waitForAgentControl(taskName, { interval: 0.1, timeout: 3 });
+    await taskSpaces.waitForAgentControl(taskName, { interval: 100, timeout: 3_000 });
 
     const scratch = await taskSpaces.new(taskName + " scratch");
     assertEqual(scratch.name, taskName + " scratch", "taskSpaces.new creates a scratch space");
@@ -59,7 +59,7 @@ export function taskSpaceCase() {
       "taskSpaces.complete validates empty task id"
     );
     await assertRejects(
-      () => taskSpaces.waitForAgentControl("", { timeout: 0.1 }),
+      () => taskSpaces.waitForAgentControl("", { timeout: 100 }),
       "requires a task space name or id",
       "taskSpaces.waitForAgentControl validates task space id"
     );
@@ -90,7 +90,7 @@ export function taskSpaceCase() {
     const taken = afterTakeover.find((s) => s.name === taskName);
     assertEqual(taken.ownership, "agent", "taskSpaces.takeOver restores agent ownership");
 
-    await taskSpaces.waitForAgentControl(taskName, { interval: 0.1, timeout: 5 });
+    await taskSpaces.waitForAgentControl(taskName, { interval: 100, timeout: 5_000 });
 
     // Repeat with explicit name parameter
     await taskSpaces.handOff(taskName);
@@ -101,6 +101,6 @@ export function taskSpaceCase() {
     const afterTakeover2 = await taskSpaces.list();
     assertEqual(afterTakeover2.find((s) => s.name === taskName).ownership, "agent", "taskSpaces.takeOver(name) restores agent ownership");
 
-    await taskSpaces.waitForAgentControl(taskName, { interval: 0.1, timeout: 5 });
+    await taskSpaces.waitForAgentControl(taskName, { interval: 100, timeout: 5_000 });
   `;
 }

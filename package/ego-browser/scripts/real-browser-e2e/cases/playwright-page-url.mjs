@@ -13,7 +13,7 @@ export const playwrightPageUrlCases = [
         { timeout: 5000 }
       );
       await page.getByRole("link", { name: "Go to nav target" }).click();
-      assert(await navigation, "PWB-03 link navigation reaches nav target");
+      await navigation;
       assertIncludes(await page.url(), "/nav-target", "PWB-03 page.url reads the URL after navigation");
     `),
   },

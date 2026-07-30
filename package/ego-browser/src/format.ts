@@ -1,11 +1,11 @@
-type FunctionParamDoc = {
+export type FunctionParamDoc = {
   name: string;
   type: string;
   required?: boolean;
   description?: string;
 };
 
-type FunctionDoc = {
+export type FunctionDoc = {
   signature: string;
   description: string;
   params?: FunctionParamDoc[];
@@ -13,11 +13,25 @@ type FunctionDoc = {
   example?: string;
 };
 
-const FUNCTION_DOCS: Record<string, FunctionDoc> = {
+function conciseDoc(
+  signature: string,
+  description: string,
+  returns?: string,
+  example?: string,
+): FunctionDoc {
+  return {
+    signature,
+    description,
+    ...(returns ? { returns } : {}),
+    ...(example ? { example } : {}),
+  };
+}
+
+export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
   "page.setDefaultTimeout": {
     signature: "page.setDefaultTimeout(timeoutMs) => void",
     description:
-      "Set the default timeout, in milliseconds, for page helper operations.",
+      "Set the default timeout, in milliseconds, for page helper operations; 0 disables it.",
     params: [
       {
         name: "timeoutMs",
@@ -29,9 +43,24 @@ const FUNCTION_DOCS: Record<string, FunctionDoc> = {
     returns: "void",
     example: "page.setDefaultTimeout(10000)",
   },
+  "page.setDefaultNavigationTimeout": {
+    signature: "page.setDefaultNavigationTimeout(timeoutMs) => void",
+    description: "Set the default navigation timeout in milliseconds.",
+    params: [
+      {
+        name: "timeoutMs",
+        type: "number",
+        required: true,
+        description: "Timeout in milliseconds; 0 disables it.",
+      },
+    ],
+    returns: "void",
+    example: "page.setDefaultNavigationTimeout(30000)",
+  },
   "page.goto": {
-    signature: "page.goto(url, options?) => Promise<any>",
-    description: "Navigate the current tab to a URL.",
+    signature: "page.goto(url, options?) => Promise<Response|null>",
+    description:
+      "Navigate the current tab and return the main-document response.",
     params: [
       {
         name: "url",
@@ -45,11 +74,11 @@ const FUNCTION_DOCS: Record<string, FunctionDoc> = {
         description: "Supports timeout, waitUntil, and settle options.",
       },
     ],
-    returns: "Promise<any>",
+    returns: "Promise<Response|null>",
     example: "await page.goto('https://example.com', { timeout: 20000 })",
   },
   "page.reload": {
-    signature: "page.reload(options?) => Promise<any>",
+    signature: "page.reload(options?) => Promise<Response|null>",
     description:
       "Reload the current page and optionally wait for a load state.",
     params: [
@@ -59,14 +88,14 @@ const FUNCTION_DOCS: Record<string, FunctionDoc> = {
         description: "Supports ignoreCache, waitUntil, and timeout.",
       },
     ],
-    returns: "Promise<any>",
+    returns: "Promise<Response|null>",
     example: "await page.reload({ waitUntil: 'load', timeout: 10000 })",
   },
   "page.info": {
     signature: "page.info() => Promise<object>",
     description:
-      "Return current page URL, title, viewport, scroll, and page size information.",
-    returns: "Promise<{ url, title, w, h, sx, sy, pw, ph }>",
+      "Return current page URL, title, viewport, scroll, and page size information, or the pending JavaScript dialog.",
+    returns: "Promise<{ url, title, w, h, sx, sy, pw, ph } | { dialog }>",
     example: "console.log(await page.info())",
   },
   "page.url": {
@@ -100,7 +129,7 @@ const FUNCTION_DOCS: Record<string, FunctionDoc> = {
   "page.getByRole": {
     signature: "page.getByRole(role, options?) => Locator",
     description:
-      "Create a locator by accessibility role and optional accessible name.",
+      "Create a locator by accessibility role and Playwright-style role options.",
     params: [
       {
         name: "role",
@@ -110,8 +139,8 @@ const FUNCTION_DOCS: Record<string, FunctionDoc> = {
       },
       {
         name: "options",
-        type: "{ name?: string }",
-        description: "Accessible name filter.",
+        type: "{ name?: string | RegExp, exact?: boolean, checked?: boolean, disabled?: boolean, expanded?: boolean, includeHidden?: boolean, level?: number, pressed?: boolean, selected?: boolean }",
+        description: "Accessible role filters.",
       },
     ],
     returns: "Locator",
@@ -212,6 +241,12 @@ const FUNCTION_DOCS: Record<string, FunctionDoc> = {
     returns: "Locator",
     example: "await page.getByTitle('More').click()",
   },
+  "page.getByTestId": conciseDoc(
+    "page.getByTestId(testId) => Locator",
+    "Create a locator by the data-testid attribute.",
+    "Locator",
+    "await page.getByTestId('save-button').click()",
+  ),
   "page.waitForTimeout": {
     signature: "page.waitForTimeout(ms) => Promise<void>",
     description:
@@ -239,15 +274,16 @@ const FUNCTION_DOCS: Record<string, FunctionDoc> = {
       },
       {
         name: "options",
-        type: "{ timeout?: number }",
-        description: "Timeout in milliseconds.",
+        type: "{ timeout?: number, idleMs?: number }",
+        description:
+          "Timeout in milliseconds; idleMs applies only to networkidle.",
       },
     ],
     returns: "Promise<void>",
     example: "await page.waitForLoadState('networkidle', { timeout: 10000 })",
   },
   "page.waitForSelector": {
-    signature: "page.waitForSelector(selector, options?) => Promise<any>",
+    signature: "page.waitForSelector(selector, options?) => Promise<true|null>",
     description: "Wait for a selector or locator to reach a desired state.",
     params: [
       {
@@ -262,12 +298,14 @@ const FUNCTION_DOCS: Record<string, FunctionDoc> = {
         description: "State and timeout options.",
       },
     ],
-    returns: "Promise<any>",
+    returns:
+      "Promise<true|null>; hidden and detached resolve to null when reached",
     example:
       "await page.waitForSelector('button.submit', { state: 'visible' })",
   },
   "page.waitForFunction": {
-    signature: "page.waitForFunction(pageFunction, options?) => Promise<any>",
+    signature:
+      "page.waitForFunction(pageFunction, arg?, options?) => Promise<JSHandle>",
     description:
       "Poll browser-side JavaScript until it returns a truthy value.",
     params: [
@@ -278,17 +316,22 @@ const FUNCTION_DOCS: Record<string, FunctionDoc> = {
         description: "Browser-side predicate.",
       },
       {
+        name: "arg",
+        type: "any",
+        description: "Serializable browser-side function argument.",
+      },
+      {
         name: "options",
-        type: "{ timeout?: number, polling?: number }",
+        type: "{ timeout?: number, polling?: number | 'raf' }",
         description: "Wait options.",
       },
     ],
-    returns: "Promise<any>",
+    returns: "Promise<JSHandle> with jsonValue(), dispose(), and toString()",
     example:
       "await page.waitForFunction(() => document.readyState === 'complete')",
   },
   "page.waitForURL": {
-    signature: "page.waitForURL(url, options?) => Promise<boolean>",
+    signature: "page.waitForURL(url, options?) => Promise<void>",
     description:
       "Wait until the current URL matches a string, glob, regex, or predicate receiving a URL object, then wait for load by default.",
     params: [
@@ -306,7 +349,7 @@ const FUNCTION_DOCS: Record<string, FunctionDoc> = {
           "Timeout in milliseconds and completion state; waitUntil defaults to 'load'.",
       },
     ],
-    returns: "Promise<boolean>",
+    returns: "Promise<void>",
     example:
       "await page.waitForURL(url => url.pathname === '/done', { timeout: 10000 })",
   },
@@ -314,7 +357,7 @@ const FUNCTION_DOCS: Record<string, FunctionDoc> = {
     signature:
       "page.waitForRequest(urlOrPredicate, options?) => Promise<Request>",
     description:
-      "Wait for a network request matching an exact URL, regex, or synchronous predicate.",
+      "Wait for a network request matching an exact URL, regex, or synchronous/async predicate.",
     params: [
       {
         name: "urlOrPredicate",
@@ -329,14 +372,14 @@ const FUNCTION_DOCS: Record<string, FunctionDoc> = {
       },
     ],
     returns:
-      "Promise<{ url(), method(), headers(), postData(), resourceType() }>",
+      "Promise<{ url(), method(), headers(), allHeaders(), headerValue(), postData(), postDataBuffer(), postDataJSON(), resourceType(), isNavigationRequest(), redirectedFrom(), redirectedTo(), failure() }>",
     example: "const req = await page.waitForRequest(/\\/api\\/search/)",
   },
   "page.waitForResponse": {
     signature:
       "page.waitForResponse(urlOrPredicate, options?) => Promise<Response>",
     description:
-      "Wait for a network response matching an exact URL, regex, or synchronous predicate.",
+      "Wait for a network response matching an exact URL, regex, or synchronous/async predicate.",
     params: [
       {
         name: "urlOrPredicate",
@@ -351,13 +394,14 @@ const FUNCTION_DOCS: Record<string, FunctionDoc> = {
       },
     ],
     returns:
-      "Promise<{ url(), status(), ok(), headers(), request(), text(), json(), body() }>",
+      "Promise<{ url(), status(), ok(), headers(), allHeaders(), headerValue(), headerValues(), request(), text(), json(), body(), finished(), fromServiceWorker(), securityDetails(), serverAddr() }>",
     example:
       "const res = await page.waitForResponse(r => r.url().includes('/api') && r.status() === 200)",
   },
   "page.waitForEvent": {
-    signature: "page.waitForEvent(eventName, options?) => Promise<any>",
-    description: "Wait for a page event. Currently useful for download events.",
+    signature: "page.waitForEvent('download', options?) => Promise<Download>",
+    description:
+      "Wait for a download event. Download is currently the only supported page event.",
     params: [
       {
         name: "eventName",
@@ -371,33 +415,57 @@ const FUNCTION_DOCS: Record<string, FunctionDoc> = {
         description: "Timeout in milliseconds.",
       },
     ],
-    returns: "Promise<any>",
+    returns:
+      "Promise<Download> with suggestedFilename(), url(), path(), saveAs(), failure(), cancel(), delete(), and createReadStream()",
     example: "const download = await page.waitForEvent('download')",
   },
   "page.evaluate": {
-    signature: "page.evaluate(expression) => Promise<any>",
+    signature: "page.evaluate(pageFunction, arg?) => Promise<any>",
     description:
-      "Evaluate page-wide browser JavaScript. Prefer locator.evaluateAll or extractAll for element collections.",
+      "Evaluate page-wide browser JavaScript. Prefer locator.evaluateAll for element collections.",
     params: [
       {
-        name: "expression",
+        name: "pageFunction",
         type: "string | Function",
         required: true,
         description: "Browser-side expression or function.",
+      },
+      {
+        name: "arg",
+        type: "any",
+        description: "Serializable argument for a page function.",
       },
     ],
     returns: "Promise<any>",
     example: "console.log(await page.evaluate('document.title'))",
   },
   "page.screenshot": {
-    signature: "page.screenshot(options?) => Promise<string>",
+    signature: "page.screenshot(options?) => Promise<Buffer>",
     description:
-      "Capture a screenshot and return the saved path or data depending on options.",
+      "Capture a screenshot and return a Buffer; path also writes a copy.",
     params: [
-      { name: "options", type: "object", description: "Screenshot options." },
+      {
+        name: "options",
+        type: "{ path?: string, type?: 'png'|'jpeg'|'webp', quality?: number, fullPage?: boolean, clip?: object, omitBackground?: boolean, animations?: 'allow'|'disabled', caret?: 'hide'|'initial', style?: string }",
+        description: "Playwright-style screenshot options.",
+      },
+    ],
+    returns: "Promise<Buffer>",
+    example: "const png = await page.screenshot({ path: '/tmp/page.png' })",
+  },
+  "page.saveScreenshot": {
+    signature: "page.saveScreenshot(options?) => Promise<string>",
+    description:
+      "Save a screenshot and return its explicit or generated local path.",
+    params: [
+      {
+        name: "options",
+        type: "{ path?: string, type?: 'png'|'jpeg'|'webp', quality?: number, fullPage?: boolean, clip?: object, omitBackground?: boolean, animations?: 'allow'|'disabled', caret?: 'hide'|'initial', style?: string }",
+        description: "Screenshot options; path is generated when omitted.",
+      },
     ],
     returns: "Promise<string>",
-    example: "console.log(await page.screenshot({ path: '/tmp/page.png' }))",
+    example: "console.log(await page.saveScreenshot())",
   },
   "page.snapshot": {
     signature: "page.snapshot(options?) => Promise<string>",
@@ -423,7 +491,7 @@ const FUNCTION_DOCS: Record<string, FunctionDoc> = {
     example: "console.log(await page.snapshotRaw())",
   },
   "page.elementCenter": {
-    signature: "page.elementCenter(selector) => Promise<{ x, y }>",
+    signature: "page.elementCenter(selector) => Promise<{ x, y, sessionId? }>",
     description: "Resolve an element and return its viewport center point.",
     params: [
       {
@@ -433,15 +501,27 @@ const FUNCTION_DOCS: Record<string, FunctionDoc> = {
         description: "Selector or @ref.",
       },
     ],
-    returns: "Promise<{ x: number, y: number }>",
+    returns: "Promise<{ x: number, y: number, sessionId?: string }>",
     example: "console.log(await page.elementCenter('@12'))",
   },
   "page.drainEvents": {
-    signature: "page.drainEvents() => Promise<object[]>",
+    signature: "page.drainEvents() => object[]",
     description: "Drain buffered page/CDP events.",
-    returns: "Promise<object[]>",
-    example: "console.log(await page.drainEvents())",
+    returns: "object[]",
+    example: "console.log(page.drainEvents())",
   },
+  "page.screencast.start": conciseDoc(
+    "page.screencast.start(options) => Promise<{dispose,[Symbol.asyncDispose]}>",
+    "Start a WebM screencast; options.path is required and must end with .webm.",
+    "Promise<{dispose: Function, [Symbol.asyncDispose]: Function}>",
+    "await page.screencast.start({ path: '/tmp/demo.webm' })",
+  ),
+  "page.screencast.stop": conciseDoc(
+    "page.screencast.stop() => Promise<void>",
+    "Stop and finalize the active screencast recording.",
+    "Promise<void>",
+    "await page.screencast.stop()",
+  ),
   "page.keyboard.press": {
     signature: "page.keyboard.press(key, options?) => Promise<void>",
     description: "Press a keyboard key or shortcut.",
@@ -471,6 +551,24 @@ const FUNCTION_DOCS: Record<string, FunctionDoc> = {
     returns: "Promise<void>",
     example: "await page.keyboard.insertText('hello')",
   },
+  "page.keyboard.down": conciseDoc(
+    "page.keyboard.down(key) => Promise<void>",
+    "Dispatch a keydown event and keep modifier keys active until page.keyboard.up().",
+    "Promise<void>",
+    "await page.keyboard.down('Shift')",
+  ),
+  "page.keyboard.up": conciseDoc(
+    "page.keyboard.up(key) => Promise<void>",
+    "Dispatch a keyup event and release the key.",
+    "Promise<void>",
+    "await page.keyboard.up('Shift')",
+  ),
+  "page.keyboard.type": conciseDoc(
+    "page.keyboard.type(text, options?) => Promise<void>",
+    "Type text as a sequence of keyboard events.",
+    "Promise<void>",
+    "await page.keyboard.type('hello', { delay: 30 })",
+  ),
   "page.mouse.click": {
     signature: "page.mouse.click(x, y, options?) => Promise<void>",
     description:
@@ -514,7 +612,7 @@ const FUNCTION_DOCS: Record<string, FunctionDoc> = {
     example: "await page.mouse.dblclick(420, 260)",
   },
   "page.mouse.move": {
-    signature: "page.mouse.move(x, y) => Promise<void>",
+    signature: "page.mouse.move(x, y, options?) => Promise<void>",
     description: "Move the mouse to viewport coordinates.",
     params: [
       {
@@ -529,25 +627,46 @@ const FUNCTION_DOCS: Record<string, FunctionDoc> = {
         required: true,
         description: "Y coordinate.",
       },
+      {
+        name: "options",
+        type: "{ steps?: number }",
+        description: "Number of interpolated mousemove steps.",
+      },
     ],
     returns: "Promise<void>",
     example: "await page.mouse.move(420, 260)",
   },
+  "page.mouse.down": conciseDoc(
+    "page.mouse.down(options?) => Promise<void>",
+    "Press a mouse button at the current mouse position.",
+    "Promise<void>",
+    "await page.mouse.down()",
+  ),
+  "page.mouse.up": conciseDoc(
+    "page.mouse.up(options?) => Promise<void>",
+    "Release a mouse button at the current mouse position.",
+    "Promise<void>",
+    "await page.mouse.up()",
+  ),
   "page.mouse.wheel": {
-    signature: "page.mouse.wheel(deltaX, deltaY) => Promise<void>",
+    signature: "page.mouse.wheel(deltaX?, deltaY?, options?) => Promise<void>",
     description: "Scroll with a mouse wheel. Positive deltaY scrolls down.",
     params: [
       {
         name: "deltaX",
         type: "number",
-        required: true,
-        description: "Horizontal wheel delta.",
+        description: "Horizontal wheel delta; defaults to 0.",
       },
       {
         name: "deltaY",
         type: "number",
-        required: true,
-        description: "Vertical wheel delta.",
+        description: "Vertical wheel delta; defaults to 300.",
+      },
+      {
+        name: "options",
+        type: "{ x?: number, y?: number }",
+        description:
+          "Ego-browser extension selecting the viewport dispatch point.",
       },
     ],
     returns: "Promise<void>",
@@ -555,7 +674,8 @@ const FUNCTION_DOCS: Record<string, FunctionDoc> = {
   },
   "page.mouse.drag": {
     signature: "page.mouse.drag(points, options?) => Promise<void>",
-    description: "Drag between points or element selectors.",
+    description:
+      "Ego-browser extension that drags through an ordered path of points or element selectors.",
     params: [
       {
         name: "points",
@@ -568,16 +688,274 @@ const FUNCTION_DOCS: Record<string, FunctionDoc> = {
     returns: "Promise<void>",
     example: "await page.mouse.drag([[100, 100], [300, 300]])",
   },
+  "locator.first": conciseDoc(
+    "locator.first() => Locator",
+    "Return a locator for the first matching element.",
+    "Locator",
+  ),
+  "locator.last": conciseDoc(
+    "locator.last() => Locator",
+    "Return a locator for the last matching element.",
+    "Locator",
+  ),
+  "locator.nth": conciseDoc(
+    "locator.nth(index) => Locator",
+    "Return a locator for the zero-based matching element index.",
+    "Locator",
+  ),
+  "locator.and": conciseDoc(
+    "locator.and(locator) => Locator",
+    "Match elements that also match another locator.",
+    "Locator",
+  ),
+  "locator.or": conciseDoc(
+    "locator.or(locator) => Locator",
+    "Match elements that match either locator.",
+    "Locator",
+  ),
+  "locator.locator": conciseDoc(
+    "locator.locator(selector) => Locator",
+    "Create a descendant locator scoped to the current locator.",
+    "Locator",
+  ),
+  "locator.getByRole": conciseDoc(
+    "locator.getByRole(role, options?) => Locator",
+    "Create a descendant locator by accessibility role and role options.",
+    "Locator",
+  ),
+  "locator.getByText": conciseDoc(
+    "locator.getByText(text, options?) => Locator",
+    "Create a descendant locator by visible text.",
+    "Locator",
+  ),
+  "locator.getByLabel": conciseDoc(
+    "locator.getByLabel(text, options?) => Locator",
+    "Create a descendant form-control locator by label.",
+    "Locator",
+  ),
+  "locator.getByPlaceholder": conciseDoc(
+    "locator.getByPlaceholder(text, options?) => Locator",
+    "Create a descendant locator by placeholder.",
+    "Locator",
+  ),
+  "locator.getByAltText": conciseDoc(
+    "locator.getByAltText(text, options?) => Locator",
+    "Create a descendant locator by image alt text.",
+    "Locator",
+  ),
+  "locator.getByTitle": conciseDoc(
+    "locator.getByTitle(text, options?) => Locator",
+    "Create a descendant locator by title.",
+    "Locator",
+  ),
+  "locator.getByTestId": conciseDoc(
+    "locator.getByTestId(testId) => Locator",
+    "Create a descendant locator by data-testid.",
+    "Locator",
+  ),
+  "locator.filter": conciseDoc(
+    "locator.filter(options?) => Locator",
+    "Narrow a locator with text or descendant-locator filters.",
+    "Locator",
+  ),
+  "locator.click": conciseDoc(
+    "locator.click(options?) => Promise<void>",
+    "Wait for click actionability and click the matching element.",
+    "Promise<void>",
+  ),
+  "locator.dblclick": conciseDoc(
+    "locator.dblclick(options?) => Promise<void>",
+    "Wait for actionability and double-click the matching element.",
+    "Promise<void>",
+  ),
+  "locator.hover": conciseDoc(
+    "locator.hover(options?) => Promise<void>",
+    "Wait for actionability and move the mouse over the matching element.",
+    "Promise<void>",
+  ),
+  "locator.dragTo": conciseDoc(
+    "locator.dragTo(target, options?) => Promise<void>",
+    "Drag the matching element to another locator or selector.",
+    "Promise<void>",
+  ),
+  "locator.scrollIntoViewIfNeeded": conciseDoc(
+    "locator.scrollIntoViewIfNeeded(options?) => Promise<void>",
+    "Scroll the matching element into the viewport when needed.",
+    "Promise<void>",
+  ),
+  "locator.focus": conciseDoc(
+    "locator.focus(options?) => Promise<void>",
+    "Focus the matching element.",
+    "Promise<void>",
+  ),
+  "locator.fill": conciseDoc(
+    "locator.fill(value, options?) => Promise<void>",
+    "Fill an editable element with text after actionability checks.",
+    "Promise<void>",
+  ),
+  "locator.clear": conciseDoc(
+    "locator.clear(options?) => Promise<void>",
+    "Clear an editable element.",
+    "Promise<void>",
+  ),
+  "locator.press": conciseDoc(
+    "locator.press(key, options?) => Promise<void>",
+    "Focus the matching element and press a key or shortcut.",
+    "Promise<void>",
+  ),
+  "locator.pressSequentially": conciseDoc(
+    "locator.pressSequentially(text, options?) => Promise<void>",
+    "Focus the matching element and type text as sequential key events.",
+    "Promise<void>",
+  ),
+  "locator.check": conciseDoc(
+    "locator.check(options?) => Promise<void>",
+    "Set a checkbox or radio control to checked.",
+    "Promise<void>",
+  ),
+  "locator.uncheck": conciseDoc(
+    "locator.uncheck(options?) => Promise<void>",
+    "Set a checkbox control to unchecked.",
+    "Promise<void>",
+  ),
+  "locator.setChecked": conciseDoc(
+    "locator.setChecked(checked, options?) => Promise<void>",
+    "Set the checked state of a checkbox or radio control.",
+    "Promise<void>",
+  ),
+  "locator.selectOption": conciseDoc(
+    "locator.selectOption(values, options?) => Promise<string[]>",
+    "Select one or more options in a select element.",
+    "Promise<string[]>",
+  ),
+  "locator.setInputFiles": conciseDoc(
+    "locator.setInputFiles(files, options?) => Promise<void>",
+    "Set files on an input, using paths or Playwright-style file payloads; pass an empty array to clear.",
+    "Promise<void>",
+  ),
+  "locator.dispatchEvent": conciseDoc(
+    "locator.dispatchEvent(type, eventInit?, options?) => Promise<void>",
+    "Dispatch a DOM event on the matching element.",
+    "Promise<void>",
+  ),
+  "locator.blur": conciseDoc(
+    "locator.blur() => Promise<void>",
+    "Remove focus from the matching element.",
+    "Promise<void>",
+  ),
+  "locator.textContent": conciseDoc(
+    "locator.textContent() => Promise<string|null>",
+    "Return the matching element's textContent.",
+    "Promise<string|null>",
+  ),
+  "locator.innerText": conciseDoc(
+    "locator.innerText() => Promise<string>",
+    "Return the rendered innerText of the matching element.",
+    "Promise<string>",
+  ),
+  "locator.innerHTML": conciseDoc(
+    "locator.innerHTML() => Promise<string>",
+    "Return the matching element's innerHTML.",
+    "Promise<string>",
+  ),
+  "locator.inputValue": conciseDoc(
+    "locator.inputValue() => Promise<string>",
+    "Return the current value of an input-like element.",
+    "Promise<string>",
+  ),
+  "locator.isChecked": conciseDoc(
+    "locator.isChecked(options?) => Promise<boolean>",
+    "Return whether the matching checkbox or radio is checked.",
+    "Promise<boolean>",
+  ),
+  "locator.isVisible": conciseDoc(
+    "locator.isVisible() => Promise<boolean>",
+    "Return whether a matching element is visible.",
+    "Promise<boolean>",
+  ),
+  "locator.isHidden": conciseDoc(
+    "locator.isHidden() => Promise<boolean>",
+    "Return whether no matching element is visible.",
+    "Promise<boolean>",
+  ),
+  "locator.isEnabled": conciseDoc(
+    "locator.isEnabled() => Promise<boolean>",
+    "Return whether a matching element is enabled.",
+    "Promise<boolean>",
+  ),
+  "locator.isDisabled": conciseDoc(
+    "locator.isDisabled() => Promise<boolean>",
+    "Return whether no matching element is enabled.",
+    "Promise<boolean>",
+  ),
+  "locator.isEditable": conciseDoc(
+    "locator.isEditable() => Promise<boolean>",
+    "Return whether a matching element is editable.",
+    "Promise<boolean>",
+  ),
+  "locator.getAttribute": conciseDoc(
+    "locator.getAttribute(name) => Promise<string|null>",
+    "Return an attribute value from the matching element.",
+    "Promise<string|null>",
+  ),
+  "locator.boundingBox": conciseDoc(
+    "locator.boundingBox() => Promise<{x,y,width,height}|null>",
+    "Return the matching element's viewport bounding box.",
+    "Promise<{x,y,width,height}|null>",
+  ),
+  "locator.screenshot": conciseDoc(
+    "locator.screenshot(options?) => Promise<Buffer>",
+    "Capture the matching element and return a Buffer; path also writes a copy.",
+    "Promise<Buffer>",
+  ),
+  "locator.count": conciseDoc(
+    "locator.count() => Promise<number>",
+    "Return the number of matching elements.",
+    "Promise<number>",
+  ),
+  "locator.allInnerTexts": conciseDoc(
+    "locator.allInnerTexts() => Promise<string[]>",
+    "Return rendered innerText for all matching elements.",
+    "Promise<string[]>",
+  ),
+  "locator.allTextContents": conciseDoc(
+    "locator.allTextContents() => Promise<Array<string|null>>",
+    "Return textContent for all matching elements.",
+    "Promise<Array<string|null>>",
+  ),
+  "locator.evaluate": conciseDoc(
+    "locator.evaluate(pageFunction, arg?) => Promise<any>",
+    "Evaluate browser-side JavaScript with the matching element as the first argument.",
+    "Promise<any>",
+  ),
+  "locator.evaluateAll": conciseDoc(
+    "locator.evaluateAll(pageFunction, arg?) => Promise<any>",
+    "Evaluate browser-side JavaScript with all matching elements as the first argument.",
+    "Promise<any>",
+  ),
+  "locator.waitFor": conciseDoc(
+    "locator.waitFor(options?) => Promise<void>",
+    "Wait for attached, detached, visible, or hidden state.",
+    "Promise<void>",
+  ),
   "browser.listTabs": {
-    signature: "browser.listTabs() => Promise<object[]>",
+    signature: "browser.listTabs(options?) => Promise<object[]>",
     description: "List tabs in the current task space.",
+    params: [
+      {
+        name: "options",
+        type: "{ includeChrome?: boolean }",
+        description:
+          "Whether to include internal browser tabs; defaults to true.",
+      },
+    ],
     returns: "Promise<object[]>",
     example: "console.log(await browser.listTabs())",
   },
   "browser.currentTab": {
-    signature: "browser.currentTab() => Promise<object | null>",
+    signature: "browser.currentTab() => Promise<object>",
     description: "Return the current selected tab.",
-    returns: "Promise<object | null>",
+    returns: "Promise<object>",
     example: "console.log(await browser.currentTab())",
   },
   "browser.switchTab": {
@@ -608,7 +986,7 @@ const FUNCTION_DOCS: Record<string, FunctionDoc> = {
       },
       {
         name: "options",
-        type: "{ wait?: boolean, timeout?: number, settle?: number }",
+        type: "{ match?: 'exact'|'origin'|'origin+path'|'includes', wait?: boolean, timeout?: number, settle?: number }",
         description: "Open and wait options.",
       },
     ],
@@ -637,19 +1015,25 @@ const FUNCTION_DOCS: Record<string, FunctionDoc> = {
     example: "await browser.ensureRealTab()",
   },
   "browser.iframeTarget": {
-    signature: "browser.iframeTarget(frameSelector) => Promise<object | null>",
-    description: "Resolve an iframe target for advanced CDP interactions.",
+    signature: "browser.iframeTarget(urlSubstring) => Promise<string | null>",
+    description:
+      "Return the target id of an iframe whose URL contains a substring.",
     params: [
       {
-        name: "frameSelector",
+        name: "urlSubstring",
         type: "string",
         required: true,
-        description: "Iframe selector.",
+        description: "URL substring.",
       },
     ],
-    returns: "Promise<object | null>",
-    example: "console.log(await browser.iframeTarget('iframe'))",
+    returns: "Promise<string | null>",
+    example: "console.log(await browser.iframeTarget('/embedded/'))",
   },
+  "browser.evaluateInTab": conciseDoc(
+    "browser.evaluateInTab(target, pageFunction, arg?) => Promise<any>",
+    "Evaluate browser-side JavaScript in an explicit target id or tab object without changing page.evaluate argument semantics.",
+    "Promise<any>",
+  ),
   "taskSpaces.list": {
     signature: "taskSpaces.list() => Promise<object[]>",
     description: "List browser task spaces.",
@@ -686,7 +1070,8 @@ const FUNCTION_DOCS: Record<string, FunctionDoc> = {
   },
   "taskSpaces.useOrCreate": {
     signature: "taskSpaces.useOrCreate(nameOrId) => Promise<object>",
-    description: "Reuse an agent-owned task space or create one by name.",
+    description:
+      "Select an existing task space or create one by name. A user-owned match remains user-owned and is not claimed.",
     params: [
       {
         name: "nameOrId",
@@ -747,7 +1132,7 @@ const FUNCTION_DOCS: Record<string, FunctionDoc> = {
     example: "await taskSpaces.handOff(task.id)",
   },
   "taskSpaces.takeOver": {
-    signature: "taskSpaces.takeOver(nameOrId?) => Promise<object>",
+    signature: "taskSpaces.takeOver(nameOrId?) => Promise<void>",
     description:
       "Take control back after the user explicitly confirms continuation.",
     params: [
@@ -758,23 +1143,24 @@ const FUNCTION_DOCS: Record<string, FunctionDoc> = {
           "Task space name, taskId, or numeric id. Defaults to current task space.",
       },
     ],
-    returns: "Promise<object>",
+    returns: "Promise<void>",
     example: "await taskSpaces.takeOver(task.id)",
   },
   "taskSpaces.waitForAgentControl": {
     signature:
-      "taskSpaces.waitForAgentControl(nameOrId?, options?) => Promise<void>",
+      "taskSpaces.waitForAgentControl(nameOrId, options?) => Promise<void>",
     description: "Poll until agent control is restored without taking control.",
     params: [
       {
         name: "nameOrId",
         type: "string | number",
+        required: true,
         description: "Task space name, taskId, or numeric id.",
       },
       {
         name: "options",
         type: "{ interval?: number, timeout?: number }",
-        description: "Polling options in seconds.",
+        description: "Polling interval and timeout in milliseconds.",
       },
     ],
     returns: "Promise<void>",
@@ -897,7 +1283,7 @@ const FUNCTION_DOCS: Record<string, FunctionDoc> = {
         name: "options",
         type: "object",
         description:
-          "Fetch options including method, headers, body, timeout seconds.",
+          "Fetch options including method, headers, body, and timeout in milliseconds.",
       },
     ],
     returns: "Promise<string>",
@@ -918,14 +1304,15 @@ const FUNCTION_DOCS: Record<string, FunctionDoc> = {
         name: "options",
         type: "object",
         description:
-          "Fetch options including method, headers, body, timeout seconds.",
+          "Fetch options including method, headers, body, and timeout in milliseconds.",
       },
     ],
     returns: "Promise<string>",
     example: "const body = await fetch.browser('/api/data')",
   },
   cdp: {
-    signature: "cdp(method, params?) => Promise<any>",
+    signature:
+      "cdp(method, params?, sessionId?, timeoutMs?) => Promise<object>",
     description:
       "Send a supported raw Chrome DevTools Protocol command to the current target. Browser.grantPermissions and Browser.setPermission are not exposed by the task-space bridge.",
     params: [
@@ -940,25 +1327,35 @@ const FUNCTION_DOCS: Record<string, FunctionDoc> = {
         type: "object",
         description: "CDP command parameters.",
       },
+      {
+        name: "sessionId",
+        type: "string",
+        description: "Optional attached target session id.",
+      },
+      {
+        name: "timeoutMs",
+        type: "number",
+        description: "Command timeout in milliseconds; 0 disables it.",
+      },
     ],
-    returns: "Promise<any>",
+    returns: "Promise<object>",
     example:
       "console.log(await cdp('Runtime.evaluate', { expression: 'document.title' }))",
   },
   help: {
     signature: "help(name?) => string",
     description:
-      "Print helper documentation. Use this when console output is not enough.",
+      "Query current runtime documentation by facade namespace or exact public path.",
     params: [
       {
         name: "name",
         type: "string",
         description:
-          "Helper or facade name, such as page, locator, browser, site.",
+          "Namespace or public path, such as page.mouse or locator.fill.",
       },
     ],
     returns: "string",
-    example: "console.log(help('site'))",
+    example: "console.log(help('page.mouse.move'))",
   },
 };
 
@@ -1029,7 +1426,7 @@ function toLoggable(
 
 function functionLogValue(fn: Function, path: string[]) {
   const key = docKeyForPath(path);
-  const doc = key ? FUNCTION_DOCS[key] : undefined;
+  const doc = key ? PUBLIC_API_DOCS[key] : undefined;
   const displayName = path.at(-1) || fn.name || "anonymous";
   if (!doc) {
     const callPath = path.length ? path.join(".") : displayName;

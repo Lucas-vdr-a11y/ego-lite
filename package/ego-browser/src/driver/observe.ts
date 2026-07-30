@@ -1,5 +1,5 @@
 import { mkdir } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, extname, join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { state } from "../state.js";
@@ -37,9 +37,15 @@ type ScreenshotClip = {
 
 type ScreenshotOptions = {
   path?: string;
+  type?: "png" | "jpeg" | "webp";
+  quality?: number;
   fullPage?: boolean;
   raw?: boolean;
   clip?: ScreenshotClip;
+  omitBackground?: boolean;
+  animations?: "allow" | "disabled";
+  caret?: "hide" | "initial";
+  style?: string;
 };
 
 export function drainEvents() {
@@ -94,46 +100,140 @@ export async function elementCenter(selectorOrRef) {
 // other's shots in the shared tmpdir, and successive shots in one run distinct.
 let screenshotSeq = 0;
 
+/**
+ * Capture a Playwright-style screenshot Buffer and optionally write it to path.
+ * @param {{path?: string, type?: "png"|"jpeg"|"webp", quality?: number, fullPage?: boolean, clip?: object, omitBackground?: boolean, animations?: "allow"|"disabled", caret?: "hide"|"initial", style?: string}} [options]
+ * @returns {Promise<Buffer>}
+ */
 export async function screenshot(options: ScreenshotOptions = {}) {
-  const path =
-    options.path ??
-    join(tmpdir(), `ego-browser-shot-${process.pid}-${++screenshotSeq}.png`);
   const full = options.fullPage ?? false;
   const raw = options.raw ?? false;
+  const format = screenshotFormat(options);
   const params: any = {
-    format: "png",
+    format,
     captureBeyondViewport: full,
   };
-  if (raw) {
-    if (options.clip) {
-      params.clip = { ...options.clip };
+  if (options.quality !== undefined) {
+    const quality = Number(options.quality);
+    if (
+      !Number.isInteger(quality) ||
+      quality < 0 ||
+      quality > 100 ||
+      format === "png"
+    ) {
+      throw new TypeError(
+        "screenshot quality must be an integer from 0 to 100 for jpeg or webp",
+      );
     }
-  } else {
-    if (isBrowserRuntime()) {
-      await ensureSession();
-    }
-    if (!pendingDialog()) {
-      const dpr = Number(await evaluate("window.devicePixelRatio")) || 1;
-      const cssScale = 1 / dpr;
-      if (options.clip) {
-        params.clip = { scale: cssScale, ...options.clip };
-      } else {
-        const info = await pageInfo();
-        if ("dialog" in info) {
-          return screenshot({ ...options, path, raw: true });
-        }
-        params.clip = {
-          x: 0,
-          y: 0,
-          width: full ? info.pw : info.w,
-          height: full ? info.ph : info.h,
-          scale: cssScale,
-        };
+    params.quality = quality;
+  }
+  let styleToken: string | null = null;
+  let transparentBackground = false;
+  try {
+    if (!raw && !pendingDialog()) {
+      styleToken = await installScreenshotStyle(options);
+      if (options.omitBackground) {
+        await cdp("Emulation.setDefaultBackgroundColorOverride", {
+          color: { r: 0, g: 0, b: 0, a: 0 },
+        });
+        transparentBackground = true;
       }
     }
+    if (raw) {
+      if (options.clip) {
+        params.clip = { ...options.clip };
+      }
+    } else {
+      if (isBrowserRuntime()) {
+        await ensureSession();
+      }
+      if (!pendingDialog()) {
+        const dpr = Number(await evaluate("window.devicePixelRatio")) || 1;
+        const cssScale = 1 / dpr;
+        if (options.clip) {
+          params.clip = { scale: cssScale, ...options.clip };
+        } else {
+          const info = await pageInfo();
+          if ("dialog" in info) {
+            return screenshot({ ...options, raw: true });
+          }
+          params.clip = {
+            x: full ? 0 : info.sx,
+            y: full ? 0 : info.sy,
+            width: full ? info.pw : info.w,
+            height: full ? info.ph : info.h,
+            scale: cssScale,
+          };
+        }
+      }
+    }
+    const result = await cdp("Page.captureScreenshot", params);
+    const buffer = Buffer.from(result.data, "base64");
+    if (options.path) {
+      await mkdir(dirname(options.path), { recursive: true });
+      await state.writeFile(options.path, buffer);
+    }
+    return buffer;
+  } finally {
+    if (styleToken) {
+      await removeScreenshotStyle(styleToken).catch(() => {});
+    }
+    if (transparentBackground) {
+      await cdp("Emulation.setDefaultBackgroundColorOverride").catch(() => {});
+    }
   }
-  const result = await cdp("Page.captureScreenshot", params);
-  await mkdir(dirname(path), { recursive: true });
-  await state.writeFile(path, Buffer.from(result.data, "base64"));
+}
+
+/**
+ * Save a screenshot and return its path. This is the ego-browser path-oriented
+ * companion to Playwright-compatible page.screenshot(), which returns Buffer.
+ */
+export async function saveScreenshot(options: ScreenshotOptions = {}) {
+  const format = screenshotFormat(options);
+  const path =
+    options.path ??
+    join(
+      tmpdir(),
+      `ego-browser-shot-${process.pid}-${Date.now()}-${++screenshotSeq}-${Math.random().toString(16).slice(2)}.${format === "jpeg" ? "jpg" : format}`,
+    );
+  await screenshot({ ...options, path });
   return path;
+}
+
+function screenshotFormat(options: ScreenshotOptions) {
+  if (options.type) return options.type;
+  const extension = options.path ? extname(options.path).toLowerCase() : "";
+  if (extension === ".jpg" || extension === ".jpeg") return "jpeg";
+  if (extension === ".webp") return "webp";
+  return "png";
+}
+
+async function installScreenshotStyle(options: ScreenshotOptions) {
+  const rules: string[] = [];
+  if (options.animations === "disabled") {
+    rules.push(
+      "*,*::before,*::after{animation-delay:-1ms!important;animation-duration:0s!important;transition-duration:0s!important;}",
+    );
+  }
+  if ((options.caret ?? "hide") === "hide") {
+    rules.push("*{caret-color:transparent!important;}");
+  }
+  if (options.style) rules.push(String(options.style));
+  if (!rules.length) return null;
+  const token = `ego-screenshot-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  await evaluate(`(() => {
+    const style = document.createElement("style");
+    style.dataset.egoScreenshot = ${JSON.stringify(token)};
+    style.textContent = ${JSON.stringify(rules.join("\n"))};
+    (document.head || document.documentElement).appendChild(style);
+  })()`);
+  return token;
+}
+
+async function removeScreenshotStyle(token: string) {
+  await evaluate(
+    `document.querySelector(${JSON.stringify(
+      `style[data-ego-screenshot="${token}"]`,
+    )})?.remove()`,
+  );
 }

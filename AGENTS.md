@@ -18,7 +18,7 @@ This repo contains the open-source harness and the agent skill package — **not
 - `src/driver/` — `nav` (tabs, navigation), `pointer` (click/scroll/drag), `keyboard`, `observe` (snapshot/screenshot), `waits`, `files` (upload), `element-ops` (objectId handles), `load`.
 - `src/learning/` — discovery, validation, and execution of site skills from `skills/ego-browser/learnings/<site>/manifest.json` (`runSiteTool`, `runSiteBrowserTool`, `learnContext`).
 - `src/state.ts` is the shared mutable runtime state singleton; `src/env.ts` resolves the agent workspace (`EGO_BROWSER_AGENT_WORKSPACE`, falling back to the skill dir bundled next to the build output, then the repo's `skills/ego-browser`).
-- `src/help-runtime.ts` parses the built bundle's JSDoc with acorn at runtime to power `help()` — JSDoc on exported helpers is therefore user-facing documentation.
+- `src/format.ts` owns `PUBLIC_API_DOCS`, the public facade-path documentation shared by `help()` and structured CLI output. `src/help-runtime.ts` resolves exact paths and namespaces; build-time JSDoc extraction remains a compatibility fallback for genuinely exposed top-level extension helpers.
 
 Data flow: `stdin JS` → `runMain()` → `helperContext()` helpers → browser runtime/CDP → snapshot or DOM/AX resolution → optional site tools → `console.log(...)`.
 
@@ -45,9 +45,9 @@ Run from `package/ego-browser/`:
 ## Code Conventions & Common Patterns
 - ESM only (`"type": "module"`); Node 22+.
 - Public helpers are camelCase, verb-first for async actions (`ensureSession`, `runSiteTool`).
-- Time parameters are in seconds unless the name ends in `Ms`.
+- All public time parameters and options use milliseconds.
 - Helpers are injected into the script scope, not imported by agent scripts.
-- New public helpers go through `helperContext()` in `src/helpers.ts` and need JSDoc (it feeds `help()`); keep `SKILL.md` in sync.
+- New public helpers go through `helperContext()` in `src/helpers.ts`, need JSDoc on their implementation, and need a matching facade-path entry in `PUBLIC_API_DOCS`; the help completeness test enforces coverage. Keep `SKILL.md` in sync when behavior visible to agents changes.
 - Snapshot refs (`@N`) are short-lived; re-snapshot after navigation or DOM changes and prefer stable `loc=...` values for reuse.
 - Element-resolution failures should use `ElementResolutionError` with an honest `transient`/`permanent` kind — wait loops rely on it.
 - The code prefers the small shared state singleton (`src/state.ts`) over threading connection state through call sites.
@@ -58,3 +58,4 @@ Run from `package/ego-browser/`:
 - Tests run against the build output (`dist/src/...`) — `npm test` builds first.
 - Behavior-focused tests inject overrides (`__testing.setOverrides`) or a `FakeEgo` double (see `src/helpers.test.mjs`, `src/taskspace-e2e.test.mjs`).
 - Cover session handling, locator resolution, helper behavior, and site-skill validation when changing runtime code; run `npm run validate:site-skills` for learning changes.
+- For real-browser dogfooding of uncommitted runtime changes, use `npm run e2e`: its runner passes the current `dist/out/index.js` through `ego-browser nodejs --sdk-path`. The global `ego-browser` binary belongs to the installed app and may intentionally be older than the worktree.

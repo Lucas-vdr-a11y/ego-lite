@@ -107,7 +107,7 @@ test("runtimeValue extracts null", () => {
 
 test("runtimeValue extracts undefined when no value key exists", () => {
   const result = runtimeValue({ result: { type: "undefined" } }, "undefined");
-  assert.equal(result, null); // falls through to the null default
+  assert.equal(result, undefined);
 });
 
 test("runtimeValue decodes unserializable NaN", () => {
@@ -349,10 +349,30 @@ test("evaluate rejects non-string/non-function input", async () => {
   );
 });
 
-test("evaluate rejects string expressions with non-string args", async () => {
-  await assert.rejects(
-    () => evaluate("document.title", { suffix: "!" }),
-    /string form only accepts a legacy target id/,
+test("evaluate passes args to string page functions", async () => {
+  let capturedExpression;
+  const restore = setOverrides({
+    cdpOverride: async (method, params) => {
+      if (method === "Runtime.evaluate") {
+        capturedExpression = params.expression;
+        return { result: { type: "string", value: "Hello!" } };
+      }
+      return {};
+    },
+  });
+  try {
+    assert.equal(
+      await evaluate("(arg) => document.title + arg.suffix", {
+        suffix: "!",
+      }),
+      "Hello!",
+    );
+  } finally {
+    restore();
+  }
+  assert.equal(
+    capturedExpression,
+    '((arg) => document.title + arg.suffix)({"suffix":"!"})',
   );
 });
 
@@ -384,34 +404,24 @@ test("evaluate propagates page exceptions", async () => {
   }
 });
 
-test("evaluate attaches to a target session when legacy target id is given", async () => {
+test("evaluate treats string second arguments as page-function args", async () => {
   const calls = [];
   const restore = setOverrides({
     cdpOverride: async (method, params, sessionId) => {
       calls.push([method, params, sessionId]);
-      if (method === "Target.attachToTarget") {
-        return { sessionId: "sess-123" };
-      }
       if (method === "Runtime.evaluate") {
-        return { result: { type: "string", value: "iframe-result" } };
+        return { result: { type: "string", value: "page-result" } };
       }
       return {};
     },
   });
   try {
-    const result = await evaluate("return document.title", "target-abc");
-    assert.equal(result, "iframe-result");
-    assert.deepEqual(calls[0], [
-      "Target.attachToTarget",
-      { targetId: "target-abc", flatten: true },
-      undefined,
-    ]);
-    assert.equal(calls[1][0], "Runtime.evaluate");
-    assert.equal(
-      calls[1][1].expression,
-      "(function(){return document.title})()",
-    );
-    assert.equal(calls[1][2], "sess-123");
+    const result = await evaluate("(target) => target", "target-abc");
+    assert.equal(result, "page-result");
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0][0], "Runtime.evaluate");
+    assert.equal(calls[0][1].expression, '((target) => target)("target-abc")');
+    assert.equal(calls[0][2], undefined);
   } finally {
     restore();
   }

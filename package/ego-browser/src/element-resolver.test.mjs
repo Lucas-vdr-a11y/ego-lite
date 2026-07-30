@@ -99,6 +99,52 @@ test("stale backend node still falls back to role/name lookup", async () => {
   );
 });
 
+test("disconnected ref object falls back to role/name lookup", async () => {
+  const refMap = new RefMap();
+  refMap.add("5", 100, "button", "ok");
+  const cdp = new FakeCDP(async (method, params) => {
+    if (method === "DOM.resolveNode") {
+      return {
+        object: {
+          objectId:
+            params.backendNodeId === 100
+              ? "disconnected-object"
+              : "replacement-object",
+        },
+      };
+    }
+    if (method === "Runtime.callFunctionOn") {
+      assert.equal(params.objectId, "disconnected-object");
+      return { result: { value: false } };
+    }
+    if (method === "Accessibility.getFullAXTree") {
+      return {
+        nodes: [
+          {
+            role: { value: "button" },
+            name: { value: "ok" },
+            backendDOMNodeId: 200,
+          },
+        ],
+      };
+    }
+    return {};
+  });
+
+  assert.deepEqual(await resolveElementObjectId(cdp, undefined, refMap, "@5"), {
+    objectId: "replacement-object",
+    sessionId: undefined,
+  });
+  assert.ok(
+    cdp.calls.some(
+      ([method, params]) =>
+        method === "Runtime.releaseObject" &&
+        params.objectId === "disconnected-object",
+    ),
+    "the disconnected remote object is released before fallback",
+  );
+});
+
 test("role locator with degenerate box model throws transient", async () => {
   const cdp = new FakeCDP(async (method) => {
     if (method === "Accessibility.getFullAXTree") {

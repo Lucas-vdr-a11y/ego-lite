@@ -5,7 +5,9 @@ import { setOverrides } from "../../dist/src/state.js";
 import {
   click,
   down,
+  drag,
   hover,
+  move,
   up,
   wheel,
 } from "../../dist/src/driver/pointer.js";
@@ -37,7 +39,18 @@ test("click resolves selector offsets without the public elementEval helper", as
         return { result: { value: { x: 125, y: 225 } } };
       }
       if (method === "Runtime.callFunctionOn") {
-        return { result: { value: { x: 100, y: 200 } } };
+        return {
+          result: {
+            value: {
+              attached: true,
+              visible: true,
+              enabled: true,
+              editable: true,
+              receivesEvents: true,
+              rect: { x: 100, y: 200, width: 50, height: 50 },
+            },
+          },
+        };
       }
       return {};
     },
@@ -104,9 +117,14 @@ test("click scrolls a selector into view before resolving its click point", asyn
       if (method === "Runtime.callFunctionOn") {
         return {
           result: {
-            value: params.functionDeclaration.includes("checkVisibility")
-              ? true
-              : null,
+            value: {
+              attached: true,
+              visible: true,
+              enabled: true,
+              editable: true,
+              receivesEvents: true,
+              rect: { x: 100, y: 200, width: 50, height: 50 },
+            },
           },
         };
       }
@@ -129,6 +147,123 @@ test("click scrolls a selector into view before resolving its click point", asyn
   );
   assert.ok(scrollIndex >= 0, "scrolls the target into the viewport");
   assert.ok(scrollIndex < dispatchIndex, "scrolls before mouse dispatch");
+});
+
+test("drag moves to the source before pressing the mouse button", async () => {
+  const calls = [];
+  const restore = setOverrides({
+    cdpOverride(method, params) {
+      calls.push({ method, params });
+      return {};
+    },
+  });
+  try {
+    await drag([
+      [10, 20],
+      [30, 40],
+    ]);
+  } finally {
+    restore();
+  }
+
+  const mouseEvents = calls.filter(
+    (call) => call.method === "Input.dispatchMouseEvent",
+  );
+  assert.deepEqual(
+    mouseEvents.slice(0, 3).map((call) => ({
+      type: call.params.type,
+      x: call.params.x,
+      y: call.params.y,
+      buttons: call.params.buttons,
+    })),
+    [
+      { type: "mouseMoved", x: 10, y: 20, buttons: 0 },
+      { type: "mousePressed", x: 10, y: 20, buttons: 1 },
+      { type: "mouseMoved", x: 30, y: 40, buttons: 1 },
+    ],
+  );
+});
+
+test("drag preserves an explicit session carried by resolved points", async () => {
+  const calls = [];
+  const restore = setOverrides({
+    cdpOverride(method, params, sessionId) {
+      calls.push({ method, params, sessionId });
+      return {};
+    },
+  });
+  try {
+    await drag([
+      { x: 10, y: 20, sessionId: "frame-session" },
+      { x: 30, y: 40, sessionId: "frame-session" },
+    ]);
+  } finally {
+    restore();
+  }
+
+  const mouseEvents = calls.filter(
+    (call) => call.method === "Input.dispatchMouseEvent",
+  );
+  assert.ok(mouseEvents.length >= 4);
+  assert.deepEqual(
+    mouseEvents.map((call) => call.sessionId),
+    Array(mouseEvents.length).fill("frame-session"),
+  );
+});
+
+test("drag resolves selector targets to their actionable centers", async () => {
+  const calls = [];
+  let nextObject = 0;
+  const restore = setOverrides({
+    cdpOverride(method, params) {
+      calls.push({ method, params });
+      if (
+        method === "Runtime.evaluate" &&
+        params.objectGroup === "ego-browser"
+      ) {
+        nextObject += 1;
+        return { result: { objectId: `node-${nextObject}` } };
+      }
+      if (method === "Runtime.callFunctionOn") {
+        const source =
+          params.objectId === "node-1" || params.objectId === "node-2";
+        return {
+          result: {
+            value: {
+              attached: true,
+              visible: true,
+              enabled: true,
+              editable: true,
+              receivesEvents: true,
+              rect: source
+                ? { x: 10, y: 20, width: 20, height: 20 }
+                : { x: 100, y: 200, width: 40, height: 20 },
+            },
+          },
+        };
+      }
+      return {};
+    },
+  });
+  try {
+    await drag(["#source", "#target"]);
+  } finally {
+    restore();
+  }
+
+  const mouseEvents = calls.filter(
+    (call) => call.method === "Input.dispatchMouseEvent",
+  );
+  assert.deepEqual(
+    mouseEvents
+      .slice(0, 3)
+      .map((call) => [call.params.type, call.params.x, call.params.y]),
+    [
+      ["mouseMoved", 20, 30],
+      ["mousePressed", 20, 30],
+      ["mouseMoved", 120, 210],
+    ],
+  );
 });
 
 test("wheel defaults to scrolling down (positive deltaY) via CDP when visible and focused", async () => {
@@ -191,6 +326,171 @@ test("down and up use the current mouse position", async () => {
       { type: "mouseReleased", x: 23, y: 45, button: "left", buttons: 0 },
     ],
   );
+});
+
+test("move interpolates steps and preserves the pressed mouse button", async () => {
+  const calls = [];
+  const restore = setOverrides({
+    cdpOverride(method, params, sessionId) {
+      calls.push({ method, params, sessionId });
+      return {};
+    },
+  });
+  try {
+    await move(10, 20);
+    await down();
+    await move(30, 40, { steps: 2 });
+    await up();
+  } finally {
+    restore();
+  }
+
+  const mouseEvents = calls.filter(
+    (call) => call.method === "Input.dispatchMouseEvent",
+  );
+  assert.deepEqual(
+    mouseEvents.map((call) => ({
+      type: call.params.type,
+      x: call.params.x,
+      y: call.params.y,
+      button: call.params.button,
+      buttons: call.params.buttons,
+    })),
+    [
+      { type: "mouseMoved", x: 10, y: 20, button: undefined, buttons: 0 },
+      { type: "mousePressed", x: 10, y: 20, button: "left", buttons: 1 },
+      { type: "mouseMoved", x: 20, y: 30, button: "left", buttons: 1 },
+      { type: "mouseMoved", x: 30, y: 40, button: "left", buttons: 1 },
+      { type: "mouseReleased", x: 30, y: 40, button: "left", buttons: 0 },
+    ],
+  );
+});
+
+test("move accepts a CDP timeout only when the pressed move reached the page", async () => {
+  const originalEgo = globalThis.ego;
+  globalThis.ego = { sendCDPMessage: () => {} };
+  let probeChecks = 0;
+  const restore = setOverrides({
+    cdpOverride(method, params) {
+      if (
+        method === "Runtime.evaluate" &&
+        params.expression.includes("const probe = { events: [] }")
+      ) {
+        return { result: { value: true } };
+      }
+      if (
+        method === "Runtime.evaluate" &&
+        params.expression.includes("probe?.events.some")
+      ) {
+        probeChecks += 1;
+        return { result: { value: true } };
+      }
+      if (
+        method === "Input.dispatchMouseEvent" &&
+        params.type === "mouseMoved"
+      ) {
+        throw new Error("CDP request timed out: Input.dispatchMouseEvent");
+      }
+      return {};
+    },
+  });
+  try {
+    await down();
+    await move(51, 61);
+    await up();
+  } finally {
+    restore();
+    if (originalEgo === undefined) delete globalThis.ego;
+    else globalThis.ego = originalEgo;
+  }
+
+  assert.equal(probeChecks, 1);
+});
+
+test("move retries the final coordinate when a timed-out path did not reach it", async () => {
+  const originalEgo = globalThis.ego;
+  globalThis.ego = { sendCDPMessage: () => {} };
+  let moved = 0;
+  let probeChecks = 0;
+  const restore = setOverrides({
+    cdpOverride(method, params) {
+      if (
+        method === "Runtime.evaluate" &&
+        params.expression.includes("const probe = { events: [] }")
+      ) {
+        return { result: { value: true } };
+      }
+      if (
+        method === "Runtime.evaluate" &&
+        params.expression.includes("probe?.events.some")
+      ) {
+        probeChecks += 1;
+        return { result: { value: false } };
+      }
+      if (
+        method === "Input.dispatchMouseEvent" &&
+        params.type === "mouseMoved"
+      ) {
+        moved += 1;
+        if (moved === 1) {
+          throw new Error("CDP request timed out: Input.dispatchMouseEvent");
+        }
+      }
+      return {};
+    },
+  });
+  try {
+    await down();
+    await move(91, 101, { steps: 2 });
+    await up();
+  } finally {
+    restore();
+    if (originalEgo === undefined) delete globalThis.ego;
+    else globalThis.ego = originalEgo;
+  }
+
+  assert.equal(probeChecks, 1);
+  assert.equal(moved, 3, "two path events plus one final-coordinate retry");
+});
+
+test("move preserves a CDP timeout when no pressed move event was observed", async () => {
+  const originalEgo = globalThis.ego;
+  globalThis.ego = { sendCDPMessage: () => {} };
+  const restore = setOverrides({
+    cdpOverride(method, params) {
+      if (
+        method === "Runtime.evaluate" &&
+        params.expression.includes("const probe = { events: [] }")
+      ) {
+        return { result: { value: true } };
+      }
+      if (
+        method === "Runtime.evaluate" &&
+        params.expression.includes("probe?.events.some")
+      ) {
+        return { result: { value: false } };
+      }
+      if (
+        method === "Input.dispatchMouseEvent" &&
+        params.type === "mouseMoved"
+      ) {
+        throw new Error("CDP request timed out: Input.dispatchMouseEvent");
+      }
+      return {};
+    },
+  });
+  try {
+    await down();
+    await assert.rejects(
+      () => move(71, 81),
+      /CDP request timed out: Input\.dispatchMouseEvent/,
+    );
+    await up();
+  } finally {
+    restore();
+    if (originalEgo === undefined) delete globalThis.ego;
+    else globalThis.ego = originalEgo;
+  }
 });
 
 test("wheel forwards deltaX/deltaY and the viewport point to CDP", async () => {
@@ -295,7 +595,18 @@ test("click triggers probe fallback when CDP click is not trusted", async () => 
         return { result: { value: { x: 100, y: 200 } } };
       }
       if (method === "Runtime.callFunctionOn") {
-        return { result: { value: true } };
+        return {
+          result: {
+            value: {
+              attached: true,
+              visible: true,
+              enabled: true,
+              editable: true,
+              receivesEvents: true,
+              rect: { x: 75, y: 175, width: 50, height: 50 },
+            },
+          },
+        };
       }
       // Input.dispatchMouseEvent calls proceed normally
       return {};
@@ -332,6 +643,43 @@ test("click triggers probe fallback when CDP click is not trusted", async () => 
   );
 });
 
+test("right-click fallback preserves the button and modifier semantics", async () => {
+  const originalEgo = globalThis.ego;
+  globalThis.ego = { sendCDPMessage: () => {} };
+  const probeExpressions = [];
+  const restore = setOverrides({
+    cdpOverride(method, params) {
+      if (
+        method === "Runtime.evaluate" &&
+        params.expression?.includes("__egoBrowserInputProbes")
+      ) {
+        probeExpressions.push(params.expression);
+        return probeExpressions.length === 1
+          ? { result: { value: true } }
+          : { result: { value: { seen: false, fallback: true } } };
+      }
+      return {};
+    },
+  });
+  try {
+    await click([10, 20], {
+      button: "right",
+      modifiers: ["Alt", "Shift"],
+    });
+  } finally {
+    restore();
+    if (originalEgo === undefined) delete globalThis.ego;
+    else globalThis.ego = originalEgo;
+  }
+
+  assert.match(probeExpressions[0], /addEventListener\("contextmenu"/);
+  assert.match(probeExpressions[1], /new MouseEvent\("contextmenu"/);
+  assert.match(probeExpressions[1], /button: 2/);
+  assert.match(probeExpressions[1], /altKey":true/);
+  assert.match(probeExpressions[1], /shiftKey":true/);
+  assert.doesNotMatch(probeExpressions[1], /new MouseEvent\("click"/);
+});
+
 test("click absorbs CDP timeout when probe fallback succeeds", async () => {
   const originalEgo = globalThis.ego;
   globalThis.ego = { sendCDPMessage: () => {} };
@@ -355,7 +703,18 @@ test("click absorbs CDP timeout when probe fallback succeeds", async () => {
         return { result: { value: { x: 100, y: 200 } } };
       }
       if (method === "Runtime.callFunctionOn") {
-        return { result: { value: true } };
+        return {
+          result: {
+            value: {
+              attached: true,
+              visible: true,
+              enabled: true,
+              editable: true,
+              receivesEvents: true,
+              rect: { x: 75, y: 175, width: 50, height: 50 },
+            },
+          },
+        };
       }
       if (method === "Input.dispatchMouseEvent") {
         // Simulate CDP timeout — the browser couldn't dispatch the event

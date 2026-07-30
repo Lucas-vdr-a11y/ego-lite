@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import * as helperExports from "../dist/src/helpers.js";
+import { PUBLIC_API_DOCS } from "../dist/src/format.js";
 import { setOverrides } from "../dist/src/state.js";
 import {
   claimTaskSpace,
@@ -27,6 +28,19 @@ function withEgo(ego, fn) {
         globalThis.ego = previous;
       }
     });
+}
+
+function callablePaths(value, prefix, depth = 3) {
+  const paths = [];
+  for (const [key, child] of Object.entries(value)) {
+    const path = `${prefix}.${key}`;
+    if (typeof child === "function") {
+      paths.push(path);
+    } else if (child && typeof child === "object" && depth > 0) {
+      paths.push(...callablePaths(child, path, depth - 1));
+    }
+  }
+  return paths;
 }
 
 test("listTaskSpaces normalizes the current taskSpaces binding shape", async () => {
@@ -117,6 +131,7 @@ test("helper surface exposes Playwright-style object facades", () => {
   assert.equal(typeof context.page.keyboard.up, "function");
   assert.equal(typeof context.page.keyboard.type, "function");
   assert.equal(typeof context.page.mouse.click, "function");
+  assert.equal(typeof context.page.mouse.move, "function");
   assert.equal(typeof context.page.mouse.down, "function");
   assert.equal(typeof context.page.mouse.up, "function");
   const locator = context.page.locator("#target");
@@ -132,6 +147,8 @@ test("helper surface exposes Playwright-style object facades", () => {
   assert.equal(typeof locator.getByTitle, "function");
   assert.equal(typeof locator.getByTestId, "function");
   assert.equal(typeof locator.filter, "function");
+  assert.equal(typeof locator.and, "function");
+  assert.equal(typeof locator.or, "function");
   assert.equal(typeof locator.clear, "function");
   assert.equal(typeof locator.blur, "function");
   assert.equal(typeof locator.innerHTML, "function");
@@ -199,10 +216,39 @@ test("helper surface exposes Playwright-style object facades", () => {
       flags: "i",
     },
   );
+  const checkedRole = context.page.getByRole("checkbox", {
+    name: "Updates",
+    exact: true,
+    checked: true,
+    disabled: false,
+    includeHidden: true,
+  }).selector;
+  assert.deepEqual(
+    JSON.parse(decodeURIComponent(checkedRole.slice("internal:role:".length))),
+    {
+      role: "checkbox",
+      name: { text: "Updates", exact: true },
+      checked: true,
+      disabled: false,
+      includeHidden: true,
+    },
+  );
+  const intersection = locator.and(context.page.locator(".enabled")).selector;
+  assert.deepEqual(
+    JSON.parse(decodeURIComponent(intersection.slice("internal:and:".length))),
+    { left: "#target", right: ".enabled" },
+  );
+  const union = locator.or(context.page.getByText("Fallback")).selector;
+  assert.deepEqual(
+    JSON.parse(decodeURIComponent(union.slice("internal:or:".length))),
+    { left: "#target", right: 'loc=text:"Fallback"' },
+  );
   assert.equal(typeof context.page.setDefaultTimeout, "function");
+  assert.equal(typeof context.page.setDefaultNavigationTimeout, "function");
   assert.equal(typeof context.page.waitForEvent, "function");
   assert.equal(typeof context.browser.openOrReuseTab, "function");
   assert.equal(typeof context.browser.closeTab, "function");
+  assert.equal(typeof context.browser.evaluateInTab, "function");
   assert.equal(typeof context.taskSpaces.useOrCreate, "function");
   assert.equal(typeof context.taskSpaces.claim, "function");
   assert.equal(typeof context.site.runTool, "function");
@@ -210,6 +256,11 @@ test("helper surface exposes Playwright-style object facades", () => {
   assert.equal(typeof context.fetch.browser, "function");
   assert.equal(typeof context.cdp, "function");
   assert.equal(typeof context.help, "function");
+  assert.match(context.help("fetch"), /timeout uses milliseconds/);
+  assert.match(
+    context.help("taskSpaces"),
+    /interval and timeout use milliseconds/,
+  );
   assert.equal(typeof helperExports.focus, "function");
   assert.equal(typeof helperExports.waitForRequest, "function");
   assert.equal(typeof helperExports.waitForResponse, "function");
@@ -222,6 +273,78 @@ test("helper surface exposes Playwright-style object facades", () => {
   assert.equal("newTab" in context, false);
   assert.equal("elementEval" in helperExports, false);
   assert.equal("elementEval" in context, false);
+});
+
+test("help documents every public callable by its facade path", () => {
+  const context = helperContext();
+  const publicPaths = [
+    ...callablePaths(context.page, "page"),
+    ...callablePaths(context.browser, "browser"),
+    ...callablePaths(context.taskSpaces, "taskSpaces"),
+    ...callablePaths(context.site, "site"),
+    ...callablePaths(context.fetch, "fetch"),
+    ...callablePaths(context.page.locator("#help-audit"), "locator"),
+    "cdp",
+    "help",
+  ].sort();
+  assert.deepEqual(
+    Object.keys(PUBLIC_API_DOCS).sort(),
+    publicPaths,
+    "public help docs and the callable facade surface must stay in exact sync",
+  );
+
+  for (const path of publicPaths) {
+    const text = context.help(path);
+    assert.doesNotMatch(
+      text,
+      /Unknown helper/,
+      `expected help for public callable ${path}`,
+    );
+    assert.match(
+      text,
+      new RegExp(path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + String.raw`\(`),
+      `expected the public facade signature for ${path} in:\n${text}`,
+    );
+  }
+});
+
+test("help supports facade namespaces and disambiguates nested methods", () => {
+  const context = helperContext();
+
+  const mouse = context.help("page.mouse");
+  assert.match(mouse, /page\.mouse\.move\(/);
+  assert.match(mouse, /page\.mouse\.down\(/);
+  assert.match(mouse, /page\.mouse\.up\(/);
+  assert.match(mouse, /page\.mouse\.drag\(/);
+
+  assert.match(context.help("mouse"), /page\.mouse\.move\(/);
+  assert.match(context.help("page"), /page\.goto\(/);
+  assert.match(context.help("locator"), /locator\.fill\(/);
+  assert.match(context.help("taskSpaces"), /taskSpaces\.switch\(/);
+  assert.match(context.help(), /\bcdp\b/);
+  assert.match(context.help(), /help\(name\?\)/);
+  assert.match(context.help("page.keyboard.down"), /Dispatch a keydown event/);
+  assert.match(context.help("page.mouse.down"), /Press a mouse button/);
+  assert.match(
+    context.help("page.screenshot"),
+    /page\.screenshot\(options\?\) => Promise<Buffer>/,
+  );
+  assert.match(
+    context.help("page.saveScreenshot"),
+    /page\.saveScreenshot\(options\?\) => Promise<string>/,
+  );
+  assert.match(
+    context.help("taskSpaces.switch"),
+    /taskSpaces\.switch\(nameOrId\)/,
+  );
+  assert.match(context.help("down"), /Ambiguous helper name/);
+  assert.match(context.help("down"), /page\.keyboard\.down/);
+  assert.match(context.help("down"), /page\.mouse\.down/);
+  assert.match(context.help("page.mouse.missing"), /help\('page\.mouse'\)/);
+  assert.match(
+    context.help("switchTaskSpace"),
+    /Unknown helper: switchTaskSpace/,
+  );
 });
 
 test("page.url reads the current URL asynchronously", async () => {
@@ -956,8 +1079,12 @@ function taskSpaceEgo(snapshot) {
 }
 
 test("waitForAgentControl retries while snapshot reports user control", async () => {
+  const sleepCalls = [];
   const restore = helperExports.__testing.setOverrides({
-    sleep: () => Promise.resolve(),
+    sleep: (milliseconds) => {
+      sleepCalls.push(milliseconds);
+      return Promise.resolve();
+    },
   });
   let calls = 0;
   try {
@@ -972,13 +1099,30 @@ test("waitForAgentControl retries while snapshot reports user control", async ()
         return { content: "" };
       }),
       async () => {
-        await waitForAgentControl("t", { interval: 0, timeout: 5 });
+        await waitForAgentControl("t", { interval: 25, timeout: 5_000 });
       },
     );
   } finally {
     restore();
   }
   assert.equal(calls, 3);
+  assert.deepEqual(sleepCalls, [25, 25]);
+});
+
+test("waitForAgentControl reports timeout in milliseconds", async () => {
+  await withEgo(
+    taskSpaceEgo(async () => {
+      throw Object.assign(new Error("user controls the task space"), {
+        error_code: "EGO_TASK_SPACE_USER_IN_CONTROL",
+      });
+    }),
+    async () => {
+      await assert.rejects(
+        () => waitForAgentControl("t", { interval: 0, timeout: 0 }),
+        /timed out after 0ms/,
+      );
+    },
+  );
 });
 
 test("waitForAgentControl propagates non-user-control snapshot errors", async () => {
@@ -990,7 +1134,7 @@ test("waitForAgentControl propagates non-user-control snapshot errors", async ()
     }),
     async () => {
       await assert.rejects(
-        () => waitForAgentControl("t", { interval: 0, timeout: 5 }),
+        () => waitForAgentControl("t", { interval: 0, timeout: 5_000 }),
         /snapshot failed/,
       );
     },

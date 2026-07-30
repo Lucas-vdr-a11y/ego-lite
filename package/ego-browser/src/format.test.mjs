@@ -79,11 +79,77 @@ test("formatCliLogValue documents the waitForURL matcher and default", () => {
   const parsed = JSON.parse(formatted);
   assert.equal(
     parsed.helpers.page.waitForURL.signature,
-    "page.waitForURL(url, options?) => Promise<boolean>",
+    "page.waitForURL(url, options?) => Promise<void>",
   );
   assert.match(
     parsed.helpers.page.waitForURL.description,
     /predicate receiving a URL object.*load by default/,
+  );
+});
+
+test("formatCliLogValue documents all public time options in milliseconds", () => {
+  const formatted = formatCliLogValue({
+    helpers: {
+      taskSpaces: { waitForAgentControl() {} },
+      fetch: {
+        server() {},
+        browser() {},
+      },
+    },
+  });
+
+  const parsed = JSON.parse(formatted);
+  assert.match(
+    parsed.helpers.taskSpaces.waitForAgentControl.params[1].description,
+    /milliseconds/,
+  );
+  assert.match(
+    parsed.helpers.fetch.server.params[1].description,
+    /milliseconds/,
+  );
+  assert.match(
+    parsed.helpers.fetch.browser.params[1].description,
+    /milliseconds/,
+  );
+  assert.doesNotMatch(formatted, /timeout seconds|options in seconds/i);
+});
+
+test("formatCliLogValue keeps facade signatures and returned subsets current", () => {
+  const formatted = formatCliLogValue({
+    helpers: {
+      page: {
+        evaluate() {},
+        waitForEvent() {},
+        waitForFunction() {},
+      },
+      taskSpaces: {
+        takeOver() {},
+        waitForAgentControl() {},
+      },
+    },
+  });
+
+  const parsed = JSON.parse(formatted);
+  assert.doesNotMatch(parsed.helpers.page.evaluate.description, /extractAll/);
+  assert.match(
+    parsed.helpers.page.waitForEvent.returns,
+    /suggestedFilename\(\).*createReadStream\(\)/,
+  );
+  assert.match(
+    parsed.helpers.page.waitForFunction.returns,
+    /jsonValue\(\).*dispose\(\)/,
+  );
+  assert.equal(
+    parsed.helpers.taskSpaces.takeOver.signature,
+    "taskSpaces.takeOver(nameOrId?) => Promise<void>",
+  );
+  assert.equal(
+    parsed.helpers.taskSpaces.waitForAgentControl.signature,
+    "taskSpaces.waitForAgentControl(nameOrId, options?) => Promise<void>",
+  );
+  assert.equal(
+    parsed.helpers.taskSpaces.waitForAgentControl.params[0].required,
+    true,
   );
 });
 

@@ -176,8 +176,14 @@ export async function resolveElementObjectId(
           effectiveSessionId,
         );
         const objectId = result.object?.objectId;
-        if (objectId) {
+        if (
+          objectId &&
+          (await isConnectedObject(cdp, objectId, effectiveSessionId))
+        ) {
           return { objectId, sessionId: effectiveSessionId };
+        }
+        if (objectId) {
+          await releaseObject(cdp, objectId, effectiveSessionId);
         }
       } catch {
         // The backend node can become stale after DOM updates; fall back to role/name lookup below.
@@ -235,6 +241,35 @@ export async function resolveElementObjectId(
     );
   }
   return { objectId, sessionId };
+}
+
+async function isConnectedObject(cdp, objectId, sessionId) {
+  try {
+    const result = await send(
+      cdp,
+      "Runtime.callFunctionOn",
+      {
+        functionDeclaration: "function(){ return this.isConnected === true; }",
+        objectId,
+        returnByValue: true,
+        awaitPromise: false,
+      },
+      sessionId,
+    );
+    // Older embeddings and simple CDP test doubles may omit the primitive
+    // result. Only an explicit `false` proves that the remote node detached.
+    return result.result?.value !== false;
+  } catch {
+    return false;
+  }
+}
+
+async function releaseObject(cdp, objectId, sessionId) {
+  try {
+    await send(cdp, "Runtime.releaseObject", { objectId }, sessionId);
+  } catch {
+    // A stale remote object may disappear before it can be released.
+  }
 }
 
 function resolveFrameSession(frameId, sessionId, iframeSessions) {
@@ -724,10 +759,7 @@ function parseLocator(input) {
     nth = "last" as any;
     value = lastMatch[1];
   }
-  if (
-    value.startsWith("internal:scope:") ||
-    value.startsWith("internal:filter:")
-  ) {
+  if (value.startsWith("internal:")) {
     return { kind: "query", selector: value, raw: value, nth };
   }
   if (value.startsWith("loc=")) {

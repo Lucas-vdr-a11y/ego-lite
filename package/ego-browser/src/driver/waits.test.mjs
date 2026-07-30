@@ -13,6 +13,7 @@ import {
   waitForLoadState,
   waitForRequest,
   waitForResponse,
+  waitForSelector,
   waitForURL,
 } from "../../dist/src/driver/waits.js";
 
@@ -42,8 +43,14 @@ function installAutoEgo(resultFor = () => ({})) {
   return calls;
 }
 
-function fireEvent(method, params = {}) {
-  globalThis.ego.onCDPMessage(JSON.stringify({ method, params }));
+function fireEvent(method, params = {}, sessionId = undefined) {
+  globalThis.ego.onCDPMessage(
+    JSON.stringify({
+      method,
+      params,
+      ...(sessionId ? { sessionId } : {}),
+    }),
+  );
 }
 
 function cleanupBrowserRuntime() {
@@ -77,7 +84,8 @@ test("waitForFunction polls until a page function returns a truthy value", async
       "done",
       { timeout: 500, polling: 50 },
     );
-    assert.equal(result, "ready");
+    assert.equal(await result.jsonValue(), "ready");
+    await result.dispose();
   } finally {
     restore();
   }
@@ -108,12 +116,37 @@ test("waitForURL supports Playwright-style glob strings", async () => {
         timeout: 500,
         waitUntil: "commit",
       }),
-      true,
+      undefined,
     );
   } finally {
     restore();
   }
   assert.deepEqual(sleeps, [100]);
+});
+
+test("waitForURL resets stateful regular expressions between polls", async () => {
+  let current = "https://example.com/pending";
+  let now = 0;
+  const matcher = /example\.com\/ready/g;
+  matcher.lastIndex = matcher.source.length;
+  const restore = setOverrides({
+    now: () => now,
+    sleep: async (ms) => {
+      now += ms;
+      current = "https://example.com/ready";
+    },
+    cdpOverride(method) {
+      if (method === "Runtime.evaluate") {
+        return { result: { value: current } };
+      }
+      return {};
+    },
+  });
+  try {
+    await waitForURL(matcher, { timeout: 1000, waitUntil: "commit" });
+  } finally {
+    restore();
+  }
 });
 
 test("waitForURL predicates receive URL objects and wait for load by default", async () => {
@@ -148,7 +181,7 @@ test("waitForURL predicates receive URL objects and wait for load by default", a
         observedUrl = url;
         return url.pathname === "/target";
       }),
-      true,
+      undefined,
     );
   } finally {
     restore();
@@ -179,7 +212,7 @@ test("waitForURL waitUntil commit returns without waiting for load", async () =>
       await waitForURL("https://example.com/target", {
         waitUntil: "commit",
       }),
-      true,
+      undefined,
     );
   } finally {
     restore();
@@ -200,7 +233,7 @@ test("waitForURL resolves a matched about:blank without waiting for load", async
     },
   });
   try {
-    assert.equal(await waitForURL("about:blank"), true);
+    assert.equal(await waitForURL("about:blank"), undefined);
   } finally {
     restore();
   }
@@ -236,7 +269,7 @@ test("waitForURL preserves networkidle for a matched about:blank", async () => {
         timeout: 5000,
         waitUntil: "networkidle",
       }),
-      true,
+      undefined,
     );
   } finally {
     restore();
@@ -264,18 +297,88 @@ test("waitForRequest matches exact URL and returns a request facade", async () =
           postData: '{"q":"test"}',
         },
       });
+      fireEvent("Network.loadingFinished", { requestId: "req-1" });
     }, 20);
     const request = await promise;
     assert.equal(request.url(), "https://example.com/api/search");
     assert.equal(request.method(), "POST");
     assert.equal(request.headers()["content-type"], "application/json");
+    assert.deepEqual(await request.allHeaders(), {
+      "content-type": "application/json",
+    });
+    assert.equal(await request.headerValue("Content-Type"), "application/json");
     assert.equal(request.postData(), '{"q":"test"}');
+    assert.equal(request.postDataBuffer().toString(), '{"q":"test"}');
+    assert.deepEqual(request.postDataJSON(), { q: "test" });
     assert.equal(request.resourceType(), "xhr");
+    assert.equal(request.isNavigationRequest(), false);
+    assert.equal(request.redirectedFrom(), null);
+    assert.equal(request.redirectedTo(), null);
+    assert.equal(request.failure(), null);
   } finally {
     cleanupBrowserRuntime();
   }
   assert.ok(calls.some((call) => call.method === "Network.enable"));
   assert.ok(calls.some((call) => call.method === "Network.disable"));
+});
+
+test("waitForRequest keeps redirect and failure state live after matching", async () => {
+  const calls = installAutoEgo();
+  try {
+    const promise = waitForRequest("https://example.com/start", {
+      timeout: 1000,
+    });
+    setTimeout(() => {
+      fireEvent("Network.requestWillBeSent", {
+        requestId: "req-live",
+        type: "Document",
+        request: {
+          url: "https://example.com/start",
+          method: "GET",
+          headers: {},
+        },
+      });
+    }, 20);
+    const request = await promise;
+    assert.equal(request.redirectedTo(), null);
+    assert.equal(
+      calls.filter((call) => call.method === "Network.disable").length,
+      0,
+      "the Network lease remains active while the request is in flight",
+    );
+
+    fireEvent("Network.requestWillBeSent", {
+      requestId: "req-live",
+      type: "Document",
+      redirectResponse: {
+        url: "https://example.com/start",
+        status: 302,
+        headers: { location: "/final" },
+      },
+      request: {
+        url: "https://example.com/final",
+        method: "GET",
+        headers: {},
+      },
+    });
+    const redirected = request.redirectedTo();
+    assert.equal(redirected.url(), "https://example.com/final");
+
+    fireEvent("Network.loadingFailed", {
+      requestId: "req-live",
+      errorText: "net::ERR_CONNECTION_RESET",
+    });
+    assert.deepEqual(redirected.failure(), {
+      errorText: "net::ERR_CONNECTION_RESET",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(
+      calls.filter((call) => call.method === "Network.disable").length,
+      1,
+    );
+  } finally {
+    cleanupBrowserRuntime();
+  }
 });
 
 test("waitForResponse matches regex and exposes response body helpers", async () => {
@@ -305,8 +408,13 @@ test("waitForResponse matches regex and exposes response body helpers", async ()
           status: 200,
           statusText: "OK",
           headers: { "Content-Type": "application/json" },
+          remoteIPAddress: "127.0.0.1",
+          remotePort: 443,
+          fromServiceWorker: true,
+          securityDetails: { protocol: "TLS 1.3" },
         },
       });
+      fireEvent("Network.loadingFinished", { requestId: "req-2" });
     }, 20);
     const response = await promise;
     assert.equal(response.url(), "https://example.com/api/items");
@@ -314,9 +422,118 @@ test("waitForResponse matches regex and exposes response body helpers", async ()
     assert.equal(response.statusText(), "OK");
     assert.equal(response.ok(), true);
     assert.equal(response.headers()["content-type"], "application/json");
+    assert.deepEqual(await response.allHeaders(), {
+      "content-type": "application/json",
+    });
+    assert.equal(
+      await response.headerValue("CONTENT-TYPE"),
+      "application/json",
+    );
+    assert.deepEqual(await response.headerValues("content-type"), [
+      "application/json",
+    ]);
+    assert.equal(response.fromServiceWorker(), true);
+    const serverAddr = response.serverAddr();
+    const securityDetails = response.securityDetails();
+    assert.ok(serverAddr instanceof Promise);
+    assert.ok(securityDetails instanceof Promise);
+    assert.deepEqual(await serverAddr, {
+      ipAddress: "127.0.0.1",
+      port: 443,
+    });
+    assert.deepEqual(await securityDetails, { protocol: "TLS 1.3" });
+    assert.equal(await response.finished(), null);
     assert.equal(response.request().method(), "GET");
     assert.deepEqual(await response.json(), { ok: true });
     assert.equal(await response.text(), '{"ok":true}');
+  } finally {
+    cleanupBrowserRuntime();
+  }
+});
+
+test("waitForResponse retains Network events until a slow response finishes", async () => {
+  const calls = installAutoEgo();
+  try {
+    const promise = waitForResponse("https://example.com/api/slow", {
+      timeout: 1000,
+    });
+    setTimeout(() => {
+      fireEvent("Network.requestWillBeSent", {
+        requestId: "req-slow",
+        type: "Fetch",
+        request: {
+          url: "https://example.com/api/slow",
+          method: "GET",
+          headers: {},
+        },
+      });
+      fireEvent("Network.responseReceived", {
+        requestId: "req-slow",
+        type: "Fetch",
+        response: {
+          url: "https://example.com/api/slow",
+          status: 200,
+          statusText: "OK",
+          headers: {},
+        },
+      });
+    }, 20);
+    const response = await promise;
+    assert.equal(
+      calls.filter((call) => call.method === "Network.disable").length,
+      0,
+      "response headers do not end Network tracking",
+    );
+    const finished = response.finished();
+    fireEvent("Network.loadingFinished", { requestId: "req-slow" });
+    assert.equal(await finished, null);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(
+      calls.filter((call) => call.method === "Network.disable").length,
+      1,
+    );
+  } finally {
+    cleanupBrowserRuntime();
+  }
+});
+
+test("Response.finished is not bounded by the response matching timeout", async () => {
+  installAutoEgo();
+  try {
+    const promise = waitForResponse("https://example.com/api/stream", {
+      timeout: 25,
+    });
+    setTimeout(() => {
+      fireEvent("Network.requestWillBeSent", {
+        requestId: "req-stream",
+        type: "Fetch",
+        request: {
+          url: "https://example.com/api/stream",
+          method: "GET",
+          headers: {},
+        },
+      });
+      fireEvent("Network.responseReceived", {
+        requestId: "req-stream",
+        type: "Fetch",
+        response: {
+          url: "https://example.com/api/stream",
+          status: 200,
+          statusText: "OK",
+          headers: {},
+        },
+      });
+    }, 5);
+    const response = await promise;
+    const outcome = response.finished().then(
+      (value) => ({ value }),
+      (error) => ({ error }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    fireEvent("Network.loadingFinished", { requestId: "req-stream" });
+    const result = await outcome;
+    assert.equal(result.error, undefined);
+    assert.equal(result.value, null);
   } finally {
     cleanupBrowserRuntime();
   }
@@ -352,6 +569,56 @@ test("waitForResponse supports synchronous response predicates", async () => {
           headers: {},
         },
       });
+      fireEvent("Network.loadingFinished", { requestId: "req-3" });
+    }, 20);
+    const response = await promise;
+    assert.equal(response.status(), 201);
+  } finally {
+    cleanupBrowserRuntime();
+  }
+});
+
+test("waitForResponse ignores matching events from another CDP session", async () => {
+  installAutoEgo();
+  try {
+    const promise = waitForResponse("https://example.com/api/session", {
+      timeout: 1000,
+    });
+    setTimeout(() => {
+      const currentSessionId = state.sessionId;
+      fireEvent(
+        "Network.responseReceived",
+        {
+          requestId: "req-other-session",
+          type: "Fetch",
+          response: {
+            url: "https://example.com/api/session",
+            status: 418,
+            statusText: "Other session",
+            headers: {},
+          },
+        },
+        "session-other",
+      );
+      fireEvent(
+        "Network.responseReceived",
+        {
+          requestId: "req-current-session",
+          type: "Fetch",
+          response: {
+            url: "https://example.com/api/session",
+            status: 201,
+            statusText: "Current session",
+            headers: {},
+          },
+        },
+        currentSessionId,
+      );
+      fireEvent(
+        "Network.loadingFinished",
+        { requestId: "req-current-session" },
+        currentSessionId,
+      );
     }, 20);
     const response = await promise;
     assert.equal(response.status(), 201);
@@ -384,10 +651,77 @@ test("waitForResponse rejects on timeout", async () => {
   }
 });
 
-test("waitForRequest rejects async predicates and disables owned Network domain", async () => {
+test("network wait timeout also bounds Network.enable setup", async () => {
+  globalThis.ego = {
+    async listTabs() {
+      return { tabs: [{ targetId: "tab-1", active: true }] };
+    },
+    sendCDPMessage(payload) {
+      const parsed = JSON.parse(payload);
+      if (parsed.method === "Network.enable") return;
+      setTimeout(() => {
+        const result =
+          parsed.method === "Target.attachToTarget"
+            ? { sessionId: "setup-timeout-session" }
+            : {};
+        globalThis.ego?.onCDPMessage?.(
+          JSON.stringify({ id: parsed.id, result }),
+        );
+      }, 0);
+    },
+  };
+  try {
+    const startedAt = Date.now();
+    await assert.rejects(
+      () => waitForRequest(/never-matches/, { timeout: 20 }),
+      /page\.waitForRequest timed out after 20ms/,
+    );
+    assert.ok(
+      Date.now() - startedAt < 250,
+      "Network.enable cannot extend the public wait timeout",
+    );
+  } finally {
+    cleanupBrowserRuntime();
+  }
+});
+
+test("waitForRequest surfaces session setup failures without waiting for its timeout", async () => {
+  globalThis.ego = {
+    async listTabs() {
+      throw new Error("session unavailable");
+    },
+    sendCDPMessage() {
+      throw new Error("unexpected CDP send");
+    },
+  };
+  const waiting = waitForRequest(/never-matches/, { timeout: 500 });
+  const outcome = await Promise.race([
+    waiting.then(
+      () => ({ value: "resolved" }),
+      (error) => ({ error }),
+    ),
+    new Promise((resolve) =>
+      setTimeout(() => resolve({ value: "still pending" }), 50),
+    ),
+  ]);
+  try {
+    assert.match(outcome.error?.message || "", /session unavailable/);
+  } finally {
+    await waiting.catch(() => {});
+    cleanupBrowserRuntime();
+  }
+});
+
+test("waitForRequest supports async predicates and disables owned Network domain", async () => {
   const calls = installAutoEgo();
   try {
-    const promise = waitForRequest(async () => true, { timeout: 1000 });
+    const promise = waitForRequest(
+      async (request) => {
+        await Promise.resolve();
+        return request.url().endsWith("/api/async");
+      },
+      { timeout: 1000 },
+    );
     setTimeout(() => {
       fireEvent("Network.requestWillBeSent", {
         requestId: "req-async",
@@ -398,11 +732,10 @@ test("waitForRequest rejects async predicates and disables owned Network domain"
           headers: {},
         },
       });
+      fireEvent("Network.loadingFinished", { requestId: "req-async" });
     }, 20);
-    await assert.rejects(
-      () => promise,
-      /page\.waitForRequest does not support async predicates/,
-    );
+    const request = await promise;
+    assert.equal(request.url(), "https://example.com/api/async");
   } finally {
     cleanupBrowserRuntime();
   }
@@ -445,6 +778,7 @@ test("waitForResponse matches redirect responses from requestWillBeSent", async 
           headers: {},
         },
       });
+      fireEvent("Network.loadingFinished", { requestId: "req-redirect" });
     }, 20);
     const response = await promise;
     assert.equal(response.url(), "https://example.com/old");
@@ -506,6 +840,90 @@ test("response body waits for loadingFinished when initially unavailable", async
   }
 });
 
+test("response body does not retry unrelated CDP failures", async () => {
+  let bodyAttempts = 0;
+  installAutoEgo((call) => {
+    if (call.method === "Network.getResponseBody") {
+      bodyAttempts += 1;
+      return { error: { message: "response body access denied" } };
+    }
+    return {};
+  });
+  try {
+    const promise = waitForResponse("https://example.com/api/denied", {
+      timeout: 1000,
+    });
+    setTimeout(() => {
+      fireEvent("Network.requestWillBeSent", {
+        requestId: "req-denied",
+        type: "Fetch",
+        request: {
+          url: "https://example.com/api/denied",
+          method: "GET",
+          headers: {},
+        },
+      });
+      fireEvent("Network.responseReceived", {
+        requestId: "req-denied",
+        type: "Fetch",
+        response: {
+          url: "https://example.com/api/denied",
+          status: 200,
+          statusText: "OK",
+          headers: {},
+        },
+      });
+      fireEvent("Network.loadingFinished", { requestId: "req-denied" });
+    }, 20);
+    const response = await promise;
+    await assert.rejects(() => response.body(), /response body access denied/);
+    assert.equal(bodyAttempts, 1);
+  } finally {
+    cleanupBrowserRuntime();
+  }
+});
+
+test("Response.body is not bounded by the response matching timeout", async () => {
+  let bodyAttempts = 0;
+  installAutoEgo((call) => {
+    if (call.method === "Network.getResponseBody") {
+      bodyAttempts += 1;
+      if (bodyAttempts === 1) {
+        return {
+          error: { message: "No resource with given identifier found" },
+        };
+      }
+      return { body: "stream complete", base64Encoded: false };
+    }
+    return {};
+  });
+  try {
+    const promise = waitForResponse("https://example.com/api/body-stream", {
+      timeout: 25,
+    });
+    setTimeout(() => {
+      fireEvent("Network.responseReceived", {
+        requestId: "req-body-stream",
+        type: "Fetch",
+        response: {
+          url: "https://example.com/api/body-stream",
+          status: 200,
+          statusText: "OK",
+          headers: {},
+        },
+      });
+    }, 5);
+    const response = await promise;
+    const bodyPromise = response.text();
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    fireEvent("Network.loadingFinished", { requestId: "req-body-stream" });
+    assert.equal(await bodyPromise, "stream complete");
+    assert.equal(bodyAttempts, 2);
+  } finally {
+    cleanupBrowserRuntime();
+  }
+});
+
 test("waitForRequest supports synchronous request predicates", async () => {
   installAutoEgo();
   try {
@@ -528,6 +946,7 @@ test("waitForRequest supports synchronous request predicates", async () => {
           postData: '{"ok":true}',
         },
       });
+      fireEvent("Network.loadingFinished", { requestId: "req-predicate" });
     }, 20);
     const request = await promise;
     assert.equal(request.method(), "PUT");
@@ -590,6 +1009,7 @@ test("waitForRequest leaves a caller-enabled Network domain enabled", async () =
           headers: {},
         },
       });
+      fireEvent("Network.loadingFinished", { requestId: "req-owned" });
     }, 20);
     const request = await promise;
     assert.equal(request.url(), "https://example.com/api/owned");
@@ -618,6 +1038,7 @@ test("concurrent network waits share the Network domain until all complete", asy
           headers: {},
         },
       });
+      fireEvent("Network.loadingFinished", { requestId: "req-first" });
     }, 20);
     const request = await requestPromise;
     assert.equal(request.url(), "https://example.com/api/first");
@@ -645,8 +1066,10 @@ test("concurrent network waits share the Network domain until all complete", asy
         headers: {},
       },
     });
+    fireEvent("Network.loadingFinished", { requestId: "req-second" });
     const response = await responsePromise;
     assert.equal(response.url(), "https://example.com/api/second");
+    await new Promise((resolve) => setTimeout(resolve, 20));
   } finally {
     cleanupBrowserRuntime();
   }
@@ -692,6 +1115,7 @@ test("response body decodes base64 payloads", async () => {
           headers: {},
         },
       });
+      fireEvent("Network.loadingFinished", { requestId: "req-base64" });
     }, 20);
     const response = await promise;
     assert.equal((await response.body()).toString("utf8"), "hello");
@@ -708,6 +1132,15 @@ test("response ok is false for non-2xx statuses", async () => {
       timeout: 1000,
     });
     setTimeout(() => {
+      fireEvent("Network.requestWillBeSent", {
+        requestId: "req-fail",
+        type: "XHR",
+        request: {
+          url: "https://example.com/api/fail",
+          method: "GET",
+          headers: {},
+        },
+      });
       fireEvent("Network.responseReceived", {
         requestId: "req-fail",
         type: "XHR",
@@ -718,6 +1151,7 @@ test("response ok is false for non-2xx statuses", async () => {
           headers: {},
         },
       });
+      fireEvent("Network.loadingFinished", { requestId: "req-fail" });
     }, 20);
     const response = await promise;
     assert.equal(response.status(), 500);
@@ -743,6 +1177,7 @@ test("waitForRequest timeout 0 disables the timeout", async () => {
           headers: {},
         },
       });
+      fireEvent("Network.loadingFinished", { requestId: "req-no-timeout" });
     }, 20);
     const request = await promise;
     assert.equal(request.url(), "https://example.com/api/no-timeout");
@@ -772,12 +1207,44 @@ test("waitForLoadState accepts Playwright-style options as the first argument", 
     },
   });
   try {
-    const result = await waitForLoadState({ timeout: 500 });
-    assert.equal(result, false);
+    await assert.rejects(
+      () => waitForLoadState({ timeout: 500 }),
+      (error) => {
+        assert.equal(error.name, "TimeoutError");
+        assert.match(
+          error.message,
+          /page\.waitForLoadState timed out after 500ms/,
+        );
+        return true;
+      },
+    );
   } finally {
     restore();
   }
   assert.deepEqual(sleeps, [300, 300]);
+});
+
+test("waitForLoadState does not retry after a frame-tree hard stop", async () => {
+  const hardStop = Object.assign(new Error("user controls the task space"), {
+    error_code: "EGO_TASK_SPACE_USER_IN_CONTROL",
+  });
+  const calls = [];
+  const restore = setOverrides({
+    cdpOverride: async (method) => {
+      calls.push(method);
+      if (method === "Page.getFrameTree") throw hardStop;
+      throw new Error(`unexpected retry through ${method}`);
+    },
+  });
+  try {
+    await assert.rejects(
+      () => waitForLoadState("load", { timeout: 100 }),
+      (error) => error === hardStop,
+    );
+  } finally {
+    restore();
+  }
+  assert.deepEqual(calls, ["Page.getFrameTree"]);
 });
 
 test("waitForLoadState enables the Network domain and disables it afterwards", async () => {
@@ -797,7 +1264,7 @@ test("waitForLoadState enables the Network domain and disables it afterwards", a
   });
   try {
     const result = await waitForLoadState("networkidle", { timeout: 5000 });
-    assert.equal(result, true, "no traffic for idleMs resolves true");
+    assert.equal(result, undefined, "no traffic for idleMs resolves");
   } finally {
     restore();
   }
@@ -830,7 +1297,7 @@ test("waitForLoadState leaves a caller-enabled Network domain enabled", async ()
     await cdp("Network.enable"); // the caller owns the domain
     methods.length = 0;
     const result = await waitForLoadState("networkidle", { timeout: 5000 });
-    assert.equal(result, true);
+    assert.equal(result, undefined);
   } finally {
     restore();
   }
@@ -856,7 +1323,198 @@ test("waitForLoadState survives a bridge that rejects Network.enable", async () 
   });
   try {
     const result = await waitForLoadState("networkidle", { timeout: 5000 });
-    assert.equal(result, true, "falls back to passive observation");
+    assert.equal(result, undefined, "falls back to passive observation");
+  } finally {
+    restore();
+  }
+});
+
+test("waitForFunction does not infer options from the second argument", async () => {
+  let expression;
+  const restore = setOverrides({
+    cdpOverride: async (method, params) => {
+      assert.equal(method, "Runtime.evaluate");
+      expression = params.expression;
+      return { result: { value: true } };
+    },
+  });
+  try {
+    const handle = await waitForFunction((arg) => arg.timeout === 123, {
+      timeout: 123,
+    });
+    assert.equal(await handle.jsonValue(), true);
+  } finally {
+    restore();
+  }
+  assert.match(expression, /\{"timeout":123\}/);
+});
+
+test("waitForFunction throws TimeoutError on timeout", async () => {
+  let now = 0;
+  const restore = setOverrides({
+    cdpOverride: async () => ({ result: { value: false } }),
+    now: () => now,
+    sleep: async (ms) => {
+      now += ms;
+    },
+  });
+  try {
+    await assert.rejects(
+      () =>
+        waitForFunction(() => false, undefined, {
+          timeout: 100,
+          polling: 25,
+        }),
+      (error) => {
+        assert.equal(error.name, "TimeoutError");
+        assert.match(
+          error.message,
+          /page\.waitForFunction timed out after 100ms/,
+        );
+        return true;
+      },
+    );
+  } finally {
+    restore();
+  }
+});
+
+test("waitForURL throws TimeoutError on timeout", async () => {
+  let now = 0;
+  const restore = setOverrides({
+    cdpOverride: async () => ({
+      result: { value: "https://example.com/current" },
+    }),
+    now: () => now,
+    sleep: async (ms) => {
+      now += ms;
+    },
+  });
+  try {
+    await assert.rejects(
+      () => waitForURL("https://example.com/expected", { timeout: 100 }),
+      (error) => {
+        assert.equal(error.name, "TimeoutError");
+        assert.match(error.message, /page\.waitForURL timed out after 100ms/);
+        return true;
+      },
+    );
+  } finally {
+    restore();
+  }
+});
+
+test("waitForURL rejects an unsupported waitUntil value", async () => {
+  const restore = setOverrides({
+    cdpOverride: async () => {
+      throw new Error("waitForURL should validate options before reading URL");
+    },
+  });
+  try {
+    await assert.rejects(
+      () =>
+        waitForURL("https://example.com/expected", {
+          timeout: 100,
+          waitUntil: "ready",
+        }),
+      /page\.waitForURL waitUntil must be one of/,
+    );
+  } finally {
+    restore();
+  }
+});
+
+test("waitForSelector supports hidden and detached states", async () => {
+  const calls = [];
+  const restore = setOverrides({
+    cdpOverride: async (method, params) => {
+      calls.push({ method, params });
+      if (method === "Runtime.evaluate") {
+        if (params.expression.includes("#detached")) {
+          return { result: {} };
+        }
+        return { result: { objectId: "node-hidden" } };
+      }
+      if (method === "Runtime.callFunctionOn") {
+        return { result: { value: false } };
+      }
+      return {};
+    },
+  });
+  try {
+    assert.equal(
+      await waitForSelector("#hidden", { state: "hidden", timeout: 100 }),
+      null,
+    );
+    assert.equal(
+      await waitForSelector("#detached", {
+        state: "detached",
+        timeout: 100,
+      }),
+      null,
+    );
+  } finally {
+    restore();
+  }
+  assert.ok(
+    calls.some(({ method }) => method === "Runtime.releaseObject"),
+    "hidden-state probes release their resolved handle",
+  );
+});
+
+test("waitForSelector does not retry a task-space hard stop", async () => {
+  const hardStop = Object.assign(new Error("user controls the task space"), {
+    error_code: "EGO_TASK_SPACE_USER_IN_CONTROL",
+  });
+  const calls = [];
+  const restore = setOverrides({
+    cdpOverride: async (method, params) => {
+      calls.push(method);
+      if (
+        method === "Runtime.evaluate" &&
+        params.objectGroup === "ego-browser"
+      ) {
+        return { result: { objectId: "node-hard-stop" } };
+      }
+      if (method === "Runtime.callFunctionOn") throw hardStop;
+      return {};
+    },
+  });
+  try {
+    await assert.rejects(
+      () => waitForSelector("#blocked", { timeout: 100 }),
+      (error) => error === hardStop,
+    );
+  } finally {
+    restore();
+  }
+  assert.equal(
+    calls.filter((method) => method === "Runtime.callFunctionOn").length,
+    1,
+  );
+});
+
+test("waitForSelector throws TimeoutError instead of returning false", async () => {
+  let now = 0;
+  const restore = setOverrides({
+    cdpOverride: async () => ({ result: {} }),
+    now: () => now,
+    sleep: async (ms) => {
+      now += ms;
+    },
+  });
+  try {
+    await assert.rejects(
+      () => waitForSelector("#missing", { timeout: 100 }),
+      (error) => {
+        assert.equal(error.name, "TimeoutError");
+        assert.match(
+          error.message,
+          /page\.waitForSelector timed out after 100ms/,
+        );
+        return true;
+      },
+    );
   } finally {
     restore();
   }

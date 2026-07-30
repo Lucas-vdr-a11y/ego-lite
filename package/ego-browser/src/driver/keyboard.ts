@@ -1,12 +1,28 @@
 import { cdp } from "../cdp-eval.js";
 import { browserCdp } from "../browser-runtime.js";
 import { withHandle, resolveAndCall } from "./element-ops.js";
-import { waitForSelector } from "./waits.js";
 import { state } from "../state.js";
+import {
+  normalizeTimeout,
+  operationTimeout,
+  remainingTimeout,
+  timeoutDeadline,
+} from "../playwright-errors.js";
+import { waitForActionableElement } from "./actionability.js";
+import { click } from "./pointer.js";
+import { checkedInputState } from "./locator.js";
 
 type FillOptions = {
   clearFirst?: boolean;
+  force?: boolean;
   timeout?: number;
+};
+
+type ElementActionOptions = {
+  force?: boolean;
+  trial?: boolean;
+  timeout?: number;
+  position?: { x: number; y: number };
 };
 
 type PressSequentiallyOptions = {
@@ -38,11 +54,31 @@ const KEYS = {
   Control: { vk: 17, key: "Control", code: "ControlLeft", text: "" },
   Alt: { vk: 18, key: "Alt", code: "AltLeft", text: "" },
   Meta: { vk: 91, key: "Meta", code: "MetaLeft", text: "" },
+  Insert: { vk: 45, key: "Insert", code: "Insert", text: "" },
+  Pause: { vk: 19, key: "Pause", code: "Pause", text: "" },
+  CapsLock: { vk: 20, key: "CapsLock", code: "CapsLock", text: "" },
+  NumLock: { vk: 144, key: "NumLock", code: "NumLock", text: "" },
+  ScrollLock: { vk: 145, key: "ScrollLock", code: "ScrollLock", text: "" },
+  PrintScreen: { vk: 44, key: "PrintScreen", code: "PrintScreen", text: "" },
+  ContextMenu: { vk: 93, key: "ContextMenu", code: "ContextMenu", text: "" },
+  F1: { vk: 112, key: "F1", code: "F1", text: "" },
+  F2: { vk: 113, key: "F2", code: "F2", text: "" },
+  F3: { vk: 114, key: "F3", code: "F3", text: "" },
+  F4: { vk: 115, key: "F4", code: "F4", text: "" },
+  F5: { vk: 116, key: "F5", code: "F5", text: "" },
+  F6: { vk: 117, key: "F6", code: "F6", text: "" },
+  F7: { vk: 118, key: "F7", code: "F7", text: "" },
+  F8: { vk: 119, key: "F8", code: "F8", text: "" },
+  F9: { vk: 120, key: "F9", code: "F9", text: "" },
+  F10: { vk: 121, key: "F10", code: "F10", text: "" },
+  F11: { vk: 122, key: "F11", code: "F11", text: "" },
+  F12: { vk: 123, key: "F12", code: "F12", text: "" },
 };
 
 const PRINTABLE_CODE_RE = /^[A-Za-z0-9]$/;
 const CTRL_MODIFIER = 2;
 const META_MODIFIER = 4;
+const SHIFT_MODIFIER = 8;
 const INPUT_EVENT_DELAY_MS = 25;
 const INPUT_DISPATCH_TIMEOUT_MS = 1000;
 
@@ -183,16 +219,18 @@ export async function down(keyCombo) {
  */
 export async function up(keyCombo) {
   const { key, modifiers } = parseKeyCombo(keyCombo);
-  const keyModifierBit = modifierBitForKey(key);
-  const eventModifiers = activeModifierBits() | modifiers | keyModifierBit;
+  const name = modifierName(key);
+  if (name) {
+    // A keyup reports the modifier state after the released key is removed,
+    // matching both DOM KeyboardEvent semantics and Playwright's keyboard
+    // state machine.
+    pressedModifiers.delete(name);
+  }
+  const eventModifiers = activeModifierBits() | modifiers;
   await dispatchKeyEvent({
     type: "keyUp",
     ...keyEventBase(key, eventModifiers),
   });
-  const name = modifierName(key);
-  if (name) {
-    pressedModifiers.delete(name);
-  }
 }
 
 /**
@@ -200,46 +238,78 @@ export async function up(keyCombo) {
  * @param {string} keyCombo Key or modifier+key combo: "Enter", "a", "Control+a", "Shift+Tab". Modifiers: Control, Shift, Alt, Meta, ControlOrMeta.
  * @returns {Promise<void>}
  */
-export async function press(keyCombo) {
+export async function press(keyCombo, options: { delay?: number } = {}) {
   const { key, modifiers } = parseKeyCombo(keyCombo);
   const effectiveModifiers = activeModifierBits() | modifiers;
   const downModifiers = effectiveModifiers | modifierBitForKey(key);
-  const { vk, code, text } = keyDefinition(key);
+  const { vk, code, text: unshiftedText } = keyDefinition(key);
+  const eventKey = shiftedKey(key, effectiveModifiers);
+  const text = shiftedKey(unshiftedText, effectiveModifiers);
   const base = {
-    key,
+    key: eventKey,
     code,
     modifiers: effectiveModifiers,
     windowsVirtualKeyCode: vk,
     nativeVirtualKeyCode: vk,
   };
   const commands = editingCommandsForKey(key, effectiveModifiers);
-  const probeId = await installKeyProbe(key);
+  const probeId = await installKeyProbe(eventKey);
   let dispatchError: unknown = null;
   try {
     await dispatchKeyEvent({
       type: "keyDown",
       ...base,
       modifiers: downModifiers,
-      ...(text ? { text, unmodifiedText: text } : {}),
+      ...(text ? { text, unmodifiedText: unshiftedText } : {}),
       ...(commands ? { commands } : {}),
     });
-    await inputEventDelay();
+    await inputEventDelay(options.delay);
     await dispatchKeyEvent({
       type: "keyUp",
       ...base,
-      modifiers: downModifiers,
+      modifiers: effectiveModifiers,
     });
   } catch (error) {
     if (!isKeyDispatchTimeout(error)) throw error;
     dispatchError = error;
   }
   const completed = await finishKeyProbe(probeId, {
-    key,
+    key: eventKey,
     code,
     text,
     commands,
   });
   if (dispatchError && !completed) throw dispatchError;
+}
+
+const SHIFTED_PRINTABLES: Record<string, string> = {
+  "`": "~",
+  "1": "!",
+  "2": "@",
+  "3": "#",
+  "4": "$",
+  "5": "%",
+  "6": "^",
+  "7": "&",
+  "8": "*",
+  "9": "(",
+  "0": ")",
+  "-": "_",
+  "=": "+",
+  "[": "{",
+  "]": "}",
+  "\\": "|",
+  ";": ":",
+  "'": '"',
+  ",": "<",
+  ".": ">",
+  "/": "?",
+};
+
+function shiftedKey(key: string, modifiers: number) {
+  if (!(modifiers & SHIFT_MODIFIER) || key.length !== 1) return key;
+  if (/[a-z]/.test(key)) return key.toUpperCase();
+  return SHIFTED_PRINTABLES[key] || key;
 }
 
 /**
@@ -266,7 +336,10 @@ export async function typeText(text, options: PressSequentiallyOptions = {}) {
  * @param {string} selector CSS selector / @ref / loc= / xpath= for the element.
  * @returns {Promise<void>}
  */
-export async function focus(selector) {
+export async function focus(selector, options: { timeout?: number } = {}) {
+  await waitForActionableElement(selector, {
+    timeout: options.timeout,
+  });
   await resolveAndCall(selector, "function(){this.focus();}");
 }
 
@@ -279,10 +352,12 @@ export async function focus(selector) {
  */
 export async function fill(selector, value, options: FillOptions = {}) {
   const clearFirst = options.clearFirst ?? true;
-  const timeout = options.timeout ?? state.defaultTimeout;
-  if (timeout > 0 && !(await waitForSelector(selector, { timeout }))) {
-    throw new Error(`fill: element not found: ${JSON.stringify(selector)}`);
-  }
+  await waitForActionableElement(selector, {
+    timeout: options.timeout,
+    visible: !options.force,
+    enabled: !options.force,
+    editable: !options.force,
+  });
   await withHandle(selector, async ({ objectId, sessionId }) => {
     const focusSource = clearFirst
       ? "function(){this.focus(); if(this.isContentEditable){const range=document.createRange();range.selectNodeContents(this);const sel=getSelection();sel.removeAllRanges();sel.addRange(range);}else if(typeof this.select==='function') this.select();}"
@@ -366,10 +441,10 @@ export async function pressSequentially(
 export async function pressOnSelector(
   selector,
   keyCombo,
-  options: { timeout?: number } = {},
+  options: { timeout?: number; delay?: number } = {},
 ) {
   await focusWithTimeout(selector, options.timeout);
-  await press(keyCombo);
+  await press(keyCombo, { delay: options.delay });
 }
 
 /**
@@ -377,8 +452,8 @@ export async function pressOnSelector(
  * @param {string} selector CSS selector / @ref / loc= / xpath= for the input.
  * @returns {Promise<void>}
  */
-export async function check(selector) {
-  await setChecked(selector, true);
+export async function check(selector, options: ElementActionOptions = {}) {
+  await setChecked(selector, true, options);
 }
 
 /**
@@ -386,8 +461,8 @@ export async function check(selector) {
  * @param {string} selector CSS selector / @ref / loc= / xpath= for the checkbox.
  * @returns {Promise<void>}
  */
-export async function uncheck(selector) {
-  await setChecked(selector, false);
+export async function uncheck(selector, options: ElementActionOptions = {}) {
+  await setChecked(selector, false, options);
 }
 
 /**
@@ -396,23 +471,35 @@ export async function uncheck(selector) {
  * @param {boolean} checked Desired checked state.
  * @returns {Promise<void>}
  */
-export async function setChecked(selector, checked) {
-  await resolveAndCall(
-    selector,
-    `function(checked){
-      if (!(this instanceof HTMLInputElement) || (this.type !== "checkbox" && this.type !== "radio")) {
-        throw new Error("setChecked target must be a checkbox or radio input");
-      }
-      if (this.type === "radio" && !checked) {
-        throw new Error("setChecked cannot uncheck a radio input");
-      }
-      if (this.checked === checked) return;
-      this.checked = checked;
-      this.dispatchEvent(new Event("input", { bubbles: true }));
-      this.dispatchEvent(new Event("change", { bubbles: true }));
-    }`,
-    [Boolean(checked)],
+export async function setChecked(
+  selector,
+  checked,
+  options: ElementActionOptions = {},
+) {
+  const timeout = normalizeTimeout(
+    "locator.setChecked",
+    options.timeout ?? state.defaultTimeout,
   );
+  const deadline = timeoutDeadline(timeout, state.now());
+  const desired = Boolean(checked);
+  const initial = await checkedStateWithinDeadline(selector, deadline, timeout);
+  if (initial.checked === desired) return;
+  if (initial.type === "radio" && !desired) {
+    throw new Error("locator.setChecked cannot uncheck a radio input");
+  }
+  await click(selector, {
+    ...options,
+    timeout: operationRemaining(deadline, timeout, "locator.setChecked"),
+  });
+  if (options.trial) return;
+  if (
+    (await checkedStateWithinDeadline(selector, deadline, timeout)).checked !==
+    desired
+  ) {
+    throw new Error(
+      `locator.setChecked could not set checked state to ${desired}`,
+    );
+  }
 }
 
 /**
@@ -424,16 +511,28 @@ export async function setChecked(selector, checked) {
 export async function selectOption(
   selector,
   values: SelectOption | SelectOption[],
+  options: { force?: boolean; timeout?: number } = {},
 ) {
-  const { result } = await resolveAndCall(
-    selector,
-    `function(values){
+  const timeout = normalizeTimeout(
+    "locator.selectOption",
+    options.timeout ?? state.defaultTimeout,
+  );
+  const deadline = timeoutDeadline(timeout, state.now());
+  await waitForActionableElement(selector, {
+    timeout: operationRemaining(deadline, timeout, "locator.selectOption"),
+    visible: !options.force,
+    enabled: !options.force,
+  });
+  while (state.now() < deadline) {
+    const { result } = await resolveAndCall(
+      selector,
+      `function(values){
       if (!(this instanceof HTMLSelectElement)) {
         throw new Error("selectOption target must be a select element");
       }
       const wanted = Array.isArray(values) ? values : [values];
+      const matches = [];
       const selected = [];
-      for (const option of this.options) option.selected = false;
       for (const wantedOption of wanted) {
         let match;
         if (typeof wantedOption === "object" && wantedOption !== null) {
@@ -447,25 +546,52 @@ export async function selectOption(
         } else {
           match = [...this.options].find((option) => option.value === String(wantedOption));
         }
-        if (!match) throw new Error("selectOption could not find option " + JSON.stringify(wantedOption));
+        if (!match) return { ready: false };
+        matches.push(match);
+        if (!this.multiple) break;
+      }
+      // Resolve every requested option before changing the current selection.
+      // A retry must be observational until it can complete atomically.
+      for (const option of this.options) option.selected = false;
+      for (const match of matches) {
         match.selected = true;
         selected.push(match.value);
-        if (!this.multiple) break;
       }
       this.dispatchEvent(new Event("input", { bubbles: true }));
       this.dispatchEvent(new Event("change", { bubbles: true }));
-      return selected;
+      return { ready: true, selected };
     }`,
-    [values],
-  );
-  return result.result?.value || [];
+      [values],
+    );
+    const value = result.result?.value || {};
+    if (value.ready === true) return value.selected || [];
+    await state.sleep(50);
+  }
+  throw operationTimeout("locator.selectOption", timeout);
+}
+
+async function checkedStateWithinDeadline(selector, deadline, timeout) {
+  try {
+    return await checkedInputState(selector, {
+      timeout: operationRemaining(deadline, timeout, "locator.setChecked"),
+    });
+  } catch (error) {
+    if (error?.name === "TimeoutError") {
+      throw operationTimeout("locator.setChecked", timeout, error.message);
+    }
+    throw error;
+  }
+}
+
+function operationRemaining(deadline, timeout, apiName) {
+  if (deadline !== Number.POSITIVE_INFINITY && state.now() >= deadline) {
+    throw operationTimeout(apiName, timeout);
+  }
+  return remainingTimeout(deadline, state.now());
 }
 
 async function focusWithTimeout(selector, timeout = state.defaultTimeout) {
-  if (timeout > 0 && !(await waitForSelector(selector, { timeout }))) {
-    throw new Error(`focus: element not found: ${JSON.stringify(selector)}`);
-  }
-  await focus(selector);
+  await focus(selector, { timeout });
 }
 
 // Page-side dispatcher, mirroring Playwright's injected dispatchEvent: the type
@@ -516,15 +642,21 @@ const DISPATCH_EVENT_SOURCE = `function(type, eventInit){
  * @param {Record<string, unknown>} [eventInit={}] Event-specific init properties (key, code, clientX, ...).
  * @returns {Promise<void>}
  */
-export async function dispatchEvent(selector, type, eventInit = {}) {
+export async function dispatchEvent(
+  selector,
+  type,
+  eventInit = {},
+  options: { timeout?: number } = {},
+) {
   if (typeof type !== "string" || type === "") {
     throw new Error("dispatchEvent requires an event type string");
   }
+  await waitForActionableElement(selector, { timeout: options.timeout });
   await resolveAndCall(selector, DISPATCH_EVENT_SOURCE, [type, eventInit]);
 }
 
-function inputEventDelay() {
-  return new Promise((resolve) => setTimeout(resolve, INPUT_EVENT_DELAY_MS));
+function inputEventDelay(delay = INPUT_EVENT_DELAY_MS) {
+  return new Promise((resolve) => setTimeout(resolve, delay));
 }
 
 async function dispatchKeyEvent(params: Record<string, unknown>) {

@@ -6,17 +6,14 @@ export const playwrightUrlWaitCases = [
     body: caseBody(`
       await page.goto(baseUrl + "/nav-target", { waitUntil: "load" });
       let observed;
-      assert(
-        await page.waitForURL((url) => {
-          observed = {
-            isUrl: url instanceof URL,
-            href: url.href,
-            pathname: url.pathname,
-          };
-          return url.pathname === "/nav-target";
-        }, { timeout: 3000 }),
-        "PWB-01 waitForURL matches the current URL"
-      );
+      await page.waitForURL((url) => {
+        observed = {
+          isUrl: url instanceof URL,
+          href: url.href,
+          pathname: url.pathname,
+        };
+        return url.pathname === "/nav-target";
+      }, { timeout: 3000 });
       assert(observed?.isUrl, "PWB-01 predicate receives a URL object");
       assertEqual(observed.pathname, "/nav-target", "PWB-01 URL pathname is available");
     `),
@@ -27,12 +24,9 @@ export const playwrightUrlWaitCases = [
       const target = baseUrl + "/regression/slow-load?ms=1200&run=" + Date.now();
       await page.goto(target, { waitUntil: "commit", timeout: 5000 });
       const startedAt = Date.now();
-      assert(
-        await page.waitForURL(
-          (url) => url.pathname === "/regression/slow-load",
-          { timeout: 5000 }
-        ),
-        "PWB-02 waitForURL reaches its default load state"
+      await page.waitForURL(
+        (url) => url.pathname === "/regression/slow-load",
+        { timeout: 5000 }
       );
       const elapsedMs = Date.now() - startedAt;
       assertEqual(

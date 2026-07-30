@@ -1,4 +1,5 @@
 import {
+  access,
   mkdir,
   mkdtemp,
   readFile,
@@ -6,8 +7,9 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { e2eCases } from "./cases/index.mjs";
@@ -214,6 +216,12 @@ export async function runRealBrowserE2e() {
     const explicitScreenshotPath = join(artifactDir, "explicit-shot.png");
     const environmentScreenshotPath = join(artifactDir, "environment-shot.png");
     const metadataPath = join(tempDir, "metadata.json");
+    const ffmpegPath = await resolveExecutable(
+      process.env.EGO_BROWSER_FFMPEG_PATH || "ffmpeg",
+    );
+    const ffprobePath = await resolveExecutable(
+      process.env.EGO_BROWSER_FFPROBE_PATH || "ffprobe",
+    );
     const taskName = `ego-lite real browser e2e ${Date.now()}-${Math.random()
       .toString(16)
       .slice(2)}`;
@@ -222,6 +230,8 @@ export async function runRealBrowserE2e() {
       artifactDir,
       explicitScreenshotPath,
       environmentScreenshotPath,
+      ffmpegPath,
+      ffprobePath,
       metadataPath,
       taskName,
       tempDir,
@@ -281,6 +291,24 @@ export async function runRealBrowserE2e() {
       await rm(tempDir, { recursive: true, force: true });
     }
   }
+}
+
+async function resolveExecutable(command) {
+  if (isAbsolute(command) || command.includes("/")) {
+    await access(command, fsConstants.X_OK);
+    return command;
+  }
+  for (const directory of String(process.env.PATH || "").split(delimiter)) {
+    if (!directory) continue;
+    const candidate = join(directory, command);
+    try {
+      await access(candidate, fsConstants.X_OK);
+      return candidate;
+    } catch {
+      // Continue searching PATH.
+    }
+  }
+  return command;
 }
 
 async function initializeE2eEnvironment(context, tempDir) {

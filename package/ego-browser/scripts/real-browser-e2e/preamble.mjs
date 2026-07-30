@@ -236,8 +236,8 @@ async function closeFixtureTabs() {
 async function resetHome() {
   await taskSpaces.takeOver(taskName).catch(() => {});
   await taskSpaces.waitForAgentControl(taskName, {
-    interval: 0.1,
-    timeout: 5,
+    interval: 100,
+    timeout: 5_000,
   });
   await closeFixtureTabs();
   const tab = await browser.openOrReuseTab(
@@ -250,14 +250,14 @@ async function resetHome() {
   await browser.switchTab(tab.targetId);
   await setStableViewport();
   const nav = await page.goto(baseUrl + "/", { timeout: 10000 });
-  assert(nav.loaded, "home page loaded");
-  await setStableViewport();
   assert(
-    await page
-      .locator("#click-button")
-      .waitFor({ timeout: 3000, state: "visible" }),
-    "home fixture click button is visible",
+    nav === null || typeof nav.status === "function",
+    "home navigation returns Response or null",
   );
+  await setStableViewport();
+  await page
+    .locator("#click-button")
+    .waitFor({ timeout: 3000, state: "visible" });
   for (let i = 0; i < 10; i += 1) {
     const info = await page.info();
     if (
