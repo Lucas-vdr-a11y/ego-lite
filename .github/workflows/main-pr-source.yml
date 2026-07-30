@@ -6,12 +6,17 @@ on:
       - main
 
 jobs:
-  require-dev-source:
+  require-sprint-source:
     runs-on: ubuntu-latest
     steps:
-      - name: Require dev branch
+      - name: Require sprint branch
+        env:
+          HEAD_REF: ${{ github.head_ref }}
         run: |
-          if [ "${{ github.head_ref }}" != "dev" ]; then
-            echo "Pull requests into main must come from the dev branch."
-            exit 1
-          fi
+          case "$HEAD_REF" in
+            sprint-?*) ;;
+            *)
+              echo "Pull requests into main must come from a sprint-* branch."
+              exit 1
+              ;;
+          esac

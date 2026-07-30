@@ -319,7 +319,7 @@ Add at least one release-note label so generated releases are grouped correctly:
   - Tags matching `vX.Y.Z-beta.N`: build a beta prerelease
   - Tags matching `vX.Y.Z`: build a stable release and mark it as latest
 - Release notes are generated automatically from merged PRs and grouped by `.github/release.yml` labels: Features, Fixes, Documentation, Maintenance, and Other Changes.
-- Normal flow: merge features into `dev`, cut beta tags from `dev`, then merge `dev` to `main` and cut stable `vX.Y.Z` tags from `main`.
+- Normal flow: create `sprint-X.Y.Z` from the latest `main`, base version work on that sprint branch, cut beta tags from the sprint branch, then merge the sprint branch to `main` and cut the stable `vX.Y.Z` tag from `main`. Start the next version from a new `sprint-*` branch created from the latest `main`.
 - The build script `scripts/build.mjs` uses `.build.lock` to prevent concurrent builds.
 
 ---

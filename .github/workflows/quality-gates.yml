@@ -9,7 +9,7 @@ on:
       - "skills/ego-browser/learnings/**"
   push:
     branches:
-      - dev
+      - "sprint-*"
       - main
     paths:
       - ".github/workflows/quality-gates.yml"
@@ -72,4 +72,3 @@ jobs:
       - name: Validate site skills
         working-directory: package/ego-browser
         run: npm run validate:site-skills
-

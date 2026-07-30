@@ -5,6 +5,13 @@
 
 This repo contains the open-source harness and the agent skill package — **not** the browser itself. The ego lite app bundles its own `ego-browser` binary that embeds this runtime; `skills/ego-browser/SKILL.md` documents that binary's usage (`ego-browser nodejs <<'EOF' ... EOF`). The repo CLI built here takes the heredoc directly on stdin with no subcommand.
 
+## Branch & Release Workflow
+- `main` is the baseline for every version.
+- Create a new `sprint-X.Y.Z` branch from the latest `main` when a version starts.
+- Base development for that version on its `sprint-*` branch.
+- When the team gives the release signal, open the release PR from that `sprint-*` branch to `main`.
+- Start the next version from a new `sprint-*` branch created from the then-current `main`.
+
 ## Architecture & Data Flow
 - `package/ego-browser/src/index.ts` is the entrypoint with two startup paths:
   - Executed directly as a CLI → `runMain()` (reads JavaScript from stdin, executes it).
