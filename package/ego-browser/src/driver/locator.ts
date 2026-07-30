@@ -3,6 +3,7 @@ import {
   ElementResolutionError,
   queryRoleLocatorBackendNodeIds,
 } from "../element-resolver.js";
+import { isLocatorTarget, resolveFrameContext } from "../frame-context.js";
 import { queryAllExpression as buildQueryAllExpression } from "../locator-query.js";
 import { parseRef } from "../ref-map.js";
 import {
@@ -134,6 +135,7 @@ export async function isVisible(selector) {
     }`,
     [],
     false,
+    (visible, handle) => Boolean(visible) && handle.frameVisible !== false,
   );
 }
 
@@ -227,14 +229,30 @@ export async function blur(selector) {
  * @returns {Promise<{x:number,y:number,width:number,height:number}|null>}
  */
 export async function boundingBox(selector) {
-  return readElement(
-    selector,
-    `function(){
+  const functionDeclaration = `function(){
       if (!(this instanceof Element)) return null;
       const rect = this.getBoundingClientRect();
       if (rect.width === 0 || rect.height === 0) return null;
       return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
-    }`,
+    }`;
+  return readElement(
+    selector,
+    functionDeclaration,
+    [],
+    state.defaultTimeout,
+    null,
+    (box, handle) => {
+      if (!box || handle.frameVisible === false) return null;
+      const offset = handle.frameOffset || { x: 0, y: 0 };
+      const scale = handle.frameScale || { x: 1, y: 1 };
+      return {
+        ...box,
+        x: offset.x + box.x * scale.x,
+        y: offset.y + box.y * scale.y,
+        width: box.width * scale.x,
+        height: box.height * scale.y,
+      };
+    },
   );
 }
 
@@ -244,12 +262,14 @@ export async function boundingBox(selector) {
  * @returns {Promise<number>}
  */
 export async function count(selector) {
-  if (parseRef(selector)) {
+  if (!isLocatorTarget(selector) && parseRef(selector)) {
     const handle = await resolveHandle(selector);
     await releaseHandle(handle.objectId, handle.sessionId);
     return 1;
   }
-  const backendNodeIds = await queryRoleBackendNodeIds(selector);
+  const backendNodeIds = isLocatorTarget(selector)
+    ? null
+    : await queryRoleBackendNodeIds(selector);
   if (backendNodeIds !== null) {
     return backendNodeIds.length;
   }
@@ -311,7 +331,7 @@ export async function evaluateLocator(selector, pageFunction, arg = undefined) {
  */
 export async function evaluateAll(selector, pageFunction, arg = undefined) {
   const functionSource = pageFunctionSource(pageFunction, "evaluateAll");
-  if (parseRef(selector)) {
+  if (!isLocatorTarget(selector) && parseRef(selector)) {
     return readElement(
       selector,
       `function(functionSource, arg){
@@ -321,7 +341,9 @@ export async function evaluateAll(selector, pageFunction, arg = undefined) {
       [functionSource, arg],
     );
   }
-  const backendNodeIds = await queryRoleBackendNodeIds(selector);
+  const backendNodeIds = isLocatorTarget(selector)
+    ? null
+    : await queryRoleBackendNodeIds(selector);
   if (backendNodeIds !== null) {
     return evaluateRoleBackendNodes(backendNodeIds, functionSource, arg, true);
   }
@@ -334,11 +356,17 @@ async function readElement(
   args = [],
   timeout = state.defaultTimeout,
   apiName: string | null = null,
+  mapResult = (value, _handle) => value,
 ) {
   const deadline = timeoutDeadline(timeout, state.now());
   while (true) {
     try {
-      return await readElementOnce(selector, functionDeclaration, args);
+      return await readElementOnce(
+        selector,
+        functionDeclaration,
+        args,
+        mapResult,
+      );
     } catch (error) {
       if (
         !(error instanceof ElementResolutionError) ||
@@ -360,9 +388,14 @@ async function readElement(
   }
 }
 
-async function readElementOnce(selector, functionDeclaration, args = []) {
-  const { result } = await resolveAndCall(selector, functionDeclaration, args);
-  return runtimeValue(result, functionDeclaration);
+async function readElementOnce(
+  selector,
+  functionDeclaration,
+  args = [],
+  mapResult = (value, _handle) => value,
+) {
+  const handle = await resolveAndCall(selector, functionDeclaration, args);
+  return mapResult(runtimeValue(handle.result, functionDeclaration), handle);
 }
 
 async function readOptionalElement(
@@ -370,9 +403,15 @@ async function readOptionalElement(
   functionDeclaration,
   args = [],
   fallback,
+  mapResult = (value, _handle) => value,
 ) {
   try {
-    return await readElementOnce(selector, functionDeclaration, args);
+    return await readElementOnce(
+      selector,
+      functionDeclaration,
+      args,
+      mapResult,
+    );
   } catch (error) {
     if (error instanceof ElementResolutionError && error.kind === "transient") {
       return fallback;
@@ -382,7 +421,9 @@ async function readOptionalElement(
 }
 
 async function readQueryAll(selector, body) {
-  const backendNodeIds = await queryRoleBackendNodeIds(selector);
+  const backendNodeIds = isLocatorTarget(selector)
+    ? null
+    : await queryRoleBackendNodeIds(selector);
   if (backendNodeIds !== null) {
     return evaluateRoleBackendNodes(
       backendNodeIds,
@@ -391,15 +432,14 @@ async function readQueryAll(selector, body) {
       false,
     );
   }
+  const selectorValue = isLocatorTarget(selector)
+    ? selector.selector
+    : selector;
   const expression = `(() => {
-    const elements = ${buildQueryAllExpression(selector)};
+    const elements = ${buildQueryAllExpression(selectorValue)};
     ${body}
   })()`;
-  const result = await cdp("Runtime.evaluate", {
-    expression,
-    returnByValue: true,
-    awaitPromise: false,
-  });
+  const result = await evaluateInLocatorContext(selector, expression, false);
   return runtimeValue(result, expression);
 }
 
@@ -471,17 +511,41 @@ function queryRoleBackendNodeIds(selector) {
 }
 
 async function evaluateQueryAll(selector, functionSource, arg) {
+  const selectorValue = isLocatorTarget(selector)
+    ? selector.selector
+    : selector;
   const expression = `(() => {
-    const elements = ${buildQueryAllExpression(selector)};
+    const elements = ${buildQueryAllExpression(selectorValue)};
     const pageFunction = (0, eval)(${JSON.stringify(`(${functionSource})`)});
     return pageFunction(elements, ${serializedArg(arg)});
   })()`;
-  const result = await cdp("Runtime.evaluate", {
-    expression,
-    returnByValue: true,
-    awaitPromise: true,
-  });
+  const result = await evaluateInLocatorContext(selector, expression, true);
   return runtimeValue(result, expression);
+}
+
+async function evaluateInLocatorContext(
+  selector,
+  expression,
+  awaitPromise: boolean,
+) {
+  if (!isLocatorTarget(selector) || selector.frameChain.length === 0) {
+    return cdp("Runtime.evaluate", {
+      expression,
+      returnByValue: true,
+      awaitPromise,
+    });
+  }
+  const context = await resolveFrameContext(selector.frameChain);
+  return cdp(
+    "Runtime.evaluate",
+    {
+      expression,
+      contextId: context.executionContextId,
+      returnByValue: true,
+      awaitPromise,
+    },
+    context.sessionId,
+  );
 }
 
 function pageFunctionSource(pageFunction, helperName) {

@@ -100,6 +100,16 @@ export async function startFixtureServer(taskName) {
       res.end("server error fixture");
       return;
     }
+    if (url.pathname === "/api/abort") {
+      res.writeHead(200, {
+        "content-type": "text/plain",
+        "content-length": "64",
+        "access-control-allow-origin": "*",
+      });
+      res.write("partial");
+      setTimeout(() => res.destroy(), 25);
+      return;
+    }
     if (url.pathname === "/api/slow") {
       const delayMs = Number(url.searchParams.get("ms") || 250);
       setTimeout(() => {
@@ -570,7 +580,7 @@ function pageHtml(kind) {
 
       <div id="delayed">Delayed element</div>
       <div id="never-visible">Never visible</div>
-      <iframe id="fixture-frame" src="/frame.html"></iframe>
+      ${kind === "frame" ? "" : '<iframe id="fixture-frame" src="/frame.html"></iframe>'}
       <div id="inner-scroll"><div id="inner-scroll-content">Inner scroll marker</div></div>
       <section id="scroll-area"><div id="bottom-marker">Bottom marker</div></section>
 

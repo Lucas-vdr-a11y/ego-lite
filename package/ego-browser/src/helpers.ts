@@ -20,7 +20,9 @@ import * as waits from "./driver/waits.js";
 import * as files from "./driver/files.js";
 import * as downloads from "./driver/downloads.js";
 import * as screencast from "./driver/screencast.js";
+import * as aria from "./driver/aria-snapshot.js";
 import { waitForActionableElement } from "./driver/actionability.js";
+import { locatorTarget } from "./frame-context.js";
 import { browserFetch, serverFetch } from "./http.js";
 import {
   loadBrowserToolSource,
@@ -528,104 +530,127 @@ export async function learnContext(url = undefined) {
   });
 }
 
-function createLocator(selector) {
+function createLocator(selector, frameChain: string[] = []) {
+  const target = locatorTarget(selector, frameChain);
   return {
     selector,
-    first: () => createLocator(nthSelector(selector, 0)),
-    last: () => createLocator(`internal:last;${selector}`),
+    frameChain: [...frameChain],
+    target,
+    first: () => createLocator(nthSelector(selector, 0), frameChain),
+    last: () => createLocator(`internal:last;${selector}`, frameChain),
     nth: (index) => {
       const value = Number(index);
       if (!Number.isInteger(value) || value < 0) {
         throw new Error("locator.nth requires a non-negative integer");
       }
-      return createLocator(nthSelector(selector, value));
+      return createLocator(nthSelector(selector, value), frameChain);
     },
     and: (other) =>
       createLocator(
         internalSelector("and", {
           left: selector,
-          right: locatorSelector(other),
+          right: locatorSelector(other, frameChain),
         }),
+        frameChain,
       ),
     or: (other) =>
       createLocator(
         internalSelector("or", {
           left: selector,
-          right: locatorSelector(other),
+          right: locatorSelector(other, frameChain),
         }),
+        frameChain,
       ),
     locator: (child) =>
-      createLocator(scopedSelector(selector, locatorSelector(child))),
+      createLocator(
+        scopedSelector(selector, locatorSelector(child, frameChain)),
+        frameChain,
+      ),
     getByRole: (role, options: any = {}) =>
-      createLocator(scopedSelector(selector, roleSelector(role, options))),
+      createLocator(
+        scopedSelector(selector, roleSelector(role, options)),
+        frameChain,
+      ),
     getByText: (text, options: any = {}) =>
       createLocator(
         scopedSelector(selector, textSelector("text", text, options)),
+        frameChain,
       ),
     getByLabel: (text, options: any = {}) =>
       createLocator(
         scopedSelector(selector, textSelector("label", text, options)),
+        frameChain,
       ),
     getByPlaceholder: (text, options: any = {}) =>
       createLocator(
         scopedSelector(selector, textSelector("placeholder", text, options)),
+        frameChain,
       ),
     getByAltText: (text, options: any = {}) =>
       createLocator(
         scopedSelector(selector, textSelector("alt", text, options)),
+        frameChain,
       ),
     getByTitle: (text, options: any = {}) =>
       createLocator(
         scopedSelector(selector, textSelector("title", text, options)),
+        frameChain,
       ),
     getByTestId: (testId) =>
-      createLocator(scopedSelector(selector, testIdSelector(testId))),
+      createLocator(
+        scopedSelector(selector, testIdSelector(testId)),
+        frameChain,
+      ),
     filter: (options: any = {}) =>
-      createLocator(filterSelector(selector, options)),
-    click: (options = {}) => pointer.click(selector, options),
-    dblclick: (options = {}) => pointer.dblclick(selector, options),
-    hover: (options = {}) => pointer.hover(selector, options),
-    dragTo: (target, options = {}) =>
-      pointer.dragTo(selector, target?.selector || target, options),
+      createLocator(filterSelector(selector, options, frameChain), frameChain),
+    click: (options = {}) => pointer.click(target, options),
+    dblclick: (options = {}) => pointer.dblclick(target, options),
+    hover: (options = {}) => pointer.hover(target, options),
+    dragTo: (destination, options = {}) =>
+      pointer.dragTo(
+        locatorTarget(selector, frameChain),
+        destination?.target || destination?.selector || destination,
+        options,
+      ),
     scrollIntoViewIfNeeded: (options = {}) =>
-      pointer.scrollIntoViewIfNeeded(selector, options),
-    focus: (options = {}) => keyboard.focus(selector, options),
-    fill: (value, options = {}) => keyboard.fill(selector, value, options),
-    clear: (options = {}) => keyboard.fill(selector, "", options),
+      pointer.scrollIntoViewIfNeeded(target, options),
+    focus: (options = {}) => keyboard.focus(target, options),
+    fill: (value, options = {}) => keyboard.fill(target, value, options),
+    clear: (options = {}) => keyboard.fill(target, "", options),
     press: (key, options = {}) =>
-      keyboard.pressOnSelector(selector, key, options),
+      keyboard.pressOnSelector(target, key, options),
     pressSequentially: (text, options = {}) =>
-      keyboard.pressSequentially(selector, text, options),
-    check: (options = {}) => keyboard.setChecked(selector, true, options),
-    uncheck: (options = {}) => keyboard.setChecked(selector, false, options),
+      keyboard.pressSequentially(target, text, options),
+    check: (options = {}) => keyboard.setChecked(target, true, options),
+    uncheck: (options = {}) => keyboard.setChecked(target, false, options),
     setChecked: (checked, options = {}) =>
-      keyboard.setChecked(selector, checked, options),
+      keyboard.setChecked(target, checked, options),
     selectOption: (values, options = {}) =>
-      keyboard.selectOption(selector, values, options),
+      keyboard.selectOption(target, values, options),
     setInputFiles: (filesValue, options = {}) =>
-      files.setInputFiles(selector, filesValue, options),
+      files.setInputFiles(target, filesValue, options),
     dispatchEvent: (type, eventInit = {}, options = {}) =>
-      keyboard.dispatchEvent(selector, type, eventInit, options),
-    blur: () => locator.blur(selector),
-    textContent: () => locator.textContent(selector),
-    innerText: () => locator.innerText(selector),
-    innerHTML: () => locator.innerHTML(selector),
-    inputValue: () => locator.inputValue(selector),
-    isChecked: (options = {}) => locator.isChecked(selector, options),
-    isVisible: () => locator.isVisible(selector),
-    isHidden: () => locator.isHidden(selector),
-    isEnabled: () => locator.isEnabled(selector),
-    isDisabled: () => locator.isDisabled(selector),
-    isEditable: () => locator.isEditable(selector),
-    getAttribute: (name) => locator.getAttribute(selector, name),
-    boundingBox: () => locator.boundingBox(selector),
+      keyboard.dispatchEvent(target, type, eventInit, options),
+    blur: () => locator.blur(target),
+    textContent: () => locator.textContent(target),
+    innerText: () => locator.innerText(target),
+    innerHTML: () => locator.innerHTML(target),
+    inputValue: () => locator.inputValue(target),
+    isChecked: (options = {}) => locator.isChecked(target, options),
+    isVisible: () => locator.isVisible(target),
+    isHidden: () => locator.isHidden(target),
+    isEnabled: () => locator.isEnabled(target),
+    isDisabled: () => locator.isDisabled(target),
+    isEditable: () => locator.isEditable(target),
+    getAttribute: (name) => locator.getAttribute(target, name),
+    boundingBox: () => locator.boundingBox(target),
     screenshot: async (options: any = {}) => {
-      await waitForActionableElement(selector, {
+      await waitForActionableElement(target, {
         timeout: options.timeout,
         visible: true,
         stable: true,
       });
-      const box = await locator.boundingBox(selector);
+      const box = await locator.boundingBox(target);
       if (!box) {
         throw new Error(
           `locator.screenshot target has no bounding box: ${selector}`,
@@ -647,16 +672,56 @@ function createLocator(selector) {
         },
       });
     },
-    count: () => locator.count(selector),
-    allInnerTexts: () => locator.allInnerTexts(selector),
-    allTextContents: () => locator.allTextContents(selector),
+    ariaSnapshot: (options = {}) =>
+      aria.ariaSnapshot(target, options, "locator.ariaSnapshot"),
+    count: () => locator.count(target),
+    allInnerTexts: () => locator.allInnerTexts(target),
+    allTextContents: () => locator.allTextContents(target),
     evaluate: (pageFunction, arg = undefined) =>
-      locator.evaluateLocator(selector, pageFunction, arg),
+      locator.evaluateLocator(target, pageFunction, arg),
     evaluateAll: (pageFunction, arg = undefined) =>
-      locator.evaluateAll(selector, pageFunction, arg),
+      locator.evaluateAll(target, pageFunction, arg),
     waitFor: async (options = {}) => {
-      await waits.waitForSelector(selector, options);
+      await waits.waitForSelector(target, options);
     },
+  };
+}
+
+function createFrameLocator(selector, parentFrameChain: string[] = []) {
+  const frameChain = [...parentFrameChain, String(selector)];
+  return {
+    selector: String(selector),
+    frameChain,
+    first: () =>
+      createFrameLocator(nthSelector(String(selector), 0), parentFrameChain),
+    last: () =>
+      createFrameLocator(`internal:last;${String(selector)}`, parentFrameChain),
+    nth: (index) => {
+      const value = Number(index);
+      if (!Number.isInteger(value) || value < 0) {
+        throw new Error("frameLocator.nth requires a non-negative integer");
+      }
+      return createFrameLocator(
+        nthSelector(String(selector), value),
+        parentFrameChain,
+      );
+    },
+    frameLocator: (child) => createFrameLocator(child, frameChain),
+    locator: (child) =>
+      createLocator(locatorSelector(child, frameChain), frameChain),
+    getByRole: (role, options: any = {}) =>
+      createLocator(roleSelector(role, options), frameChain),
+    getByText: (text, options: any = {}) =>
+      createLocator(textSelector("text", text, options), frameChain),
+    getByLabel: (text, options: any = {}) =>
+      createLocator(textSelector("label", text, options), frameChain),
+    getByPlaceholder: (text, options: any = {}) =>
+      createLocator(textSelector("placeholder", text, options), frameChain),
+    getByAltText: (text, options: any = {}) =>
+      createLocator(textSelector("alt", text, options), frameChain),
+    getByTitle: (text, options: any = {}) =>
+      createLocator(textSelector("title", text, options), frameChain),
+    getByTestId: (testId) => createLocator(testIdSelector(testId), frameChain),
   };
 }
 
@@ -672,15 +737,31 @@ function scopedSelector(base, child) {
   return internalSelector("scope", { base, child });
 }
 
-function locatorSelector(value) {
+function locatorSelector(value, expectedFrameChain?: string[]) {
   if (
     value &&
     typeof value === "object" &&
     typeof value.selector === "string"
   ) {
+    if (
+      expectedFrameChain &&
+      Array.isArray(value.frameChain) &&
+      !sameFrameChain(expectedFrameChain, value.frameChain)
+    ) {
+      throw new Error(
+        "locator composition requires locators from the same frame",
+      );
+    }
     return value.selector;
   }
   return String(value);
+}
+
+function sameFrameChain(left: string[], right: string[]) {
+  return (
+    left.length === right.length &&
+    left.every((selector, index) => selector === right[index])
+  );
 }
 
 function textSelector(prefix, text, options: any = {}) {
@@ -723,7 +804,7 @@ function testIdSelector(testId) {
   return textSelector("testid", testId, { exact: true });
 }
 
-function filterSelector(base, options: any = {}) {
+function filterSelector(base, options: any = {}, frameChain?: string[]) {
   const data: any = { base };
   if (Object.prototype.hasOwnProperty.call(options, "hasText")) {
     data.hasText = textMatcher(options.hasText);
@@ -732,10 +813,10 @@ function filterSelector(base, options: any = {}) {
     data.hasNotText = textMatcher(options.hasNotText);
   }
   if (options.has !== undefined) {
-    data.has = locatorSelector(options.has);
+    data.has = locatorSelector(options.has, frameChain);
   }
   if (options.hasNot !== undefined) {
-    data.hasNot = locatorSelector(options.hasNot);
+    data.hasNot = locatorSelector(options.hasNot, frameChain);
   }
   return internalSelector("filter", data);
 }
@@ -780,6 +861,7 @@ function createPageFacade() {
     url: async () => (await nav.pageInfo()).url,
     title: async () => (await nav.pageInfo()).title,
     locator: createLocator,
+    frameLocator: createFrameLocator,
     getByRole: (role, options: any = {}) => {
       return createLocator(roleSelector(role, options));
     },
@@ -807,6 +889,8 @@ function createPageFacade() {
     saveScreenshot: observe.saveScreenshot,
     snapshot: observe.snapshot,
     snapshotRaw: observe.snapshotRaw,
+    ariaSnapshot: (options = {}) =>
+      aria.ariaSnapshot("body", options, "page.ariaSnapshot"),
     elementCenter: observe.elementCenter,
     drainEvents: observe.drainEvents,
     screencast: {
@@ -888,7 +972,7 @@ function createSiteFacade() {
 }
 
 const FACADE_HELP: Record<string, string> = {
-  page: "page: Playwright-style page facade. page.url() asynchronously returns the current URL; always call await page.url(). page.goto() and page.reload() return a main-document Response or null. Use page.setDefaultTimeout(ms), page.setDefaultNavigationTimeout(ms), locators, Playwright-style waits and supported page events, page.evaluate(fnOrExpression, arg), page.screenshot(options) for a Buffer, page.saveScreenshot(options) for a path, page.screencast, page.keyboard, and page.mouse. waitForRequest/waitForResponse predicates may be async; waitForURL predicates receive URL objects and waitUntil defaults to load. Wait timeouts throw TimeoutError.",
+  page: "page: Playwright-style page facade. page.url() asynchronously returns the current URL; always call await page.url(). page.goto() and page.reload() return a main-document Response or null. Use page.setDefaultTimeout(ms), page.setDefaultNavigationTimeout(ms), locators, Playwright-style waits and supported page events, page.evaluate(fnOrExpression, arg), page.ariaSnapshot(options), page.screenshot(options) for a Buffer, page.saveScreenshot(options) for a path, page.screencast, page.keyboard, and page.mouse. waitForEvent, waitForRequest, and waitForResponse predicates may be async; waitForEvent also accepts AbortSignal cancellation. waitForURL predicates receive URL objects and waitUntil defaults to load. Wait timeouts throw TimeoutError.",
   locator:
     "page.locator(selector): returns a strict locator facade with locator(), getByRole(), getByText(), filter(), and(), or(), first(), nth(index), last(), actionability-aware click(), hover(), dragTo(), fill(), focus(), check(), setChecked(), selectOption(), file upload, state/collection reads, evaluation, Buffer screenshots, and waitFor({ state: 'visible'|'attached'|'hidden'|'detached' }). Narrow multiple matches; use first()/nth() only for confirmed legitimate duplicates.",
   browser:

@@ -30,6 +30,12 @@ type PressSequentiallyOptions = {
   timeout?: number;
 };
 
+type KeyInputContext = {
+  inputSessionId?: string;
+  probeSessionId?: string;
+  probeExecutionContextId?: number;
+};
+
 type SelectOption =
   | string
   | number
@@ -238,7 +244,10 @@ export async function up(keyCombo) {
  * @param {string} keyCombo Key or modifier+key combo: "Enter", "a", "Control+a", "Shift+Tab". Modifiers: Control, Shift, Alt, Meta, ControlOrMeta.
  * @returns {Promise<void>}
  */
-export async function press(keyCombo, options: { delay?: number } = {}) {
+export async function press(
+  keyCombo,
+  options: { delay?: number } & KeyInputContext = {},
+) {
   const { key, modifiers } = parseKeyCombo(keyCombo);
   const effectiveModifiers = activeModifierBits() | modifiers;
   const downModifiers = effectiveModifiers | modifierBitForKey(key);
@@ -253,32 +262,42 @@ export async function press(keyCombo, options: { delay?: number } = {}) {
     nativeVirtualKeyCode: vk,
   };
   const commands = editingCommandsForKey(key, effectiveModifiers);
-  const probeId = await installKeyProbe(eventKey);
+  const probeId = await installKeyProbe(eventKey, options);
   let dispatchError: unknown = null;
   try {
-    await dispatchKeyEvent({
-      type: "keyDown",
-      ...base,
-      modifiers: downModifiers,
-      ...(text ? { text, unmodifiedText: unshiftedText } : {}),
-      ...(commands ? { commands } : {}),
-    });
+    await dispatchKeyEvent(
+      {
+        type: "keyDown",
+        ...base,
+        modifiers: downModifiers,
+        ...(text ? { text, unmodifiedText: unshiftedText } : {}),
+        ...(commands ? { commands } : {}),
+      },
+      options.inputSessionId,
+    );
     await inputEventDelay(options.delay);
-    await dispatchKeyEvent({
-      type: "keyUp",
-      ...base,
-      modifiers: effectiveModifiers,
-    });
+    await dispatchKeyEvent(
+      {
+        type: "keyUp",
+        ...base,
+        modifiers: effectiveModifiers,
+      },
+      options.inputSessionId,
+    );
   } catch (error) {
     if (!isKeyDispatchTimeout(error)) throw error;
     dispatchError = error;
   }
-  const completed = await finishKeyProbe(probeId, {
-    key: eventKey,
-    code,
-    text,
-    commands,
-  });
+  const completed = await finishKeyProbe(
+    probeId,
+    {
+      key: eventKey,
+      code,
+      text,
+      commands,
+    },
+    options,
+  );
   if (dispatchError && !completed) throw dispatchError;
 }
 
@@ -337,10 +356,7 @@ export async function typeText(text, options: PressSequentiallyOptions = {}) {
  * @returns {Promise<void>}
  */
 export async function focus(selector, options: { timeout?: number } = {}) {
-  await waitForActionableElement(selector, {
-    timeout: options.timeout,
-  });
-  await resolveAndCall(selector, "function(){this.focus();}");
+  await focusWithTimeout(selector, options.timeout);
 }
 
 /**
@@ -414,8 +430,9 @@ export async function pressSequentially(
 ) {
   let text;
   let effectiveOptions;
+  let inputContext: KeyInputContext = {};
   if (typeof textOrOptions === "string") {
-    await focusWithTimeout(selectorOrText, options.timeout);
+    inputContext = await focusWithTimeout(selectorOrText, options.timeout);
     text = textOrOptions;
     effectiveOptions = options;
   } else {
@@ -423,7 +440,7 @@ export async function pressSequentially(
     effectiveOptions = textOrOptions || {};
   }
   for (const char of String(text)) {
-    await press(char);
+    await press(char, inputContext);
     const delay = Number(effectiveOptions.delay ?? 0);
     if (delay > 0) {
       await state.sleep(delay);
@@ -443,8 +460,8 @@ export async function pressOnSelector(
   keyCombo,
   options: { timeout?: number; delay?: number } = {},
 ) {
-  await focusWithTimeout(selector, options.timeout);
-  await press(keyCombo, { delay: options.delay });
+  const inputContext = await focusWithTimeout(selector, options.timeout);
+  await press(keyCombo, { delay: options.delay, ...inputContext });
 }
 
 /**
@@ -591,7 +608,28 @@ function operationRemaining(deadline, timeout, apiName) {
 }
 
 async function focusWithTimeout(selector, timeout = state.defaultTimeout) {
-  await focus(selector, { timeout });
+  await waitForActionableElement(selector, { timeout });
+  return withHandle(selector, async (handle) => {
+    await cdp(
+      "Runtime.callFunctionOn",
+      {
+        functionDeclaration: "function(){this.focus();}",
+        objectId: handle.objectId,
+        returnByValue: true,
+        awaitPromise: false,
+      },
+      handle.sessionId,
+    );
+    return {
+      inputSessionId: handle.inputSessionId || handle.sessionId,
+      ...(handle.probeExecutionContextId === undefined
+        ? {}
+        : {
+            probeSessionId: handle.sessionId,
+            probeExecutionContextId: handle.probeExecutionContextId,
+          }),
+    };
+  });
 }
 
 // Page-side dispatcher, mirroring Playwright's injected dispatchEvent: the type
@@ -659,21 +697,26 @@ function inputEventDelay(delay = INPUT_EVENT_DELAY_MS) {
   return new Promise((resolve) => setTimeout(resolve, delay));
 }
 
-async function dispatchKeyEvent(params: Record<string, unknown>) {
+async function dispatchKeyEvent(
+  params: Record<string, unknown>,
+  sessionId = undefined,
+) {
   await browserCdp(
     "Input.dispatchKeyEvent",
     params,
-    undefined,
+    sessionId,
     INPUT_DISPATCH_TIMEOUT_MS,
   );
 }
 
-async function installKeyProbe(key: string) {
+async function installKeyProbe(key: string, context: KeyInputContext = {}) {
   if (!canProbeInputFallback()) return null;
   const id = `key_${Date.now()}_${Math.random().toString(16).slice(2)}`;
   try {
-    const result = await cdp("Runtime.evaluate", {
-      expression: `(() => {
+    const result = await cdp(
+      "Runtime.evaluate",
+      {
+        expression: `(() => {
       window.__egoBrowserInputProbes ||= {};
       const probe = { seen: false };
       probe.handler = (event) => {
@@ -683,9 +726,14 @@ async function installKeyProbe(key: string) {
       window.__egoBrowserInputProbes[${JSON.stringify(id)}] = probe;
       return true;
     })()`,
-      returnByValue: true,
-      awaitPromise: false,
-    });
+        returnByValue: true,
+        awaitPromise: false,
+        ...(context.probeExecutionContextId === undefined
+          ? {}
+          : { contextId: context.probeExecutionContextId }),
+      },
+      context.probeSessionId,
+    );
     return result.result?.value ? id : null;
   } catch {
     return null;
@@ -695,12 +743,15 @@ async function installKeyProbe(key: string) {
 async function finishKeyProbe(
   id: string | null,
   definition: { key: string; code: string; text: string; commands?: string[] },
+  context: KeyInputContext = {},
 ) {
   if (!id) return false;
   await inputEventDelay();
   try {
-    const result = await cdp("Runtime.evaluate", {
-      expression: `(() => {
+    const result = await cdp(
+      "Runtime.evaluate",
+      {
+        expression: `(() => {
       const probes = window.__egoBrowserInputProbes || {};
       const probe = probes[${JSON.stringify(id)}];
       if (!probe) return { seen: false, fallback: false };
@@ -785,9 +836,14 @@ async function finishKeyProbe(
       target.dispatchEvent(new KeyboardEvent("keyup", keyboardInit));
       return { seen: false, fallback: true };
     })()`,
-      returnByValue: true,
-      awaitPromise: false,
-    });
+        returnByValue: true,
+        awaitPromise: false,
+        ...(context.probeExecutionContextId === undefined
+          ? {}
+          : { contextId: context.probeExecutionContextId }),
+      },
+      context.probeSessionId,
+    );
     const value = result.result?.value;
     return Boolean(value?.seen || value?.fallback);
   } catch {

@@ -37,6 +37,26 @@ test("installEgoSdk keeps page.locator chainable while wrapping locator methods"
     );
     assert.equal(typeof target.page.getByAltText("Logo").click, "function");
     assert.equal(typeof target.page.getByTitle("More").click, "function");
+    const frameLocator = target.page.frameLocator("#checkout-frame");
+    assert.equal(frameLocator && typeof frameLocator, "object");
+    assert.deepEqual(frameLocator.frameChain, ["#checkout-frame"]);
+    assert.equal(typeof frameLocator.locator("#card-number").fill, "function");
+    const framedField = frameLocator.locator("#card-number");
+    assert.deepEqual(framedField.target.frameChain, ["#checkout-frame"]);
+    assert.equal(
+      typeof framedField.and(frameLocator.locator("[required]")).fill,
+      "function",
+    );
+    assert.equal(
+      typeof framedField.or(frameLocator.locator("#saved-card")).click,
+      "function",
+    );
+    assert.equal(
+      typeof frameLocator
+        .frameLocator("#nested-frame")
+        .getByRole("button", { name: "Pay" }).click,
+      "function",
+    );
     const locator = target.page.locator("#target");
     assert.equal(locator && typeof locator, "object");
     assert.equal(typeof locator.click, "function");
@@ -78,6 +98,69 @@ test("installEgoSdk preserves the asynchronous page.url contract", async () => {
     const value = target.page.url();
     assert.equal(typeof value.then, "function");
     assert.equal(await value, "https://example.com/current");
+  } finally {
+    console.log = originalLog;
+  }
+});
+
+test("installEgoSdk starts page.waitForEvent synchronously when already ready", async () => {
+  const originalLog = console.log;
+  const target = {};
+  let started = false;
+  try {
+    installEgoSdk(target, {
+      cliLog() {},
+      context: {
+        page: {
+          waitForEvent: async () => {
+            started = true;
+            return "event";
+          },
+        },
+      },
+    });
+    const event = target.page.waitForEvent("console");
+    assert.equal(
+      started,
+      true,
+      "event registration starts before the caller's next action",
+    );
+    assert.equal(await event, "event");
+  } finally {
+    console.log = originalLog;
+  }
+});
+
+test("installEgoSdk keeps page.waitForEvent behind an explicit readiness gate", async () => {
+  const originalLog = console.log;
+  const target = {};
+  let releaseReady;
+  const ready = new Promise((resolve) => {
+    releaseReady = resolve;
+  });
+  let started = false;
+  try {
+    installEgoSdk(target, {
+      cliLog() {},
+      ready,
+      context: {
+        page: {
+          waitForEvent: async () => {
+            started = true;
+            return "event";
+          },
+        },
+      },
+    });
+    const event = target.page.waitForEvent("console");
+    assert.equal(
+      started,
+      false,
+      "an explicit host readiness signal is honored",
+    );
+    releaseReady();
+    assert.equal(await event, "event");
+    assert.equal(started, true);
   } finally {
     console.log = originalLog;
   }

@@ -40,7 +40,12 @@ export async function queryRoleLocatorBackendNodeIds(
 
 function exceptionText(result: any) {
   const d = result?.exceptionDetails;
-  return d?.exception?.description || d?.text || "evaluation error";
+  return (
+    d?.exception?.description ||
+    d?.exception?.value ||
+    d?.text ||
+    "evaluation error"
+  );
 }
 
 function matchCountKind(message: string): "transient" | "permanent" {
@@ -49,7 +54,7 @@ function matchCountKind(message: string): "transient" | "permanent" {
   return n > 1 ? "permanent" : "transient";
 }
 
-function selectorResolutionError(selector, result) {
+export function selectorResolutionError(selector, result) {
   const message = exceptionText(result);
   if (/\bmatched \d+ elements\b/.test(message)) {
     return new ElementResolutionError(message, matchCountKind(message));

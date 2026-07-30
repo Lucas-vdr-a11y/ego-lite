@@ -1462,6 +1462,79 @@ test("waitForSelector supports hidden and detached states", async () => {
   );
 });
 
+test("waitForSelector waits until the frame owner becomes visible", async () => {
+  let frameProbes = 0;
+  let now = 0;
+  const restore = setOverrides({
+    sessionId: "main-session",
+    sessionTargetId: "tab-1",
+    sessionAt: Date.now(),
+    now: () => now,
+    sleep: async (ms) => {
+      now += ms;
+    },
+    cdpOverride(method, params) {
+      if (method === "Runtime.evaluate") {
+        return {
+          result: {
+            objectId:
+              params.contextId === 101 ? "inside-object" : "frame-owner",
+          },
+        };
+      }
+      if (
+        method === "Runtime.callFunctionOn" &&
+        params.objectId === "frame-owner"
+      ) {
+        frameProbes += 1;
+        return {
+          result: {
+            value: {
+              x: 100,
+              y: 50,
+              width: frameProbes === 1 ? 0 : 400,
+              height: frameProbes === 1 ? 0 : 300,
+              visible: frameProbes > 1,
+              receivesEvents: frameProbes > 1,
+              scaleX: 1,
+              scaleY: 1,
+            },
+          },
+        };
+      }
+      if (method === "DOM.describeNode") {
+        return { node: { frameId: "delayed-visible-frame" } };
+      }
+      if (method === "Page.createIsolatedWorld") {
+        return { executionContextId: 101 };
+      }
+      if (
+        method === "Runtime.callFunctionOn" &&
+        params.objectId === "inside-object"
+      ) {
+        return { result: { value: true } };
+      }
+      if (method === "Runtime.releaseObject") return {};
+      throw new Error(`Unexpected CDP method: ${method}`);
+    },
+  });
+  try {
+    assert.equal(
+      await waitForSelector(
+        {
+          selector: "#inside",
+          frameChain: ["iframe#delayed-visible"],
+        },
+        { state: "visible", timeout: 700 },
+      ),
+      true,
+    );
+    assert.equal(frameProbes, 2);
+  } finally {
+    restore();
+  }
+});
+
 test("waitForSelector does not retry a task-space hard stop", async () => {
   const hardStop = Object.assign(new Error("user controls the task space"), {
     error_code: "EGO_TASK_SPACE_USER_IN_CONTROL",

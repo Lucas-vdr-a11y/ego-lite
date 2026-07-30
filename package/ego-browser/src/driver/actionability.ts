@@ -1,5 +1,7 @@
 import { cdp, runtimeValue } from "../cdp-eval.js";
 import { ElementResolutionError } from "../element-resolver.js";
+import type { LocatorTarget } from "../frame-context.js";
+import { frameOwnersReceiveEvents } from "../frame-context.js";
 import {
   normalizeTimeout,
   operationTimeout,
@@ -79,7 +81,7 @@ const ACTIONABILITY_PROBE = `function(position) {
  * actionability checks pass, then return the viewport point for input dispatch.
  */
 export async function waitForActionableElement(
-  selector: string,
+  selector: string | LocatorTarget,
   options: ActionabilityOptions = {},
 ) {
   const timeout = normalizeTimeout(
@@ -93,7 +95,10 @@ export async function waitForActionableElement(
   while (state.now() < deadline) {
     let handle;
     try {
-      handle = await resolveHandle(selector);
+      handle = await resolveHandle(selector, {
+        scrollFrames: requiresLayoutProbe(options),
+        trackFrameOwners: Boolean(options.receivesEvents),
+      });
     } catch (error) {
       if (
         error instanceof ElementResolutionError &&
@@ -141,6 +146,12 @@ export async function waitForActionableElement(
         await state.sleep(50);
         continue;
       }
+      if (options.visible && handle.frameVisible === false) {
+        previousRect = null;
+        lastIssue = "frame owner is not visible";
+        await state.sleep(50);
+        continue;
+      }
       if (options.visible && !probe.visible) {
         previousRect = null;
         lastIssue = "element is not visible";
@@ -159,23 +170,71 @@ export async function waitForActionableElement(
         await state.sleep(50);
         continue;
       }
+      const position = normalizedPosition(options.position);
+      const localX = probe.rect.x + (position?.x ?? probe.rect.width / 2);
+      const localY = probe.rect.y + (position?.y ?? probe.rect.height / 2);
       if (options.receivesEvents && !probe.receivesEvents) {
         previousRect = null;
         lastIssue = "element does not receive pointer events";
         await state.sleep(50);
         continue;
       }
-      if (options.stable && !sameRect(previousRect, probe.rect)) {
-        previousRect = probe.rect;
+      if (options.receivesEvents) {
+        let frameReceivesEvents;
+        try {
+          frameReceivesEvents = await frameOwnersReceiveEvents(
+            handle.frameOwners,
+            {
+              x: localX,
+              y: localY,
+            },
+          );
+        } catch (error) {
+          if (
+            error instanceof ElementResolutionError &&
+            error.kind === "transient"
+          ) {
+            previousRect = null;
+            lastIssue = error.message;
+            await state.sleep(50);
+            continue;
+          }
+          throw error;
+        }
+        if (!frameReceivesEvents) {
+          previousRect = null;
+          lastIssue =
+            "frame owner does not receive pointer events at target point";
+          await state.sleep(50);
+          continue;
+        }
+      }
+      const frameOffset = handle.frameOffset || { x: 0, y: 0 };
+      const frameScale = handle.frameScale || { x: 1, y: 1 };
+      const globalRect = {
+        x: frameOffset.x + probe.rect.x * frameScale.x,
+        y: frameOffset.y + probe.rect.y * frameScale.y,
+        width: probe.rect.width * frameScale.x,
+        height: probe.rect.height * frameScale.y,
+      };
+      if (options.stable && !sameRect(previousRect, globalRect)) {
+        previousRect = globalRect;
         lastIssue = "element is not stable";
         await state.sleep(50);
         continue;
       }
-      const position = normalizedPosition(options.position);
       return {
-        x: probe.rect.x + (position?.x ?? probe.rect.width / 2),
-        y: probe.rect.y + (position?.y ?? probe.rect.height / 2),
-        sessionId: handle.sessionId,
+        x: frameOffset.x + localX * frameScale.x,
+        y: frameOffset.y + localY * frameScale.y,
+        sessionId: handle.inputSessionId || handle.sessionId,
+        ...(handle.frameOffset !== undefined
+          ? {
+              probeSessionId: handle.sessionId,
+              probeExecutionContextId: handle.probeExecutionContextId,
+              probeX: localX,
+              probeY: localY,
+            }
+          : {}),
       };
     } finally {
       await releaseHandle(handle.objectId, handle.sessionId);

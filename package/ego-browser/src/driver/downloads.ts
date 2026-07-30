@@ -1,9 +1,10 @@
 import { createReadStream, mkdirSync } from "node:fs";
-import { access, copyFile, mkdir, unlink } from "node:fs/promises";
+import { access, copyFile, mkdir, rm, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { cdp } from "../cdp-eval.js";
+import { isEgoHardStopError } from "../ego-errors.js";
 import {
   ensureSession,
   subscribeBrowserEvent,
@@ -19,6 +20,19 @@ import { listTabs, switchTab } from "./nav.js";
 
 type WaitForEventOptions = {
   timeout?: number;
+  predicate?: (event: any) => boolean | Promise<boolean>;
+  signal?: AbortSignal;
+};
+
+type EventPredicate = NonNullable<WaitForEventOptions["predicate"]>;
+type PageContext = {
+  sessionId: string;
+  targetId: string | null;
+};
+type FileChooserInterception = {
+  users: number;
+  enabled: boolean;
+  ready: Promise<void>;
 };
 
 const PAGE_EVENTS = new Set([
@@ -30,10 +44,12 @@ const PAGE_EVENTS = new Set([
   "popup",
   "requestfailed",
 ]);
+const fileChooserInterceptions = new Map<string, FileChooserInterception>();
 
 type DownloadWillBegin = {
   method: "Page.downloadWillBegin" | "Browser.downloadWillBegin";
   params?: {
+    frameId?: string;
     guid?: string;
     url?: string;
     suggestedFilename?: string;
@@ -51,40 +67,58 @@ type DownloadProgress = {
 /**
  * Wait for a Playwright-style page event.
  * @param {"console"|"dialog"|"download"|"filechooser"|"pageerror"|"popup"|"requestfailed"} eventName Event name.
- * @param {{timeout?: number}} [options] Timeout in milliseconds.
+ * @param {Function|{timeout?: number, predicate?: Function, signal?: AbortSignal}} [optionsOrPredicate] Predicate function or wait options.
  * @returns {Promise<object>} Event-specific Playwright-style facade.
  */
 export async function waitForEvent(
   eventName,
-  options: WaitForEventOptions = {},
+  optionsOrPredicate:
+    | WaitForEventOptions
+    | ((event: any) => boolean | Promise<boolean>) = {},
 ) {
   if (!PAGE_EVENTS.has(eventName)) {
     throw new Error(
       `page.waitForEvent supports ${[...PAGE_EVENTS].map((name) => JSON.stringify(name)).join(", ")}, got ${JSON.stringify(eventName)}`,
     );
   }
+  const options = normalizeWaitForEventOptions(optionsOrPredicate);
+  if (options.signal?.aborted) {
+    throw abortReason(options.signal);
+  }
   const timeout = normalizeTimeout(
     `page.waitForEvent(${JSON.stringify(eventName)})`,
     options.timeout ?? state.defaultTimeout,
   );
-  try {
+  const predicate = options.predicate || (() => true);
+  const operationName = `page.waitForEvent(${JSON.stringify(eventName)})`;
+  const operationScope = createOperationScope(
+    operationName,
+    timeout,
+    options.signal,
+  );
+  const operation = (async () => {
     switch (eventName) {
       case "console":
-        return await waitForConsole(timeout);
+        return waitForConsole(timeout, predicate, operationScope.signal);
       case "dialog":
-        return await waitForDialog(timeout);
+        return waitForDialog(timeout, predicate, operationScope.signal);
       case "download":
-        return await waitForDownload(timeout);
+        return waitForDownload(timeout, predicate, operationScope.signal);
       case "filechooser":
-        return await waitForFileChooser(timeout);
+        return waitForFileChooser(timeout, predicate, operationScope.signal);
       case "pageerror":
-        return await waitForPageError(timeout);
+        return waitForPageError(timeout, predicate, operationScope.signal);
       case "popup":
-        return await waitForPopup(timeout);
+        return waitForPopup(timeout, predicate, operationScope.signal);
       case "requestfailed":
-        return await waitForFailedRequest(timeout);
+        return waitForFailedRequest(timeout, predicate, operationScope.signal);
     }
+  })();
+  void operation.catch(() => {});
+  try {
+    return await operation;
   } catch (error) {
+    if (error?.name === "TimeoutError") throw error;
     if (
       /page\.waitForEvent timed out|CDP request timed out:/i.test(
         error?.message || "",
@@ -96,37 +130,66 @@ export async function waitForEvent(
       );
     }
     throw error;
+  } finally {
+    operationScope.dispose();
   }
 }
 
-async function waitForPopup(timeout: number) {
-  const sessionPromise = ensureSession();
-  const abortController = new AbortController();
-  const eventPromise = waitForBrowserEvent(
-    async (event) => {
-      await sessionPromise;
-      const targetInfo = event?.params?.targetInfo;
-      return (
-        event?.method === "Target.targetCreated" &&
-        targetInfo?.type === "page" &&
-        targetInfo?.openerId === state.sessionTargetId
-      );
-    },
-    browserEventTimeout(timeout),
-    abortController.signal,
-  ) as Promise<any>;
-  void eventPromise.catch(() => {});
-  const discoveryPromise = sessionPromise.then(() =>
-    cdp("Target.setDiscoverTargets", { discover: true }, undefined, timeout),
-  );
-  try {
-    const [, event] = await Promise.all([discoveryPromise, eventPromise]);
-    return createPopupFacade(event.params?.targetInfo || {});
-  } catch (error) {
-    abortController.abort();
-    await eventPromise.catch(() => {});
-    throw error;
+function normalizeWaitForEventOptions(
+  optionsOrPredicate:
+    | WaitForEventOptions
+    | ((event: any) => boolean | Promise<boolean>),
+): WaitForEventOptions {
+  if (typeof optionsOrPredicate === "function") {
+    return { predicate: optionsOrPredicate };
   }
+  if (
+    optionsOrPredicate === null ||
+    typeof optionsOrPredicate !== "object" ||
+    Array.isArray(optionsOrPredicate)
+  ) {
+    throw new TypeError(
+      "page.waitForEvent options must be an object or predicate function",
+    );
+  }
+  if (
+    optionsOrPredicate.predicate !== undefined &&
+    typeof optionsOrPredicate.predicate !== "function"
+  ) {
+    throw new TypeError("page.waitForEvent predicate must be a function");
+  }
+  if (
+    optionsOrPredicate.signal !== undefined &&
+    !isAbortSignal(optionsOrPredicate.signal)
+  ) {
+    throw new TypeError("page.waitForEvent signal must be an AbortSignal");
+  }
+  return optionsOrPredicate;
+}
+
+async function waitForPopup(
+  timeout: number,
+  predicate: EventPredicate,
+  signal?: AbortSignal,
+) {
+  return waitForPageValue(
+    timeout,
+    signal,
+    ({ targetId }) =>
+      cdp("Target.setDiscoverTargets", { discover: true }, undefined, timeout),
+    (event, { targetId }) => {
+      const targetInfo = event?.params?.targetInfo;
+      if (
+        event?.method !== "Target.targetCreated" ||
+        targetInfo?.type !== "page" ||
+        targetInfo?.openerId !== targetId
+      ) {
+        return NO_EVENT;
+      }
+      return createPopupFacade(targetInfo);
+    },
+    predicate,
+  );
 }
 
 function createPopupFacade(targetInfo) {
@@ -149,12 +212,22 @@ function createPopupFacade(targetInfo) {
   };
 }
 
-async function waitForDialog(timeout: number) {
-  const { event, sessionId } = await waitForSessionEvent(
+async function waitForDialog(
+  timeout: number,
+  predicate: EventPredicate,
+  signal?: AbortSignal,
+) {
+  return waitForSessionValue(
     "Page.javascriptDialogOpening",
     timeout,
+    undefined,
+    (event, sessionId) => createDialogFacade(event.params || {}, sessionId),
+    predicate,
+    signal,
   );
-  const params = event.params || {};
+}
+
+function createDialogFacade(params, sessionId: string) {
   return {
     type: () => params.type || "",
     message: () => params.message || "",
@@ -173,28 +246,93 @@ async function waitForDialog(timeout: number) {
   };
 }
 
-async function waitForFileChooser(timeout: number) {
-  const { event, sessionId } = await waitForSessionEvent(
-    "Page.fileChooserOpened",
-    timeout,
-    (currentSessionId) =>
-      cdp(
-        "Page.setInterceptFileChooserDialog",
-        { enabled: true },
-        currentSessionId,
-        timeout,
-      ),
-  );
-  await cdp(
-    "Page.setInterceptFileChooserDialog",
-    { enabled: false },
-    sessionId,
-    timeout,
-  ).catch(() => {
-    // The chooser event is already captured. Cleanup is best-effort so a
-    // transient bridge failure does not discard the usable chooser facade.
-  });
-  const params = event.params || {};
+async function waitForFileChooser(
+  timeout: number,
+  predicate: EventPredicate,
+  signal?: AbortSignal,
+) {
+  let interceptionLease:
+    | {
+        ready: Promise<void>;
+        release: () => Promise<void>;
+      }
+    | undefined;
+  try {
+    return await waitForSessionValue(
+      "Page.fileChooserOpened",
+      timeout,
+      async (sessionId) => {
+        interceptionLease = acquireFileChooserInterception(sessionId, timeout);
+        await interceptionLease.ready;
+      },
+      (event, sessionId) =>
+        createFileChooserFacade(event.params || {}, sessionId),
+      predicate,
+      signal,
+    );
+  } finally {
+    await interceptionLease?.release();
+  }
+}
+
+function acquireFileChooserInterception(sessionId: string, timeout: number) {
+  let interception = fileChooserInterceptions.get(sessionId);
+  if (!interception) {
+    interception = {
+      users: 0,
+      enabled: false,
+      ready: Promise.resolve(),
+    };
+    fileChooserInterceptions.set(sessionId, interception);
+    interception.ready = cdp(
+      "Page.setInterceptFileChooserDialog",
+      { enabled: true },
+      sessionId,
+      timeout,
+    ).then(() => {
+      interception.enabled = true;
+    });
+    void interception.ready.catch(() => {});
+  }
+  interception.users += 1;
+  let released = false;
+  return {
+    ready: interception.ready,
+    release: async () => {
+      if (released) return;
+      released = true;
+      interception.users = Math.max(0, interception.users - 1);
+      if (interception.users > 0) return;
+      const disable = async () => {
+        await interception.ready.catch(() => {});
+        if (
+          interception.users > 0 ||
+          fileChooserInterceptions.get(sessionId) !== interception
+        ) {
+          return;
+        }
+        fileChooserInterceptions.delete(sessionId);
+        if (!interception.enabled) return;
+        await cdp(
+          "Page.setInterceptFileChooserDialog",
+          { enabled: false },
+          sessionId,
+          timeout,
+        ).catch(() => {
+          // Cleanup is best-effort so it does not hide the event result or the
+          // original wait failure.
+        });
+      };
+      if (interception.enabled) {
+        await disable();
+      } else {
+        void disable();
+      }
+    },
+  };
+}
+
+function createFileChooserFacade(params, sessionId: string) {
   return {
     isMultiple: () => params.mode === "selectMultiple",
     setFiles: async (filesValue) => {
@@ -216,11 +354,21 @@ async function waitForFileChooser(timeout: number) {
   };
 }
 
-async function waitForPageError(timeout: number) {
-  const { event } = await waitForRuntimeEvent(
+async function waitForPageError(
+  timeout: number,
+  predicate: EventPredicate,
+  signal?: AbortSignal,
+) {
+  return waitForRuntimeEvent(
     "Runtime.exceptionThrown",
     timeout,
+    (event) => createPageError(event),
+    predicate,
+    signal,
   );
+}
+
+function createPageError(event) {
   const details = event.params?.exceptionDetails || {};
   const description =
     details.exception?.description || details.exception?.value || details.text;
@@ -232,11 +380,21 @@ async function waitForPageError(timeout: number) {
   return error;
 }
 
-async function waitForConsole(timeout: number) {
-  const { event, sessionId } = await waitForRuntimeEvent(
+async function waitForConsole(
+  timeout: number,
+  predicate: EventPredicate,
+  signal?: AbortSignal,
+) {
+  return waitForRuntimeEvent(
     "Runtime.consoleAPICalled",
     timeout,
+    (event, sessionId) => createConsoleMessage(event, sessionId),
+    predicate,
+    signal,
   );
+}
+
+function createConsoleMessage(event, sessionId: string) {
   const params = event.params || {};
   const args = (params.args || []).map((remoteObject) =>
     createJSHandle(remoteObject, sessionId),
@@ -271,123 +429,373 @@ function consoleArgumentText(remoteObject) {
   }
 }
 
-async function waitForRuntimeEvent(method: string, timeout: number) {
-  return waitForSessionEvent(method, timeout, (sessionId) =>
-    cdp("Runtime.enable", {}, sessionId, timeout),
+async function waitForRuntimeEvent(
+  method: string,
+  timeout: number,
+  createValue: (event: any, sessionId: string) => any,
+  predicate: EventPredicate,
+  signal?: AbortSignal,
+) {
+  return waitForSessionValue(
+    method,
+    timeout,
+    (sessionId) => cdp("Runtime.enable", {}, sessionId, timeout),
+    createValue,
+    predicate,
+    signal,
   );
 }
 
-async function waitForSessionEvent(
+async function waitForSessionValue(
   method: string,
   timeout: number,
   setup?: (sessionId: string) => Promise<any>,
+  createValue: (event: any, sessionId: string) => any = (event) => event,
+  predicate: EventPredicate = () => true,
+  signal?: AbortSignal,
 ) {
-  const sessionPromise = ensureSession();
-  const abortController = new AbortController();
+  return waitForPageValue(
+    timeout,
+    signal,
+    setup ? ({ sessionId }) => setup(sessionId) : undefined,
+    (event, { sessionId }) => {
+      if (
+        event?.method !== method ||
+        (event?.sessionId && event.sessionId !== sessionId)
+      ) {
+        return NO_EVENT;
+      }
+      return createValue(event, sessionId);
+    },
+    predicate,
+  );
+}
+
+const NO_EVENT = Symbol("no-page-event");
+
+async function waitForPageValue(
+  timeout: number,
+  signal: AbortSignal | undefined,
+  setup: ((context: PageContext) => Promise<any>) | undefined,
+  createValue: (event: any, context: PageContext) => any | typeof NO_EVENT,
+  predicate: EventPredicate,
+) {
+  const cachedContext = cachedPageContext();
+  const contextPromise = cachedContext
+    ? Promise.resolve(cachedContext)
+    : currentPageContext();
+  const abortScope = createAbortScope(signal);
+  let matchedValue;
   const eventPromise = waitForBrowserEvent(
     async (event) => {
-      const sessionId = await sessionPromise;
-      return (
-        event?.method === method &&
-        (!event?.sessionId || event.sessionId === sessionId)
-      );
+      const context = await contextPromise;
+      throwIfPageEnded(event, context);
+      const value = createValue(event, context);
+      if (value === NO_EVENT || !(await predicate(value))) return false;
+      matchedValue = value;
+      return true;
     },
     browserEventTimeout(timeout),
-    abortController.signal,
-  ) as Promise<any>;
+    abortScope.signal,
+  );
   void eventPromise.catch(() => {});
-  const setupPromise = setup
-    ? sessionPromise.then((sessionId) => setup(sessionId))
-    : Promise.resolve();
+  const setupPromise = !setup
+    ? Promise.resolve()
+    : raceWithAbort(
+        cachedContext
+          ? Promise.resolve(setup(cachedContext))
+          : contextPromise.then((context) => setup(context)),
+        abortScope.signal,
+      );
   try {
-    const [sessionId, , event] = await Promise.all([
-      sessionPromise,
-      setupPromise,
-      eventPromise,
-    ]);
-    return { event, sessionId };
+    await Promise.all([contextPromise, setupPromise, eventPromise]);
+    return matchedValue;
   } catch (error) {
-    abortController.abort();
+    abortScope.abort(error);
     await eventPromise.catch(() => {});
     throw error;
+  } finally {
+    abortScope.dispose();
   }
 }
 
-async function waitForFailedRequest(timeout: number) {
-  const sessionPromise = ensureSession();
-  const networkEvents = acquireNetworkEvents(sessionPromise, timeout);
+function currentPageContext(): Promise<PageContext> {
+  return ensureSession().then((sessionId) => ({
+    sessionId,
+    targetId: state.sessionTargetId,
+  }));
+}
+
+function cachedPageContext(): PageContext | undefined {
+  if (!state.sessionId || !state.sessionTargetId) return undefined;
+  return {
+    sessionId: state.sessionId,
+    targetId: state.sessionTargetId,
+  };
+}
+
+function throwIfPageEnded(event, context: PageContext) {
+  const detachedSessionId = event?.params?.sessionId || event?.sessionId;
+  const endedTargetId =
+    event?.params?.targetId || event?.params?.targetInfo?.targetId;
+  if (
+    (event?.method === "Target.targetDestroyed" &&
+      endedTargetId === context.targetId) ||
+    (event?.method === "Target.detachedFromTarget" &&
+      (detachedSessionId === context.sessionId ||
+        endedTargetId === context.targetId))
+  ) {
+    throw new Error("page.waitForEvent failed because the page closed");
+  }
+  if (
+    event?.method === "Inspector.targetCrashed" &&
+    (!event?.sessionId || event.sessionId === context.sessionId)
+  ) {
+    throw new Error("page.waitForEvent failed because the page crashed");
+  }
+}
+
+function createAbortScope(externalSignal?: AbortSignal) {
+  const controller = new AbortController();
+  const onAbort = () => controller.abort(abortReason(externalSignal));
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      onAbort();
+    } else {
+      externalSignal.addEventListener("abort", onAbort, { once: true });
+    }
+  }
+  return {
+    signal: controller.signal,
+    abort: (reason?: unknown) => {
+      if (!controller.signal.aborted) controller.abort(reason);
+    },
+    dispose: () => externalSignal?.removeEventListener("abort", onAbort),
+  };
+}
+
+function createOperationScope(
+  operationName: string,
+  timeout: number,
+  externalSignal?: AbortSignal,
+) {
+  const controller = new AbortController();
+  const cancel = (reason: Error) => {
+    if (controller.signal.aborted) return;
+    controller.abort(reason);
+  };
+  const onAbort = () => cancel(abortReason(externalSignal));
+  externalSignal?.addEventListener("abort", onAbort, { once: true });
+  const timer =
+    timeout === 0
+      ? undefined
+      : setTimeout(
+          () => cancel(operationTimeout(operationName, timeout)),
+          timeout,
+        );
+  return {
+    signal: controller.signal,
+    dispose() {
+      if (timer) clearTimeout(timer);
+      externalSignal?.removeEventListener("abort", onAbort);
+    },
+  };
+}
+
+function raceWithAbort<T>(operation: Promise<T>, signal: AbortSignal) {
+  if (signal.aborted) return Promise.reject(abortReason(signal));
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(abortReason(signal));
+    signal.addEventListener("abort", onAbort, { once: true });
+    operation.then(resolve, reject).finally(() => {
+      signal.removeEventListener("abort", onAbort);
+    });
+  });
+}
+
+function abortReason(signal?: AbortSignal) {
+  return signal?.reason instanceof Error
+    ? signal.reason
+    : new Error("page.waitForEvent was aborted");
+}
+
+function isAbortSignal(value: unknown): value is AbortSignal {
+  return Boolean(
+    value &&
+    typeof value === "object" &&
+    typeof (value as AbortSignal).aborted === "boolean" &&
+    typeof (value as AbortSignal).addEventListener === "function" &&
+    typeof (value as AbortSignal).removeEventListener === "function",
+  );
+}
+
+async function waitForFailedRequest(
+  timeout: number,
+  predicate: EventPredicate,
+  signal?: AbortSignal,
+) {
+  const cachedContext = cachedPageContext();
+  const contextPromise = cachedContext
+    ? Promise.resolve(cachedContext)
+    : currentPageContext();
+  const networkEvents = acquireNetworkEvents(
+    cachedContext?.sessionId ||
+      contextPromise.then(({ sessionId }) => sessionId),
+    timeout,
+  );
   const monitor = createNetworkLifecycleMonitor(networkEvents);
-  const abortController = new AbortController();
-  let request: RequestInfo | undefined;
+  const abortScope = createAbortScope(signal);
+  let matchedRequest;
   const eventPromise = waitForBrowserEvent(
     async (event) => {
-      const expectedSessionId = await networkEvents.sessionId;
+      const context = await contextPromise;
+      throwIfPageEnded(event, context);
       if (
-        expectedSessionId &&
+        context.sessionId &&
         event?.sessionId &&
-        event.sessionId !== expectedSessionId
+        event.sessionId !== context.sessionId
       ) {
         return false;
       }
       if (event?.method !== "Network.loadingFailed") return false;
-      request = monitor.requestForEvent(event);
-      return Boolean(request);
+      const request = monitor.requestForEvent(event);
+      if (!request) return false;
+      const candidate = createRequestFacade(request);
+      if (!(await predicate(candidate))) return false;
+      matchedRequest = candidate;
+      return true;
     },
     browserEventTimeout(timeout),
-    abortController.signal,
+    abortScope.signal,
   );
   void eventPromise.catch(() => {});
   try {
-    await Promise.all([networkEvents.ready, eventPromise]);
-    return createRequestFacade(request);
-  } finally {
-    abortController.abort();
+    await Promise.all([
+      raceWithAbort(networkEvents.ready, abortScope.signal),
+      eventPromise,
+    ]);
+    return matchedRequest;
+  } catch (error) {
+    abortScope.abort(error);
     await eventPromise.catch(() => {});
+    throw error;
+  } finally {
+    abortScope.dispose();
     await monitor.release();
   }
 }
 
-async function waitForDownload(timeout: number) {
+async function waitForDownload(
+  timeout: number,
+  predicate: EventPredicate,
+  signal?: AbortSignal,
+) {
   const downloadDir = join(
     tmpdir(),
     `ego-browser-downloads-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
   );
   mkdirSync(downloadDir, { recursive: true });
-  const sessionPromise = ensureSession();
-  const behaviorPromise = setDownloadBehavior(downloadDir, timeout);
+  const contextPromise = currentPageContext();
   const progressTracker = trackDownloadProgress();
-  const abortController = new AbortController();
+  const abortScope = createAbortScope(signal);
+  const behaviorPromise = raceWithAbort(
+    setDownloadBehavior(downloadDir, timeout),
+    abortScope.signal,
+  );
+  const candidates = new Set<any>();
+  let mainFrameIdPromise: Promise<string | undefined> | undefined;
+  let matchedCandidate;
   const willBeginPromise = waitForBrowserEvent(
-    (event) =>
-      event?.method === "Page.downloadWillBegin" ||
-      event?.method === "Browser.downloadWillBegin",
+    async (event) => {
+      const context = await contextPromise;
+      throwIfPageEnded(event, context);
+      if (
+        event?.method !== "Page.downloadWillBegin" &&
+        event?.method !== "Browser.downloadWillBegin"
+      ) {
+        return false;
+      }
+      if (event?.sessionId && event.sessionId !== context.sessionId) {
+        return false;
+      }
+      if (
+        event.method === "Browser.downloadWillBegin" &&
+        event.params?.frameId
+      ) {
+        mainFrameIdPromise ??= currentMainFrameId(context.sessionId, timeout);
+        const mainFrameId = await mainFrameIdPromise;
+        if (mainFrameId && event.params.frameId !== mainFrameId) {
+          return false;
+        }
+      }
+      const candidate = createDownloadCandidate(
+        event,
+        downloadDir,
+        progressTracker,
+      );
+      candidates.add(candidate);
+      try {
+        if (!(await predicate(candidate.value))) {
+          candidate.dispose();
+          candidates.delete(candidate);
+          return false;
+        }
+        matchedCandidate = candidate;
+        candidate.retain();
+        return true;
+      } catch (error) {
+        candidate.dispose();
+        candidates.delete(candidate);
+        throw error;
+      }
+    },
     browserEventTimeout(timeout),
-    abortController.signal,
-  ) as Promise<DownloadWillBegin>;
+    abortScope.signal,
+  );
   void willBeginPromise.catch(() => {});
-  let willBegin;
   try {
-    [, , willBegin] = await Promise.all([
-      sessionPromise,
-      behaviorPromise,
-      willBeginPromise,
-    ]);
+    await Promise.all([contextPromise, behaviorPromise, willBeginPromise]);
+    return matchedCandidate.value;
   } catch (error) {
-    abortController.abort();
+    abortScope.abort(error);
     await willBeginPromise.catch(() => {});
     progressTracker.dispose();
+    await rm(downloadDir, { recursive: true, force: true }).catch(() => {});
     throw error;
+  } finally {
+    abortScope.dispose();
+    for (const candidate of candidates) {
+      if (candidate !== matchedCandidate) candidate.dispose();
+    }
   }
+}
+
+async function currentMainFrameId(sessionId: string, timeout: number) {
+  try {
+    const result = await cdp("Page.getFrameTree", {}, sessionId, timeout);
+    return result.frameTree?.frame?.id || undefined;
+  } catch (error) {
+    if (isEgoHardStopError(error)) throw error;
+    // Older bridges may not expose Page.getFrameTree. Keep download support
+    // available there, while filtering by frame whenever Chromium provides it.
+    return undefined;
+  }
+}
+
+function createDownloadCandidate(
+  willBegin: DownloadWillBegin,
+  downloadDir: string,
+  progressTracker: ReturnType<typeof trackDownloadProgress>,
+) {
   const guid = willBegin.params?.guid;
-  progressTracker.setGuid(guid);
+  const progress = progressTracker.watch(guid);
   const suggestedFilename =
     willBegin.params?.suggestedFilename || guid || "download";
   const downloadedPath = join(downloadDir, suggestedFilename);
-  const completion = progressTracker.completion;
   let outcomePromise: Promise<DownloadProgress> | null = null;
   const downloadOutcome = () => {
     outcomePromise ??= waitForDownloadOutcome(
-      completion,
+      progress.completion,
       downloadedPath,
       progressTracker.dispose,
     );
@@ -400,7 +808,7 @@ async function waitForDownload(timeout: number) {
     }
     return downloadedPath;
   };
-  return {
+  const value = {
     suggestedFilename: () => suggestedFilename,
     url: () => willBegin.params?.url || "",
     path: completedPath,
@@ -428,6 +836,13 @@ async function waitForDownload(timeout: number) {
       });
     },
     createReadStream: async () => createReadStream(await completedPath()),
+  };
+  return {
+    value,
+    retain() {
+      void progress.completion.then(progressTracker.dispose);
+    },
+    dispose: progress.dispose,
   };
 }
 
@@ -475,13 +890,9 @@ function browserEventTimeout(timeout) {
 }
 
 function trackDownloadProgress() {
-  let guid;
-  let settled = false;
   const buffered: DownloadProgress[] = [];
-  let resolveCompletion;
-  const completion = new Promise<DownloadProgress>((resolve) => {
-    resolveCompletion = resolve;
-  });
+  const watchers = new Set<any>();
+  let disposed = false;
   const onProgress = (event: DownloadProgress) => {
     if (
       event?.params?.state !== "completed" &&
@@ -489,33 +900,55 @@ function trackDownloadProgress() {
     ) {
       return;
     }
-    if (!guid) {
-      buffered.push(event);
-      return;
+    buffered.push(event);
+    if (buffered.length > 100) buffered.shift();
+    for (const watcher of [...watchers]) {
+      if (watcher.guid === event?.params?.guid) {
+        watcher.finish(event);
+      }
     }
-    if (event?.params?.guid === guid) finish(event);
   };
   const unsubscribe = [
     subscribeBrowserEvent("Page.downloadProgress", undefined, onProgress),
     subscribeBrowserEvent("Browser.downloadProgress", undefined, onProgress),
   ];
-  const finish = (event) => {
-    if (settled) return;
-    settled = true;
-    for (const remove of unsubscribe) remove();
-    resolveCompletion(event);
-  };
   return {
-    completion,
-    setGuid(value) {
-      guid = value;
+    watch(guid) {
+      let settled = false;
+      let resolveCompletion;
+      const completion = new Promise<DownloadProgress>((resolve) => {
+        resolveCompletion = resolve;
+      });
+      const watcher = {
+        guid,
+        finish(event) {
+          if (settled) return;
+          settled = true;
+          watchers.delete(watcher);
+          resolveCompletion(event);
+        },
+      };
       const match = buffered.find((event) => event?.params?.guid === guid);
-      if (match) finish(match);
+      if (match) {
+        watcher.finish(match);
+      } else if (!disposed) {
+        watchers.add(watcher);
+      }
+      return {
+        completion,
+        dispose() {
+          if (settled) return;
+          settled = true;
+          watchers.delete(watcher);
+        },
+      };
     },
     dispose() {
-      if (settled) return;
-      settled = true;
+      if (disposed) return;
+      disposed = true;
       for (const remove of unsubscribe) remove();
+      for (const watcher of watchers) watcher.dispose?.();
+      watchers.clear();
     },
   };
 }

@@ -442,9 +442,11 @@ export async function openOrReuseTab(
   if (existing) {
     await switchTab(existing.targetId);
     if (options.wait) {
-      await waitForDocumentLoad({
-        timeout: options.timeout ?? navigationTimeout(undefined),
-      });
+      const timeout = options.timeout ?? navigationTimeout(undefined);
+      const loaded = await waitForDocumentLoad({ timeout });
+      if (!loaded) {
+        throw operationTimeout("browser.openOrReuseTab", timeout);
+      }
     }
     const settle = Number(options.settle ?? 0);
     if (settle > 0) {
@@ -454,9 +456,11 @@ export async function openOrReuseTab(
   }
   const targetId = await newTab(url);
   if (options.wait !== false) {
-    await waitForDocumentLoad({
-      timeout: options.timeout ?? navigationTimeout(undefined),
-    });
+    const timeout = options.timeout ?? navigationTimeout(undefined);
+    const loaded = await waitForDocumentLoad({ timeout });
+    if (!loaded) {
+      throw operationTimeout("browser.openOrReuseTab", timeout);
+    }
   }
   const settle = Number(options.settle ?? 0);
   if (settle > 0) {
@@ -510,18 +514,42 @@ export async function ensureRealTab() {
 }
 
 /**
- * Find an iframe target whose URL contains a substring.
+ * Find an iframe target under the current tab whose URL contains a substring.
  * @param {string} urlSubstring URL substring to match.
- * @returns {Promise<string|null>} Matching iframe target id, if any.
+ * @returns {Promise<string|null>} Unique matching iframe target id, if any.
  */
 export async function iframeTarget(urlSubstring) {
+  const current = await currentTab();
   const targets = (await cdp("Target.getTargets")).targetInfos || [];
-  return (
-    targets.find(
-      (target) =>
-        target.type === "iframe" && (target.url || "").includes(urlSubstring),
-    )?.targetId || null
+  const targetsById = new Map(
+    targets.map((target) => [target.targetId, target]),
   );
+  const matches = targets.filter(
+    (target) =>
+      target.type === "iframe" &&
+      (target.url || "").includes(urlSubstring) &&
+      targetDescendsFrom(target, current.targetId, targetsById),
+  );
+  if (matches.length > 1) {
+    throw new Error(
+      `iframeTarget matched ${matches.length} iframe targets under current tab ${current.targetId} for ${JSON.stringify(urlSubstring)}: ${matches
+        .map((target) => `${target.targetId} (${target.url || ""})`)
+        .join(", ")}`,
+    );
+  }
+  return matches[0]?.targetId || null;
+}
+
+function targetDescendsFrom(target, ancestorTargetId, targetsById) {
+  const visited = new Set([target.targetId]);
+  let parentId = target.parentId;
+  while (parentId) {
+    if (parentId === ancestorTargetId) return true;
+    if (visited.has(parentId)) return false;
+    visited.add(parentId);
+    parentId = targetsById.get(parentId)?.parentId;
+  }
+  return false;
 }
 
 function tabMatchesUrl(tabUrl: string, wantedUrl: string, match: UrlMatchMode) {

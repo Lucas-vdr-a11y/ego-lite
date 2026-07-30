@@ -44,6 +44,39 @@ export function navigationCase() {
     await browser.closeTab(unique.targetId);
     await browser.switchTab(home);
 
+    const slowRun = Date.now();
+    const slowUrl =
+      baseUrl + "/regression/slow-load?ms=1200&run=" + slowRun;
+    let openTimeoutError = null;
+    try {
+      try {
+        await browser.openOrReuseTab(slowUrl, {
+          wait: true,
+          timeout: 200,
+        });
+      } catch (error) {
+        openTimeoutError = error;
+      }
+      assertEqual(
+        openTimeoutError?.name,
+        "TimeoutError",
+        "openOrReuseTab exposes a load timeout as TimeoutError",
+      );
+      assertIncludes(
+        openTimeoutError?.message,
+        "browser.openOrReuseTab timed out after 200ms",
+        "openOrReuseTab reports its effective load timeout",
+      );
+    } finally {
+      const slowTabs = (await browser.listTabs({ includeChrome: false })).filter(
+        (tab) => String(tab.url || "").includes("run=" + slowRun),
+      );
+      for (const slowTab of slowTabs) {
+        await browser.closeTab(slowTab.targetId).catch(() => {});
+      }
+      await browser.switchTab(home);
+    }
+
     const secondary = await browser.openOrReuseTab(baseUrl + "/secondary", {
       wait: true,
       timeout: 10000,

@@ -1,5 +1,6 @@
 import { cdp, evaluate } from "../cdp-eval.js";
 import { browserCdp } from "../browser-runtime.js";
+import { isLocatorTarget, type LocatorTarget } from "../frame-context.js";
 import { resolveAndCall } from "./element-ops.js";
 import { waitForActionableElement } from "./actionability.js";
 
@@ -8,9 +9,14 @@ type Point = {
   x: number;
   y: number;
   sessionId?: string;
+  probeSessionId?: string;
+  probeExecutionContextId?: number;
+  probeX?: number;
+  probeY?: number;
 };
 export type MouseTarget =
   | string
+  | LocatorTarget
   | [number, number]
   | { x: number; y: number; sessionId?: string }
   | { selector: string; x?: number; y?: number };
@@ -336,8 +342,8 @@ export async function drag(points: MouseTarget[], options: DragOptions = {}) {
  * Drag one locator to another with Playwright-style source and target positions.
  */
 export async function dragTo(
-  source: string,
-  target: string,
+  source: string | LocatorTarget,
+  target: string | LocatorTarget,
   options: DragToOptions = {},
 ) {
   const sourcePoint = await waitForActionableElement(source, {
@@ -402,6 +408,7 @@ function inputEventDelay(ms = INPUT_EVENT_DELAY_MS) {
 
 async function installClickProbe(point: Point, button: MouseButton) {
   if (!canProbeInputFallback()) return null;
+  const localPoint = probePoint(point);
   const id = `click_${Date.now()}_${Math.random().toString(16).slice(2)}`;
   const completionEvent = mouseCompletionEvent(button);
   try {
@@ -409,7 +416,7 @@ async function installClickProbe(point: Point, button: MouseButton) {
       "Runtime.evaluate",
       {
         expression: `(() => {
-        const target = document.elementFromPoint(${JSON.stringify(point.x)}, ${JSON.stringify(point.y)});
+        const target = document.elementFromPoint(${JSON.stringify(localPoint.x)}, ${JSON.stringify(localPoint.y)});
         window.__egoBrowserInputProbes ||= {};
         const probe = { seen: false, target };
         probe.handler = (event) => {
@@ -420,11 +427,12 @@ async function installClickProbe(point: Point, button: MouseButton) {
         document.addEventListener(${JSON.stringify(completionEvent)}, probe.handler, true);
         window.__egoBrowserInputProbes[${JSON.stringify(id)}] = probe;
         return Boolean(target);
-      })()`,
+        })()`,
+        ...probeContext(localPoint),
         returnByValue: true,
         awaitPromise: false,
       },
-      point.sessionId,
+      localPoint.sessionId,
     );
     return result.result?.value ? id : null;
   } catch {
@@ -440,6 +448,7 @@ async function finishClickProbe(
   modifiers: number,
 ) {
   if (!id) return false;
+  const localPoint = probePoint(point);
   const completionEvent = mouseCompletionEvent(button);
   const buttonIndex = mouseButtonIndex(button);
   const buttons = pressedButtons(button);
@@ -466,8 +475,8 @@ async function finishClickProbe(
           bubbles: true,
           cancelable: true,
           view: window,
-          clientX: ${JSON.stringify(point.x)},
-          clientY: ${JSON.stringify(point.y)},
+          clientX: ${JSON.stringify(localPoint.x)},
+          clientY: ${JSON.stringify(localPoint.y)},
           button: ${JSON.stringify(buttonIndex)},
           ...${JSON.stringify(modifierInit)},
         };
@@ -480,10 +489,11 @@ async function finishClickProbe(
         }
         return { seen: false, fallback: true };
       })()`,
+        ...probeContext(localPoint),
         returnByValue: true,
         awaitPromise: false,
       },
-      point.sessionId,
+      localPoint.sessionId,
     );
     const value = result.result?.value;
     return Boolean(value?.seen || value?.fallback);
@@ -494,14 +504,17 @@ async function finishClickProbe(
 
 async function installDragProbe(first: Point, last: Point) {
   if (!canProbeInputFallback()) return null;
+  const localFirst = probePoint(first);
+  const localLast = probePoint(last);
+  if (!sameProbeContext(localFirst, localLast)) return null;
   const id = `drag_${Date.now()}_${Math.random().toString(16).slice(2)}`;
   try {
     const result = await cdp(
       "Runtime.evaluate",
       {
         expression: `(() => {
-        const source = document.elementFromPoint(${JSON.stringify(first.x)}, ${JSON.stringify(first.y)});
-        const target = document.elementFromPoint(${JSON.stringify(last.x)}, ${JSON.stringify(last.y)});
+        const source = document.elementFromPoint(${JSON.stringify(localFirst.x)}, ${JSON.stringify(localFirst.y)});
+        const target = document.elementFromPoint(${JSON.stringify(localLast.x)}, ${JSON.stringify(localLast.y)});
         window.__egoBrowserInputProbes ||= {};
         const probe = { sourceDown: false, targetUp: false, source, target };
         probe.downHandler = (event) => {
@@ -519,10 +532,11 @@ async function installDragProbe(first: Point, last: Point) {
         window.__egoBrowserInputProbes[${JSON.stringify(id)}] = probe;
         return Boolean(source && target);
       })()`,
+        ...probeContext(localLast),
         returnByValue: true,
         awaitPromise: false,
       },
-      last.sessionId ?? first.sessionId,
+      localLast.sessionId,
     );
     return result.result?.value ? id : null;
   } catch {
@@ -532,13 +546,14 @@ async function installDragProbe(first: Point, last: Point) {
 
 async function installHoverProbe(point: Point) {
   if (!canProbeInputFallback()) return null;
+  const localPoint = probePoint(point);
   const id = `hover_${Date.now()}_${Math.random().toString(16).slice(2)}`;
   try {
     const result = await cdp(
       "Runtime.evaluate",
       {
         expression: `(() => {
-        const target = document.elementFromPoint(${JSON.stringify(point.x)}, ${JSON.stringify(point.y)});
+        const target = document.elementFromPoint(${JSON.stringify(localPoint.x)}, ${JSON.stringify(localPoint.y)});
         window.__egoBrowserInputProbes ||= {};
         const probe = { seen: false, target };
         probe.handler = (event) => {
@@ -551,10 +566,11 @@ async function installHoverProbe(point: Point) {
         window.__egoBrowserInputProbes[${JSON.stringify(id)}] = probe;
         return Boolean(target);
       })()`,
+        ...probeContext(localPoint),
         returnByValue: true,
         awaitPromise: false,
       },
-      point.sessionId,
+      localPoint.sessionId,
     );
     return result.result?.value ? id : null;
   } catch {
@@ -653,6 +669,7 @@ async function removePressedMoveProbe(id: string, sessionId?: string) {
 
 async function finishHoverProbe(point: Point, id: string | null) {
   if (!id) return false;
+  const localPoint = probePoint(point);
   await inputEventDelay(50);
   try {
     const result = await cdp(
@@ -671,8 +688,8 @@ async function finishHoverProbe(point: Point, id: string | null) {
           bubbles: true,
           cancelable: true,
           view: window,
-          clientX: ${JSON.stringify(point.x)},
-          clientY: ${JSON.stringify(point.y)},
+          clientX: ${JSON.stringify(localPoint.x)},
+          clientY: ${JSON.stringify(localPoint.y)},
           button: 0,
           buttons: 0,
         };
@@ -680,10 +697,11 @@ async function finishHoverProbe(point: Point, id: string | null) {
         target.dispatchEvent(new MouseEvent("mouseover", init));
         return { seen: false, fallback: true };
       })()`,
+        ...probeContext(localPoint),
         returnByValue: true,
         awaitPromise: false,
       },
-      point.sessionId,
+      localPoint.sessionId,
     );
     const value = result.result?.value;
     return Boolean(value?.seen || value?.fallback);
@@ -699,8 +717,15 @@ async function finishDragProbe(
 ) {
   if (!id) return false;
   await inputEventDelay(50);
-  const first = points[0];
-  const last = points.at(-1);
+  const localPoints = points.map(probePoint);
+  const localFirst = localPoints[0];
+  const localLast = localPoints.at(-1);
+  if (
+    !localLast ||
+    localPoints.some((point) => !sameProbeContext(point, localFirst))
+  ) {
+    return false;
+  }
   try {
     const result = await cdp(
       "Runtime.evaluate",
@@ -729,7 +754,7 @@ async function finishDragProbe(
             detail: type === "mousemove" ? 0 : 1,
           }));
         };
-        const points = ${JSON.stringify(points.map(({ x, y }) => ({ x, y })))};
+        const points = ${JSON.stringify(localPoints.map(({ x, y }) => ({ x, y })))};
         if (!probe.sourceDown) {
           eventFor("mousedown", points[0], 1);
           for (const point of points.slice(1)) eventFor("mousemove", point, 1);
@@ -737,16 +762,24 @@ async function finishDragProbe(
         if (!probe.targetUp) eventFor("mouseup", points.at(-1), 0);
         return { completed: false, fallback: true };
       })()`,
+        ...probeContext(localLast),
         returnByValue: true,
         awaitPromise: false,
       },
-      last.sessionId ?? first.sessionId,
+      localLast.sessionId,
     );
     const value = result.result?.value;
     return Boolean(value?.completed || value?.fallback);
   } catch {
     return false;
   }
+}
+
+function sameProbeContext(left: Point, right: Point) {
+  return (
+    left.sessionId === right.sessionId &&
+    left.probeExecutionContextId === right.probeExecutionContextId
+  );
 }
 
 function canProbeInputFallback() {
@@ -850,7 +883,7 @@ async function dispatchSyntheticWheel(
  * @returns {Promise<void>}
  */
 export async function scrollIntoViewIfNeeded(
-  selector: string,
+  selector: string | LocatorTarget,
   options: { timeout?: number } = {},
 ) {
   await waitForActionableElement(selector, {
@@ -910,7 +943,7 @@ async function resolveMouseTarget(
     position?: { x: number; y: number };
   } = {},
 ): Promise<Point> {
-  if (typeof target === "string") {
+  if (typeof target === "string" || isLocatorTarget(target)) {
     return waitForActionableElement(target, {
       timeout,
       ...actionability,
@@ -925,13 +958,14 @@ async function resolveMouseTarget(
       typeof target.selector === "string" &&
       target.selector
     ) {
+      const selectorTarget = isLocatorTarget(target) ? target : target.selector;
       if (target.x === undefined && target.y === undefined) {
-        return waitForActionableElement(target.selector, {
+        return waitForActionableElement(selectorTarget, {
           timeout,
           ...actionability,
         });
       }
-      return waitForActionableElement(target.selector, {
+      return waitForActionableElement(selectorTarget, {
         timeout,
         ...actionability,
         position: {
@@ -964,9 +998,7 @@ function modifierMask(modifiers: string[] | undefined) {
   return mask;
 }
 
-function pointFrom(
-  point: [number, number] | { x?: number; y?: number; sessionId?: string },
-) {
+function pointFrom(point: [number, number] | Partial<Point>) {
   const x = Array.isArray(point) ? point[0] : point?.x;
   const y = Array.isArray(point) ? point[1] : point?.y;
   if (!Number.isFinite(Number(x)) || !Number.isFinite(Number(y))) {
@@ -976,7 +1008,39 @@ function pointFrom(
     !Array.isArray(point) && typeof point?.sessionId === "string"
       ? point.sessionId
       : undefined;
-  return { x: Number(x), y: Number(y), sessionId };
+  return {
+    x: Number(x),
+    y: Number(y),
+    sessionId,
+    ...(!Array.isArray(point) &&
+    typeof point.probeSessionId === "string" &&
+    (point.probeExecutionContextId === undefined ||
+      Number.isInteger(point.probeExecutionContextId)) &&
+    Number.isFinite(point.probeX) &&
+    Number.isFinite(point.probeY)
+      ? {
+          probeSessionId: point.probeSessionId,
+          probeExecutionContextId: point.probeExecutionContextId,
+          probeX: Number(point.probeX),
+          probeY: Number(point.probeY),
+        }
+      : {}),
+  };
+}
+
+function probePoint(point: Point): Point {
+  return {
+    x: point.probeX ?? point.x,
+    y: point.probeY ?? point.y,
+    sessionId: point.probeSessionId ?? point.sessionId,
+    probeExecutionContextId: point.probeExecutionContextId,
+  };
+}
+
+function probeContext(point: Point) {
+  return point.probeExecutionContextId === undefined
+    ? {}
+    : { contextId: point.probeExecutionContextId };
 }
 
 function numberValue(value: unknown) {

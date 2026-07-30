@@ -38,8 +38,10 @@ export * from "./helpers.js";
 export { runMain } from "./run.js";
 
 const SYNC_HELPERS = new Set(["help"]);
+const SYNC_START_HELPERS = new Set(["page.waitForEvent"]);
 const SYNC_FACTORY_HELPERS = new Set([
   "page.locator",
+  "page.frameLocator",
   "page.getByRole",
   "page.getByText",
   "page.getByLabel",
@@ -62,6 +64,7 @@ const SYNC_FACTORY_HELPERS = new Set([
 ]);
 const SYNC_FACTORY_METHODS = new Set([
   "locator",
+  "frameLocator",
   "getByRole",
   "getByText",
   "getByLabel",
@@ -72,6 +75,8 @@ const SYNC_FACTORY_METHODS = new Set([
   "first",
   "nth",
   "last",
+  "and",
+  "or",
   "filter",
 ]);
 // Marks an ego runtime whose mutating methods have already been wrapped, so a
@@ -86,6 +91,7 @@ export function installEgoSdk(
     return target;
   }
   const context = options.context || helpers.helperContext();
+  const readyImmediately = options.ready === undefined;
   const readySignal = Promise.resolve(options.ready);
   let readyError = null;
   readySignal.catch((error) => {
@@ -95,7 +101,13 @@ export function installEgoSdk(
   for (const [name, value] of Object.entries(context)) {
     const exposed = SYNC_HELPERS.has(name)
       ? value
-      : wrapReady(value, readySignal, () => readyError, [name]);
+      : wrapReady(
+          value,
+          readySignal,
+          () => readyError,
+          [name],
+          readyImmediately,
+        );
     Object.defineProperty(target, name, {
       value: exposed,
       writable: true,
@@ -154,11 +166,21 @@ function wrapReady(
   readySignal: Promise<unknown>,
   readyError: () => unknown,
   path: string[] = [],
+  readyImmediately = false,
 ): unknown {
   if (typeof value === "function") {
     if (isSyncFactoryHelper(path)) {
       return (...args: unknown[]) =>
-        wrapReady(value(...args), readySignal, readyError, path);
+        wrapReady(
+          value(...args),
+          readySignal,
+          readyError,
+          path,
+          readyImmediately,
+        );
+    }
+    if (readyImmediately && SYNC_START_HELPERS.has(path.join("."))) {
+      return (...args: unknown[]) => value(...args);
     }
     return async (...args: unknown[]) => {
       await readySignal;
@@ -172,9 +194,26 @@ function wrapReady(
   if (!value || typeof value !== "object") {
     return value;
   }
+  if (Array.isArray(value)) {
+    return value.map((child, index) =>
+      wrapReady(
+        child,
+        readySignal,
+        readyError,
+        [...path, String(index)],
+        readyImmediately,
+      ),
+    );
+  }
   const wrapped: Record<string, unknown> = {};
   for (const [key, child] of Object.entries(value)) {
-    wrapped[key] = wrapReady(child, readySignal, readyError, [...path, key]);
+    wrapped[key] = wrapReady(
+      child,
+      readySignal,
+      readyError,
+      [...path, key],
+      readyImmediately,
+    );
   }
   return wrapped;
 }

@@ -275,6 +275,167 @@ test("helper surface exposes Playwright-style object facades", () => {
   assert.equal("elementEval" in context, false);
 });
 
+test("page.frameLocator creates nested frame-scoped locators", () => {
+  const context = helperContext();
+
+  assert.equal(typeof context.page.frameLocator, "function");
+  const outer = context.page.frameLocator("iframe#outer");
+  assert.equal(typeof outer.frameLocator, "function");
+  assert.equal(typeof outer.getByRole, "function");
+
+  const inner = outer.frameLocator("iframe#inner");
+  const button = inner.getByRole("button", { name: "Save" });
+  assert.equal(typeof button.click, "function");
+  assert.match(button.selector, /^loc=role:button/);
+  assert.deepEqual(button.frameChain, ["iframe#outer", "iframe#inner"]);
+  assert.deepEqual(outer.first().frameChain, ["internal:nth=0;iframe#outer"]);
+  assert.deepEqual(outer.nth(2).frameChain, ["internal:nth=2;iframe#outer"]);
+  assert.deepEqual(outer.last().frameChain, ["internal:last;iframe#outer"]);
+  assert.throws(() => outer.nth(-1), /non-negative integer/);
+});
+
+test("frame-scoped locator composition rejects locators from another frame", () => {
+  const page = helperContext().page;
+  const left = page.frameLocator("#left-frame").locator(".item");
+  const right = page.frameLocator("#right-frame").locator(".item");
+
+  for (const compose of [
+    () => left.and(right),
+    () => left.or(right),
+    () => left.locator(right),
+    () => left.filter({ has: right }),
+    () => left.filter({ hasNot: right }),
+  ]) {
+    assert.throws(compose, /same frame/);
+  }
+});
+
+test("frame-scoped locator resolves inside the child execution context", async () => {
+  const calls = [];
+  const restore = setOverrides({
+    sessionId: "main-session",
+    sessionTargetId: "tab-1",
+    sessionAt: Date.now(),
+    cdpOverride: async (method, params, sessionId) => {
+      calls.push({ method, params, sessionId });
+      if (method === "Runtime.evaluate") {
+        if (params.contextId === 101) {
+          assert.match(params.expression, /#inside/);
+          return { result: { objectId: "inside-object" } };
+        }
+        if (params.expression.includes("#frame")) {
+          return { result: { objectId: "frame-owner" } };
+        }
+        throw new Error("expected frame owner resolution first");
+      }
+      if (
+        method === "Runtime.callFunctionOn" &&
+        params.objectId === "frame-owner"
+      ) {
+        return {
+          result: {
+            value: { x: 100, y: 50, width: 400, height: 300 },
+          },
+        };
+      }
+      if (method === "DOM.describeNode") {
+        return { node: { frameId: "frame-1" } };
+      }
+      if (method === "Page.createIsolatedWorld") {
+        assert.equal(params.frameId, "frame-1");
+        return { executionContextId: 101 };
+      }
+      if (
+        method === "Runtime.callFunctionOn" &&
+        params.objectId === "inside-object"
+      ) {
+        return { result: { value: "Inside frame" } };
+      }
+      if (method === "Runtime.releaseObject") return {};
+      throw new Error(`unexpected CDP method: ${method}`);
+    },
+  });
+  try {
+    const text = await helperContext()
+      .page.frameLocator("#frame")
+      .locator("#inside")
+      .innerText();
+
+    assert.equal(text, "Inside frame");
+    assert.ok(
+      calls.some(
+        (call) =>
+          call.method === "Runtime.evaluate" && call.params.contextId === 101,
+      ),
+    );
+  } finally {
+    restore();
+  }
+});
+
+test("frame-scoped locator re-resolves after its execution context is destroyed", async () => {
+  let frameWorlds = 0;
+  let now = 0;
+  const restore = setOverrides({
+    sessionId: "main-session",
+    sessionTargetId: "tab-1",
+    sessionAt: Date.now(),
+    defaultTimeout: 500,
+    now: () => now,
+    sleep: async (ms) => {
+      now += ms;
+    },
+    cdpOverride: async (method, params) => {
+      if (method === "Runtime.evaluate" && params.contextId === 101) {
+        throw new Error("Execution context was destroyed.");
+      }
+      if (method === "Runtime.evaluate" && params.contextId === 102) {
+        return { result: { objectId: "inside-object" } };
+      }
+      if (method === "Runtime.evaluate") {
+        return { result: { objectId: "frame-owner" } };
+      }
+      if (
+        method === "Runtime.callFunctionOn" &&
+        params.objectId === "frame-owner"
+      ) {
+        return {
+          result: {
+            value: { x: 100, y: 50, width: 400, height: 300 },
+          },
+        };
+      }
+      if (method === "DOM.describeNode") {
+        return { node: { frameId: "navigating-frame" } };
+      }
+      if (method === "Page.createIsolatedWorld") {
+        frameWorlds += 1;
+        return { executionContextId: frameWorlds === 1 ? 101 : 102 };
+      }
+      if (
+        method === "Runtime.callFunctionOn" &&
+        params.objectId === "inside-object"
+      ) {
+        return { result: { value: "After navigation" } };
+      }
+      if (method === "Runtime.releaseObject") return {};
+      throw new Error(`Unexpected CDP method: ${method}`);
+    },
+  });
+  try {
+    assert.equal(
+      await helperContext()
+        .page.frameLocator("#frame")
+        .locator("#inside")
+        .innerText(),
+      "After navigation",
+    );
+    assert.equal(frameWorlds, 2);
+  } finally {
+    restore();
+  }
+});
+
 test("help documents every public callable by its facade path", () => {
   const context = helperContext();
   const publicPaths = [
@@ -284,6 +445,7 @@ test("help documents every public callable by its facade path", () => {
     ...callablePaths(context.site, "site"),
     ...callablePaths(context.fetch, "fetch"),
     ...callablePaths(context.page.locator("#help-audit"), "locator"),
+    ...callablePaths(context.page.frameLocator("#help-frame"), "frameLocator"),
     "cdp",
     "help",
   ].sort();

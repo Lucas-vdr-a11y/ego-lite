@@ -126,6 +126,71 @@ test("locator collection helpers evaluate all matching nodes", async () => {
   }
 });
 
+test("frame-scoped collection helpers evaluate in the child execution context", async () => {
+  const calls = [];
+  const target = {
+    selector: ".item",
+    frameChain: ["iframe#catalog"],
+  };
+  const restore = setOverrides({
+    sessionId: "main-session",
+    sessionTargetId: "tab-1",
+    sessionAt: Date.now(),
+    cdpOverride(method, params, sessionId) {
+      calls.push({ method, params, sessionId });
+      if (method === "Runtime.evaluate" && params.contextId === 101) {
+        assert.match(params.expression, /querySelectorAll\("\.item"\)/);
+        if (params.expression.includes("elements.length")) {
+          return { result: { value: 3 } };
+        }
+        return { result: { value: ["One", "Two", "Three"] } };
+      }
+      if (method === "Runtime.evaluate") {
+        assert.match(params.expression, /iframe#catalog/);
+        return { result: { objectId: "frame-owner" } };
+      }
+      if (
+        method === "Runtime.callFunctionOn" &&
+        params.objectId === "frame-owner"
+      ) {
+        return {
+          result: {
+            value: { x: 10, y: 20, width: 300, height: 200 },
+          },
+        };
+      }
+      if (method === "DOM.describeNode") {
+        return { node: { frameId: "frame-1" } };
+      }
+      if (method === "Page.createIsolatedWorld") {
+        return { executionContextId: 101 };
+      }
+      if (method === "Runtime.releaseObject") return {};
+      throw new Error(`Unexpected CDP method: ${method}`);
+    },
+  });
+  try {
+    assert.equal(await count(target), 3);
+    assert.deepEqual(
+      await evaluateAll(target, (elements) =>
+        elements.map((element) => element.textContent),
+      ),
+      ["One", "Two", "Three"],
+    );
+  } finally {
+    restore();
+  }
+
+  const childEvaluations = calls.filter(
+    (call) =>
+      call.method === "Runtime.evaluate" && call.params.contextId === 101,
+  );
+  assert.equal(childEvaluations.length, 2);
+  assert.ok(
+    childEvaluations.every((call) => call.sessionId === "main-session"),
+  );
+});
+
 test("test id locators query data-testid attributes exactly", async () => {
   const restore = setOverrides({
     cdpOverride(method, params) {
@@ -461,6 +526,178 @@ test("innerHTML, blur, and boundingBox use the resolved element", async () => {
   } finally {
     restore();
   }
+});
+
+test("frame-scoped boundingBox returns top-level viewport coordinates", async () => {
+  const restore = setOverrides({
+    sessionId: "main-session",
+    sessionTargetId: "tab-1",
+    sessionAt: Date.now(),
+    cdpOverride(method, params) {
+      if (method === "Runtime.evaluate") {
+        return {
+          result: {
+            objectId:
+              params.contextId === 101 ? "inside-object" : "frame-owner",
+          },
+        };
+      }
+      if (
+        method === "Runtime.callFunctionOn" &&
+        params.objectId === "frame-owner"
+      ) {
+        return {
+          result: {
+            value: { x: 100, y: 50, width: 400, height: 300 },
+          },
+        };
+      }
+      if (method === "DOM.describeNode") {
+        return { node: { frameId: "frame-1" } };
+      }
+      if (method === "Page.createIsolatedWorld") {
+        return { executionContextId: 101 };
+      }
+      if (
+        method === "Runtime.callFunctionOn" &&
+        params.objectId === "inside-object"
+      ) {
+        return {
+          result: {
+            value: { x: 20, y: 30, width: 80, height: 40 },
+          },
+        };
+      }
+      if (method === "Runtime.releaseObject") return {};
+      throw new Error(`Unexpected CDP method: ${method}`);
+    },
+  });
+  try {
+    assert.deepEqual(
+      await boundingBox({
+        selector: "#inside",
+        frameChain: ["iframe#catalog"],
+      }),
+      { x: 120, y: 80, width: 80, height: 40 },
+    );
+  } finally {
+    restore();
+  }
+});
+
+test("frame-scoped visibility APIs honor a hidden frame owner", async () => {
+  const restore = setOverrides({
+    sessionId: "main-session",
+    sessionTargetId: "tab-1",
+    sessionAt: Date.now(),
+    cdpOverride(method, params) {
+      if (method === "Runtime.evaluate") {
+        return {
+          result: {
+            objectId:
+              params.contextId === 101 ? "inside-object" : "frame-owner",
+          },
+        };
+      }
+      if (
+        method === "Runtime.callFunctionOn" &&
+        params.objectId === "frame-owner"
+      ) {
+        return {
+          result: {
+            value: {
+              x: 0,
+              y: 0,
+              width: 0,
+              height: 0,
+              visible: false,
+              receivesEvents: false,
+              scaleX: 1,
+              scaleY: 1,
+            },
+          },
+        };
+      }
+      if (method === "DOM.describeNode") {
+        return { node: { frameId: "hidden-frame" } };
+      }
+      if (method === "Page.createIsolatedWorld") {
+        return { executionContextId: 101 };
+      }
+      if (
+        method === "Runtime.callFunctionOn" &&
+        params.objectId === "inside-object"
+      ) {
+        return {
+          result: {
+            value: params.functionDeclaration.includes("getBoundingClientRect")
+              ? { x: 20, y: 30, width: 80, height: 40 }
+              : true,
+          },
+        };
+      }
+      if (method === "Runtime.releaseObject") return {};
+      throw new Error(`Unexpected CDP method: ${method}`);
+    },
+  });
+  try {
+    assert.equal(
+      await isVisible({
+        selector: "#inside",
+        frameChain: ["iframe#hidden"],
+      }),
+      false,
+    );
+    assert.equal(
+      await boundingBox({
+        selector: "#inside",
+        frameChain: ["iframe#hidden"],
+      }),
+      null,
+    );
+  } finally {
+    restore();
+  }
+});
+
+test("boundingBox preserves locator auto-waiting", async () => {
+  let attempts = 0;
+  let now = 0;
+  const restore = setOverrides({
+    defaultTimeout: 500,
+    now: () => now,
+    sleep: async (ms) => {
+      now += ms;
+    },
+    cdpOverride(method) {
+      if (method === "Runtime.evaluate") {
+        attempts += 1;
+        return attempts === 1
+          ? { result: {} }
+          : { result: { objectId: "node-delayed" } };
+      }
+      if (method === "Runtime.callFunctionOn") {
+        return {
+          result: {
+            value: { x: 1, y: 2, width: 3, height: 4 },
+          },
+        };
+      }
+      if (method === "Runtime.releaseObject") return {};
+      throw new Error(`Unexpected CDP method: ${method}`);
+    },
+  });
+  try {
+    assert.deepEqual(await boundingBox("#delayed"), {
+      x: 1,
+      y: 2,
+      width: 3,
+      height: 4,
+    });
+  } finally {
+    restore();
+  }
+  assert.equal(attempts, 2);
 });
 
 test("evaluateAll runs a page function with matching elements and an argument", async () => {

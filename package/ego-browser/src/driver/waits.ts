@@ -2,6 +2,7 @@ import { state } from "../state.js";
 import { cdp, runtimeValue } from "../cdp-eval.js";
 import { resolveHandle, releaseHandle } from "./element-ops.js";
 import { ElementResolutionError } from "../element-resolver.js";
+import type { LocatorTarget } from "../frame-context.js";
 import { isEgoHardStopError } from "../ego-errors.js";
 import { waitForDocumentLoad } from "./load.js";
 import { drainEvents } from "./observe.js";
@@ -426,7 +427,7 @@ function browserEventTimeout(timeout) {
  * @returns {Promise<true|null>} True for attached/visible, null for hidden/detached.
  */
 export async function waitForSelector(
-  selector: string,
+  selector: string | LocatorTarget,
   options: WaitForSelectorOptions = {},
 ) {
   const timeout = normalizeTimeout(
@@ -468,7 +469,8 @@ export async function waitForSelector(
         },
         handle.sessionId,
       );
-      const visible = Boolean(response.result?.value);
+      const visible =
+        handle.frameVisible !== false && Boolean(response.result?.value);
       if (targetState === "visible" && visible) return true;
       if (targetState === "hidden" && !visible) return null;
     } catch (error) {

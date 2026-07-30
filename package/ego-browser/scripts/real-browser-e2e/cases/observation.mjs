@@ -160,23 +160,20 @@ export function observationCase() {
     const textAfter = await page.snapshot({ scope: "full_page" });
     assertIncludes(String(textAfter), "Dynamic!", "snapshot text includes dynamically created element");
 
-    /* iframe interaction — evaluate JS inside the iframe */
+    /* iframe interaction — use Playwright-style frame-scoped locators */
     console.log(JSON.stringify({ observationStep: "iframe" }));
-    const frameTarget = await browser.iframeTarget("/frame.html");
-    if (frameTarget) {
-      const iframeMarkerText = await browser.evaluateInTab(
-        frameTarget,
-        "return document.querySelector('#iframe-marker')?.textContent",
-      );
-      assertEqual(iframeMarkerText, "iframe target", "evaluateInTab evaluates inside iframe using targetId");
+    const fixtureFrame = page.frameLocator("#fixture-frame");
+    const iframeMarkerText = await fixtureFrame
+      .locator("#iframe-marker")
+      .innerText();
+    assertEqual(iframeMarkerText, "iframe target", "frameLocator evaluates inside the fixture iframe");
 
-      const iframeTitle = await browser.evaluateInTab(
-        frameTarget,
-        "return document.title"
-      );
-      assertEqual(iframeTitle, "ego-lite iframe", "evaluateInTab reads iframe page title via targetId");
-    } else {
-      console.log(JSON.stringify({ iframeWarning: "iframe target not available, skipping iframe tests" }));
-    }
+    const iframeTitle = await fixtureFrame.locator("title").textContent();
+    assertEqual(iframeTitle, "ego-lite iframe", "frameLocator reads the fixture iframe title");
+    assertEqual(
+      await fixtureFrame.locator("#fixture-frame").count(),
+      0,
+      "iframe fixture does not recursively embed itself",
+    );
   `;
 }

@@ -25,7 +25,7 @@ export function acquireNetworkEvents(
   sessionId: string | Promise<string> | undefined = undefined,
   timeoutMs: number | undefined = undefined,
 ): NetworkEventLease {
-  const acquisition = Promise.resolve(sessionId).then((resolvedSessionId) => {
+  const acquire = (resolvedSessionId: string | undefined) => {
     const key = resolvedSessionId || DEFAULT_SESSION;
     let sessionState = sessionStates.get(key);
     if (!sessionState) {
@@ -71,7 +71,11 @@ export function acquireNetworkEvents(
       sessionState,
       ready: sessionState.enableInFlight || Promise.resolve(),
     };
-  });
+  };
+  const acquisition =
+    sessionId && typeof (sessionId as Promise<string>).then === "function"
+      ? Promise.resolve(sessionId).then(acquire)
+      : Promise.resolve(acquire(sessionId as string | undefined));
   let released = false;
   const ready = acquisition.then(({ ready }) => ready);
   const resolvedSessionId = acquisition.then(

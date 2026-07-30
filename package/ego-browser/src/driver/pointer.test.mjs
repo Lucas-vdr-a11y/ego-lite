@@ -643,6 +643,191 @@ test("click triggers probe fallback when CDP click is not trusted", async () => 
   );
 });
 
+test("frame click fallback probes the child document with frame-local coordinates", async () => {
+  const originalEgo = globalThis.ego;
+  globalThis.ego = { sendCDPMessage: () => {} };
+  const probeCalls = [];
+  const inputCalls = [];
+  const restore = setOverrides({
+    sessionId: "main-session",
+    sessionTargetId: "tab-1",
+    sessionAt: Date.now(),
+    cdpOverride(method, params, sessionId) {
+      if (
+        method === "Runtime.evaluate" &&
+        params.expression?.includes("framePoint")
+      ) {
+        return { result: { value: true } };
+      }
+      if (
+        method === "Runtime.evaluate" &&
+        params.expression?.includes("__egoBrowserInputProbes")
+      ) {
+        probeCalls.push({ params, sessionId });
+        return probeCalls.length === 1
+          ? { result: { value: true } }
+          : { result: { value: { seen: false, fallback: true } } };
+      }
+      if (method === "Runtime.evaluate") {
+        return {
+          result: {
+            objectId:
+              sessionId === "frame-session" ? "button-object" : "frame-owner",
+          },
+        };
+      }
+      if (
+        method === "Runtime.callFunctionOn" &&
+        params.objectId === "frame-owner"
+      ) {
+        return {
+          result: {
+            value: { x: 100, y: 50, width: 400, height: 300 },
+          },
+        };
+      }
+      if (method === "DOM.describeNode") {
+        return { node: { frameId: "pointer-oopif-frame" } };
+      }
+      if (
+        method === "Page.createIsolatedWorld" &&
+        sessionId === "main-session"
+      ) {
+        throw new Error("No frame for given id found");
+      }
+      if (method === "Target.getTargets") {
+        return {
+          targetInfos: [
+            {
+              targetId: "pointer-oopif-frame",
+              type: "iframe",
+              url: "https://cross-origin.example/pointer",
+            },
+          ],
+        };
+      }
+      if (method === "Target.attachToTarget") {
+        return { sessionId: "frame-session" };
+      }
+      if (
+        method === "Page.createIsolatedWorld" &&
+        sessionId === "frame-session"
+      ) {
+        return { executionContextId: 303 };
+      }
+      if (
+        method === "Runtime.callFunctionOn" &&
+        params.objectId === "button-object"
+      ) {
+        return {
+          result: {
+            value: {
+              attached: true,
+              visible: true,
+              enabled: true,
+              editable: false,
+              receivesEvents: true,
+              rect: { x: 20, y: 30, width: 100, height: 40 },
+            },
+          },
+        };
+      }
+      if (method === "Input.dispatchMouseEvent") {
+        inputCalls.push({ params, sessionId });
+        throw new Error("CDP request timed out: Input.dispatchMouseEvent");
+      }
+      if (method === "Runtime.releaseObject") return {};
+      throw new Error(`Unexpected CDP method: ${method}`);
+    },
+  });
+  try {
+    await click({
+      selector: "#button",
+      frameChain: ["iframe#payment"],
+    });
+  } finally {
+    restore();
+    if (originalEgo === undefined) delete globalThis.ego;
+    else globalThis.ego = originalEgo;
+  }
+
+  assert.ok(
+    inputCalls.every((call) => call.sessionId === "main-session"),
+    "trusted mouse input uses top-level viewport coordinates",
+  );
+  assert.equal(probeCalls.length, 2);
+  assert.ok(
+    probeCalls.every((call) => call.sessionId === "frame-session"),
+    "fallback probes run in the child document",
+  );
+  assert.ok(
+    probeCalls.every((call) => call.params.contextId === 303),
+    "fallback probes use the child execution context",
+  );
+  assert.match(probeCalls[0].params.expression, /elementFromPoint\(70, 50\)/);
+  assert.match(probeCalls[1].params.expression, /clientX: 70/);
+  assert.match(probeCalls[1].params.expression, /clientY: 50/);
+});
+
+test("cross-frame drag does not synthesize fallback events in one child context", async () => {
+  const originalEgo = globalThis.ego;
+  globalThis.ego = { sendCDPMessage() {} };
+  const probeCalls = [];
+  const restore = setOverrides({
+    cdpOverride(method, params, sessionId) {
+      if (
+        method === "Runtime.evaluate" &&
+        params.expression?.includes("__egoBrowserInputProbes")
+      ) {
+        probeCalls.push({ params, sessionId });
+        return probeCalls.length === 1
+          ? { result: { value: true } }
+          : { result: { value: { completed: false, fallback: true } } };
+      }
+      if (method === "Input.dispatchMouseEvent") {
+        throw new Error("CDP request timed out: Input.dispatchMouseEvent");
+      }
+      return {};
+    },
+  });
+  try {
+    await assert.rejects(
+      () =>
+        drag([
+          {
+            x: 110,
+            y: 60,
+            sessionId: "main-session",
+            probeSessionId: "main-session",
+            probeExecutionContextId: 101,
+            probeX: 10,
+            probeY: 10,
+          },
+          {
+            x: 320,
+            y: 170,
+            sessionId: "main-session",
+            probeSessionId: "main-session",
+            probeExecutionContextId: 202,
+            probeX: 20,
+            probeY: 20,
+          },
+        ]),
+      /CDP request timed out: Input\.dispatchMouseEvent/,
+    );
+  } finally {
+    restore();
+    if (originalEgo === undefined) delete globalThis.ego;
+    else globalThis.ego = originalEgo;
+  }
+
+  assert.equal(
+    probeCalls.length,
+    0,
+    "one document must not synthesize both sides of a cross-frame drag",
+  );
+});
+
 test("right-click fallback preserves the button and modifier semantics", async () => {
   const originalEgo = globalThis.ego;
   globalThis.ego = { sendCDPMessage: () => {} };

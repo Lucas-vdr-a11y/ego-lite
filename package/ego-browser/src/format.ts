@@ -126,6 +126,22 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
     returns: "Locator",
     example: "await page.locator('button[type=submit]').click()",
   },
+  "page.frameLocator": {
+    signature: "page.frameLocator(selector) => FrameLocator",
+    description:
+      "Create a locator for an iframe and scope descendant locators to its document.",
+    params: [
+      {
+        name: "selector",
+        type: "string",
+        required: true,
+        description: "Selector matching exactly one iframe or frame element.",
+      },
+    ],
+    returns: "FrameLocator",
+    example:
+      "await page.frameLocator('#checkout-frame').getByRole('button', { name: 'Pay' }).click()",
+  },
   "page.getByRole": {
     signature: "page.getByRole(role, options?) => Locator",
     description:
@@ -400,9 +416,9 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
   },
   "page.waitForEvent": {
     signature:
-      'page.waitForEvent("console"|"dialog"|"download"|"filechooser"|"pageerror"|"popup"|"requestfailed", options?) => Promise<ConsoleMessage|Dialog|Download|FileChooser|Error|Popup|Request>',
+      'page.waitForEvent("console"|"dialog"|"download"|"filechooser"|"pageerror"|"popup"|"requestfailed", predicateOrOptions?) => Promise<ConsoleMessage|Dialog|Download|FileChooser|Error|Popup|Request>',
     description:
-      "Wait for a supported page event. Register the wait before the action that triggers the event.",
+      "Wait for a supported page event. Register the wait before the action that triggers the event. A synchronous or asynchronous predicate skips unrelated events.",
     params: [
       {
         name: "eventName",
@@ -411,15 +427,16 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
         description: "Supported page event name.",
       },
       {
-        name: "options",
-        type: "{ timeout?: number }",
-        description: "Timeout in milliseconds.",
+        name: "predicateOrOptions",
+        type: "((event) => boolean | Promise<boolean>) | { timeout?: number, predicate?: Function, signal?: AbortSignal }",
+        description:
+          "Optional predicate function, or options with timeout, predicate, and AbortSignal cancellation.",
       },
     ],
     returns:
       "Promise<ConsoleMessage|Dialog|Download|FileChooser|Error|Popup|Request>. Facades expose their Playwright-style subset; Popup includes targetId and bringToFront().",
     example:
-      "const popupPromise = page.waitForEvent('popup'); await page.getByText('Open').click(); const popup = await popupPromise",
+      "const popupPromise = page.waitForEvent('popup', { predicate: p => p.targetId, timeout: 5000 }); await page.getByText('Open').click(); const popup = await popupPromise",
   },
   "page.evaluate": {
     signature: "page.evaluate(pageFunction, arg?) => Promise<any>",
@@ -482,6 +499,21 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
     ],
     returns: "Promise<string>",
     example: "console.log(await page.snapshot())",
+  },
+  "page.ariaSnapshot": {
+    signature: "page.ariaSnapshot(options?) => Promise<string>",
+    description:
+      "Return a Playwright-style default-mode ARIA snapshot of the page body as YAML. Use page.snapshot() when AI refs are needed.",
+    params: [
+      {
+        name: "options",
+        type: "{ timeout?: number, depth?: number, boxes?: boolean, mode?: 'default', signal?: AbortSignal }",
+        description:
+          "Capture timeout, maximum depth, viewport boxes, default mode, and cancellation signal. mode: 'ai' is not supported.",
+      },
+    ],
+    returns: "Promise<string>",
+    example: "console.log(await page.ariaSnapshot({ depth: 3, boxes: true }))",
   },
   "page.snapshotRaw": {
     signature: "page.snapshotRaw(options?) => Promise<object>",
@@ -690,6 +722,66 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
     returns: "Promise<void>",
     example: "await page.mouse.drag([[100, 100], [300, 300]])",
   },
+  "frameLocator.first": conciseDoc(
+    "frameLocator.first() => FrameLocator",
+    "Select the first matching frame.",
+    "FrameLocator",
+  ),
+  "frameLocator.last": conciseDoc(
+    "frameLocator.last() => FrameLocator",
+    "Select the last matching frame.",
+    "FrameLocator",
+  ),
+  "frameLocator.nth": conciseDoc(
+    "frameLocator.nth(index) => FrameLocator",
+    "Select a matching frame by zero-based index.",
+    "FrameLocator",
+  ),
+  "frameLocator.frameLocator": conciseDoc(
+    "frameLocator.frameLocator(selector) => FrameLocator",
+    "Create a nested frame locator inside the current frame.",
+    "FrameLocator",
+  ),
+  "frameLocator.locator": conciseDoc(
+    "frameLocator.locator(selector) => Locator",
+    "Create an element locator inside the frame document.",
+    "Locator",
+  ),
+  "frameLocator.getByRole": conciseDoc(
+    "frameLocator.getByRole(role, options?) => Locator",
+    "Create a role locator inside the frame document.",
+    "Locator",
+  ),
+  "frameLocator.getByText": conciseDoc(
+    "frameLocator.getByText(text, options?) => Locator",
+    "Create a visible-text locator inside the frame document.",
+    "Locator",
+  ),
+  "frameLocator.getByLabel": conciseDoc(
+    "frameLocator.getByLabel(text, options?) => Locator",
+    "Create a label locator inside the frame document.",
+    "Locator",
+  ),
+  "frameLocator.getByPlaceholder": conciseDoc(
+    "frameLocator.getByPlaceholder(text, options?) => Locator",
+    "Create a placeholder locator inside the frame document.",
+    "Locator",
+  ),
+  "frameLocator.getByAltText": conciseDoc(
+    "frameLocator.getByAltText(text, options?) => Locator",
+    "Create an alt-text locator inside the frame document.",
+    "Locator",
+  ),
+  "frameLocator.getByTitle": conciseDoc(
+    "frameLocator.getByTitle(text, options?) => Locator",
+    "Create a title locator inside the frame document.",
+    "Locator",
+  ),
+  "frameLocator.getByTestId": conciseDoc(
+    "frameLocator.getByTestId(testId) => Locator",
+    "Create a data-testid locator inside the frame document.",
+    "Locator",
+  ),
   "locator.first": conciseDoc(
     "locator.first() => Locator",
     "Return a locator for the first matching element.",
@@ -910,6 +1002,21 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
     "Capture the matching element and return a Buffer; path also writes a copy.",
     "Promise<Buffer>",
   ),
+  "locator.ariaSnapshot": {
+    signature: "locator.ariaSnapshot(options?) => Promise<string>",
+    description:
+      "Auto-wait for one matching element and return its Playwright-style default-mode ARIA subtree as YAML. Frame-scoped locators are supported.",
+    params: [
+      {
+        name: "options",
+        type: "{ timeout?: number, depth?: number, boxes?: boolean, mode?: 'default', signal?: AbortSignal }",
+        description:
+          "Capture timeout, maximum depth, main-viewport boxes, default mode, and cancellation signal. mode: 'ai' is not supported; use page.snapshot() for ego refs.",
+      },
+    ],
+    returns: "Promise<string>",
+    example: "console.log(await page.getByRole('navigation').ariaSnapshot())",
+  },
   "locator.count": conciseDoc(
     "locator.count() => Promise<number>",
     "Return the number of matching elements.",
@@ -1019,7 +1126,7 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
   "browser.iframeTarget": {
     signature: "browser.iframeTarget(urlSubstring) => Promise<string | null>",
     description:
-      "Return the target id of an iframe whose URL contains a substring.",
+      "Return the unique target id of an iframe under the current tab whose URL contains a substring; return null when none match and reject ambiguous matches.",
     params: [
       {
         name: "urlSubstring",

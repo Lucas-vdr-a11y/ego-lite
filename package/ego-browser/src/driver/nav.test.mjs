@@ -8,6 +8,7 @@ import {
   pendingDialog,
 } from "../../dist/src/browser-runtime.js";
 import {
+  iframeTarget,
   listTabs,
   newTab,
   openOrReuseTab,
@@ -15,6 +16,7 @@ import {
   closeTab,
   switchTab,
 } from "../../dist/src/driver/nav.js";
+import { TimeoutError } from "../../dist/src/playwright-errors.js";
 import { setOverrides, state } from "../../dist/src/state.js";
 
 function withEgo(ego, fn) {
@@ -91,6 +93,97 @@ function withCdpRuntime(fn) {
         globalThis.ego = previous;
       }
     });
+}
+
+function withOpenOrReuseLoadScenario(options, fn) {
+  const existing = options.existing === true;
+  const readyStates = options.readyStates || ["complete"];
+  const calls = [];
+  const sleeps = [];
+  let readyStateIndex = 0;
+  let now = 0;
+  const tab = {
+    targetId: existing ? "target-existing" : "target-new",
+    active: existing,
+    title: existing ? "Existing" : "",
+    url: "https://example.com/target",
+  };
+
+  return withEgo(
+    {
+      async listTabs() {
+        return { tabs: existing ? [tab] : [] };
+      },
+      async createTab() {
+        return { targetId: tab.targetId };
+      },
+    },
+    async () => {
+      const restore = setOverrides({
+        cdpOverride(method, params, sessionId, timeoutMs) {
+          calls.push({ method, params, sessionId, timeoutMs });
+          if (method === "Target.activateTarget") {
+            return { success: true };
+          }
+          if (options.loadError && method === "Page.getFrameTree") {
+            throw options.loadError;
+          }
+          if (method === "Page.getFrameTree") {
+            return {
+              frameTree: {
+                frame: { url: tab.url },
+              },
+            };
+          }
+          if (method === "Runtime.evaluate") {
+            const readyState =
+              readyStates[Math.min(readyStateIndex, readyStates.length - 1)];
+            readyStateIndex += 1;
+            return { result: { value: readyState } };
+          }
+          throw new Error(`unexpected CDP method: ${method}`);
+        },
+        defaultTimeout: options.defaultTimeout ?? 30_000,
+        defaultNavigationTimeout:
+          options.defaultNavigationTimeout === undefined
+            ? null
+            : options.defaultNavigationTimeout,
+        now: () => now,
+        sleep: async (ms) => {
+          sleeps.push(ms);
+          now += ms;
+        },
+      });
+      try {
+        return await fn({ calls, sleeps, tab });
+      } finally {
+        restore();
+      }
+    },
+  );
+}
+
+function withIframeTargetScenario({ tabs, targetInfos }, fn) {
+  return withEgo(
+    {
+      async listTabs() {
+        return { tabs };
+      },
+    },
+    async () => {
+      const restore = setOverrides({
+        cdpOverride(method) {
+          assert.equal(method, "Target.getTargets");
+          return { targetInfos };
+        },
+      });
+      try {
+        return await fn();
+      } finally {
+        restore();
+      }
+    },
+  );
 }
 
 test("listTabs throws on ego binding error objects", async () => {
@@ -175,6 +268,388 @@ test("openOrReuseTab settles a newly opened tab in milliseconds, not seconds", a
   );
 
   assert.deepEqual(sleeps, [500]);
+});
+
+test("openOrReuseTab rejects when a newly opened tab misses an explicit load timeout", async () => {
+  await withOpenOrReuseLoadScenario(
+    { readyStates: ["loading"] },
+    async ({ sleeps }) => {
+      await assert.rejects(
+        () =>
+          openOrReuseTab("https://example.com/target", {
+            timeout: 23,
+            settle: 77,
+          }),
+        (error) => {
+          assert.ok(error instanceof TimeoutError);
+          assert.equal(error.name, "TimeoutError");
+          assert.equal(
+            error.message,
+            "browser.openOrReuseTab timed out after 23ms",
+          );
+          return true;
+        },
+      );
+      assert.deepEqual(
+        sleeps,
+        [300],
+        "settle must not run after the load timeout",
+      );
+    },
+  );
+});
+
+test("openOrReuseTab rejects when a reused tab misses the default navigation timeout", async () => {
+  await withOpenOrReuseLoadScenario(
+    {
+      existing: true,
+      readyStates: ["interactive"],
+      defaultNavigationTimeout: 17,
+      defaultTimeout: 91,
+    },
+    async () => {
+      await assert.rejects(
+        () =>
+          openOrReuseTab("https://example.com/target", {
+            wait: true,
+          }),
+        (error) => {
+          assert.ok(error instanceof TimeoutError);
+          assert.equal(
+            error.message,
+            "browser.openOrReuseTab timed out after 17ms",
+          );
+          return true;
+        },
+      );
+    },
+  );
+});
+
+test("openOrReuseTab falls back to the default action timeout when no navigation timeout exists", async () => {
+  await withOpenOrReuseLoadScenario(
+    {
+      readyStates: ["loading"],
+      defaultNavigationTimeout: null,
+      defaultTimeout: 19,
+    },
+    async () => {
+      await assert.rejects(
+        () => openOrReuseTab("https://example.com/target"),
+        (error) => {
+          assert.ok(error instanceof TimeoutError);
+          assert.equal(
+            error.message,
+            "browser.openOrReuseTab timed out after 19ms",
+          );
+          return true;
+        },
+      );
+    },
+  );
+});
+
+test("openOrReuseTab returns normally when requested document loads complete", async (t) => {
+  for (const scenario of [
+    {
+      name: "new tab with its default wait",
+      options: {},
+      existing: false,
+      reused: false,
+    },
+    {
+      name: "reused tab with wait enabled",
+      options: { wait: true },
+      existing: true,
+      reused: true,
+    },
+  ]) {
+    await t.test(scenario.name, async () => {
+      await withOpenOrReuseLoadScenario(
+        { existing: scenario.existing, readyStates: ["complete"] },
+        async ({ calls, tab }) => {
+          const opened = await openOrReuseTab(
+            "https://example.com/target",
+            scenario.options,
+          );
+          assert.equal(opened.targetId, tab.targetId);
+          assert.equal(opened.reused, scenario.reused);
+          assert.equal(
+            calls.filter((call) => call.method === "Runtime.evaluate").length,
+            1,
+          );
+        },
+      );
+    });
+  }
+});
+
+test("openOrReuseTab skips document loading when waiting is disabled", async (t) => {
+  for (const scenario of [
+    {
+      name: "new tab with wait false",
+      options: { wait: false, timeout: -1 },
+      existing: false,
+    },
+    {
+      name: "reused tab without explicit wait",
+      options: { timeout: -1 },
+      existing: true,
+    },
+  ]) {
+    await t.test(scenario.name, async () => {
+      await withOpenOrReuseLoadScenario(
+        { existing: scenario.existing },
+        async ({ calls }) => {
+          await openOrReuseTab("https://example.com/target", scenario.options);
+          assert.equal(
+            calls.some(
+              (call) =>
+                call.method === "Page.getFrameTree" ||
+                call.method === "Runtime.evaluate",
+            ),
+            false,
+          );
+        },
+      );
+    });
+  }
+});
+
+test("openOrReuseTab treats timeout zero as an unlimited load wait", async () => {
+  await withOpenOrReuseLoadScenario(
+    { readyStates: ["loading", "complete"] },
+    async ({ sleeps }) => {
+      const opened = await openOrReuseTab("https://example.com/target", {
+        timeout: 0,
+      });
+      assert.equal(opened.reused, false);
+      assert.deepEqual(sleeps, [300]);
+    },
+  );
+});
+
+test("openOrReuseTab preserves task-space hard stops while loading", async (t) => {
+  for (const existing of [false, true]) {
+    await t.test(existing ? "reused tab" : "new tab", async () => {
+      const hardStop = Object.assign(
+        new Error("user controls the task space"),
+        {
+          error_code: "EGO_TASK_SPACE_USER_IN_CONTROL",
+        },
+      );
+      await withOpenOrReuseLoadScenario(
+        { existing, loadError: hardStop },
+        async () => {
+          await assert.rejects(
+            () =>
+              openOrReuseTab("https://example.com/target", {
+                wait: true,
+              }),
+            (error) => error === hardStop,
+          );
+        },
+      );
+    });
+  }
+});
+
+test("openOrReuseTab rejects invalid timeouts only when it waits for loading", async (t) => {
+  for (const existing of [false, true]) {
+    await t.test(existing ? "reused tab" : "new tab", async () => {
+      await withOpenOrReuseLoadScenario({ existing }, async () => {
+        await assert.rejects(
+          () =>
+            openOrReuseTab("https://example.com/target", {
+              wait: existing ? true : undefined,
+              timeout: -1,
+            }),
+          (error) => {
+            assert.ok(error instanceof TypeError);
+            assert.match(
+              error.message,
+              /timeout must be a non-negative number/,
+            );
+            return true;
+          },
+        );
+      });
+    });
+  }
+});
+
+test("iframeTarget ignores matching iframe targets outside the current tab", async () => {
+  await withIframeTargetScenario(
+    {
+      tabs: [
+        {
+          targetId: "target-current",
+          active: true,
+          title: "Current",
+          url: "https://current.example/",
+        },
+        {
+          targetId: "target-inactive",
+          active: false,
+          title: "Inactive",
+          url: "https://inactive.example/",
+        },
+      ],
+      targetInfos: [
+        {
+          targetId: "iframe-hidden",
+          type: "iframe",
+          url: "https://hidden.example/frame.html",
+          parentId: "target-hidden",
+          browserContextId: "shared-context",
+        },
+        {
+          targetId: "iframe-inactive",
+          type: "iframe",
+          url: "https://inactive.example/frame.html",
+          parentId: "target-inactive",
+          browserContextId: "shared-context",
+        },
+        {
+          targetId: "iframe-current",
+          type: "iframe",
+          url: "https://current.example/frame.html",
+          parentId: "target-current",
+          browserContextId: "shared-context",
+        },
+      ],
+    },
+    async () => {
+      assert.equal(await iframeTarget("/frame.html"), "iframe-current");
+    },
+  );
+});
+
+test("iframeTarget follows nested iframe target ancestry to the current tab", async () => {
+  await withIframeTargetScenario(
+    {
+      tabs: [
+        {
+          targetId: "target-current",
+          active: true,
+          title: "Current",
+          url: "https://current.example/",
+        },
+      ],
+      targetInfos: [
+        {
+          targetId: "iframe-parent",
+          type: "iframe",
+          url: "https://frames.example/outer.html",
+          parentId: "target-current",
+        },
+        {
+          targetId: "iframe-nested",
+          type: "iframe",
+          url: "https://frames.example/frame.html",
+          parentId: "iframe-parent",
+        },
+      ],
+    },
+    async () => {
+      assert.equal(await iframeTarget("/frame.html"), "iframe-nested");
+    },
+  );
+});
+
+test("iframeTarget returns null when only another tab has a matching target", async () => {
+  await withIframeTargetScenario(
+    {
+      tabs: [
+        {
+          targetId: "target-current",
+          active: true,
+          title: "Current",
+          url: "https://current.example/",
+        },
+      ],
+      targetInfos: [
+        {
+          targetId: "iframe-other",
+          type: "iframe",
+          url: "https://other.example/frame.html",
+          parentId: "target-other",
+        },
+      ],
+    },
+    async () => {
+      assert.equal(await iframeTarget("/frame.html"), null);
+    },
+  );
+});
+
+test("iframeTarget rejects ambiguous matches under the current tab", async () => {
+  await withIframeTargetScenario(
+    {
+      tabs: [
+        {
+          targetId: "target-current",
+          active: true,
+          title: "Current",
+          url: "https://current.example/",
+        },
+      ],
+      targetInfos: [
+        {
+          targetId: "iframe-first",
+          type: "iframe",
+          url: "https://frames.example/frame.html?slot=first",
+          parentId: "target-current",
+        },
+        {
+          targetId: "iframe-second",
+          type: "iframe",
+          url: "https://frames.example/frame.html?slot=second",
+          parentId: "target-current",
+        },
+      ],
+    },
+    async () => {
+      await assert.rejects(
+        () => iframeTarget("/frame.html"),
+        /iframeTarget matched 2 iframe targets under current tab target-current/,
+      );
+    },
+  );
+});
+
+test("iframeTarget propagates task-space errors before target discovery", async () => {
+  let cdpCalled = false;
+  await withEgo(
+    {
+      async listTabs() {
+        return {
+          error: "The task is under user control",
+          error_code: "EGO_TASK_SPACE_USER_IN_CONTROL",
+        };
+      },
+    },
+    async () => {
+      const restore = setOverrides({
+        cdpOverride() {
+          cdpCalled = true;
+          return { targetInfos: [] };
+        },
+      });
+      try {
+        await assert.rejects(
+          () => iframeTarget("/frame.html"),
+          (error) => {
+            assert.equal(error.error_code, "EGO_TASK_SPACE_USER_IN_CONTROL");
+            return true;
+          },
+        );
+      } finally {
+        restore();
+      }
+    },
+  );
+  assert.equal(cdpCalled, false);
 });
 
 test("switchTab refreshes the target list before activating it", async () => {

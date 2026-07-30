@@ -859,3 +859,114 @@ test("pressOnSelector focuses a selector then presses a key", async () => {
     ),
   );
 });
+
+test("frame-scoped press fallback probes the child execution context", async () => {
+  const originalEgo = globalThis.ego;
+  globalThis.ego = { sendCDPMessage() {} };
+  const probeCalls = [];
+  const inputCalls = [];
+  const restore = setOverrides({
+    sessionId: "main-session",
+    sessionTargetId: "tab-1",
+    sessionAt: Date.now(),
+    cdpOverride(method, params, sessionId) {
+      if (
+        method === "Runtime.evaluate" &&
+        params.expression?.includes("__egoBrowserInputProbes")
+      ) {
+        probeCalls.push({ params, sessionId });
+        return probeCalls.length === 1
+          ? { result: { value: true } }
+          : { result: { value: { seen: false, fallback: true } } };
+      }
+      if (method === "Runtime.evaluate") {
+        return {
+          result: {
+            objectId:
+              sessionId === "keyboard-frame-session"
+                ? "input-object"
+                : "frame-owner",
+          },
+        };
+      }
+      if (
+        method === "Runtime.callFunctionOn" &&
+        params.objectId === "frame-owner"
+      ) {
+        return {
+          result: {
+            value: { x: 100, y: 50, width: 400, height: 300 },
+          },
+        };
+      }
+      if (method === "DOM.describeNode") {
+        return { node: { frameId: "keyboard-oopif-frame" } };
+      }
+      if (
+        method === "Page.createIsolatedWorld" &&
+        sessionId === "main-session"
+      ) {
+        throw new Error("No frame for given id found");
+      }
+      if (method === "Target.getTargets") {
+        return {
+          targetInfos: [
+            {
+              targetId: "keyboard-oopif-frame",
+              type: "iframe",
+              url: "https://cross-origin.example/keyboard",
+            },
+          ],
+        };
+      }
+      if (method === "Target.attachToTarget") {
+        return { sessionId: "keyboard-frame-session" };
+      }
+      if (
+        method === "Page.createIsolatedWorld" &&
+        sessionId === "keyboard-frame-session"
+      ) {
+        return { executionContextId: 303 };
+      }
+      if (
+        method === "Runtime.callFunctionOn" &&
+        params.objectId === "input-object"
+      ) {
+        return {};
+      }
+      if (method === "Input.dispatchKeyEvent") {
+        inputCalls.push({ params, sessionId });
+        throw new Error("CDP request timed out: Input.dispatchKeyEvent");
+      }
+      if (method === "Runtime.releaseObject") return {};
+      throw new Error(`Unexpected CDP method: ${method}`);
+    },
+  });
+  try {
+    await pressOnSelector(
+      {
+        selector: "#name",
+        frameChain: ["iframe#keyboard-payment"],
+      },
+      "Enter",
+    );
+  } finally {
+    restore();
+    if (originalEgo === undefined) delete globalThis.ego;
+    else globalThis.ego = originalEgo;
+  }
+
+  assert.ok(
+    inputCalls.every((call) => call.sessionId === "main-session"),
+    "trusted keyboard input uses the top-level session",
+  );
+  assert.equal(probeCalls.length, 2);
+  assert.ok(
+    probeCalls.every(
+      (call) =>
+        call.sessionId === "keyboard-frame-session" &&
+        call.params.contextId === 303,
+    ),
+    "fallback probes run in the child execution context",
+  );
+});

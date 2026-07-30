@@ -20,9 +20,9 @@ Scripts receive two categories of preloaded APIs:
 The Playwright-shaped surface is meant to be used directly. For ordinary page and locator work, rely on familiar Playwright methods and the needs of the task instead of querying help before every call. When a familiar call fails, a less common capability is needed, or an exact signature, option, or return value matters, query the current runtime by namespace or public path:
 
 ```js
-console.log(help('page.mouse'))
-console.log(help('page.mouse.move'))
-console.log(help('locator.fill'))
+console.log(help("page.mouse"));
+console.log(help("page.mouse.move"));
+console.log(help("locator.fill"));
 ```
 
 All public time parameters and options use milliseconds, including `timeout`, `interval`, `delay`, and `polling`.
@@ -105,7 +105,7 @@ Within one heredoc, base subsequent decisions on locators, URLs, or other state 
 ### 3.4 Act and verify
 
 - **Check the final state first.** Before setting or selecting, read the minimum state needed to decide. If it already matches, treat that item as complete.
-- **Wait before triggering.** When an action will trigger navigation, a request, or a response, create the corresponding wait before clicking or typing. Use `page.waitForTimeout(...)` only for brief visual settling of no more than 2000 ms.
+- **Wait before triggering.** When an action will trigger navigation, a request, a response, or a page event, create the corresponding wait before clicking or typing. Use `page.waitForTimeout(...)` only for brief visual settling of no more than 2000 ms.
 - **Make the locator unambiguous.** When uniqueness is not obvious, inspect `count()` or relevant text, then narrow with semantics or `filter(...)`. Use `first()` / `nth()` only after confirming that position has meaning or the repeated items are equivalent.
 - **Observe again based on dependency.** When the next step depends on a page change, needs a new ref, or follows a substantial DOM change, snapshot again first. When the next step is independent of intermediate state and uses a stable locator, it can continue in the same round.
 - **Verify with an authoritative signal.** Prefer the final URL, selected state, success message, generated result, or another direct page state. One reliable signal with no contradiction is usually enough to establish the fact.
@@ -117,16 +117,18 @@ For “today”, “current”, or “latest” tasks, establish the current tim
 
 ## 4. Playwright subset and remaining differences
 
-The Playwright subset is concentrated in `page`, locators, keyboard, and mouse. It covers common navigation, semantic location, clicking and input, waits, reads, screenshots, and evaluate. Treat familiar Playwright calls on these surfaces as the default vocabulary and use them directly when they fit the task. The subset is intentionally broad enough for normal browser work but is not the complete Playwright API; use `help(namespace)` to see the current subset or `help(publicPath)` to inspect one method when a call fails or precise behavior matters.
+The Playwright subset is concentrated in `page`, locators including `page.frameLocator()` for iframe content, keyboard, and mouse. It covers common navigation, semantic location, clicking and input, waits, reads, screenshots, and evaluate. Treat familiar Playwright calls on these surfaces as the default vocabulary and use them directly when they fit the task. The subset is intentionally broad enough for normal browser work but is not the complete Playwright API; use `help(namespace)` to see the current subset or `help(publicPath)` to inspect one method when a call fails or precise behavior matters.
 
 The table lists only remaining differences in same-named APIs that affect how they are called:
 
-| Difference | ego-browser behavior |
-|---|---|
-| `page.url()` | It is asynchronous; call it as `await page.url()`. |
-| `page.waitForURL(...)` matcher | Accepts a string, `RegExp`, or synchronous predicate that receives a `URL`; it does not support `URLPattern`. |
-| `page.evaluate(fnOrExpression, arg)` argument | Functions and string expressions are both supported. The second argument accepts serializable values but does not accept mixed-in Playwright `JSHandle` values. |
-| `page.screenshot(options)` options | Returning a `Buffer` and writing a file when `path` is supplied match Playwright. Supported options are `path`, `type`, `quality`, `fullPage`, `clip`, `omitBackground`, `animations`, `caret`, and `style`. |
+| Difference                                            | ego-browser behavior                                                                                                                                                                                         |
+| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `page.url()`                                          | It is asynchronous; call it as `await page.url()`.                                                                                                                                                           |
+| `page.waitForURL(...)` matcher                        | Accepts a string, `RegExp`, or synchronous predicate that receives a `URL`; it does not support `URLPattern`.                                                                                                |
+| `page.waitForEvent(...)` events                       | Supports `console`, `dialog`, `download`, `filechooser`, `pageerror`, `popup`, and `requestfailed`.                                                                                                          |
+| `page.evaluate(fnOrExpression, arg)` argument         | Functions and string expressions are both supported. The second argument accepts serializable values but does not accept mixed-in Playwright `JSHandle` values.                                              |
+| `page.ariaSnapshot()` / `locator.ariaSnapshot()` mode | Supports Playwright default-mode YAML plus `timeout`, `depth`, `boxes`, and `signal`, including frame-scoped locators. `mode: "ai"` is not supported; use `page.snapshot()` for ego-browser `@N` refs.       |
+| `page.screenshot(options)` options                    | Returning a `Buffer` and writing a file when `path` is supplied match Playwright. Supported options are `path`, `type`, `quality`, `fullPage`, `clip`, `omitBackground`, `animations`, `caret`, and `style`. |
 
 Locators and actionability are also a compatible subset rather than Playwright's complete selector and actionability engines. Actions such as click, hover, fill, focus, check, and select wait for their relevant attached, visible, stable, enabled, editable, or hit-target conditions. Supported actions can use `force` to skip non-essential checks or `trial` to run checks without input. When no element matches, `isVisible` / `isEnabled` return `false`, while `isHidden` / `isDisabled` return `true`.
 

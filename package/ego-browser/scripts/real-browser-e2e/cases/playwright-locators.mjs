@@ -2,6 +2,123 @@ import { homeCase } from "./shared.mjs";
 
 export const playwrightLocatorCases = [
   {
+    name: "frame locator helpers",
+    body: homeCase(`
+      assertEqual(typeof page.frameLocator, "function", "page.frameLocator is installed synchronously");
+      const frame = page.frameLocator("#fixture-frame");
+      assertEqual(typeof frame.locator, "function", "frameLocator.locator is chainable");
+      assertEqual(
+        await frame.locator("#iframe-marker").innerText(),
+        "iframe target",
+        "frame locator reads inside the child document"
+      );
+      assertEqual(
+        await frame.getByRole("button", { name: "Increment counter" }).count(),
+        1,
+        "frame-scoped role locator counts inside the child document"
+      );
+
+      const button = frame.getByRole("button", { name: "Increment counter" });
+      assertEqual(await button.isVisible(), false, "hidden frame owner makes child locator hidden");
+      await page.locator("#fixture-frame").evaluate((element) => {
+        setTimeout(() => {
+          element.style.display = "block";
+          element.style.width = "480px";
+          element.style.height = "320px";
+        }, 100);
+      });
+      await button.waitFor({ state: "visible", timeout: 2000 });
+      const frameBox = await page.locator("#fixture-frame").boundingBox();
+      const buttonBox = await button.boundingBox();
+      assert(
+        buttonBox.x >= frameBox.x && buttonBox.y >= frameBox.y,
+        "frame-scoped boundingBox uses top-level viewport coordinates"
+      );
+
+      await page.locator("#fixture-frame").evaluate((element) => {
+        const rect = element.getBoundingClientRect();
+        const overlay = document.createElement("div");
+        overlay.id = "frame-overlay";
+        Object.assign(overlay.style, {
+          position: "absolute",
+          left: rect.left + scrollX + "px",
+          top: rect.top + scrollY + "px",
+          width: rect.width + "px",
+          height: rect.height + "px",
+          zIndex: "2147483647",
+        });
+        document.body.append(overlay);
+      });
+      await assertRejects(
+        () => button.click({ timeout: 500 }),
+        "frame owner does not receive pointer events",
+        "frame-scoped click waits while the iframe is covered"
+      );
+      await page.locator("#frame-overlay").evaluate((element) => element.remove());
+
+      await button.click();
+      assertEqual(
+        await frame.locator("#click-count").textContent(),
+        "1",
+        "frame-scoped click dispatches to the child document"
+      );
+      await frame.getByLabel("Text input").fill("inside frame");
+      assertEqual(
+        await frame.locator("#text-input").inputValue(),
+        "inside frame",
+        "frame-scoped fill targets the child document"
+      );
+      await frame.locator("#text-input").pressSequentially("x");
+      assertEqual(
+        await frame.locator("#text-input").inputValue(),
+        "inside framex",
+        "frame-scoped pressSequentially keeps focus in the child document"
+      );
+      assertEqual(
+        JSON.stringify(await frame.locator("#dropdown").selectOption("beta")),
+        '["beta"]',
+        "frame-scoped selectOption targets the child document"
+      );
+      await frame.locator("#checkbox").check();
+      assertEqual(
+        await frame.locator("#checkbox").isChecked(),
+        true,
+        "frame-scoped check updates the child control"
+      );
+      await frame.locator("#file-input").setInputFiles({
+        name: "frame-upload.txt",
+        mimeType: "text/plain",
+        buffer: Buffer.from("frame upload"),
+      });
+      assertEqual(
+        await frame.locator("#file-name").textContent(),
+        "frame-upload.txt",
+        "frame-scoped setInputFiles targets the child input"
+      );
+      const screenshotBuffer = await button.screenshot();
+      assert(
+        Buffer.isBuffer(screenshotBuffer) && screenshotBuffer.length > 0,
+        "frame-scoped screenshot returns image bytes"
+      );
+
+      await page.locator("#fixture-frame").evaluate((element) => {
+        element.style.transformOrigin = "top left";
+        element.style.transform = "scale(0.75)";
+      });
+      await button.click();
+      assertEqual(
+        await frame.locator("#click-count").textContent(),
+        "2",
+        "frame-scoped click maps coordinates through a transformed iframe"
+      );
+      assertIncludes(
+        help("page.frameLocator"),
+        "FrameLocator",
+        "frameLocator is discoverable through runtime help"
+      );
+    `),
+  },
+  {
     name: "regression PWB-05 locator zero auto-wait",
     body: homeCase(`
       await page.evaluate(() => {
