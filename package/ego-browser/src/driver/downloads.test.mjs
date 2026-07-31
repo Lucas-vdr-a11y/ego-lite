@@ -1194,13 +1194,16 @@ test("waitForEvent aborts while an asynchronous predicate is still pending", asy
   }
 });
 
-test("waitForEvent rejects when the page closes before the event", async () => {
+test("waitForEvent uses the Playwright-style error when the page closes", async () => {
   installAutoEgo();
   try {
     const promise = waitForEvent("console", { timeout: 100 });
     await new Promise((resolve) => setTimeout(resolve, 20));
     fireEvent("Target.targetDestroyed", { targetId: "tab-1" }, undefined);
-    await assert.rejects(promise, /page closed/i);
+    await assert.rejects(
+      promise,
+      /Target page, context or browser has been closed/,
+    );
   } finally {
     cleanup();
   }
@@ -1234,7 +1237,10 @@ test("waitForEvent ignores a foreign detach and rejects when its own session det
       { sessionId: "sess-1", targetId: "tab-1" },
       undefined,
     );
-    await assert.rejects(promise, /page closed/i);
+    await assert.rejects(
+      promise,
+      /Target page, context or browser has been closed/,
+    );
   } finally {
     cleanup();
   }

@@ -107,13 +107,56 @@ export const pageEventCases = [
         });
         popup = await popupPromise;
         assert(popup.targetId, "popup exposes its target id");
-        await popup.bringToFront();
-        await page.waitForURL(
+        await tabs.activate(originalTab);
+        await popup.waitForURL(
           (url) => url.pathname === "/secondary",
           { timeout: 5000, waitUntil: "load" }
         );
-        assertIncludes(await page.url(), "/secondary", "popup bringToFront selects the popup");
-        assertIncludes(await popup.url(), "/secondary", "popup facade resolves its committed URL");
+        assertIncludes(await popup.url(), "/secondary", "popup Page resolves its committed URL");
+        assertEqual(await popup.title(), "ego-lite secondary", "popup Page reads its own title");
+        assertEqual(
+          await popup.getByRole("heading", { name: "Secondary tab" }).innerText(),
+          "Secondary tab",
+          "popup locator stays bound without bringing the popup to front"
+        );
+        assertEqual(
+          await popup.frameLocator("#fixture-frame").locator("#iframe-marker").innerText(),
+          "iframe target",
+          "popup frameLocator stays bound to the popup target"
+        );
+        const handle = await popup.waitForFunction(
+          () => ({ title: document.title }),
+          undefined,
+          { timeout: 5000 }
+        );
+        assertEqual(
+          (await handle.jsonValue()).title,
+          "ego-lite secondary",
+          "a JSHandle returned by the popup remains usable"
+        );
+        await handle.dispose();
+        const responsePromise = popup.waitForResponse(
+          (response) => response.url().endsWith("/api/text"),
+          { timeout: 5000 }
+        );
+        await popup.evaluate((url) => fetch(url), baseUrl + "/api/text");
+        const response = await responsePromise;
+        assertEqual(
+          response.status(),
+          200,
+          "popup waitForResponse observes the popup network session"
+        );
+        assertEqual(
+          (await tabs.current()).targetId,
+          originalTab.targetId,
+          "target-bound popup operations do not change the active tab"
+        );
+        await popup.bringToFront();
+        assertEqual(
+          (await tabs.current()).targetId,
+          popup.targetId,
+          "popup.bringToFront explicitly activates the popup"
+        );
       } finally {
         if (popup?.targetId) await tabs.close(popup.targetId);
         await tabs.activate(originalTab);

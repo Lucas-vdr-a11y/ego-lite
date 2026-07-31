@@ -150,6 +150,7 @@ test("agent skill names the pinned baseline and distinguishes ARIA snapshot scop
   assert.match(skill, /`page\.ariaSnapshot\(\)`.*ego-browser-specific/);
   assert.match(skill, /`tabs\.open\(\)` always creates a new tab/);
   assert.match(skill, /\{ targetId, url, title, type: "page" \}/);
+  assert.match(skill, /popup.*target-bound Page/i);
 });
 
 async function readCompatibilityManifest() {

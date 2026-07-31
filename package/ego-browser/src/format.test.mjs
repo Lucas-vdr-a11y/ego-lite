@@ -174,15 +174,12 @@ test("formatCliLogValue keeps facade signatures and returned subsets current", (
   );
   assert.match(
     parsed.helpers.page.waitForEvent.returns,
-    /ConsoleMessage.*Dialog.*Download.*FileChooser.*Error.*Popup.*Request/,
+    /ConsoleMessage.*Dialog.*Download.*FileChooser.*Error.*Page.*Request/,
   );
-  assert.match(
-    parsed.helpers.page.waitForEvent.returns,
-    /does not require tabs\.list\(\)/,
-  );
+  assert.match(parsed.helpers.page.waitForEvent.returns, /target-bound Page/);
   assert.match(
     parsed.helpers.page.waitForEvent.example,
-    /await popup\.bringToFront\(\)/,
+    /popup\.getByRole\('heading'\)/,
   );
   assert.match(
     parsed.helpers.page.waitForFunction.returns,

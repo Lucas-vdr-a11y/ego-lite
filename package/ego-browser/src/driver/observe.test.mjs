@@ -14,6 +14,10 @@ import {
   screenshot,
 } from "../../dist/src/driver/observe.js";
 import { setOverrides } from "../../dist/src/state.js";
+import {
+  createTargetContext,
+  runWithTarget,
+} from "../../dist/src/target-context.js";
 
 function withCdpRuntime(fn) {
   const previous = globalThis.ego;
@@ -28,6 +32,12 @@ function withCdpRuntime(fn) {
             title: "Example",
             url: "https://example.com/",
           },
+          {
+            targetId: "target-popup",
+            active: false,
+            title: "Popup",
+            url: "https://example.com/popup",
+          },
         ],
       };
     },
@@ -36,7 +46,12 @@ function withCdpRuntime(fn) {
       sent.push(request);
       let result = {};
       if (request.method === "Target.attachToTarget") {
-        result = { sessionId: "session-1" };
+        result = {
+          sessionId:
+            request.params.targetId === "target-popup"
+              ? "session-popup"
+              : "session-1",
+        };
       } else if (request.method === "Page.captureScreenshot") {
         result = { data: Buffer.from("png").toString("base64") };
       } else if (request.method === "Runtime.evaluate") {
@@ -46,10 +61,8 @@ function withCdpRuntime(fn) {
         runtime.onCDPMessage(JSON.stringify({ id: request.id, result })),
       );
     },
-    emit(method, params) {
-      runtime.onCDPMessage(
-        JSON.stringify({ sessionId: "session-1", method, params }),
-      );
+    emit(method, params, sessionId = "session-1") {
+      runtime.onCDPMessage(JSON.stringify({ sessionId, method, params }));
     },
   };
   globalThis.ego = runtime;
@@ -103,6 +116,37 @@ test("screenshot skips page metric JavaScript while a native dialog is pending",
 
   assert.equal(writes.length, 1);
   assert.equal(writes[0].path, "/tmp/ego-browser-dialog-shot.png");
+});
+
+test("target-bound screenshot checks dialogs on the bound Page session", async () => {
+  await withCdpRuntime(async ({ runtime, sent }) => {
+    const targetContext = createTargetContext("target-popup");
+    await runWithTarget(targetContext, () =>
+      browserCdp("Runtime.evaluate", { expression: "document.title" }),
+    );
+    runtime.emit(
+      "Page.javascriptDialogOpening",
+      {
+        type: "alert",
+        message: "Popup blocked",
+        url: "https://example.com/popup",
+      },
+      "session-popup",
+    );
+    sent.length = 0;
+
+    await runWithTarget(targetContext, () => screenshot());
+
+    assert.equal(
+      sent.some((request) => request.method === "Runtime.evaluate"),
+      false,
+    );
+    assert.equal(
+      sent.find((request) => request.method === "Page.captureScreenshot")
+        ?.sessionId,
+      "session-popup",
+    );
+  });
 });
 
 test("screenshot creates a missing parent directory", async () => {

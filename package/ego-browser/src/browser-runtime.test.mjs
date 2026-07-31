@@ -14,6 +14,7 @@ import {
   waitForBrowserEvent,
 } from "../dist/src/browser-runtime.js";
 import { state } from "../dist/src/state.js";
+import { runWithTarget } from "../dist/src/target-context.js";
 
 /**
  * Install a mock ego that auto-responds to every CDP send with { result: {} }.
@@ -813,6 +814,82 @@ test("ensureSession skips re-attach when targetId matches existing session", asy
     await ensureSession();
     const attach = calls.find((c) => c.method === "Target.attachToTarget");
     assert.equal(attach, undefined, "skips re-attach when target unchanged");
+  } finally {
+    cleanup();
+  }
+});
+
+test("target contexts isolate concurrent CDP sessions", async () => {
+  const calls = installAutoEgo({
+    tabs: [
+      { targetId: "tab-one", active: true },
+      { targetId: "tab-two", active: false },
+    ],
+  });
+  try {
+    await Promise.all([
+      runWithTarget("tab-one", () =>
+        browserCdp("Runtime.evaluate", { expression: "'one'" }),
+      ),
+      runWithTarget("tab-two", () =>
+        browserCdp("Runtime.evaluate", { expression: "'two'" }),
+      ),
+    ]);
+
+    const sessionsByTarget = new Map(
+      calls
+        .filter((call) => call.method === "Target.attachToTarget")
+        .map((call) => [call.params.targetId, `auto-sess-${call.id}`]),
+    );
+    const evaluations = calls.filter(
+      (call) => call.method === "Runtime.evaluate",
+    );
+    assert.deepEqual(
+      new Set(evaluations.map((call) => call.sessionId)),
+      new Set([
+        sessionsByTarget.get("tab-one"),
+        sessionsByTarget.get("tab-two"),
+      ]),
+    );
+    assert.deepEqual(
+      new Set(
+        calls
+          .filter((call) => call.method === "Target.detachFromTarget")
+          .map((call) => call.params.sessionId),
+      ),
+      new Set([
+        sessionsByTarget.get("tab-one"),
+        sessionsByTarget.get("tab-two"),
+      ]),
+    );
+  } finally {
+    cleanup();
+  }
+});
+
+test("target context maps an attach race to the Playwright-style closed error", async () => {
+  const calls = installManualEgo({
+    tabs: [{ targetId: "tab-popup", active: false }],
+  });
+  try {
+    const promise = runWithTarget("tab-popup", () =>
+      browserCdp("Runtime.evaluate", { expression: "location.href" }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const attach = calls.find(
+      (call) => call.method === "Target.attachToTarget",
+    );
+    globalThis.ego.onCDPMessage(
+      JSON.stringify({
+        id: attach.id,
+        error: { message: "No target with given id found" },
+      }),
+    );
+
+    await assert.rejects(
+      promise,
+      /Target page, context or browser has been closed.*tab-popup/,
+    );
   } finally {
     cleanup();
   }

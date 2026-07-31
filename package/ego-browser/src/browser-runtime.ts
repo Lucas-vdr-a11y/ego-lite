@@ -1,5 +1,7 @@
 import { state } from "./state.js";
 import { assertNoEgoError, buildEgoError } from "./ego-errors.js";
+import { currentTargetContext } from "./target-context.js";
+import { targetClosedError } from "./playwright-errors.js";
 
 const RESPONSE_TIMEOUT_MS = 15000;
 const SESSION_TTL_MS = 2000;
@@ -8,7 +10,7 @@ const KEEP_ALIVE_INTERVAL_MS = 2147483647;
 // inside the browser); without a cap, undrained events grow without bound.
 const MAX_BUFFERED_EVENTS = 10000;
 const SESSION_LOST =
-  /Session (?:with given id )?not found|Target closed|No session/i;
+  /Session (?:with given id )?not found|Target closed|No session|No target with given id found/i;
 const BROWSER_LEVEL = (method) =>
   method.startsWith("Target.") || method.startsWith("Browser.");
 type BrowserEventSubscriber = {
@@ -100,6 +102,22 @@ export async function browserCdp(
     return await rawCdp(method, params, effective, timeoutMs);
   } catch (error) {
     const lost = SESSION_LOST.test(error?.message || "");
+    const targetContext = currentTargetContext();
+    const contextualSession =
+      targetContext && (!explicit || effective === targetContext.sessionId);
+    if (lost && contextualSession && !BROWSER_LEVEL(method)) {
+      clearTargetContextSession(targetContext);
+      const fresh = await ensureSession();
+      try {
+        return await rawCdp(method, params, fresh, timeoutMs);
+      } catch (retryError) {
+        if (SESSION_LOST.test(retryError?.message || "")) {
+          clearTargetContextSession(targetContext);
+          throw targetClosedError(targetContext.targetId);
+        }
+        throw retryError;
+      }
+    }
     if (lost && !explicit && !BROWSER_LEVEL(method)) {
       invalidateSession();
       const fresh = await ensureSession();
@@ -109,7 +127,22 @@ export async function browserCdp(
   }
 }
 
+function clearTargetContextSession(targetContext) {
+  const sessionId = targetContext.sessionId;
+  if (sessionId) {
+    pageEnabledSessions.delete(sessionId);
+    pendingDialogs.delete(sessionId);
+  }
+  targetContext.sessionId = undefined;
+  targetContext.sessionPromise = undefined;
+  targetContext.dispose = undefined;
+}
+
 export async function ensureSession() {
+  const targetContext = currentTargetContext();
+  if (targetContext) {
+    return ensureTargetSession(targetContext);
+  }
   if (state.sessionId && Date.now() - state.sessionAt < SESSION_TTL_MS) {
     return state.sessionId;
   }
@@ -151,6 +184,44 @@ export async function ensureSession() {
     }
   })();
   return state.sessionInflight;
+}
+
+async function ensureTargetSession(targetContext) {
+  if (targetContext.sessionId) return targetContext.sessionId;
+  if (targetContext.sessionPromise) return targetContext.sessionPromise;
+  targetContext.sessionPromise = (async () => {
+    const result = assertNoEgoError(await browserEgo().listTabs());
+    const tabs = result?.tabs || result?.targetInfos || [];
+    if (!tabs.some((tab) => tab.targetId === targetContext.targetId)) {
+      throw targetClosedError(targetContext.targetId);
+    }
+    let attached;
+    try {
+      attached = await rawCdp("Target.attachToTarget", {
+        targetId: targetContext.targetId,
+        flatten: true,
+      });
+    } catch (error) {
+      if (SESSION_LOST.test(error?.message || "")) {
+        throw targetClosedError(targetContext.targetId);
+      }
+      throw error;
+    }
+    const sessionId = attached.result?.sessionId || attached.sessionId;
+    if (!sessionId) throw targetClosedError(targetContext.targetId);
+    targetContext.sessionId = sessionId;
+    targetContext.dispose = async () => {
+      targetContext.sessionId = undefined;
+      pageEnabledSessions.delete(sessionId);
+      pendingDialogs.delete(sessionId);
+      await rawCdp("Target.detachFromTarget", { sessionId }).catch(() => {});
+    };
+    await enablePageEvents(sessionId);
+    return sessionId;
+  })().finally(() => {
+    targetContext.sessionPromise = undefined;
+  });
+  return targetContext.sessionPromise;
 }
 
 export function invalidateSession() {

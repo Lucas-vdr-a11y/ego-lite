@@ -127,10 +127,11 @@ export async function screenshot(options: ScreenshotOptions = {}) {
     }
     params.quality = quality;
   }
+  const sessionId = isBrowserRuntime() ? await ensureSession() : undefined;
   let styleToken: string | null = null;
   let transparentBackground = false;
   try {
-    if (!raw && !pendingDialog()) {
+    if (!raw && !pendingDialog(sessionId)) {
       styleToken = await installScreenshotStyle(options);
       if (options.omitBackground) {
         await cdp("Emulation.setDefaultBackgroundColorOverride", {
@@ -144,10 +145,7 @@ export async function screenshot(options: ScreenshotOptions = {}) {
         params.clip = { ...options.clip };
       }
     } else {
-      if (isBrowserRuntime()) {
-        await ensureSession();
-      }
-      if (!pendingDialog()) {
+      if (!pendingDialog(sessionId)) {
         const dpr = Number(await evaluate("window.devicePixelRatio")) || 1;
         const cssScale = 1 / dpr;
         if (options.clip) {

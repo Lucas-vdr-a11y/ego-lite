@@ -25,6 +25,7 @@ import {
 import { acquireNetworkEvents } from "../network-events.js";
 import { retainResponseLifecycle } from "../network-lifecycle.js";
 import { state } from "../state.js";
+import { currentTargetId } from "../target-context.js";
 import { waitForDocumentLoad } from "./load.js";
 
 export const INTERNAL_URL_PREFIXES = [
@@ -96,7 +97,9 @@ export async function goto(url: string, options: GotoOptions = {}) {
 export async function reload(
   options: GotoOptions & { ignoreCache?: boolean } = {},
 ) {
-  const current = await currentTab();
+  const currentUrl = currentTargetId()
+    ? String(await evaluate("location.href"))
+    : (await currentTab()).url;
   return navigateAndTrack(
     (commandTimeout) =>
       cdp(
@@ -108,7 +111,7 @@ export async function reload(
     options,
     "page.reload",
     undefined,
-    isImmediateNavigationUrl(current.url),
+    isImmediateNavigationUrl(currentUrl),
   );
 }
 
@@ -341,8 +344,8 @@ function isImmediateNavigationUrl(url) {
  */
 export async function pageInfo() {
   if (isBrowserRuntime()) {
-    await ensureSession();
-    const dialog = pendingDialog();
+    const sessionId = await ensureSession();
+    const dialog = pendingDialog(sessionId);
     if (dialog) {
       return { dialog };
     }
@@ -374,9 +377,7 @@ export async function listTabs(
   return (await listedTabs(options)).map(toTabInfo);
 }
 
-async function listedTabs(
-  options: ListTabsOptions = {},
-): Promise<ListedTab[]> {
+async function listedTabs(options: ListTabsOptions = {}): Promise<ListedTab[]> {
   const includeChrome = options.includeChrome ?? true;
   const result = assertNoEgoError(await browserEgo().listTabs(), "listTabs");
   const tabs = result.tabs || [];
@@ -458,7 +459,10 @@ export async function newTab(url = "about:blank") {
  * @param {{wait?:boolean,timeout?:number,settle?:number}} [options]
  * @returns {Promise<{targetId:string,url:string,title:string,type:"page"}>}
  */
-export async function openTab(url = "about:blank", options: OpenTabOptions = {}) {
+export async function openTab(
+  url = "about:blank",
+  options: OpenTabOptions = {},
+) {
   return openNewTab(url, options, "tabs.open");
 }
 

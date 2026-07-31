@@ -5,11 +5,7 @@ import { pathToFileURL } from "node:url";
 import { setOverrides, state } from "./state.js";
 import { assertNoEgoError, isEgoUserControlError } from "./ego-errors.js";
 import { help as helpRuntime, formatHelp } from "./help-runtime.js";
-import {
-  cdp,
-  decodeUnserializableJsValue,
-  evaluate,
-} from "./cdp-eval.js";
+import { cdp, decodeUnserializableJsValue, evaluate } from "./cdp-eval.js";
 import * as pointer from "./driver/pointer.js";
 import * as keyboard from "./driver/keyboard.js";
 import * as locator from "./driver/locator.js";
@@ -23,6 +19,11 @@ import * as aria from "./driver/aria-snapshot.js";
 import { waitForActionableElement } from "./driver/actionability.js";
 import { locatorTarget } from "./frame-context.js";
 import { browserFetch, serverFetch } from "./http.js";
+import {
+  createTargetContext,
+  runWithTarget,
+  type TargetContext,
+} from "./target-context.js";
 import {
   loadBrowserToolSource,
   loadLearnedContext,
@@ -529,17 +530,27 @@ export async function learnContext(url = undefined) {
   });
 }
 
-function createLocator(selector, frameChain: string[] = []) {
+function createLocator(
+  selector,
+  frameChain: string[] = [],
+  targetContext?: TargetContext,
+) {
   const target = locatorTarget(selector, frameChain);
   const facade = {
-    first: () => createLocator(nthSelector(selector, 0), frameChain),
-    last: () => createLocator(`internal:last;${selector}`, frameChain),
+    first: () =>
+      createLocator(nthSelector(selector, 0), frameChain, targetContext),
+    last: () =>
+      createLocator(`internal:last;${selector}`, frameChain, targetContext),
     nth: (index) => {
       const value = Number(index);
       if (!Number.isInteger(value) || value < 0) {
         throw new Error("locator.nth requires a non-negative integer");
       }
-      return createLocator(nthSelector(selector, value), frameChain);
+      return createLocator(
+        nthSelector(selector, value),
+        frameChain,
+        targetContext,
+      );
     },
     and: (other) =>
       createLocator(
@@ -548,6 +559,7 @@ function createLocator(selector, frameChain: string[] = []) {
           right: locatorSelector(other, frameChain),
         }),
         frameChain,
+        targetContext,
       ),
     or: (other) =>
       createLocator(
@@ -556,6 +568,7 @@ function createLocator(selector, frameChain: string[] = []) {
           right: locatorSelector(other, frameChain),
         }),
         frameChain,
+        targetContext,
       ),
     locator: (child, options: any = {}) => {
       const scoped = scopedSelector(
@@ -565,45 +578,57 @@ function createLocator(selector, frameChain: string[] = []) {
       return createLocator(
         locatorOptionsSelector(scoped, options, frameChain),
         frameChain,
+        targetContext,
       );
     },
     getByRole: (role, options: any = {}) =>
       createLocator(
         scopedSelector(selector, roleSelector(role, options)),
         frameChain,
+        targetContext,
       ),
     getByText: (text, options: any = {}) =>
       createLocator(
         scopedSelector(selector, textSelector("text", text, options)),
         frameChain,
+        targetContext,
       ),
     getByLabel: (text, options: any = {}) =>
       createLocator(
         scopedSelector(selector, textSelector("label", text, options)),
         frameChain,
+        targetContext,
       ),
     getByPlaceholder: (text, options: any = {}) =>
       createLocator(
         scopedSelector(selector, textSelector("placeholder", text, options)),
         frameChain,
+        targetContext,
       ),
     getByAltText: (text, options: any = {}) =>
       createLocator(
         scopedSelector(selector, textSelector("alt", text, options)),
         frameChain,
+        targetContext,
       ),
     getByTitle: (text, options: any = {}) =>
       createLocator(
         scopedSelector(selector, textSelector("title", text, options)),
         frameChain,
+        targetContext,
       ),
     getByTestId: (testId) =>
       createLocator(
         scopedSelector(selector, testIdSelector(testId)),
         frameChain,
+        targetContext,
       ),
     filter: (options: any = {}) =>
-      createLocator(filterSelector(selector, options, frameChain), frameChain),
+      createLocator(
+        filterSelector(selector, options, frameChain),
+        frameChain,
+        targetContext,
+      ),
     click: (options = {}) => pointer.click(target, options),
     dblclick: (options = {}) => pointer.dblclick(target, options),
     hover: (options = {}) => pointer.hover(target, options),
@@ -686,20 +711,35 @@ function createLocator(selector, frameChain: string[] = []) {
       await waits.waitForSelector(target, options);
     },
   };
-  return defineInternalState(facade, {
-    selector,
-    frameChain: [...frameChain],
-    target,
-  });
+  return bindFacadeToTarget(
+    defineInternalState(facade, {
+      selector,
+      frameChain: [...frameChain],
+      target,
+    }),
+    targetContext,
+  );
 }
 
-function createFrameLocator(selector, parentFrameChain: string[] = []) {
+function createFrameLocator(
+  selector,
+  parentFrameChain: string[] = [],
+  targetContext?: TargetContext,
+) {
   const frameChain = [...parentFrameChain, String(selector)];
   const facade = {
     first: () =>
-      createFrameLocator(nthSelector(String(selector), 0), parentFrameChain),
+      createFrameLocator(
+        nthSelector(String(selector), 0),
+        parentFrameChain,
+        targetContext,
+      ),
     last: () =>
-      createFrameLocator(`internal:last;${String(selector)}`, parentFrameChain),
+      createFrameLocator(
+        `internal:last;${String(selector)}`,
+        parentFrameChain,
+        targetContext,
+      ),
     nth: (index) => {
       const value = Number(index);
       if (!Number.isInteger(value) || value < 0) {
@@ -708,29 +748,53 @@ function createFrameLocator(selector, parentFrameChain: string[] = []) {
       return createFrameLocator(
         nthSelector(String(selector), value),
         parentFrameChain,
+        targetContext,
       );
     },
-    frameLocator: (child) => createFrameLocator(child, frameChain),
+    frameLocator: (child) =>
+      createFrameLocator(child, frameChain, targetContext),
     locator: (child, options: any = {}) => {
       const childSelector = locatorSelector(child, frameChain);
       return createLocator(
         locatorOptionsSelector(childSelector, options, frameChain),
         frameChain,
+        targetContext,
       );
     },
     getByRole: (role, options: any = {}) =>
-      createLocator(roleSelector(role, options), frameChain),
+      createLocator(roleSelector(role, options), frameChain, targetContext),
     getByText: (text, options: any = {}) =>
-      createLocator(textSelector("text", text, options), frameChain),
+      createLocator(
+        textSelector("text", text, options),
+        frameChain,
+        targetContext,
+      ),
     getByLabel: (text, options: any = {}) =>
-      createLocator(textSelector("label", text, options), frameChain),
+      createLocator(
+        textSelector("label", text, options),
+        frameChain,
+        targetContext,
+      ),
     getByPlaceholder: (text, options: any = {}) =>
-      createLocator(textSelector("placeholder", text, options), frameChain),
+      createLocator(
+        textSelector("placeholder", text, options),
+        frameChain,
+        targetContext,
+      ),
     getByAltText: (text, options: any = {}) =>
-      createLocator(textSelector("alt", text, options), frameChain),
+      createLocator(
+        textSelector("alt", text, options),
+        frameChain,
+        targetContext,
+      ),
     getByTitle: (text, options: any = {}) =>
-      createLocator(textSelector("title", text, options), frameChain),
-    getByTestId: (testId) => createLocator(testIdSelector(testId), frameChain),
+      createLocator(
+        textSelector("title", text, options),
+        frameChain,
+        targetContext,
+      ),
+    getByTestId: (testId) =>
+      createLocator(testIdSelector(testId), frameChain, targetContext),
   };
   return defineInternalState(facade, {
     selector: String(selector),
@@ -875,8 +939,13 @@ function roleNameMatcher(value, exact = false) {
   return { text: String(value), exact };
 }
 
-function createPageFacade() {
-  return {
+function createPageFacade(target?: { targetId: string }) {
+  const targetContext = target
+    ? createTargetContext(target.targetId)
+    : undefined;
+  const targetId = targetContext?.targetId;
+  const facade = {
+    ...(targetId ? { targetId } : {}),
     setDefaultTimeout: (timeout) => {
       const value = Number(timeout);
       if (!Number.isFinite(value) || value < 0) {
@@ -901,22 +970,31 @@ function createPageFacade() {
     url: async () => (await nav.pageInfo()).url,
     title: async () => (await nav.pageInfo()).title,
     locator: (selector, options: any = {}) =>
-      createLocator(locatorOptionsSelector(selector, options, [])),
-    frameLocator: createFrameLocator,
+      createLocator(
+        locatorOptionsSelector(selector, options, []),
+        [],
+        targetContext,
+      ),
+    frameLocator: (selector) => createFrameLocator(selector, [], targetContext),
     getByRole: (role, options: any = {}) => {
-      return createLocator(roleSelector(role, options));
+      return createLocator(roleSelector(role, options), [], targetContext);
     },
     getByText: (text, options: any = {}) =>
-      createLocator(textSelector("text", text, options)),
+      createLocator(textSelector("text", text, options), [], targetContext),
     getByLabel: (text, options: any = {}) =>
-      createLocator(textSelector("label", text, options)),
+      createLocator(textSelector("label", text, options), [], targetContext),
     getByPlaceholder: (text, options: any = {}) =>
-      createLocator(textSelector("placeholder", text, options)),
+      createLocator(
+        textSelector("placeholder", text, options),
+        [],
+        targetContext,
+      ),
     getByAltText: (text, options: any = {}) =>
-      createLocator(textSelector("alt", text, options)),
+      createLocator(textSelector("alt", text, options), [], targetContext),
     getByTitle: (text, options: any = {}) =>
-      createLocator(textSelector("title", text, options)),
-    getByTestId: (testId) => createLocator(testIdSelector(testId)),
+      createLocator(textSelector("title", text, options), [], targetContext),
+    getByTestId: (testId) =>
+      createLocator(testIdSelector(testId), [], targetContext),
     waitForTimeout: waits.waitForTimeout,
     waitForLoadState: waits.waitForLoadState,
     waitForSelector: waits.waitForSelector,
@@ -924,16 +1002,26 @@ function createPageFacade() {
     waitForURL: waits.waitForURL,
     waitForRequest: waits.waitForRequest,
     waitForResponse: waits.waitForResponse,
-    waitForEvent: downloads.waitForEvent,
+    waitForEvent: (eventName, optionsOrPredicate = {}) =>
+      downloads.waitForEvent(eventName, optionsOrPredicate, {
+        createPopup: (targetInfo) =>
+          createPageFacade({ targetId: targetInfo.targetId }),
+      }),
     evaluate,
     screenshot: observe.screenshot,
     saveScreenshot: observe.saveScreenshot,
-    snapshot: observe.snapshot,
-    snapshotRaw: observe.snapshotRaw,
+    snapshot: targetId
+      ? async () => activeGlobalPageOnly("page.snapshot")
+      : observe.snapshot,
+    snapshotRaw: targetId
+      ? async () => activeGlobalPageOnly("page.snapshotRaw")
+      : observe.snapshotRaw,
     ariaSnapshot: (options = {}) =>
       aria.ariaSnapshot("body", options, "page.ariaSnapshot"),
     elementCenter: observe.elementCenter,
-    drainEvents: observe.drainEvents,
+    drainEvents: targetId
+      ? () => activeGlobalPageOnly("page.drainEvents")
+      : observe.drainEvents,
     screencast: {
       start: screencast.startScreencast,
       stop: screencast.stopScreencast,
@@ -960,7 +1048,35 @@ function createPageFacade() {
       wheel: pointer.wheel,
       drag: pointer.drag,
     },
+    ...(targetId
+      ? {
+          bringToFront: async () => {
+            await nav.switchTab(targetId);
+          },
+        }
+      : {}),
   };
+  return bindFacadeToTarget(facade, targetContext);
+}
+
+function activeGlobalPageOnly(apiName: string): never {
+  throw new Error(`${apiName} is available only on the active global page`);
+}
+
+function bindFacadeToTarget<T extends object>(
+  facade: T,
+  targetContext?: TargetContext,
+): T {
+  if (!targetContext) return facade;
+  for (const [name, value] of Object.entries(facade)) {
+    if (typeof value === "function") {
+      facade[name] = (...args) =>
+        runWithTarget(targetContext, () => value(...args));
+    } else if (value && typeof value === "object") {
+      bindFacadeToTarget(value, targetContext);
+    }
+  }
+  return facade;
 }
 
 function mousePointArgs(x, y, options) {
@@ -1007,7 +1123,7 @@ function createSiteFacade() {
 }
 
 const FACADE_HELP: Record<string, string> = {
-  page: "page: Playwright-style page facade. page.url() asynchronously returns the current URL; always call await page.url(). page.goto() and page.reload() return a main-document Response or null. Use page.setDefaultTimeout(ms), page.setDefaultNavigationTimeout(ms), locators, Playwright-style waits and supported page events, page.evaluate(fnOrExpression, arg), page.ariaSnapshot(options), page.screenshot(options) for a Buffer, page.saveScreenshot(options) for a path, page.screencast, page.keyboard, and page.mouse. waitForEvent, waitForRequest, and waitForResponse predicates may be async; waitForEvent also accepts AbortSignal cancellation. waitForURL predicates receive URL objects and waitUntil defaults to load. Wait timeouts throw TimeoutError.",
+  page: "page: Playwright-style page facade. page.url() asynchronously returns the current URL; always call await page.url(). page.goto() and page.reload() return a main-document Response or null. Use page.setDefaultTimeout(ms), page.setDefaultNavigationTimeout(ms), locators, Playwright-style waits and supported page events, page.evaluate(fnOrExpression, arg), page.ariaSnapshot(options), page.screenshot(options) for a Buffer, page.saveScreenshot(options) for a path, page.screencast, page.keyboard, and page.mouse. A popup event returns a target-bound Page whose Page and Locator methods work without changing the active tab; bringToFront() changes it explicitly. waitForEvent, waitForRequest, and waitForResponse predicates may be async; waitForEvent also accepts AbortSignal cancellation. waitForURL predicates receive URL objects and waitUntil defaults to load. Wait timeouts throw TimeoutError.",
   locator:
     "page.locator(selector): returns a strict locator facade with locator(), getByRole(), getByText(), filter(), and(), or(), first(), nth(index), last(), actionability-aware click(), hover(), dragTo(), fill(), focus(), check(), setChecked(), selectOption(), file upload, state/collection reads, evaluation, Buffer screenshots, and waitFor({ state: 'visible'|'attached'|'hidden'|'detached' }). Narrow multiple matches; use first()/nth() only for confirmed legitimate duplicates.",
   tabs: "tabs: ego-browser tab facade. list(), current(), open(), openOrReuse(), and activate() return { targetId, url, title, type: 'page' }. Use open(url, options) to always create a tab, or openOrReuse(url, options) to select a match when available. Use close(target) and evaluate(target, pageFunction, arg) for an explicit tab. Treat targetId as short-lived: obtain and validate it in the current script.",

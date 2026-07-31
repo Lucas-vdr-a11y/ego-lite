@@ -5,6 +5,12 @@ import * as helperExports from "../dist/src/helpers.js";
 import { PUBLIC_API_DOCS } from "../dist/src/format.js";
 import { setOverrides } from "../dist/src/state.js";
 import {
+  clearPreferredTarget,
+  drainBrowserEvents,
+  invalidateSession,
+} from "../dist/src/browser-runtime.js";
+import { runWithTarget } from "../dist/src/target-context.js";
+import {
   claimTaskSpace,
   completeTaskSpace,
   handOffTaskSpace,
@@ -41,6 +47,14 @@ function callablePaths(value, prefix, depth = 3) {
     }
   }
   return paths;
+}
+
+async function waitForCdpCall(calls, method) {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    if (calls.some((call) => call.method === method)) return;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  throw new Error(`timed out waiting for CDP call: ${method}`);
 }
 
 test("listTaskSpaces normalizes the current taskSpaces binding shape", async () => {
@@ -327,6 +341,286 @@ test("tabs.evaluate rejects targets outside the current task space before CDP at
     },
   );
   assert.equal(cdpCalled, false);
+});
+
+test("page.waitForEvent('popup') returns the complete Page facade", async () => {
+  const calls = [];
+  await withEgo(
+    {
+      async listTabs() {
+        return {
+          tabs: [
+            {
+              targetId: "target-main",
+              active: true,
+              title: "Main",
+              url: "https://example.com/",
+            },
+            {
+              targetId: "target-popup",
+              active: false,
+              title: "Popup",
+              url: "https://example.com/popup",
+            },
+          ],
+        };
+      },
+      sendCDPMessage(payload) {
+        const call = JSON.parse(payload);
+        calls.push(call);
+        setTimeout(() => {
+          const result =
+            call.method === "Target.attachToTarget"
+              ? { sessionId: `session-${call.params.targetId}` }
+              : {};
+          globalThis.ego.onCDPMessage(JSON.stringify({ id: call.id, result }));
+        }, 0);
+      },
+    },
+    async () => {
+      invalidateSession();
+      clearPreferredTarget();
+      drainBrowserEvents();
+      const popupPromise = helperContext().page.waitForEvent("popup", {
+        timeout: 1000,
+      });
+      await waitForCdpCall(calls, "Target.setDiscoverTargets");
+      globalThis.ego.onCDPMessage(
+        JSON.stringify({
+          method: "Target.targetCreated",
+          params: {
+            targetInfo: {
+              targetId: "target-popup",
+              type: "page",
+              openerId: "target-main",
+              title: "Popup",
+              url: "https://example.com/popup",
+            },
+          },
+        }),
+      );
+
+      const popup = await popupPromise;
+      assert.equal(popup.targetId, "target-popup");
+      assert.equal(typeof popup.locator, "function");
+      assert.equal(typeof popup.getByRole, "function");
+      assert.equal(typeof popup.frameLocator, "function");
+      assert.equal(typeof popup.evaluate, "function");
+      assert.equal(typeof popup.waitForLoadState, "function");
+      assert.equal(typeof popup.keyboard.press, "function");
+      assert.equal(typeof popup.mouse.click, "function");
+      assert.equal(typeof popup.bringToFront, "function");
+      await assert.rejects(
+        () => popup.snapshot(),
+        /page\.snapshot is available only on the active global page/,
+      );
+      await assert.rejects(
+        () => popup.snapshotRaw(),
+        /page\.snapshotRaw is available only on the active global page/,
+      );
+      assert.throws(
+        () => popup.drainEvents(),
+        /page\.drainEvents is available only on the active global page/,
+      );
+    },
+  );
+  invalidateSession();
+  clearPreferredTarget();
+  drainBrowserEvents();
+});
+
+test("popup Page stays bound to its target when another tab is active", async () => {
+  const calls = [];
+  const tabs = [
+    {
+      targetId: "target-main",
+      active: true,
+      title: "Main",
+      url: "https://example.com/",
+    },
+    {
+      targetId: "target-popup",
+      active: false,
+      title: "Popup",
+      url: "https://example.com/popup",
+    },
+  ];
+  try {
+    await withEgo(
+      {
+        async listTabs() {
+          return { tabs };
+        },
+        sendCDPMessage(payload) {
+          const call = JSON.parse(payload);
+          calls.push(call);
+          setTimeout(() => {
+            let result = {};
+            if (call.method === "Target.attachToTarget") {
+              result = { sessionId: `session-${call.params.targetId}` };
+            } else if (call.method === "Runtime.evaluate") {
+              result =
+                call.params.returnByValue === false
+                  ? { result: { type: "object", objectId: "popup-handle" } }
+                  : { result: { value: call.sessionId } };
+            } else if (call.method === "Runtime.callFunctionOn") {
+              result = { result: { value: call.sessionId } };
+            }
+            globalThis.ego.onCDPMessage(
+              JSON.stringify({ id: call.id, result }),
+            );
+          }, 0);
+        },
+      },
+      async () => {
+        invalidateSession();
+        clearPreferredTarget();
+        drainBrowserEvents();
+        const popupPromise = helperContext().page.waitForEvent("popup", {
+          timeout: 1000,
+        });
+        await waitForCdpCall(calls, "Target.setDiscoverTargets");
+        globalThis.ego.onCDPMessage(
+          JSON.stringify({
+            method: "Target.targetCreated",
+            params: {
+              targetInfo: {
+                targetId: "target-popup",
+                type: "page",
+                openerId: "target-main",
+                url: "https://example.com/popup",
+              },
+            },
+          }),
+        );
+
+        const popup = await popupPromise;
+        assert.equal(
+          await popup.evaluate("location.href"),
+          "session-target-popup",
+        );
+        assert.equal(
+          await popup.evaluate("document.title"),
+          "session-target-popup",
+        );
+        assert.equal(
+          calls.filter(
+            (call) =>
+              call.method === "Target.attachToTarget" &&
+              call.params.targetId === "target-popup",
+          ).length,
+          1,
+          "a target-bound Page keeps one stable CDP session",
+        );
+        assert.equal(
+          calls.some(
+            (call) =>
+              call.method === "Target.detachFromTarget" &&
+              call.params.sessionId === "session-target-popup",
+          ),
+          false,
+          "the Page session remains usable by returned handles and event facades",
+        );
+        assert.equal(
+          await popup
+            .locator("#target")
+            .evaluateAll((elements) => elements.length),
+          "session-target-popup",
+        );
+        await popup.keyboard.insertText("hello");
+        assert.equal(
+          calls.findLast((call) => call.method === "Input.insertText")
+            ?.sessionId,
+          "session-target-popup",
+        );
+        const handle = await popup.waitForFunction(
+          "({ ready: true })",
+          undefined,
+          {
+            timeout: 1000,
+            polling: 1,
+          },
+        );
+        assert.equal(
+          await handle.jsonValue(),
+          "session-target-popup",
+          "a handle returned by the popup remains bound to its Page session",
+        );
+        await handle.dispose();
+        assert.equal(
+          calls.findLast((call) => call.method === "Runtime.releaseObject")
+            ?.sessionId,
+          "session-target-popup",
+        );
+        assert.equal(
+          tabs.find((tab) => tab.active)?.targetId,
+          "target-main",
+          "bound evaluation must not activate the popup",
+        );
+      },
+    );
+  } finally {
+    invalidateSession();
+    clearPreferredTarget();
+    drainBrowserEvents();
+  }
+});
+
+test("target-bound Page maps a lost target to the Playwright-style closed error", async () => {
+  try {
+    await withEgo(
+      {
+        async listTabs() {
+          return {
+            tabs: [
+              {
+                targetId: "target-popup",
+                active: false,
+                title: "Popup",
+                url: "https://example.com/popup",
+              },
+            ],
+          };
+        },
+        sendCDPMessage(payload) {
+          const call = JSON.parse(payload);
+          setTimeout(() => {
+            if (call.method === "Runtime.evaluate") {
+              globalThis.ego.onCDPMessage(
+                JSON.stringify({
+                  id: call.id,
+                  error: { message: "Target closed" },
+                }),
+              );
+              return;
+            }
+            const result =
+              call.method === "Target.attachToTarget"
+                ? { sessionId: "session-target-popup" }
+                : {};
+            globalThis.ego.onCDPMessage(
+              JSON.stringify({ id: call.id, result }),
+            );
+          }, 0);
+        },
+      },
+      async () => {
+        invalidateSession();
+        clearPreferredTarget();
+        await assert.rejects(
+          () =>
+            runWithTarget("target-popup", () =>
+              helperContext().page.evaluate("location.href"),
+            ),
+          /Target page, context or browser has been closed/,
+        );
+      },
+    );
+  } finally {
+    invalidateSession();
+    clearPreferredTarget();
+    drainBrowserEvents();
+  }
 });
 
 test("all text-based getBy locators preserve regular expressions", () => {

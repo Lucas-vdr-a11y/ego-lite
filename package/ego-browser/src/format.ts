@@ -437,7 +437,7 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
   },
   "page.waitForEvent": {
     signature:
-      'page.waitForEvent("console"|"dialog"|"download"|"filechooser"|"pageerror"|"popup"|"requestfailed", predicateOrOptions?) => Promise<ConsoleMessage|Dialog|Download|FileChooser|Error|Popup|Request>',
+      'page.waitForEvent("console"|"dialog"|"download"|"filechooser"|"pageerror"|"popup"|"requestfailed", predicateOrOptions?) => Promise<ConsoleMessage|Dialog|Download|FileChooser|Error|Page|Request>',
     description:
       "Wait for a supported page event. Register the wait before the action that triggers the event. A synchronous or asynchronous predicate skips unrelated events.",
     params: [
@@ -455,9 +455,9 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
       },
     ],
     returns:
-      "Promise<ConsoleMessage|Dialog|Download|FileChooser|Error|Popup|Request>. Facades expose their Playwright-style subset; Popup includes targetId and bringToFront() and does not require tabs.list() in the same execution round.",
+      "Promise<ConsoleMessage|Dialog|Download|FileChooser|Error|Page|Request>. Popup events return a target-bound Page facade with targetId and bringToFront(); use its Page and Locator methods directly without changing the active tab.",
     example:
-      "const popupPromise = page.waitForEvent('popup', { predicate: p => p.targetId, timeout: 5000 }); await page.getByText('Open').click(); const popup = await popupPromise; await popup.bringToFront()",
+      "const popupPromise = page.waitForEvent('popup'); await page.getByText('Open').click(); const popup = await popupPromise; await popup.getByRole('heading').waitFor()",
   },
   "page.evaluate": {
     signature: "page.evaluate(pageFunction, arg?) => Promise<any>",
@@ -1108,8 +1108,7 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
   },
   "tabs.open": {
     signature: "tabs.open(url?, options?) => Promise<TabInfo>",
-    description:
-      "Always open and select a new tab, then return its TabInfo.",
+    description: "Always open and select a new tab, then return its TabInfo.",
     params: [
       {
         name: "url",
@@ -1124,8 +1123,7 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
       },
     ],
     returns: "Promise<TabInfo>",
-    example:
-      "await tabs.open('https://example.com', { timeout: 20000 })",
+    example: "await tabs.open('https://example.com', { timeout: 20000 })",
   },
   "tabs.openOrReuse": {
     signature: "tabs.openOrReuse(url, options?) => Promise<TabInfo>",

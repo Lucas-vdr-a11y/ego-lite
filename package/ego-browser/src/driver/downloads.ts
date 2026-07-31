@@ -15,13 +15,22 @@ import { createRequestFacade, type RequestInfo } from "../network-facades.js";
 import { acquireNetworkEvents } from "../network-events.js";
 import { createNetworkLifecycleMonitor } from "../network-lifecycle.js";
 import { state } from "../state.js";
-import { normalizeTimeout, operationTimeout } from "../playwright-errors.js";
+import {
+  normalizeTimeout,
+  operationTimeout,
+  targetClosedError,
+} from "../playwright-errors.js";
+import { currentTargetId } from "../target-context.js";
 import { listTabs, switchTab } from "./nav.js";
 
 type WaitForEventOptions = {
   timeout?: number;
   predicate?: (event: any) => boolean | Promise<boolean>;
   signal?: AbortSignal;
+};
+
+type WaitForEventDependencies = {
+  createPopup?: (targetInfo: any) => any;
 };
 
 type EventPredicate = NonNullable<WaitForEventOptions["predicate"]>;
@@ -75,6 +84,7 @@ export async function waitForEvent(
   optionsOrPredicate:
     | WaitForEventOptions
     | ((event: any) => boolean | Promise<boolean>) = {},
+  dependencies: WaitForEventDependencies = {},
 ) {
   if (!PAGE_EVENTS.has(eventName)) {
     throw new Error(
@@ -109,7 +119,12 @@ export async function waitForEvent(
       case "pageerror":
         return waitForPageError(timeout, predicate, operationScope.signal);
       case "popup":
-        return waitForPopup(timeout, predicate, operationScope.signal);
+        return waitForPopup(
+          timeout,
+          predicate,
+          operationScope.signal,
+          dependencies.createPopup,
+        );
       case "requestfailed":
         return waitForFailedRequest(timeout, predicate, operationScope.signal);
     }
@@ -171,6 +186,7 @@ async function waitForPopup(
   timeout: number,
   predicate: EventPredicate,
   signal?: AbortSignal,
+  createPopup: (targetInfo: any) => any = createPopupFacade,
 ) {
   return waitForPageValue(
     timeout,
@@ -186,7 +202,7 @@ async function waitForPopup(
       ) {
         return NO_EVENT;
       }
-      return createPopupFacade(targetInfo);
+      return createPopup(targetInfo);
     },
     predicate,
   );
@@ -520,13 +536,15 @@ async function waitForPageValue(
 }
 
 function currentPageContext(): Promise<PageContext> {
+  const boundTargetId = currentTargetId();
   return ensureSession().then((sessionId) => ({
     sessionId,
-    targetId: state.sessionTargetId,
+    targetId: boundTargetId || state.sessionTargetId,
   }));
 }
 
 function cachedPageContext(): PageContext | undefined {
+  if (currentTargetId()) return undefined;
   if (!state.sessionId || !state.sessionTargetId) return undefined;
   return {
     sessionId: state.sessionId,
@@ -545,7 +563,7 @@ function throwIfPageEnded(event, context: PageContext) {
       (detachedSessionId === context.sessionId ||
         endedTargetId === context.targetId))
   ) {
-    throw new Error("page.waitForEvent failed because the page closed");
+    throw targetClosedError(context.targetId);
   }
   if (
     event?.method === "Inspector.targetCrashed" &&

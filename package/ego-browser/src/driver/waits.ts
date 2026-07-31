@@ -89,12 +89,19 @@ export async function waitForFunction(
   }
   const deadline = timeoutDeadline(timeout, state.now());
   const expression = buildWaitForFunctionExpression(pageFunction, arg);
+  const sessionId = isBrowserRuntime()
+    ? await ensureSession()
+    : state.sessionId || undefined;
   while (state.now() < deadline) {
-    const response = await cdp("Runtime.evaluate", {
-      expression,
-      returnByValue: false,
-      awaitPromise: true,
-    });
+    const response = await cdp(
+      "Runtime.evaluate",
+      {
+        expression,
+        returnByValue: false,
+        awaitPromise: true,
+      },
+      sessionId,
+    );
     if (response.exceptionDetails || response.result?.subtype === "error") {
       runtimeValue(response, expression);
     }
@@ -103,7 +110,7 @@ export async function waitForFunction(
       ? true
       : remotePrimitiveValue(remoteObject);
     if (value) {
-      return createJSHandle(remoteObject);
+      return createJSHandle(remoteObject, sessionId);
     }
     await state.sleep(polling);
   }

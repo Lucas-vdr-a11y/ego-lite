@@ -8,6 +8,7 @@ import {
 } from "../../dist/src/browser-runtime.js";
 import { goto, reload } from "../../dist/src/driver/nav.js";
 import { setOverrides } from "../../dist/src/state.js";
+import { runWithTarget } from "../../dist/src/target-context.js";
 
 function installNavigationEgo(options = {}) {
   let sessionId = "session-1";
@@ -21,6 +22,15 @@ function installNavigationEgo(options = {}) {
             active: true,
             url: options.currentUrl || "https://example.test/start",
           },
+          ...(options.targetTab
+            ? [
+                {
+                  targetId: options.targetTab.targetId,
+                  active: false,
+                  url: options.targetTab.url,
+                },
+              ]
+            : []),
         ],
       };
     },
@@ -155,7 +165,12 @@ function installNavigationEgo(options = {}) {
         }
         if (call.method === "Runtime.evaluate") {
           respond(call, {
-            result: { type: "string", value: "complete" },
+            result: {
+              type: "string",
+              value: call.params.expression.includes("location.href")
+                ? options.targetPageUrl || options.currentUrl
+                : "complete",
+            },
           });
           return;
         }
@@ -264,6 +279,26 @@ test("reload returns null for a page without a network response", async () => {
   try {
     const response = await reload({ timeout: 100 });
     assert.equal(response, null);
+  } finally {
+    cleanup();
+  }
+});
+
+test("target-bound reload uses the bound page URL instead of the active tab URL", async () => {
+  installNavigationEgo({
+    currentUrl: "about:blank",
+    targetTab: {
+      targetId: "tab-popup",
+      url: "https://example.test/popup",
+    },
+    targetPageUrl: "https://example.test/popup",
+  });
+  try {
+    const response = await runWithTarget("tab-popup", () =>
+      reload({ timeout: 1000 }),
+    );
+    assert.equal(response.url(), "https://example.test/reloaded");
+    assert.equal(response.status(), 204);
   } finally {
     cleanup();
   }

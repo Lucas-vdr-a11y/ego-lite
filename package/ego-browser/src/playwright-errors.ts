@@ -18,6 +18,12 @@ export function operationTimeout(
   );
 }
 
+export function targetClosedError(targetId?: string | null) {
+  return new Error(
+    `Target page, context or browser has been closed${targetId ? ` (targetId: ${targetId})` : ""}`,
+  );
+}
+
 export function normalizeTimeout(apiName: string, timeout: unknown) {
   const value = Number(timeout);
   if (!Number.isFinite(value) || value < 0) {
