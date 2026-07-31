@@ -22,12 +22,12 @@ export const workflowCases = [
       assertEqual(navInfo.title, "ego-lite nav target", "workflow: page title changes after navigation");
       assertIncludes(navInfo.url, "/nav-target", "workflow: URL reflects nav-target");
 
-      /* Step 3: open a secondary page in a new tab. */
+      /* Step 3: select or open the secondary page. */
       const secondary = await tabs.openOrReuse(baseUrl + "/secondary", {
         wait: true,
         timeout: 10000,
       });
-      assertEqual(secondary.reused, false, "workflow: secondary tab is new");
+      assertEqual(secondary.type, "page", "workflow: secondary result is TabInfo");
       const secTitle = await page.evaluate(() => document.title);
       assertEqual(secTitle, "ego-lite secondary", "workflow: secondary tab title is correct");
 

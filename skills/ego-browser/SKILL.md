@@ -74,7 +74,7 @@ Use “establish context → observe → choose a path → act → verify” as 
 
 Use one task space for one user goal. In the first round, call `taskSpaces.useOrCreate(shortGoalName)`, immediately print the returned numeric `task.id`, and then begin page operations. In every later working Bash round, use that ID to call `await taskSpaces.switch(taskId)` before any `page` or `tabs` operation; failure recovery, retries, and follow-up work for the same goal use the same ID. `switch` selects an existing space and does not create one.
 
-For the active tab, use `page` directly. Use `tabs` only to discover, activate, or close another tab, or to evaluate in an explicit tab. Navigate the active page with `page.goto(...)`; use `tabs.openOrReuse(...)` only when the task specifically needs to reuse a matching tab or open another one.
+For the active tab, use `page` directly. Use `tabs` only to discover, open, activate, or close another tab, or to evaluate in an explicit tab. Navigate the active page with `page.goto(...)`. `tabs.open()` always creates a new tab; use `tabs.openOrReuse(...)` when the task should select a matching tab if one already exists. Both methods activate the returned tab and wait for document load by default.
 
 If `task.id` is lost, use `taskSpaces.list()` to identify the original space unambiguously, then call `taskSpaces.switch(id)`. If the result is ambiguous or the space no longer exists, stop and ask the user; do not create a replacement space.
 
@@ -111,7 +111,7 @@ Within one heredoc, base subsequent decisions on locators, URLs, or other state 
 
 For “today”, “current”, or “latest” tasks, establish the current time and the task time range before collecting data, then keep that range fixed throughout the task. Treat newly encountered dates on the page as record data.
 
-`targetId` is a short-lived handle. For an existing tab, obtain and validate it with `tabs.list()` in the current Bash invocation and fetch it again in a new execution round. Pass the returned tab object directly to `tabs.activate(tab)` / `tabs.close(tab)` when possible. A `Popup` returned by `page.waitForEvent("popup")` already carries the current round's target; call `popup.bringToFront()` and do not rediscover it with `tabs.list()`.
+`tabs.list()`, `tabs.current()`, `tabs.open()`, `tabs.openOrReuse()`, and `tabs.activate()` return the same lightweight `{ targetId, url, title, type: "page" }` object. `targetId` is a short-lived handle: obtain and validate it in the current Bash invocation and fetch it again in a new execution round. Pass the returned tab object directly to `tabs.activate(tab)` / `tabs.close(tab)` when possible. A `Popup` returned by `page.waitForEvent("popup")` already carries the current round's target; call `popup.bringToFront()` and do not rediscover it with `tabs.list()`.
 
 ## 4. Playwright subset and remaining differences
 
@@ -134,7 +134,7 @@ Locators and actionability are also a compatible subset rather than Playwright's
 ## 5. ego-browser-specific APIs
 
 - **`page` extensions**: `snapshot` / `snapshotRaw` provide semantic page state with refs; `info` provides page, viewport, and dialog state; `saveScreenshot`, `screencast`, `elementCenter`, and `drainEvents` add path-oriented screenshots, recording, coordinates, and events.
-- **`tabs`**: manages tabs in the current task space with `list`, `current`, `activate`, `openOrReuse`, and `close`, and evaluates in an explicit tab with `evaluate`. Opening or reusing a tab activates it. Internal recovery and iframe-target helpers are not public APIs.
+- **`tabs`**: manages tabs in the current task space with `list`, `current`, `activate`, `open`, `openOrReuse`, and `close`, and evaluates in an explicit tab with `evaluate`. `open` always creates a tab; `openOrReuse` selects a matching tab when available. Both activate the returned tab. Internal recovery and iframe-target helpers are not public APIs.
 - **`taskSpaces`**: manages the ownership lifecycle of isolated browsing contexts, including create or reuse, switch, claim, handoff, takeover, and completion.
 - **`site`**: discovers and runs reusable site skills and reads site learning context.
 - **`fetch`**: `fetch.server` requests from Node.js; `fetch.browser` requests from the current page origin.

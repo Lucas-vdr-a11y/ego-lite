@@ -16,27 +16,41 @@ export function navigationCase() {
 
     const current = await tabs.current();
     assertEqual(current.targetId, home.targetId, "tabs.current follows selected tab");
+    assertEqual(
+      Object.keys(current).sort().join(","),
+      "targetId,title,type,url",
+      "tabs.current returns the lightweight TabInfo shape",
+    );
 
     const reused = await tabs.openOrReuse(baseUrl + "/", { wait: true, timeout: 10000 });
-    assertEqual(reused.reused, true, "tabs.openOrReuse reuses exact home URL");
+    assertEqual(reused.targetId, home.targetId, "tabs.openOrReuse reuses exact home URL");
 
     const byOrigin = await tabs.openOrReuse(baseUrl + "/not-opened", {
       match: "origin",
       wait: false,
     });
-    assertEqual(byOrigin.reused, true, "tabs.openOrReuse reuses by origin");
+    assertEqual(byOrigin.targetId, home.targetId, "tabs.openOrReuse reuses by origin");
 
     const byPath = await tabs.openOrReuse(baseUrl + "/?query=1", {
       match: "origin+path",
       wait: false,
     });
-    assertEqual(byPath.reused, true, "tabs.openOrReuse reuses by origin and path");
+    assertEqual(byPath.targetId, home.targetId, "tabs.openOrReuse reuses by origin and path");
 
     const unique = await tabs.openOrReuse(baseUrl + "/secondary?unique=" + Date.now(), {
       wait: false,
     });
-    assertEqual(unique.reused, false, "tabs.openOrReuse opens a unique exact URL");
+    assert(unique.targetId !== home.targetId, "tabs.openOrReuse opens a unique exact URL");
     await tabs.close(unique);
+    await tabs.activate(home);
+
+    const alwaysNew = await tabs.open(baseUrl + "/", {
+      wait: true,
+      timeout: 10000,
+    });
+    assert(alwaysNew.targetId !== home.targetId, "tabs.open always creates a new tab");
+    assertEqual(alwaysNew.type, "page", "tabs.open returns TabInfo");
+    await tabs.close(alwaysNew);
     await tabs.activate(home);
 
     const slowRun = Date.now();
@@ -86,7 +100,11 @@ export function navigationCase() {
       match: "includes",
       wait: false,
     });
-    assertEqual(secondaryByIncludes.reused, true, "tabs.openOrReuse reuses by URL substring");
+    assertEqual(
+      secondaryByIncludes.targetId,
+      secondary.targetId,
+      "tabs.openOrReuse reuses by URL substring",
+    );
     await tabs.activate(secondary);
     const secondaryInfo = await page.info();
     assertEqual(secondaryInfo.title, "ego-lite secondary", "tabs.activate selects secondary tab");

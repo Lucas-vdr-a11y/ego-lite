@@ -8,9 +8,11 @@ import {
   pendingDialog,
 } from "../../dist/src/browser-runtime.js";
 import {
+  currentTab,
   iframeTarget,
   listTabs,
   newTab,
+  openTab,
   openOrReuseTab,
   pageInfo,
   closeTab,
@@ -202,6 +204,111 @@ test("listTabs throws on ego binding error objects", async () => {
   );
 });
 
+test("listTabs and currentTab return the same lightweight TabInfo shape", async () => {
+  await withEgo(
+    {
+      async listTabs() {
+        return {
+          tabs: [
+            {
+              targetId: "target-1",
+              active: true,
+              index: 4,
+              title: "Home",
+              url: "https://example.com/",
+              internalField: "must not leak",
+            },
+          ],
+        };
+      },
+    },
+    async () => {
+      const expected = {
+        targetId: "target-1",
+        url: "https://example.com/",
+        title: "Home",
+        type: "page",
+      };
+      assert.deepEqual(await listTabs(), [expected]);
+      assert.deepEqual(await currentTab(), expected);
+    },
+  );
+});
+
+test("openTab always creates, activates, waits, and returns refreshed TabInfo", async () => {
+  let created = false;
+  const calls = [];
+  await withEgo(
+    {
+      async listTabs() {
+        return {
+          tabs: [
+            {
+              targetId: "target-existing",
+              active: !created,
+              title: "Existing",
+              url: "https://example.com/target",
+            },
+            ...(created
+              ? [
+                  {
+                    targetId: "target-new",
+                    active: true,
+                    title: "Fresh",
+                    url: "https://example.com/target",
+                  },
+                ]
+              : []),
+          ],
+        };
+      },
+      async createTab() {
+        created = true;
+        return { targetId: "target-new" };
+      },
+    },
+    async () => {
+      const restore = setOverrides({
+        cdpOverride(method, params, sessionId) {
+          calls.push({ method, params, sessionId });
+          if (method === "Target.activateTarget") return { success: true };
+          if (method === "Page.getFrameTree") {
+            return {
+              frameTree: {
+                frame: { url: "https://example.com/target" },
+              },
+            };
+          }
+          if (method === "Runtime.evaluate") {
+            return { result: { value: "complete" } };
+          }
+          throw new Error(`unexpected CDP method: ${method}`);
+        },
+      });
+      try {
+        assert.deepEqual(await openTab("https://example.com/target"), {
+          targetId: "target-new",
+          url: "https://example.com/target",
+          title: "Fresh",
+          type: "page",
+        });
+      } finally {
+        restore();
+      }
+    },
+  );
+
+  assert.equal(created, true);
+  assert.ok(
+    calls.some((call) => call.method === "Target.activateTarget"),
+    "tabs.open explicitly activates the created target",
+  );
+  assert.ok(
+    calls.some((call) => call.method === "Runtime.evaluate"),
+    "tabs.open waits for document readiness by default",
+  );
+});
+
 test("newTab throws on ego binding error objects", async () => {
   await withEgo(
     {
@@ -250,6 +357,10 @@ test("openOrReuseTab settles a newly opened tab in milliseconds, not seconds", a
     },
     async () => {
       const restore = setOverrides({
+        cdpOverride(method) {
+          assert.equal(method, "Target.activateTarget");
+          return { success: true };
+        },
         sleep: async (ms) => {
           sleeps.push(ms);
         },
@@ -259,8 +370,8 @@ test("openOrReuseTab settles a newly opened tab in milliseconds, not seconds", a
           wait: false,
           settle: 500,
         });
-        assert.equal(opened.reused, false);
         assert.equal(opened.targetId, "target-new");
+        assert.equal(opened.type, "page");
       } finally {
         restore();
       }
@@ -346,13 +457,11 @@ test("openOrReuseTab returns normally when requested document loads complete", a
       name: "new tab with its default wait",
       options: {},
       existing: false,
-      reused: false,
     },
     {
-      name: "reused tab with wait enabled",
-      options: { wait: true },
+      name: "reused tab with its default wait",
+      options: {},
       existing: true,
-      reused: true,
     },
   ]) {
     await t.test(scenario.name, async () => {
@@ -363,8 +472,12 @@ test("openOrReuseTab returns normally when requested document loads complete", a
             "https://example.com/target",
             scenario.options,
           );
-          assert.equal(opened.targetId, tab.targetId);
-          assert.equal(opened.reused, scenario.reused);
+          assert.deepEqual(opened, {
+            targetId: tab.targetId,
+            url: tab.url,
+            title: tab.title,
+            type: "page",
+          });
           assert.equal(
             calls.filter((call) => call.method === "Runtime.evaluate").length,
             1,
@@ -383,8 +496,8 @@ test("openOrReuseTab skips document loading when waiting is disabled", async (t)
       existing: false,
     },
     {
-      name: "reused tab without explicit wait",
-      options: { timeout: -1 },
+      name: "reused tab with wait false",
+      options: { wait: false, timeout: -1 },
       existing: true,
     },
   ]) {
@@ -414,7 +527,7 @@ test("openOrReuseTab treats timeout zero as an unlimited load wait", async () =>
       const opened = await openOrReuseTab("https://example.com/target", {
         timeout: 0,
       });
-      assert.equal(opened.reused, false);
+      assert.equal(opened.type, "page");
       assert.deepEqual(sleeps, [300]);
     },
   );
@@ -674,7 +787,12 @@ test("switchTab refreshes the target list before activating it", async () => {
         },
       });
       try {
-        assert.equal(await switchTab({ targetId: "target-2" }), "target-2");
+        assert.deepEqual(await switchTab({ targetId: "target-2" }), {
+          targetId: "target-2",
+          url: "https://example.com/docs",
+          title: "Docs",
+          type: "page",
+        });
       } finally {
         restore();
       }

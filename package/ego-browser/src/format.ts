@@ -1069,8 +1069,9 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
     "Promise<void>",
   ),
   "tabs.list": {
-    signature: "tabs.list(options?) => Promise<object[]>",
-    description: "List tabs in the current task space.",
+    signature: "tabs.list(options?) => Promise<TabInfo[]>",
+    description:
+      "List tabs in the current task space as { targetId, url, title, type: 'page' } objects.",
     params: [
       {
         name: "options",
@@ -1079,17 +1080,18 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
           "Whether to include internal browser tabs; defaults to true.",
       },
     ],
-    returns: "Promise<object[]>",
+    returns: "Promise<TabInfo[]>",
     example: "console.log(await tabs.list())",
   },
   "tabs.current": {
-    signature: "tabs.current() => Promise<object>",
-    description: "Return the current selected tab.",
-    returns: "Promise<object>",
+    signature: "tabs.current() => Promise<TabInfo>",
+    description:
+      "Return the selected tab as { targetId, url, title, type: 'page' }.",
+    returns: "Promise<TabInfo>",
     example: "console.log(await tabs.current())",
   },
   "tabs.activate": {
-    signature: "tabs.activate(target) => Promise<string>",
+    signature: "tabs.activate(target) => Promise<TabInfo>",
     description:
       "Refresh the current tab list, validate a target id/tab object, then switch to that tab.",
     params: [
@@ -1100,13 +1102,35 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
         description: "Target id or tab object.",
       },
     ],
-    returns: "Promise<string>",
+    returns: "Promise<TabInfo>",
     example:
       "const tab = (await tabs.list()).find(t => t.url.includes('/docs')); if (!tab) throw new Error('docs tab not found'); await tabs.activate(tab)",
   },
+  "tabs.open": {
+    signature: "tabs.open(url?, options?) => Promise<TabInfo>",
+    description:
+      "Always open and select a new tab, then return its TabInfo.",
+    params: [
+      {
+        name: "url",
+        type: "string",
+        description: "URL to open; defaults to about:blank.",
+      },
+      {
+        name: "options",
+        type: "{ wait?: boolean, timeout?: number, settle?: number }",
+        description:
+          "Wait options. Document load waiting is enabled by default.",
+      },
+    ],
+    returns: "Promise<TabInfo>",
+    example:
+      "await tabs.open('https://example.com', { timeout: 20000 })",
+  },
   "tabs.openOrReuse": {
-    signature: "tabs.openOrReuse(url, options?) => Promise<object>",
-    description: "Open a URL in a new or reusable tab, then select it.",
+    signature: "tabs.openOrReuse(url, options?) => Promise<TabInfo>",
+    description:
+      "Select a matching tab or open a new one, wait by default, then return its TabInfo.",
     params: [
       {
         name: "url",
@@ -1117,10 +1141,11 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
       {
         name: "options",
         type: "{ match?: 'exact'|'origin'|'origin+path'|'includes', wait?: boolean, timeout?: number, settle?: number }",
-        description: "Open and wait options.",
+        description:
+          "Match and wait options. Document load waiting is enabled by default.",
       },
     ],
-    returns: "Promise<object>",
+    returns: "Promise<TabInfo>",
     example:
       "await tabs.openOrReuse('https://example.com', { wait: true, timeout: 20000 })",
   },
@@ -1140,7 +1165,7 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
   },
   "tabs.evaluate": conciseDoc(
     "tabs.evaluate(target, pageFunction, arg?) => Promise<any>",
-    "Evaluate browser-side JavaScript in an explicit target id or tab object without changing page.evaluate argument semantics.",
+    "Validate an explicit target id or tab object against the current task space, then evaluate browser-side JavaScript there without changing page.evaluate argument semantics.",
     "Promise<any>",
   ),
   "taskSpaces.list": {

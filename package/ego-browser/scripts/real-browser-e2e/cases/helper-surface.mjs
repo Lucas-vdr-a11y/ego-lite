@@ -35,11 +35,14 @@ export function helperSurfaceCase() {
     assertEqual(typeof page.getByAltText("Ego fixture logo").count, "function", "getByAltText returns a locator");
     assertEqual(typeof page.getByTitle("Counter button").click, "function", "getByTitle returns a locator");
     assertEqual(typeof globalThis.tabs, "object", "tabs facade is installed");
+    assertEqual(typeof tabs.open, "function", "tabs.open is installed");
     assertEqual(typeof tabs.openOrReuse, "function", "tabs.openOrReuse is installed");
     assertEqual(typeof tabs.close, "function", "tabs.close is installed");
     assertEqual(typeof tabs.ensureRealTab, "undefined", "internal ensureRealTab is not exposed");
     assertEqual(typeof tabs.iframeTarget, "undefined", "internal iframeTarget is not exposed");
     assertEqual(typeof globalThis.browser, "undefined", "Playwright Browser is not emulated");
+    assertEqual(typeof globalThis.listTabs, "undefined", "native listTabs is not exposed at the top level");
+    assertEqual(typeof globalThis.createTab, "undefined", "native createTab is not exposed at the top level");
     assertEqual(typeof globalThis.taskSpaces, "object", "taskSpaces facade is installed");
     assertEqual(typeof taskSpaces.useOrCreate, "function", "taskSpaces.useOrCreate is installed");
     assertEqual(typeof taskSpaces.claim, "function", "taskSpaces.claim is installed");

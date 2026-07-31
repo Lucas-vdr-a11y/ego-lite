@@ -35,6 +35,7 @@ test("Playwright and ego-specific methods are classified honestly", () => {
     "ego-extension",
   );
   assert.equal(docs["tabs.list"].compatibility.status, "ego-extension");
+  assert.equal(docs["tabs.open"].compatibility.status, "ego-extension");
   assert.equal(docs["browser.listTabs"], undefined);
   assert.equal(
     docs["taskSpaces.useOrCreate"].compatibility.status,
@@ -147,6 +148,8 @@ test("agent skill names the pinned baseline and distinguishes ARIA snapshot scop
   assert.match(skill, /`locator\.ariaSnapshot\(\)`.*Playwright/);
   assert.match(skill, /`ref: true`.*not supported.*`page\.snapshot\(\)`/);
   assert.match(skill, /`page\.ariaSnapshot\(\)`.*ego-browser-specific/);
+  assert.match(skill, /`tabs\.open\(\)` always creates a new tab/);
+  assert.match(skill, /\{ targetId, url, title, type: "page" \}/);
 });
 
 async function readCompatibilityManifest() {

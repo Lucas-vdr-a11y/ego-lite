@@ -156,7 +156,6 @@ export function installEgoSdk(
         enumerable: false,
       });
     }
-    exposeEgoMethods(target, target.ego);
   }
   return target;
 }
@@ -293,28 +292,4 @@ function wrapCreateTab(ego: EgoRuntime) {
     invalidateSession();
     return result;
   };
-}
-
-function exposeEgoMethods(target: InstallTarget, ego: EgoRuntime) {
-  const skip = new Set([
-    "helpers",
-    "learnings",
-    "useTaskSpace",
-    "createTaskSpace",
-    "claimTaskSpace",
-    "closeTaskSpace",
-  ]);
-  for (const key of Object.keys(ego)) {
-    if (skip.has(key)) continue;
-    if (key in target) continue;
-    const value = ego[key];
-    if (typeof value !== "function") continue;
-    const bound = value.bind(ego);
-    Object.defineProperty(target, key, {
-      value: bound,
-      writable: true,
-      configurable: true,
-      enumerable: false,
-    });
-  }
 }

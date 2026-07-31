@@ -252,8 +252,10 @@ test("helper surface exposes Playwright-style object facades", () => {
     "current",
     "evaluate",
     "list",
+    "open",
     "openOrReuse",
   ]);
+  assert.equal(typeof context.tabs.open, "function");
   assert.equal(typeof context.tabs.openOrReuse, "function");
   assert.equal(typeof context.tabs.close, "function");
   assert.equal(typeof context.tabs.evaluate, "function");
@@ -280,8 +282,51 @@ test("helper surface exposes Playwright-style object facades", () => {
   assert.equal(typeof context.evaluate, "undefined");
   assert.equal("newTab" in helperExports, false);
   assert.equal("newTab" in context, false);
+  assert.equal("ensureRealTab" in helperExports, false);
+  assert.equal("iframeTarget" in helperExports, false);
   assert.equal("elementEval" in helperExports, false);
   assert.equal("elementEval" in context, false);
+});
+
+test("tabs.evaluate rejects targets outside the current task space before CDP attach", async () => {
+  let cdpCalled = false;
+  await withEgo(
+    {
+      async listTabs() {
+        return {
+          tabs: [
+            {
+              targetId: "target-current",
+              active: true,
+              title: "Current",
+              url: "https://example.com/current",
+            },
+          ],
+        };
+      },
+    },
+    async () => {
+      const restore = setOverrides({
+        cdpOverride() {
+          cdpCalled = true;
+          throw new Error("CDP must not run for a foreign tab target");
+        },
+      });
+      try {
+        await assert.rejects(
+          () =>
+            helperContext().tabs.evaluate(
+              { targetId: "target-from-another-task-space" },
+              "document.title",
+            ),
+          /tabs\.evaluate target not found.*target-from-another-task-space.*target-current/,
+        );
+      } finally {
+        restore();
+      }
+    },
+  );
+  assert.equal(cdpCalled, false);
 });
 
 test("all text-based getBy locators preserve regular expressions", () => {

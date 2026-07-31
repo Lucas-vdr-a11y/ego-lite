@@ -11,6 +11,7 @@ test("formatCliLogValue renders documented function properties in object output"
         waitForResponse() {},
       },
       tabs: {
+        open() {},
         openOrReuse() {},
       },
       site: {
@@ -20,10 +21,15 @@ test("formatCliLogValue renders documented function properties in object output"
   });
 
   const parsed = JSON.parse(formatted);
+  assert.equal(parsed.helpers.tabs.open.kind, "function");
+  assert.equal(
+    parsed.helpers.tabs.open.signature,
+    "tabs.open(url?, options?) => Promise<TabInfo>",
+  );
   assert.equal(parsed.helpers.tabs.openOrReuse.kind, "function");
   assert.equal(
     parsed.helpers.tabs.openOrReuse.signature,
-    "tabs.openOrReuse(url, options?) => Promise<object>",
+    "tabs.openOrReuse(url, options?) => Promise<TabInfo>",
   );
   assert.equal(
     parsed.helpers.page.waitForRequest.signature,

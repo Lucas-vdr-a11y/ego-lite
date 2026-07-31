@@ -29,6 +29,29 @@ export function taskSpaceCase() {
       assertEqual(scratch.name, taskName + " scratch", "taskSpaces.new creates a scratch space");
       const scratchByName = await taskSpaces.switch(scratch.name);
       assertEqual(scratchByName.id, scratch.id, "taskSpaces.new output can be selected by name");
+      const scratchTab = await tabs.open(baseUrl + "/secondary?task-space=scratch", {
+        wait: true,
+        timeout: 10_000,
+      });
+
+      await taskSpaces.switch(task.id);
+      await assertRejects(
+        () => tabs.activate(scratchTab),
+        "tabs.activate target not found",
+        "tabs.activate rejects a target from another task space"
+      );
+      await assertRejects(
+        () => tabs.close(scratchTab),
+        "tabs.close target not found",
+        "tabs.close rejects a target from another task space"
+      );
+      await assertRejects(
+        () => tabs.evaluate(scratchTab, "document.title"),
+        "tabs.evaluate target not found",
+        "tabs.evaluate rejects a target from another task space"
+      );
+
+      await taskSpaces.switch(scratch.id);
       const closed = await taskSpaces.complete(scratch.id, { keep: false });
       assertEqual(closed.done, true, "taskSpaces.complete closes scratch task");
 

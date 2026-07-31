@@ -8,7 +8,7 @@ import {
   setPreferredTarget,
   subscribeBrowserEvent,
 } from "../browser-runtime.js";
-import { cdp, evaluate } from "../cdp-eval.js";
+import { cdp, evaluate, evaluateInTarget } from "../cdp-eval.js";
 import { assertNoEgoError, isEgoHardStopError } from "../ego-errors.js";
 import {
   createRequestInfo,
@@ -35,10 +35,14 @@ export const INTERNAL_URL_PREFIXES = [
   "about:",
 ];
 
-type TabInfo = {
+export type TabInfo = {
   targetId: string;
   title: string;
   url: string;
+  type: "page";
+};
+
+type ListedTab = TabInfo & {
   active: boolean;
   index?: number;
 };
@@ -61,6 +65,8 @@ type OpenOrReuseTabOptions = {
   timeout?: number;
   settle?: number;
 };
+
+type OpenTabOptions = Omit<OpenOrReuseTabOptions, "match">;
 
 type TabTarget = string | { targetId: string };
 
@@ -360,11 +366,17 @@ export async function pageInfo() {
 /**
  * List open page targets known to the browser.
  * @param {{includeChrome?: boolean}} [options]
- * @returns {Promise<Array<{targetId:string,title:string,url:string,active:boolean,index?:number}>>}
+ * @returns {Promise<Array<{targetId:string,title:string,url:string,type:"page"}>>}
  */
 export async function listTabs(
   options: ListTabsOptions = {},
 ): Promise<TabInfo[]> {
+  return (await listedTabs(options)).map(toTabInfo);
+}
+
+async function listedTabs(
+  options: ListTabsOptions = {},
+): Promise<ListedTab[]> {
   const includeChrome = options.includeChrome ?? true;
   const result = assertNoEgoError(await browserEgo().listTabs(), "listTabs");
   const tabs = result.tabs || [];
@@ -380,37 +392,51 @@ export async function listTabs(
       targetId: tab.targetId,
       title: tab.title || "",
       url: tab.url || "",
+      type: "page" as const,
       active: Boolean(tab.active),
       index: tab.index,
     }));
 }
 
+function toTabInfo(tab: ListedTab): TabInfo {
+  return {
+    targetId: tab.targetId,
+    url: tab.url,
+    title: tab.title,
+    type: "page",
+  };
+}
+
 /**
  * Return the currently attached tab.
- * @returns {Promise<{targetId:string,url:string,title:string}>}
+ * @returns {Promise<{targetId:string,url:string,title:string,type:"page"}>}
  */
 export async function currentTab() {
-  const tabs = await listTabs();
+  const tabs = await listedTabs();
   const active = tabs.find((tab) => tab.active) || tabs[0];
   if (!active) {
     throw new Error("no active browser tab");
   }
-  return { targetId: active.targetId, url: active.url, title: active.title };
+  return toTabInfo(active);
 }
 
 /**
  * Activate an existing tab target.
  * @param {string|{targetId:string}} target Target id or tab-like object.
- * @returns {Promise<string>} Target id.
+ * @returns {Promise<{targetId:string,url:string,title:string,type:"page"}>} Activated tab.
  */
 export async function switchTab(target: string | { targetId: string }) {
   const targetId = targetIdFrom(target, "tabs.activate");
-  const tabs = await listTabs();
-  currentTargetFrom(tabs, targetId, "tabs.activate");
+  const tabs = await listedTabs();
+  const tab = currentTargetFrom(tabs, targetId, "tabs.activate");
+  await activateTarget(targetId);
+  return toTabInfo(tab);
+}
+
+async function activateTarget(targetId: string) {
   await cdp("Target.activateTarget", { targetId });
   invalidateSession();
   setPreferredTarget(targetId);
-  return targetId;
 }
 
 /**
@@ -427,46 +453,70 @@ export async function newTab(url = "about:blank") {
 }
 
 /**
+ * Always open a new tab.
+ * @param {string} [url="about:blank"] URL to open.
+ * @param {{wait?:boolean,timeout?:number,settle?:number}} [options]
+ * @returns {Promise<{targetId:string,url:string,title:string,type:"page"}>}
+ */
+export async function openTab(url = "about:blank", options: OpenTabOptions = {}) {
+  return openNewTab(url, options, "tabs.open");
+}
+
+async function openNewTab(
+  url: string,
+  options: OpenTabOptions,
+  operation: "tabs.open" | "tabs.openOrReuse",
+) {
+  const targetId = await newTab(url);
+  await activateTarget(targetId);
+  await waitForActivatedTab(options, operation);
+  const refreshed = (await listedTabs()).find(
+    (tab) => tab.targetId === targetId,
+  );
+  return refreshed
+    ? toTabInfo(refreshed)
+    : { targetId, url, title: "", type: "page" as const };
+}
+
+/**
  * Reuse an existing matching tab or open a new one.
  * @param {string} url URL to find or open.
  * @param {{match?: "exact"|"origin"|"origin+path"|"includes", wait?: boolean, timeout?: number, settle?: number}} [options]
- * @returns {Promise<{targetId:string,url:string,title:string,active:boolean,index?:number,reused:boolean}>}
+ * @returns {Promise<{targetId:string,url:string,title:string,type:"page"}>}
  */
 export async function openOrReuseTab(
   url: string,
   options: OpenOrReuseTabOptions = {},
 ) {
-  const tabs = await listTabs({ includeChrome: false });
+  const tabs = await listedTabs({ includeChrome: false });
   const match = options.match || "exact";
   const existing = tabs.find((tab) => tabMatchesUrl(tab.url, url, match));
   if (existing) {
     await switchTab(existing.targetId);
-    if (options.wait) {
-      const timeout = options.timeout ?? navigationTimeout(undefined);
-      const loaded = await waitForDocumentLoad({ timeout });
-      if (!loaded) {
-        throw operationTimeout("tabs.openOrReuse", timeout);
-      }
-    }
-    const settle = Number(options.settle ?? 0);
-    if (settle > 0) {
-      await state.sleep(settle);
-    }
-    return { ...existing, active: true, reused: true };
+    await waitForActivatedTab(options, "tabs.openOrReuse");
+    const refreshed = (await listedTabs({ includeChrome: false })).find(
+      (tab) => tab.targetId === existing.targetId,
+    );
+    return toTabInfo(refreshed || existing);
   }
-  const targetId = await newTab(url);
+  return openNewTab(url, options, "tabs.openOrReuse");
+}
+
+async function waitForActivatedTab(
+  options: OpenTabOptions,
+  operation: "tabs.open" | "tabs.openOrReuse",
+) {
   if (options.wait !== false) {
     const timeout = options.timeout ?? navigationTimeout(undefined);
     const loaded = await waitForDocumentLoad({ timeout });
     if (!loaded) {
-      throw operationTimeout("tabs.openOrReuse", timeout);
+      throw operationTimeout(operation, timeout);
     }
   }
   const settle = Number(options.settle ?? 0);
   if (settle > 0) {
     await state.sleep(settle);
   }
-  return { targetId, url, title: "", active: true, reused: false };
 }
 
 /**
@@ -475,7 +525,7 @@ export async function openOrReuseTab(
  * @returns {Promise<string>} Closed target id.
  */
 export async function closeTab(target: TabTarget | undefined = undefined) {
-  const tabs = await listTabs();
+  const tabs = await listedTabs();
   const targetId =
     target === undefined
       ? (tabs.find((tab) => tab.active) || tabs[0])?.targetId
@@ -491,6 +541,24 @@ export async function closeTab(target: TabTarget | undefined = undefined) {
     await waitForClosedTarget(targetId);
   }
   return targetId;
+}
+
+/**
+ * Evaluate JavaScript in a tab from the current task space without activating it.
+ * @param {string|{targetId:string}} target Target id or tab-like object.
+ * @param {string|Function} pageFunction Browser-side expression or function.
+ * @param {unknown} [arg] Optional serializable function argument.
+ * @returns {Promise<any>}
+ */
+export async function evaluateTab(
+  target: TabTarget,
+  pageFunction,
+  arg = undefined,
+) {
+  const targetId = targetIdFrom(target, "tabs.evaluate");
+  const tabs = await listedTabs();
+  currentTargetFrom(tabs, targetId, "tabs.evaluate");
+  return evaluateInTarget(targetId, pageFunction, arg);
 }
 
 /**
@@ -599,7 +667,7 @@ function targetIdFrom(target: TabTarget, operation: string) {
 }
 
 function currentTargetFrom(
-  tabs: TabInfo[],
+  tabs: ListedTab[],
   targetId: string,
   operation: string,
 ) {

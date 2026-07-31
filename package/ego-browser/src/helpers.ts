@@ -9,7 +9,6 @@ import {
   cdp,
   decodeUnserializableJsValue,
   evaluate,
-  evaluateInTarget,
 } from "./cdp-eval.js";
 import * as pointer from "./driver/pointer.js";
 import * as keyboard from "./driver/keyboard.js";
@@ -83,12 +82,12 @@ export {
   listTabs,
   currentTab,
   switchTab,
+  openTab,
   openOrReuseTab,
   closeTab,
+  evaluateTab,
   goto,
   reload,
-  ensureRealTab,
-  iframeTarget,
 } from "./driver/nav.js";
 export {
   snapshot,
@@ -976,14 +975,10 @@ function createTabsFacade() {
     list: nav.listTabs,
     current: nav.currentTab,
     activate: nav.switchTab,
+    open: nav.openTab,
     openOrReuse: nav.openOrReuseTab,
     close: nav.closeTab,
-    evaluate: (target, pageFunction, arg = undefined) =>
-      evaluateInTarget(
-        typeof target === "string" ? target : target?.targetId,
-        pageFunction,
-        arg,
-      ),
+    evaluate: nav.evaluateTab,
   };
 }
 
@@ -1015,7 +1010,7 @@ const FACADE_HELP: Record<string, string> = {
   page: "page: Playwright-style page facade. page.url() asynchronously returns the current URL; always call await page.url(). page.goto() and page.reload() return a main-document Response or null. Use page.setDefaultTimeout(ms), page.setDefaultNavigationTimeout(ms), locators, Playwright-style waits and supported page events, page.evaluate(fnOrExpression, arg), page.ariaSnapshot(options), page.screenshot(options) for a Buffer, page.saveScreenshot(options) for a path, page.screencast, page.keyboard, and page.mouse. waitForEvent, waitForRequest, and waitForResponse predicates may be async; waitForEvent also accepts AbortSignal cancellation. waitForURL predicates receive URL objects and waitUntil defaults to load. Wait timeouts throw TimeoutError.",
   locator:
     "page.locator(selector): returns a strict locator facade with locator(), getByRole(), getByText(), filter(), and(), or(), first(), nth(index), last(), actionability-aware click(), hover(), dragTo(), fill(), focus(), check(), setChecked(), selectOption(), file upload, state/collection reads, evaluation, Buffer screenshots, and waitFor({ state: 'visible'|'attached'|'hidden'|'detached' }). Narrow multiple matches; use first()/nth() only for confirmed legitimate duplicates.",
-  tabs: "tabs: ego-browser tab facade. Use list(), current(), activate(target), openOrReuse(url, options), close(target), and evaluate(target, pageFunction, arg). Treat targetId as short-lived: obtain and validate it in the current script.",
+  tabs: "tabs: ego-browser tab facade. list(), current(), open(), openOrReuse(), and activate() return { targetId, url, title, type: 'page' }. Use open(url, options) to always create a tab, or openOrReuse(url, options) to select a match when available. Use close(target) and evaluate(target, pageFunction, arg) for an explicit tab. Treat targetId as short-lived: obtain and validate it in the current script.",
   taskSpaces:
     "taskSpaces: task-space facade. Use taskSpaces.useOrCreate(nameOrId), taskSpaces.claim(nameOrId), taskSpaces.switch(nameOrId), taskSpaces.complete(nameOrId, options), taskSpaces.handOff(nameOrId), taskSpaces.takeOver(nameOrId), and taskSpaces.waitForAgentControl(nameOrId, options). waitForAgentControl interval and timeout use milliseconds.",
   site: "site: learned site-skill facade. Use site.skills(url), site.skillsForUrl(url), site.runTool(siteId, toolName, args), site.runBrowserTool(siteId, toolName, args), and site.learnContext(url).",

@@ -191,6 +191,32 @@ test("installEgoSdk exposes the site facade under ego.learnings", () => {
   }
 });
 
+test("installEgoSdk keeps native ego bridge methods off the top-level API", () => {
+  const originalLog = console.log;
+  const nativeMethods = {
+    listTabs() {},
+    createTab() {},
+    snapshot() {},
+    sendCDPMessage() {},
+  };
+  const target = { ego: { ...nativeMethods } };
+  try {
+    installEgoSdk(target, { cliLog() {} });
+
+    assert.equal(typeof target.tabs, "object");
+    for (const name of Object.keys(nativeMethods)) {
+      assert.equal(
+        typeof target[name],
+        "undefined",
+        `${name} must remain available only through globalThis.ego`,
+      );
+      assert.equal(typeof target.ego[name], "function");
+    }
+  } finally {
+    console.log = originalLog;
+  }
+});
+
 test("installEgoSdk keeps raw task-space bridge methods behind stale-skill guards", () => {
   const originalLog = console.log;
   const target = {
