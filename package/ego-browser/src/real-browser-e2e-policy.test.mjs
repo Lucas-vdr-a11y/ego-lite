@@ -104,6 +104,19 @@ test("skill uses the tabs facade without documenting the removed Browser API", (
   assert.doesNotMatch(skill, /`Browser\.(?:grantPermissions|setPermission)`/);
 });
 
+test("skill keeps outer Bash timeouts above in-script operation timeouts", () => {
+  const skill = readFileSync(
+    new URL("../../../skills/ego-browser/SKILL.md", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(
+    skill,
+    /set it longer than the longest in-script locator, navigation, or event timeout/,
+  );
+  assert.match(skill, /shorter explicit timeout only for optional probes/);
+});
+
 test("native task-space close regression remains a dedicated opt-in e2e", () => {
   const regression = e2eCases.find(
     (testCase) => testCase.name === "native task space close regression",

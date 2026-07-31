@@ -29,6 +29,8 @@ console.log(help("locator.fill"));
 
 All public time parameters and options use milliseconds, including `timeout`, `interval`, `delay`, and `polling`.
 
+When the Bash tool applies an outer timeout, set it longer than the longest in-script locator, navigation, or event timeout after converting units, leaving time for process startup and output. Use a shorter explicit timeout only for optional probes whose absence is an expected result.
+
 Run it with the `Bash` tool:
 
 ```bash
