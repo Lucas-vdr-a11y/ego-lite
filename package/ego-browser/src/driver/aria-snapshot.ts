@@ -1,4 +1,6 @@
 import { pendingDialog } from "../browser-runtime.js";
+import { ariaRefScope, type AriaRefEntry } from "../aria-ref-map.js";
+import { currentAriaRefMap } from "../aria-ref-state.js";
 import { cdp } from "../cdp-eval.js";
 import { ElementResolutionError } from "../element-resolver.js";
 import type { LocatorTarget } from "../frame-context.js";
@@ -25,12 +27,14 @@ export type AriaSnapshotOptions = {
 };
 
 type SnapshotNode = {
+  backendNodeId?: number;
   role: string;
   name?: string;
   states: string[];
   properties: { name: string; value: string }[];
   children: SnapshotEntry[];
   box?: [number, number, number, number];
+  ref?: string;
 };
 
 type SnapshotEntry = SnapshotNode | string;
@@ -49,7 +53,7 @@ type DomSnapshotData = {
  * Capture a Playwright-style default-mode ARIA snapshot as YAML.
  *
  * The AI mode is intentionally unsupported: ego-browser's agent snapshot uses
- * @N refs and page.snapshot(), while Playwright AI snapshots use aria-ref=eN.
+ * @N refs and page.snapshot(). Playwright ref mode uses aria-ref=sNeN.
  */
 export async function ariaSnapshot(
   target: string | LocatorTarget,
@@ -79,7 +83,13 @@ export async function ariaSnapshot(
       );
       throwIfAborted(normalized.signal, apiName);
       assertNoDialog(apiName, handle.inputSessionId || handle.sessionId);
-      return await captureSnapshot(handle, normalized, deadline, apiName);
+      return await captureSnapshot(
+        handle,
+        normalized,
+        deadline,
+        apiName,
+        ariaRefScope(target),
+      );
     } catch (error) {
       throwIfAborted(normalized.signal, apiName);
       const caught =
@@ -141,11 +151,6 @@ function validateOptions(
   if (options.ref !== undefined && typeof options.ref !== "boolean") {
     throw new TypeError(`${apiName} ref must be a boolean`);
   }
-  if (options.ref) {
-    throw new TypeError(
-      `${apiName} ref: true is not supported; use page.snapshot() for ego-browser @N refs`,
-    );
-  }
   if (options.mode === "ai") {
     throw new TypeError(
       `${apiName} mode "ai" is not supported; use page.snapshot() for ego-browser AI refs`,
@@ -172,6 +177,7 @@ async function captureSnapshot(
   options: ReturnType<typeof validateOptions>,
   deadline: number,
   apiName: string,
+  refScope: string,
 ) {
   const send = async (method: string, params: any) => {
     throwIfAborted(options.signal, apiName);
@@ -266,7 +272,42 @@ async function captureSnapshot(
   const entries = rootIds.flatMap((rootId) =>
     buildSnapshotEntries(nodes, rootId, domData.metadata),
   );
-  return renderEntries(entries, options.depth);
+  const refNodes = collectRefNodes(entries);
+  const generation = currentAriaRefMap().replace(
+    refScope,
+    refNodes.map((node) => ariaRefEntry(node.backendNodeId!, handle)),
+  );
+  refNodes.forEach((node, index) => {
+    node.ref = `s${generation}e${index + 1}`;
+  });
+  return renderEntries(entries, options.depth, options.ref);
+}
+
+function collectRefNodes(entries: SnapshotEntry[]) {
+  const result: SnapshotNode[] = [];
+  const visit = (entry: SnapshotEntry) => {
+    if (typeof entry === "string") return;
+    if (entry.backendNodeId !== undefined) result.push(entry);
+    entry.children.forEach(visit);
+  };
+  entries.forEach(visit);
+  return result;
+}
+
+function ariaRefEntry(
+  backendNodeId: number,
+  handle: ResolvedElementHandle,
+): AriaRefEntry {
+  return {
+    backendNodeId,
+    sessionId: handle.sessionId || state.sessionId || undefined,
+    inputSessionId: handle.inputSessionId,
+    frameOffset: handle.frameOffset,
+    frameScale: handle.frameScale,
+    frameVisible: handle.frameVisible,
+    frameOwners: handle.frameOwners,
+    frameId: handle.frameId,
+  };
 }
 
 function rootsMatchedFromPartialRelatives(
@@ -394,6 +435,7 @@ function buildSnapshotEntries(
 
     return [
       {
+        backendNodeId: node.backendDOMNodeId,
         role,
         ...(name ? { name } : {}),
         states: nodeStates(node, dom),
@@ -597,10 +639,16 @@ function domSnapshotData(
   };
 }
 
-function renderEntries(entries: SnapshotEntry[], maxDepth?: number) {
+function renderEntries(
+  entries: SnapshotEntry[],
+  maxDepth?: number,
+  includeRefs = false,
+) {
   const lines: string[] = [];
   const effectiveDepth = maxDepth || undefined;
-  for (const entry of entries) renderEntry(entry, 0, effectiveDepth, lines);
+  for (const entry of entries) {
+    renderEntry(entry, 0, effectiveDepth, lines, includeRefs);
+  }
   return lines.join("\n");
 }
 
@@ -609,6 +657,7 @@ function renderEntry(
   depth: number,
   maxDepth: number | undefined,
   lines: string[],
+  includeRefs: boolean,
 ) {
   const indent = "  ".repeat(depth);
   if (typeof entry === "string") {
@@ -622,6 +671,7 @@ function renderEntry(
   }
   for (const state of entry.states) key += ` [${state}]`;
   if (entry.box) key += ` [box=${entry.box.join(",")}]`;
+  if (includeRefs && entry.ref) key += ` [ref=${entry.ref}]`;
 
   const singleTextChild =
     entry.properties.length === 0 &&
@@ -645,7 +695,7 @@ function renderEntry(
   }
   for (const child of entry.children) {
     if (atDepthLimit) break;
-    renderEntry(child, depth + 1, maxDepth, lines);
+    renderEntry(child, depth + 1, maxDepth, lines, includeRefs);
   }
 }
 

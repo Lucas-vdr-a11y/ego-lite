@@ -41,6 +41,12 @@ export function helperSurfaceCase() {
     assertEqual(typeof tabs.ensureRealTab, "undefined", "internal ensureRealTab is not exposed");
     assertEqual(typeof tabs.iframeTarget, "undefined", "internal iframeTarget is not exposed");
     assertEqual(typeof globalThis.browser, "undefined", "Playwright Browser is not emulated");
+    assertEqual(typeof globalThis.egoBrowser, "object", "egoBrowser facade is installed");
+    assertEqual(Object.keys(egoBrowser).sort().join(","), "closeTaskSpace,completeTaskSpace,newTaskSpace,switchTaskSpace", "egoBrowser exposes only TaskSpace lifecycle methods");
+    assertEqual(typeof egoBrowser.newPage, "undefined", "egoBrowser.newPage is not exposed");
+    assertEqual(typeof egoBrowser.newContext, "undefined", "egoBrowser.newContext is not exposed");
+    assertEqual(typeof egoBrowser.contexts, "undefined", "egoBrowser.contexts is not exposed");
+    assertEqual(typeof egoBrowser.close, "undefined", "egoBrowser.close is not exposed");
     assertEqual(typeof globalThis.listTabs, "undefined", "native listTabs is not exposed at the top level");
     assertEqual(typeof globalThis.createTab, "undefined", "native createTab is not exposed at the top level");
     assertEqual(typeof globalThis.taskSpaces, "object", "taskSpaces facade is installed");

@@ -43,6 +43,22 @@ test("Playwright and ego-specific methods are classified honestly", () => {
   );
 });
 
+test("every exact classification has an explicit executable contract", async () => {
+  const source = await readFile(
+    new URL("./playwright-exact-contracts.test.mjs", import.meta.url),
+    "utf8",
+  );
+  const contracted = [...source.matchAll(/\[exact:([^\]]+)\]/g)]
+    .map((match) => match[1])
+    .sort();
+  const classified = Object.entries(formatModule.PUBLIC_API_DOCS)
+    .filter(([, doc]) => doc.compatibility.status === "exact")
+    .map(([path]) => path)
+    .sort();
+
+  assert.deepEqual(classified, contracted);
+});
+
 test("help exposes the pinned compatibility baseline without model knowledge", () => {
   const output = helperContext().help("compat");
 
@@ -138,6 +154,51 @@ test("compatibility checker verifies the manifest against installed Playwright t
   assert.match(result.stdout, /playwright-core@1\.52\.0/);
 });
 
+test("compatibility report lists covered and missing members for the promised boundary", () => {
+  const result = spawnSync(
+    process.execPath,
+    ["scripts/check-playwright-compat.mjs", "--report"],
+    {
+      cwd: new URL("..", import.meta.url),
+      encoding: "utf8",
+    },
+  );
+
+  assert.equal(
+    result.status,
+    0,
+    `compatibility report failed:\n${result.stdout}\n${result.stderr}`,
+  );
+  assert.match(result.stdout, /Page: 31\/105 \(29\.5%\)/);
+  assert.match(result.stdout, /Locator: 55\/62 \(88\.7%\)/);
+  assert.match(result.stdout, /FrameLocator: 13\/13 \(100\.0%\)/);
+  assert.match(result.stdout, /Keyboard: 5\/5 \(100\.0%\)/);
+  assert.match(result.stdout, /Mouse: 6\/6 \(100\.0%\)/);
+  assert.match(result.stdout, /Total: 110\/191 \(57\.6%\)/);
+  assert.doesNotMatch(result.stdout, /Page missing:.*(?:goBack|goForward)/);
+  assert.doesNotMatch(result.stdout, /Locator missing:.*(?:all|contentFrame)/);
+  assert.match(result.stdout, /FrameLocator missing: none/);
+});
+
+test("Browser and BrowserContext remain explicit architectural exclusions", () => {
+  const context = helperContext();
+  assert.equal(context.browser, undefined);
+  assert.equal(context.page.context, undefined);
+  assert.equal(formatModule.PUBLIC_API_DOCS["browser.newContext"], undefined);
+  assert.equal(formatModule.PUBLIC_API_DOCS["page.context"], undefined);
+
+  const result = spawnSync(
+    process.execPath,
+    ["scripts/check-playwright-compat.mjs", "--report"],
+    {
+      cwd: new URL("..", import.meta.url),
+      encoding: "utf8",
+    },
+  );
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /Excluded by design: Browser, BrowserContext/);
+});
+
 test("agent skill names the pinned baseline and distinguishes ARIA snapshot scopes", async () => {
   const skill = await readFile(
     new URL("../../../skills/ego-browser/SKILL.md", import.meta.url),
@@ -146,11 +207,20 @@ test("agent skill names the pinned baseline and distinguishes ARIA snapshot scop
 
   assert.match(skill, /targets `playwright@1\.52\.0`/);
   assert.match(skill, /`locator\.ariaSnapshot\(\)`.*Playwright/);
-  assert.match(skill, /`ref: true`.*not supported.*`page\.snapshot\(\)`/);
+  assert.match(
+    skill,
+    /`locator\.ariaSnapshot\(\{ ref: true \}\)`.*`aria-ref=sNeN`/s,
+  );
+  assert.doesNotMatch(skill, /`ref: true`.*not supported/);
   assert.match(skill, /`page\.ariaSnapshot\(\)`.*ego-browser-specific/);
-  assert.match(skill, /`tabs\.open\(\)` always creates a new tab/);
-  assert.match(skill, /\{ targetId, url, title, type: "page" \}/);
+  assert.match(skill, /`task\.tabs\.open\(\)` always creates a new tab/);
+  assert.match(
+    skill,
+    /\{ targetId, url, title, type: "page", page, activate, close \}/,
+  );
   assert.match(skill, /popup.*target-bound Page/i);
+  assert.match(skill, /Native snapshots are serialized internally/);
+  assert.match(skill, /refs stay scoped to that Page/);
 });
 
 async function readCompatibilityManifest() {

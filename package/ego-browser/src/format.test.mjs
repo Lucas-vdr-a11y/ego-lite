@@ -60,6 +60,27 @@ test("formatCliLogValue documents page.url as asynchronous", () => {
   assert.match(parsed.helpers.page.url.example, /await page\.url\(\)/);
 });
 
+test("formatCliLogValue documents egoBrowser terminal methods as void", () => {
+  const formatted = formatCliLogValue({
+    helpers: {
+      egoBrowser: {
+        completeTaskSpace() {},
+        closeTaskSpace() {},
+      },
+    },
+  });
+
+  const parsed = JSON.parse(formatted);
+  assert.equal(
+    parsed.helpers.egoBrowser.completeTaskSpace.signature,
+    "egoBrowser.completeTaskSpace(nameOrId) => Promise<void>",
+  );
+  assert.equal(
+    parsed.helpers.egoBrowser.closeTaskSpace.signature,
+    "egoBrowser.closeTaskSpace(nameOrId) => Promise<void>",
+  );
+});
+
 test("formatCliLogValue documents Playwright 1.52 locator matcher options", () => {
   const formatted = formatCliLogValue({
     helpers: {

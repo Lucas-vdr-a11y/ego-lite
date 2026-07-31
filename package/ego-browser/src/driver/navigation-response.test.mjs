@@ -7,11 +7,13 @@ import {
   invalidateSession,
 } from "../../dist/src/browser-runtime.js";
 import { goto, reload } from "../../dist/src/driver/nav.js";
+import { helperContext } from "../../dist/src/helpers.js";
 import { setOverrides } from "../../dist/src/state.js";
 import { runWithTarget } from "../../dist/src/target-context.js";
 
 function installNavigationEgo(options = {}) {
   let sessionId = "session-1";
+  let networkEnabled = false;
   const calls = [];
   globalThis.ego = {
     async listTabs() {
@@ -41,6 +43,37 @@ function installNavigationEgo(options = {}) {
         if (call.method === "Target.attachToTarget") {
           sessionId = "session-1";
           respond(call, { sessionId });
+          return;
+        }
+        if (call.method === "Network.enable") {
+          networkEnabled = true;
+          respond(call, {});
+          return;
+        }
+        if (call.method === "Network.disable") {
+          networkEnabled = false;
+          respond(call, {});
+          return;
+        }
+        if (
+          call.method === "Network.getResponseBody" &&
+          options.responseBody !== undefined
+        ) {
+          if (networkEnabled) {
+            respond(call, {
+              body: options.responseBody,
+              base64Encoded: false,
+            });
+          } else {
+            globalThis.ego?.onCDPMessage?.(
+              JSON.stringify({
+                id: call.id,
+                error: {
+                  message: "No resource with given identifier found",
+                },
+              }),
+            );
+          }
           return;
         }
         if (call.method === "Page.navigate") {
@@ -155,6 +188,64 @@ function installNavigationEgo(options = {}) {
           }
           return;
         }
+        if (call.method === "Page.getNavigationHistory") {
+          respond(
+            call,
+            options.navigationHistory || {
+              currentIndex: 1,
+              entries: [
+                { id: 10, url: "https://example.test/back" },
+                { id: 11, url: "https://example.test/current" },
+                { id: 12, url: "https://example.test/forward" },
+              ],
+            },
+          );
+          return;
+        }
+        if (call.method === "Page.navigateToHistoryEntry") {
+          respond(call, {});
+          const entry = (
+            options.navigationHistory?.entries || [
+              { id: 10, url: "https://example.test/back" },
+              { id: 11, url: "https://example.test/current" },
+              { id: 12, url: "https://example.test/forward" },
+            ]
+          ).find((candidate) => candidate.id === call.params.entryId);
+          if (options.historyWithoutNetwork) {
+            emit("Page.frameNavigated", {
+              frame: { id: "frame-1", url: entry.url },
+              type: "BackForwardCacheRestore",
+            });
+            return;
+          }
+          emit("Network.requestWillBeSent", {
+            requestId: `history-${call.params.entryId}`,
+            frameId: "frame-1",
+            loaderId: `history-loader-${call.params.entryId}`,
+            type: "Document",
+            request: { url: entry.url, method: "GET", headers: {} },
+          });
+          emit("Network.responseReceived", {
+            requestId: `history-${call.params.entryId}`,
+            frameId: "frame-1",
+            loaderId: `history-loader-${call.params.entryId}`,
+            type: "Document",
+            response: {
+              url: entry.url,
+              status: 200,
+              statusText: "OK",
+              headers: {},
+            },
+          });
+          emit("Network.loadingFinished", {
+            requestId: `history-${call.params.entryId}`,
+          });
+          return;
+        }
+        if (call.method === "Page.setDocumentContent") {
+          respond(call, {});
+          return;
+        }
         if (call.method === "Page.getFrameTree") {
           respond(call, {
             frameTree: {
@@ -169,7 +260,10 @@ function installNavigationEgo(options = {}) {
               type: "string",
               value: call.params.expression.includes("location.href")
                 ? options.targetPageUrl || options.currentUrl
-                : "complete",
+                : call.params.expression.includes("document.doctype")
+                  ? options.content ||
+                    "<!DOCTYPE html><html><body>Current</body></html>"
+                  : "complete",
             },
           });
           return;
@@ -208,6 +302,19 @@ test("goto returns the correlated main-document response facade", async () => {
     assert.equal(response.status(), 200);
     assert.equal(response.request().isNavigationRequest(), true);
     assert.equal(await response.headerValue("content-type"), "text/html");
+  } finally {
+    cleanup();
+  }
+});
+
+test("goto Response body remains readable after navigation tracking is released", async () => {
+  const { calls } = installNavigationEgo({ responseBody: "navigation body" });
+  try {
+    const response = await goto("https://example.test/target", {
+      timeout: 1000,
+    });
+    assert.ok(calls.some((call) => call.method === "Network.disable"));
+    assert.equal(await response.text(), "navigation body");
   } finally {
     cleanup();
   }
@@ -266,6 +373,86 @@ test("reload ignores a subframe document response before the main frame", async 
     const response = await reload({ timeout: 1000 });
     assert.equal(response.url(), "https://example.test/reloaded");
     assert.equal(response.status(), 204);
+  } finally {
+    cleanup();
+  }
+});
+
+test("page.goBack returns the previous history document response", async () => {
+  installNavigationEgo();
+  try {
+    const response = await helperContext().page.goBack({ timeout: 1000 });
+    assert.equal(response.url(), "https://example.test/back");
+    assert.equal(response.status(), 200);
+  } finally {
+    cleanup();
+  }
+});
+
+test("page.goForward returns the next history document response", async () => {
+  installNavigationEgo();
+  try {
+    const response = await helperContext().page.goForward({ timeout: 1000 });
+    assert.equal(response.url(), "https://example.test/forward");
+    assert.equal(response.status(), 200);
+  } finally {
+    cleanup();
+  }
+});
+
+test("page.goBack returns null when there is no previous history entry", async () => {
+  const { calls } = installNavigationEgo({
+    navigationHistory: {
+      currentIndex: 0,
+      entries: [{ id: 11, url: "https://example.test/current" }],
+    },
+  });
+  try {
+    assert.equal(await helperContext().page.goBack({ timeout: 1000 }), null);
+    assert.ok(
+      !calls.some((call) => call.method === "Page.navigateToHistoryEntry"),
+    );
+  } finally {
+    cleanup();
+  }
+});
+
+test("page.goBack returns null for a back-forward-cache history restore", async () => {
+  installNavigationEgo({ historyWithoutNetwork: true });
+  try {
+    assert.equal(await helperContext().page.goBack({ timeout: 1000 }), null);
+  } finally {
+    cleanup();
+  }
+});
+
+test("page.content returns the serialized document markup", async () => {
+  installNavigationEgo({
+    content: "<!DOCTYPE html><html><body>Serialized</body></html>",
+  });
+  try {
+    assert.equal(
+      await helperContext().page.content(),
+      "<!DOCTYPE html><html><body>Serialized</body></html>",
+    );
+  } finally {
+    cleanup();
+  }
+});
+
+test("page.setContent replaces the main frame document", async () => {
+  const { calls } = installNavigationEgo({ currentUrl: "about:blank" });
+  try {
+    await helperContext().page.setContent("<main>Replacement</main>", {
+      timeout: 1000,
+    });
+    const command = calls.find(
+      (call) => call.method === "Page.setDocumentContent",
+    );
+    assert.deepEqual(command.params, {
+      frameId: "frame-1",
+      html: "<main>Replacement</main>",
+    });
   } finally {
     cleanup();
   }

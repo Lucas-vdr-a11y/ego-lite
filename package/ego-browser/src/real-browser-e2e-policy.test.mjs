@@ -29,7 +29,7 @@ test("task-space keep mode does not create a destructively closed scratch space"
   const source = taskSpaceCase();
   assert.match(
     source,
-    /if \(!keepTaskSpace\) \{[\s\S]*taskSpaces\.new\(taskName \+ " scratch"\)[\s\S]*keep: false[\s\S]*\}/,
+    /if \(!keepTaskSpace\) \{[\s\S]*egoBrowser\.newTaskSpace\(taskName \+ " scratch"\)[\s\S]*egoBrowser\.closeTaskSpace\(scratch\.id\)[\s\S]*\}/,
   );
 });
 
@@ -86,7 +86,7 @@ test("agent-facing sources do not publish the removed browser tab namespace", ()
   }
 });
 
-test("skill uses the tabs facade without documenting the removed Browser API", () => {
+test("skill uses the TaskSpace object model without documenting the removed Browser API", () => {
   const skill = readFileSync(
     new URL("../../../skills/ego-browser/SKILL.md", import.meta.url),
     "utf8",
@@ -96,9 +96,13 @@ test("skill uses the tabs facade without documenting the removed Browser API", (
   assert.ok(quickStart);
   assert.match(
     quickStart,
-    /await tabs\.openOrReuse\('https:\/\/example\.com', \{ wait: true, timeout: 20000 \}\)/,
+    /await egoBrowser\.newTaskSpace\('inspect example page'\)/,
   );
-  assert.match(quickStart, /console\.log\(await page\.snapshot\(\)\)/);
+  assert.match(
+    quickStart,
+    /await task\.tabs\.openOrReuse\('https:\/\/example\.com', \{ wait: true, timeout: 20000 \}\)/,
+  );
+  assert.match(quickStart, /console\.log\(await tab\.page\.snapshot\(\)\)/);
   assert.doesNotMatch(quickStart, /getByRole|innerText|page\.url/);
   assert.doesNotMatch(skill, /Playwright `Browser`/);
   assert.doesNotMatch(skill, /`Browser\.(?:grantPermissions|setPermission)`/);

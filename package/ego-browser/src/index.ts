@@ -78,6 +78,8 @@ const SYNC_FACTORY_METHODS = new Set([
   "and",
   "or",
   "filter",
+  "contentFrame",
+  "owner",
 ]);
 // Marks an ego runtime whose mutating methods have already been wrapped, so a
 // second installEgoSdk call cannot double-wrap createTab / task-space methods.
@@ -93,6 +95,7 @@ export function installEgoSdk(
   const context = options.context || helpers.helperContext();
   const readyImmediately = options.ready === undefined;
   const readySignal = Promise.resolve(options.ready);
+  const wrappedObjects = new WeakMap<object, unknown>();
   let readyError = null;
   readySignal.catch((error) => {
     readyError = error;
@@ -107,6 +110,7 @@ export function installEgoSdk(
           () => readyError,
           [name],
           readyImmediately,
+          wrappedObjects,
         );
     Object.defineProperty(target, name, {
       value: exposed,
@@ -166,6 +170,7 @@ function wrapReady(
   readyError: () => unknown,
   path: string[] = [],
   readyImmediately = false,
+  wrappedObjects: WeakMap<object, unknown> = new WeakMap(),
 ): unknown {
   if (typeof value === "function") {
     if (isSyncFactoryHelper(path)) {
@@ -176,10 +181,22 @@ function wrapReady(
           readyError,
           path,
           readyImmediately,
+          wrappedObjects,
         );
     }
     if (readyImmediately && SYNC_START_HELPERS.has(path.join("."))) {
-      return (...args: unknown[]) => value(...args);
+      return (...args: unknown[]) => {
+        const result = value(...args);
+        const mapKnownObject = (resolved) =>
+          resolved &&
+          typeof resolved === "object" &&
+          wrappedObjects.has(resolved)
+            ? wrappedObjects.get(resolved)
+            : resolved;
+        return result && typeof (result as Promise<unknown>).then === "function"
+          ? Promise.resolve(result).then(mapKnownObject)
+          : mapKnownObject(result);
+      };
     }
     return async (...args: unknown[]) => {
       await readySignal;
@@ -187,7 +204,10 @@ function wrapReady(
       if (error) {
         throw error;
       }
-      return value(...args);
+      const result = await value(...args);
+      return result && typeof result === "object" && wrappedObjects.has(result)
+        ? wrappedObjects.get(result)
+        : result;
     };
   }
   if (!value || typeof value !== "object") {
@@ -201,10 +221,12 @@ function wrapReady(
         readyError,
         [...path, String(index)],
         readyImmediately,
+        wrappedObjects,
       ),
     );
   }
   const wrapped: Record<string, unknown> = {};
+  wrappedObjects.set(value, wrapped);
   for (const [key, child] of Object.entries(value)) {
     wrapped[key] = wrapReady(
       child,
@@ -212,6 +234,7 @@ function wrapReady(
       readyError,
       [...path, key],
       readyImmediately,
+      wrappedObjects,
     );
   }
   for (const key of Reflect.ownKeys(value)) {

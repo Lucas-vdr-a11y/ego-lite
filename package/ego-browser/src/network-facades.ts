@@ -21,6 +21,12 @@ type ResponseLifecycleInfo = {
   sessionId?: string;
   request: RequestInfo;
   finished: boolean;
+  bodyPromise?: Promise<ResponseBodyPayload>;
+};
+
+type ResponseBodyPayload = {
+  body?: string;
+  base64Encoded?: boolean;
 };
 
 const responseLifecycle = new WeakMap<object, ResponseLifecycleInfo>();
@@ -86,6 +92,12 @@ export function createResponseFacade(info) {
     );
   const status = Number(response.status || 0);
   const headers = normalizeHeaders(response.headers);
+  const lifecycle: ResponseLifecycleInfo = {
+    requestId: info.requestId,
+    sessionId: info.sessionId,
+    request,
+    finished: Boolean(info.finished),
+  };
   const facade: any = {
     url: () => response.url || request.url || "",
     status: () => status,
@@ -104,7 +116,7 @@ export function createResponseFacade(info) {
     },
     request: () => createRequestFacade(request),
     body: async () => {
-      const body = await readResponseBody(info.requestId, 0, info.sessionId);
+      const body = await responseBody(lifecycle);
       return body.base64Encoded
         ? Buffer.from(body.body || "", "base64")
         : Buffer.from(body.body || "", "utf8");
@@ -128,12 +140,7 @@ export function createResponseFacade(info) {
         : null,
   };
   facade.json = async () => JSON.parse(await facade.text());
-  responseLifecycle.set(facade, {
-    requestId: info.requestId,
-    sessionId: info.sessionId,
-    request,
-    finished: Boolean(info.finished),
-  });
+  responseLifecycle.set(facade, lifecycle);
   return facade;
 }
 
@@ -141,6 +148,12 @@ export function responseLifecycleInfo(
   response,
 ): ResponseLifecycleInfo | undefined {
   return responseLifecycle.get(response);
+}
+
+export async function cacheResponseBody(response) {
+  const info = responseLifecycle.get(response);
+  if (!info || info.finished) return;
+  await responseBody(info);
 }
 
 export function linkRedirect(
@@ -160,7 +173,11 @@ export function normalizeHeaders(headers = {}) {
   return out;
 }
 
-async function readResponseBody(requestId, timeout, sessionId = undefined) {
+async function readResponseBody(
+  requestId,
+  timeout,
+  sessionId = undefined,
+): Promise<ResponseBodyPayload> {
   if (!requestId) {
     throw new Error("response body is unavailable without a requestId");
   }
@@ -185,6 +202,13 @@ async function readResponseBody(requestId, timeout, sessionId = undefined) {
       );
     }
   }
+}
+
+function responseBody(info: ResponseLifecycleInfo) {
+  if (!info.bodyPromise) {
+    info.bodyPromise = readResponseBody(info.requestId, 0, info.sessionId);
+  }
+  return info.bodyPromise;
 }
 
 function isResponseBodyPendingError(error: unknown) {

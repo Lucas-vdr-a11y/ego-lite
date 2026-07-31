@@ -1,5 +1,11 @@
 import { cdp, runtimeValue } from "../cdp-eval.js";
-import { browserRefMap, ensureRefMapForRef } from "../ref-state.js";
+import {
+  ariaRefScope,
+  isAriaRefSelector,
+  parseAriaRef,
+} from "../aria-ref-map.js";
+import { currentAriaRefMap } from "../aria-ref-state.js";
+import { currentRefMap, ensureRefMapForRef } from "../ref-state.js";
 import {
   ElementResolutionError,
   resolveElementObjectId,
@@ -42,6 +48,19 @@ export async function resolveHandle(
     cdpTimeoutMs?: number;
   } = {},
 ): Promise<ResolvedElementHandle> {
+  const ariaRefSelector = isLocatorTarget(selectorOrRef)
+    ? selectorOrRef.selector
+    : selectorOrRef;
+  const ariaRef = parseAriaRef(ariaRefSelector);
+  if (!ariaRef && isAriaRefSelector(ariaRefSelector)) {
+    throw new ElementResolutionError(
+      "Invalid aria-ref selector, should be of form s<number>e<number>",
+      "permanent",
+    );
+  }
+  if (ariaRef) {
+    return resolveAriaRefHandle(selectorOrRef, ariaRef, options.cdpTimeoutMs);
+  }
   if (isLocatorTarget(selectorOrRef) && selectorOrRef.frameChain.length > 0) {
     return resolveFrameScopedHandle(selectorOrRef, options);
   }
@@ -55,9 +74,87 @@ export async function resolveHandle(
         cdp(method, params, sessionId, options.cdpTimeoutMs),
     },
     undefined,
-    browserRefMap,
+    currentRefMap(),
     selector,
   );
+}
+
+async function resolveAriaRefHandle(
+  target: string | LocatorTarget,
+  ref: NonNullable<ReturnType<typeof parseAriaRef>>,
+  cdpTimeoutMs?: number,
+): Promise<ResolvedElementHandle> {
+  const map = currentAriaRefMap();
+  const scope = ariaRefScope(target);
+  const generation = map.generation(scope);
+  if (generation !== ref.generation) {
+    throw new ElementResolutionError(
+      `Stale aria-ref, expected s${String(generation)}e{number}, got ${ref.selector}`,
+      "permanent",
+    );
+  }
+  const entry = map.get(scope, ref.generation, ref.elementId);
+  if (!entry) {
+    throw new ElementResolutionError(
+      `Element not found for aria-ref=${ref.selector}`,
+      "transient",
+    );
+  }
+  let resolved;
+  try {
+    resolved = await cdp(
+      "DOM.resolveNode",
+      {
+        backendNodeId: entry.backendNodeId,
+        objectGroup: "ego-browser",
+      },
+      entry.sessionId,
+      cdpTimeoutMs,
+    );
+  } catch (error) {
+    if (!/No node|Could not find node/i.test(error?.message || "")) {
+      throw error;
+    }
+    throw new ElementResolutionError(
+      `Element not found for aria-ref=${ref.selector}`,
+      "transient",
+    );
+  }
+  const objectId = resolved.object?.objectId;
+  if (!objectId) {
+    throw new ElementResolutionError(
+      `Element not found for aria-ref=${ref.selector}`,
+      "transient",
+    );
+  }
+  const connected = await cdp(
+    "Runtime.callFunctionOn",
+    {
+      functionDeclaration: "function(){ return this.isConnected === true; }",
+      objectId,
+      returnByValue: true,
+      awaitPromise: false,
+    },
+    entry.sessionId,
+    cdpTimeoutMs,
+  );
+  if (!connected.result?.value) {
+    await releaseHandle(objectId, entry.sessionId, cdpTimeoutMs);
+    throw new ElementResolutionError(
+      `Element not found for aria-ref=${ref.selector}`,
+      "transient",
+    );
+  }
+  return {
+    objectId,
+    sessionId: entry.sessionId,
+    inputSessionId: entry.inputSessionId,
+    frameOffset: entry.frameOffset,
+    frameScale: entry.frameScale,
+    frameVisible: entry.frameVisible,
+    frameOwners: entry.frameOwners,
+    frameId: entry.frameId,
+  };
 }
 
 async function resolveFrameScopedHandle(

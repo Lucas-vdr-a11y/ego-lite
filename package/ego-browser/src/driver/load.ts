@@ -6,6 +6,7 @@ import { normalizeTimeout, timeoutDeadline } from "../playwright-errors.js";
 export type WaitForLoadOptions = {
   timeout?: number;
   until?: "load" | "domcontentloaded";
+  requireCommitted?: boolean;
 };
 
 export async function waitForDocumentLoad(options: WaitForLoadOptions = {}) {
@@ -23,7 +24,9 @@ export async function waitForDocumentLoad(options: WaitForLoadOptions = {}) {
     try {
       const tree = await cdp("Page.getFrameTree");
       const url = tree.frameTree?.frame?.url || "";
-      committed = url !== "" && url !== ":" && url !== "about:blank";
+      committed =
+        options.requireCommitted === false ||
+        (url !== "" && url !== ":" && url !== "about:blank");
     } catch (error) {
       if (isEgoHardStopError(error)) throw error;
       // Page.getFrameTree may not be supported in some sessions; fall back to readyState only.

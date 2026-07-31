@@ -1,7 +1,14 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 
+import { AriaRefMap } from "./aria-ref-map.js";
+import { RefMap } from "./ref-map.js";
+
 export type TargetContext = {
   targetId: string;
+  beforeOperation?: () => Promise<void>;
+  ariaRefMap: AriaRefMap;
+  refMap: RefMap;
+  snapshotForRefRefresh?: () => Promise<unknown>;
   sessionId?: string;
   sessionPromise?: Promise<string>;
   dispose?: () => Promise<void> | void;
@@ -20,8 +27,16 @@ export function currentTargetId() {
 // Page facades retain this context so their CDP session also remains valid for
 // returned handles and event facades. A string passed to runWithTarget instead
 // creates an operation-scoped context that is detached when the call finishes.
-export function createTargetContext(targetId: string): TargetContext {
-  return { targetId };
+export function createTargetContext(
+  targetId: string,
+  beforeOperation?: () => Promise<void>,
+): TargetContext {
+  return {
+    targetId,
+    beforeOperation,
+    ariaRefMap: new AriaRefMap(),
+    refMap: new RefMap(),
+  };
 }
 
 export function runWithTarget<T>(

@@ -57,7 +57,7 @@ Printing `ego-browser ready` means the environment is ready.
 
 ## After that, return to the original task
 
-Once the environment is ready, return to the user's original task and continue with the task space flow in `SKILL.md` — start from `taskSpaces.useOrCreate(name)` and proceed as usual.
+Once the environment is ready, return to the user's original task and continue with the TaskSpace flow in `SKILL.md` — start from `egoBrowser.newTaskSpace(name)` and proceed as usual.
 
 ## Troubleshooting
 

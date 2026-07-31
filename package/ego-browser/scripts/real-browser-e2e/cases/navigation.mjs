@@ -143,6 +143,34 @@ export function navigationCase() {
 
     const nav = await page.goto(baseUrl + "/", { timeout: 10000, settle: 100 });
     assert(nav === null || typeof nav.status === "function", "goto returns Response or null");
+    await page.waitForTimeout(200);
+    assertIncludes(
+      await nav.text(),
+      "ego-lite helper e2e",
+      "a delayed navigation Response body remains readable",
+    );
+
+    const back = await page.goBack({ timeout: 10000 });
+    assertIncludes(await page.url(), "/nav-target", "page.goBack restores the history entry");
+    if (back) {
+      assertIncludes(back.url(), "/nav-target", "page.goBack returns the navigation response");
+    }
+    const forward = await page.goForward({ timeout: 10000 });
+    assertIncludes(await page.url(), baseUrl + "/", "page.goForward restores the history entry");
+    if (forward) {
+      assertIncludes(forward.url(), baseUrl + "/", "page.goForward returns the navigation response");
+    }
+    assertIncludes(await page.content(), "Helper e2e fixture", "page.content serializes the document");
+
+    await page.setContent("<!doctype html><html><body><main id='replacement'>Replacement document</main></body></html>", {
+      timeout: 10000,
+    });
+    assertEqual(
+      await page.locator("#replacement").innerText(),
+      "Replacement document",
+      "page.setContent replaces the main-frame document",
+    );
+    await page.goto(baseUrl + "/", { timeout: 10000 });
 
   `;
 }

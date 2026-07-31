@@ -16,7 +16,7 @@ import {
 import { buildEgoError } from "../ego-errors.js";
 import { resolveElementCenter } from "../element-resolver.js";
 import {
-  browserRefMap,
+  currentRefMap,
   ensureRefMapForRef,
   registerSnapshotForRefRefresh,
 } from "../ref-state.js";
@@ -64,7 +64,7 @@ export async function snapshotRaw(options: SnapshotOptions = {}) {
     // ego error instead of leaking repeated native text.
     throw buildEgoError(err, "snapshot");
   }
-  browserSnapshotRefsToRefMap(browserRefMap, result.refs || []);
+  browserSnapshotRefsToRefMap(currentRefMap(), result.refs || []);
   return result;
 }
 
@@ -90,7 +90,7 @@ export async function elementCenter(selectorOrRef) {
   return resolveElementCenter(
     { sendRaw: cdp },
     undefined,
-    browserRefMap,
+    currentRefMap(),
     selectorOrRef,
   );
 }

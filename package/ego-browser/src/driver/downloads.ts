@@ -11,7 +11,12 @@ import {
   waitForBrowserEvent,
 } from "../browser-runtime.js";
 import { createJSHandle, remotePrimitiveValue } from "../js-handle.js";
-import { createRequestFacade, type RequestInfo } from "../network-facades.js";
+import {
+  createRequestFacade,
+  createResponseFacade,
+  responseLifecycleInfo,
+  type RequestInfo,
+} from "../network-facades.js";
 import { acquireNetworkEvents } from "../network-events.js";
 import { createNetworkLifecycleMonitor } from "../network-lifecycle.js";
 import { state } from "../state.js";
@@ -31,6 +36,7 @@ type WaitForEventOptions = {
 
 type WaitForEventDependencies = {
   createPopup?: (targetInfo: any) => any;
+  page?: any;
 };
 
 type EventPredicate = NonNullable<WaitForEventOptions["predicate"]>;
@@ -52,6 +58,12 @@ const PAGE_EVENTS = new Set([
   "pageerror",
   "popup",
   "requestfailed",
+  "request",
+  "response",
+  "requestfinished",
+  "load",
+  "domcontentloaded",
+  "close",
 ]);
 const fileChooserInterceptions = new Map<string, FileChooserInterception>();
 
@@ -75,7 +87,7 @@ type DownloadProgress = {
 
 /**
  * Wait for a Playwright-style page event.
- * @param {"console"|"dialog"|"download"|"filechooser"|"pageerror"|"popup"|"requestfailed"} eventName Event name.
+ * @param {"console"|"dialog"|"download"|"filechooser"|"pageerror"|"popup"|"request"|"response"|"requestfailed"|"requestfinished"|"load"|"domcontentloaded"|"close"} eventName Event name.
  * @param {Function|{timeout?: number, predicate?: Function, signal?: AbortSignal}} [optionsOrPredicate] Predicate function or wait options.
  * @returns {Promise<object>} Event-specific Playwright-style facade.
  */
@@ -127,6 +139,31 @@ export async function waitForEvent(
         );
       case "requestfailed":
         return waitForFailedRequest(timeout, predicate, operationScope.signal);
+      case "request":
+      case "response":
+      case "requestfinished":
+        return waitForNetworkPageEvent(
+          eventName,
+          timeout,
+          predicate,
+          operationScope.signal,
+        );
+      case "load":
+      case "domcontentloaded":
+        return waitForLifecycleEvent(
+          eventName,
+          timeout,
+          predicate,
+          operationScope.signal,
+          dependencies.page,
+        );
+      case "close":
+        return waitForClose(
+          timeout,
+          predicate,
+          operationScope.signal,
+          dependencies.page,
+        );
     }
   })();
   void operation.catch(() => {});
@@ -148,6 +185,174 @@ export async function waitForEvent(
   } finally {
     operationScope.dispose();
   }
+}
+
+async function waitForLifecycleEvent(
+  eventName: "load" | "domcontentloaded",
+  timeout: number,
+  predicate: EventPredicate,
+  signal: AbortSignal,
+  page,
+) {
+  const method =
+    eventName === "load" ? "Page.loadEventFired" : "Page.domContentEventFired";
+  return waitForPageValue(
+    timeout,
+    signal,
+    ({ sessionId }) => cdp("Page.enable", {}, sessionId, timeout),
+    (event, context) =>
+      event?.method === method &&
+      (!event?.sessionId || event.sessionId === context.sessionId)
+        ? page
+        : NO_EVENT,
+    predicate,
+  );
+}
+
+async function waitForClose(
+  timeout: number,
+  predicate: EventPredicate,
+  signal: AbortSignal,
+  page,
+) {
+  const contextPromise = currentPageContext();
+  const abortScope = createAbortScope(signal);
+  let matchedPage;
+  const eventPromise = waitForBrowserEvent(
+    async (event) => {
+      const context = await contextPromise;
+      const detachedSessionId = event?.params?.sessionId || event?.sessionId;
+      const endedTargetId =
+        event?.params?.targetId || event?.params?.targetInfo?.targetId;
+      const closed =
+        (event?.method === "Target.targetDestroyed" &&
+          endedTargetId === context.targetId) ||
+        (event?.method === "Target.detachedFromTarget" &&
+          (detachedSessionId === context.sessionId ||
+            endedTargetId === context.targetId));
+      if (!closed || !(await predicate(page))) return false;
+      matchedPage = page;
+      return true;
+    },
+    browserEventTimeout(timeout),
+    abortScope.signal,
+  );
+  void eventPromise.catch(() => {});
+  try {
+    await Promise.all([contextPromise, eventPromise]);
+    return matchedPage;
+  } finally {
+    abortScope.dispose();
+  }
+}
+
+async function waitForNetworkPageEvent(
+  eventName: "request" | "response" | "requestfinished",
+  timeout: number,
+  predicate: EventPredicate,
+  signal: AbortSignal,
+) {
+  const cachedContext = cachedPageContext();
+  const contextPromise = cachedContext
+    ? Promise.resolve(cachedContext)
+    : currentPageContext();
+  const networkEvents = acquireNetworkEvents(
+    cachedContext?.sessionId ||
+      contextPromise.then(({ sessionId }) => sessionId),
+    timeout,
+  );
+  const monitor = createNetworkLifecycleMonitor(networkEvents);
+  const abortScope = createAbortScope(signal);
+  let matched;
+  let retained = false;
+  const eventPromise = waitForBrowserEvent(
+    async (event) => {
+      const context = await contextPromise;
+      throwIfPageEnded(event, context);
+      if (
+        context.sessionId &&
+        event?.sessionId &&
+        event.sessionId !== context.sessionId
+      ) {
+        return false;
+      }
+      const candidate = networkEventCandidate(eventName, event, monitor);
+      if (!candidate || !(await predicate(candidate.value))) return false;
+      matched = candidate;
+      return true;
+    },
+    browserEventTimeout(timeout),
+    abortScope.signal,
+  );
+  void eventPromise.catch(() => {});
+  try {
+    await Promise.all([
+      raceWithAbort(networkEvents.ready, abortScope.signal),
+      eventPromise,
+    ]);
+    if (eventName !== "requestfinished") {
+      await monitor.retain(
+        matched.request,
+        eventName === "response" ? matched.value : undefined,
+      );
+      retained = true;
+    }
+    return matched.value;
+  } catch (error) {
+    abortScope.abort(error);
+    await eventPromise.catch(() => {});
+    throw error;
+  } finally {
+    abortScope.dispose();
+    if (!retained) await monitor.release();
+  }
+}
+
+function networkEventCandidate(eventName, event, monitor) {
+  const params = event?.params || {};
+  if (
+    eventName === "request" &&
+    event?.method === "Network.requestWillBeSent"
+  ) {
+    const request = monitor.requestForEvent(event);
+    return request ? { value: createRequestFacade(request), request } : null;
+  }
+  if (
+    eventName === "requestfinished" &&
+    event?.method === "Network.loadingFinished"
+  ) {
+    const request = monitor.requestForEvent(event);
+    return request ? { value: createRequestFacade(request), request } : null;
+  }
+  if (eventName !== "response") return null;
+  if (
+    event?.method === "Network.requestWillBeSent" &&
+    params.redirectResponse
+  ) {
+    const currentRequest = monitor.requestForEvent(event);
+    const response = createResponseFacade({
+      requestId: params.requestId,
+      response: params.redirectResponse,
+      request: currentRequest?.redirectedFrom,
+      sessionId: event?.sessionId,
+      finished: true,
+    });
+    const request =
+      currentRequest?.redirectedFrom ||
+      responseLifecycleInfo(response)?.request;
+    return request ? { value: response, request } : null;
+  }
+  if (event?.method !== "Network.responseReceived") return null;
+  const request = monitor.requestForEvent(event);
+  const response = createResponseFacade({
+    requestId: params.requestId,
+    response: params.response,
+    request,
+    type: params.type,
+    sessionId: event?.sessionId,
+  });
+  const matchedRequest = request || responseLifecycleInfo(response)?.request;
+  return matchedRequest ? { value: response, request: matchedRequest } : null;
 }
 
 function normalizeWaitForEventOptions(

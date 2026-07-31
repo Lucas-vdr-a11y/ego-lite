@@ -107,6 +107,59 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
     returns: "Promise<Response|null>",
     example: "await page.reload({ waitUntil: 'load', timeout: 10000 })",
   },
+  "page.goBack": {
+    signature: "page.goBack(options?) => Promise<Response|null>",
+    description:
+      "Navigate to the previous session-history entry and return its main-document response, or null when no previous entry exists.",
+    params: [
+      {
+        name: "options",
+        type: "{ timeout?: number, waitUntil?: 'load'|'domcontentloaded'|'networkidle'|'commit' }",
+        description: "Navigation timeout and completion state.",
+      },
+    ],
+    returns: "Promise<Response|null>",
+    example: "const response = await page.goBack({ timeout: 10000 })",
+  },
+  "page.goForward": {
+    signature: "page.goForward(options?) => Promise<Response|null>",
+    description:
+      "Navigate to the next session-history entry and return its main-document response, or null when no next entry exists.",
+    params: [
+      {
+        name: "options",
+        type: "{ timeout?: number, waitUntil?: 'load'|'domcontentloaded'|'networkidle'|'commit' }",
+        description: "Navigation timeout and completion state.",
+      },
+    ],
+    returns: "Promise<Response|null>",
+    example: "const response = await page.goForward({ timeout: 10000 })",
+  },
+  "page.content": conciseDoc(
+    "page.content() => Promise<string>",
+    "Return the full serialized HTML contents of the current document.",
+    "Promise<string>",
+    "console.log(await page.content())",
+  ),
+  "page.setContent": {
+    signature: "page.setContent(html, options?) => Promise<void>",
+    description: "Replace the current main-frame document contents.",
+    params: [
+      {
+        name: "html",
+        type: "string",
+        required: true,
+        description: "Document markup.",
+      },
+      {
+        name: "options",
+        type: "{ timeout?: number, waitUntil?: 'load'|'domcontentloaded'|'networkidle'|'commit' }",
+        description: "Navigation timeout and completion state.",
+      },
+    ],
+    returns: "Promise<void>",
+    example: "await page.setContent('<main>Ready</main>')",
+  },
   "page.info": {
     signature: "page.info() => Promise<object>",
     description:
@@ -437,13 +490,13 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
   },
   "page.waitForEvent": {
     signature:
-      'page.waitForEvent("console"|"dialog"|"download"|"filechooser"|"pageerror"|"popup"|"requestfailed", predicateOrOptions?) => Promise<ConsoleMessage|Dialog|Download|FileChooser|Error|Page|Request>',
+      'page.waitForEvent("close"|"console"|"dialog"|"domcontentloaded"|"download"|"filechooser"|"load"|"pageerror"|"popup"|"request"|"requestfailed"|"requestfinished"|"response", predicateOrOptions?) => Promise<ConsoleMessage|Dialog|Download|FileChooser|Error|Page|Request|Response>',
     description:
       "Wait for a supported page event. Register the wait before the action that triggers the event. A synchronous or asynchronous predicate skips unrelated events.",
     params: [
       {
         name: "eventName",
-        type: '"console" | "dialog" | "download" | "filechooser" | "pageerror" | "popup" | "requestfailed"',
+        type: '"close" | "console" | "dialog" | "domcontentloaded" | "download" | "filechooser" | "load" | "pageerror" | "popup" | "request" | "requestfailed" | "requestfinished" | "response"',
         required: true,
         description: "Supported page event name.",
       },
@@ -455,7 +508,7 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
       },
     ],
     returns:
-      "Promise<ConsoleMessage|Dialog|Download|FileChooser|Error|Page|Request>. Popup events return a target-bound Page facade with targetId and bringToFront(); use its Page and Locator methods directly without changing the active tab.",
+      "Promise<ConsoleMessage|Dialog|Download|FileChooser|Error|Page|Request|Response>. Popup events return a target-bound Page facade with targetId and bringToFront(); close/load/domcontentloaded return the current Page facade.",
     example:
       "const popupPromise = page.waitForEvent('popup'); await page.getByText('Open').click(); const popup = await popupPromise; await popup.getByRole('heading').waitFor()",
   },
@@ -510,7 +563,7 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
   "page.snapshot": {
     signature: "page.snapshot(options?) => Promise<string>",
     description:
-      "Return a semantic page snapshot with refs and stable locators.",
+      "Return a semantic page snapshot with refs and stable locators. On a target-bound Page, capture that Page and keep refs scoped to it without requiring explicit tab activation.",
     params: [
       {
         name: "options",
@@ -538,7 +591,8 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
   },
   "page.snapshotRaw": {
     signature: "page.snapshotRaw(options?) => Promise<object>",
-    description: "Return the raw structured snapshot object.",
+    description:
+      "Return the raw structured snapshot object. On a target-bound Page, capture that Page and keep refs scoped to it without requiring explicit tab activation.",
     params: [
       { name: "options", type: "object", description: "Snapshot options." },
     ],
@@ -748,6 +802,11 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
     "Select the first matching frame.",
     "FrameLocator",
   ),
+  "frameLocator.owner": conciseDoc(
+    "frameLocator.owner() => Locator",
+    "Return a locator for the frame element in its parent frame.",
+    "Locator",
+  ),
   "frameLocator.last": conciseDoc(
     "frameLocator.last() => FrameLocator",
     "Select the last matching frame.",
@@ -808,6 +867,11 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
     "Return a locator for the first matching element.",
     "Locator",
   ),
+  "locator.all": conciseDoc(
+    "locator.all() => Promise<Locator[]>",
+    "Return one nth locator for each element that currently matches, without waiting for new matches.",
+    "Promise<Locator[]>",
+  ),
   "locator.last": conciseDoc(
     "locator.last() => Locator",
     "Return a locator for the last matching element.",
@@ -832,6 +896,16 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
     "locator.locator(selectorOrLocator, options?) => Locator",
     "Create a filtered descendant locator scoped to the current locator.",
     "Locator",
+  ),
+  "locator.contentFrame": conciseDoc(
+    "locator.contentFrame() => FrameLocator",
+    "Return a FrameLocator for the iframe or frame element matched by this locator.",
+    "FrameLocator",
+  ),
+  "locator.frameLocator": conciseDoc(
+    "locator.frameLocator(selector) => FrameLocator",
+    "Create a FrameLocator for a descendant iframe or frame element.",
+    "FrameLocator",
   ),
   "locator.getByRole": conciseDoc(
     "locator.getByRole(role, options?) => Locator",
@@ -958,6 +1032,11 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
     "Remove focus from the matching element.",
     "Promise<void>",
   ),
+  "locator.selectText": conciseDoc(
+    "locator.selectText(options?) => Promise<void>",
+    "Select the text contents of the matching element after waiting for it to become visible.",
+    "Promise<void>",
+  ),
   "locator.textContent": conciseDoc(
     "locator.textContent() => Promise<string|null>",
     "Return the matching element's textContent.",
@@ -1026,17 +1105,18 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
   "locator.ariaSnapshot": {
     signature: "locator.ariaSnapshot(options?) => Promise<string>",
     description:
-      "Auto-wait for one matching element and return its Playwright-style default-mode ARIA subtree as YAML. Frame-scoped locators are supported.",
+      "Auto-wait for one matching element and return its Playwright-style default-mode ARIA subtree as YAML. Frame-scoped locators are supported. Playwright 1.52 generation refs are supported.",
     params: [
       {
         name: "options",
         type: "{ timeout?: number, ref?: boolean, depth?: number, boxes?: boolean, mode?: 'default', signal?: AbortSignal }",
         description:
-          "Capture timeout, maximum depth, main-viewport boxes, default mode, and cancellation signal. Playwright 1.52 ref: true and mode: 'ai' are not supported; use page.snapshot() for ego refs.",
+          "Capture timeout, Playwright 1.52 ref: true output, maximum depth, main-viewport boxes, default mode, and cancellation signal. ref: true emits sNeN refs usable with aria-ref=sNeN; mode: 'ai' is not supported.",
       },
     ],
     returns: "Promise<string>",
-    example: "console.log(await page.getByRole('navigation').ariaSnapshot())",
+    example:
+      "console.log(await page.getByRole('navigation').ariaSnapshot({ ref: true }))",
   },
   "locator.count": conciseDoc(
     "locator.count() => Promise<number>",
@@ -1166,6 +1246,66 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
     "Validate an explicit target id or tab object against the current task space, then evaluate browser-side JavaScript there without changing page.evaluate argument semantics.",
     "Promise<any>",
   ),
+  "egoBrowser.newTaskSpace": {
+    signature: "egoBrowser.newTaskSpace(name) => Promise<TaskSpace>",
+    description:
+      "Create and select an agent-owned TaskSpace. Its bound tabs return Tab objects with target-bound Page facades.",
+    params: [
+      {
+        name: "name",
+        type: "string",
+        required: true,
+        description: "TaskSpace name.",
+      },
+    ],
+    returns: "Promise<TaskSpace>",
+    example: "const space = await egoBrowser.newTaskSpace('inspect products')",
+  },
+  "egoBrowser.switchTaskSpace": {
+    signature: "egoBrowser.switchTaskSpace(nameOrId) => Promise<TaskSpace>",
+    description:
+      "Select an existing agent-owned TaskSpace and return its bound object facade.",
+    params: [
+      {
+        name: "nameOrId",
+        type: "string | number",
+        required: true,
+        description: "TaskSpace name or numeric id.",
+      },
+    ],
+    returns: "Promise<TaskSpace>",
+    example: "const space = await egoBrowser.switchTaskSpace(taskSpaceId)",
+  },
+  "egoBrowser.completeTaskSpace": {
+    signature: "egoBrowser.completeTaskSpace(nameOrId) => Promise<void>",
+    description:
+      "Complete a TaskSpace while preserving its tabs and final result for the user. Throws when the space cannot be completed.",
+    params: [
+      {
+        name: "nameOrId",
+        type: "string | number",
+        required: true,
+        description: "TaskSpace name or numeric id.",
+      },
+    ],
+    returns: "Promise<void>",
+    example: "await egoBrowser.completeTaskSpace(space.id)",
+  },
+  "egoBrowser.closeTaskSpace": {
+    signature: "egoBrowser.closeTaskSpace(nameOrId) => Promise<void>",
+    description:
+      "Destructively close a TaskSpace and all of its tabs. Use completeTaskSpace when the result should remain visible. Throws when the space cannot be closed.",
+    params: [
+      {
+        name: "nameOrId",
+        type: "string | number",
+        required: true,
+        description: "TaskSpace name or numeric id.",
+      },
+    ],
+    returns: "Promise<void>",
+    example: "await egoBrowser.closeTaskSpace(space.id)",
+  },
   "taskSpaces.list": {
     signature: "taskSpaces.list() => Promise<object[]>",
     description: "List browser task spaces.",
@@ -1504,6 +1644,16 @@ const EGO_EXTENSION_PATHS = new Set([
   "page.mouse.drag",
 ]);
 
+const EXACT_PLAYWRIGHT_PATHS = new Set([
+  "page.waitForTimeout",
+  "locator.first",
+  "locator.last",
+  "locator.nth",
+  "locator.count",
+  "locator.all",
+  "frameLocator.owner",
+]);
+
 for (const [path, doc] of Object.entries(PUBLIC_API_DOCS)) {
   doc.compatibility = {
     baseline: PLAYWRIGHT_COMPATIBILITY_BASELINE,
@@ -1527,6 +1677,7 @@ export function playwrightCompatibilitySummary() {
   ];
   return [
     `Playwright compatibility baseline: ${PLAYWRIGHT_COMPATIBILITY_BASELINE}`,
+    "Excluded by design: Browser, BrowserContext.",
     "Statuses: exact, superset, subset, ego-extension, deprecated, internal.",
     ...orderedStatuses
       .filter((status) => counts.has(status))
@@ -1537,11 +1688,14 @@ export function playwrightCompatibilitySummary() {
 function compatibilityStatus(path: string): CompatibilityStatus {
   if (
     EGO_EXTENSION_PATHS.has(path) ||
-    /^(tabs|taskSpaces|site|fetch)\./.test(path) ||
+    /^(egoBrowser|tabs|taskSpaces|site|fetch)\./.test(path) ||
     path === "cdp" ||
     path === "help"
   ) {
     return "ego-extension";
+  }
+  if (EXACT_PLAYWRIGHT_PATHS.has(path)) {
+    return "exact";
   }
   if (/^frameLocator\.(first|last|nth)$/.test(path)) {
     return "deprecated";

@@ -91,6 +91,43 @@ export const pageEventCases = [
     `),
   },
   {
+    name: "page network and lifecycle events",
+    body: homeCase(`
+      const requestPromise = page.waitForEvent("request", {
+        timeout: 5000,
+        predicate: (request) => request.url().endsWith("/api/text"),
+      });
+      const responsePromise = page.waitForEvent("response", {
+        timeout: 5000,
+        predicate: (response) => response.url().endsWith("/api/text"),
+      });
+      const finishedPromise = page.waitForEvent("requestfinished", {
+        timeout: 5000,
+        predicate: (request) => request.url().endsWith("/api/text"),
+      });
+      await page.evaluate((url) => fetch(url), baseUrl + "/api/text");
+      const [request, response, finished] = await Promise.all([
+        requestPromise,
+        responsePromise,
+        finishedPromise,
+      ]);
+      assertEqual(request.method(), "GET", "request event returns a Request facade");
+      assertEqual(finished.failure(), null, "requestfinished returns the completed request");
+      await page.waitForTimeout(200);
+      assertEqual(
+        await response.text(),
+        "server text fixture",
+        "response event body survives Network cleanup",
+      );
+
+      const domReady = page.waitForEvent("domcontentloaded", { timeout: 5000 });
+      const loaded = page.waitForEvent("load", { timeout: 5000 });
+      await page.reload({ timeout: 5000 });
+      assertEqual(await domReady, page, "domcontentloaded returns the current Page facade");
+      assertEqual(await loaded, page, "load returns the current Page facade");
+    `),
+  },
+  {
     name: "page popup event helper",
     body: homeCase(`
       const originalTab = await tabs.current();
@@ -141,10 +178,11 @@ export const pageEventCases = [
         );
         await popup.evaluate((url) => fetch(url), baseUrl + "/api/text");
         const response = await responsePromise;
+        await popup.waitForTimeout(200);
         assertEqual(
-          response.status(),
-          200,
-          "popup waitForResponse observes the popup network session"
+          await response.text(),
+          "server text fixture",
+          "a delayed popup Response body remains readable"
         );
         assertEqual(
           (await tabs.current()).targetId,

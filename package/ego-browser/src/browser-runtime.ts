@@ -187,6 +187,7 @@ export async function ensureSession() {
 }
 
 async function ensureTargetSession(targetContext) {
+  await targetContext.beforeOperation?.();
   if (targetContext.sessionId) return targetContext.sessionId;
   if (targetContext.sessionPromise) return targetContext.sessionPromise;
   targetContext.sessionPromise = (async () => {

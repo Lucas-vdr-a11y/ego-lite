@@ -1,5 +1,6 @@
 import { networkCompletion, subscribeBrowserEvent } from "./browser-runtime.js";
 import {
+  cacheResponseBody,
   createRequestInfo,
   linkRedirect,
   responseLifecycleInfo,
@@ -15,13 +16,15 @@ type Completion = { errorText: string | null };
  * Browser events reach subscribers before waiter predicates are processed, so
  * this monitor preserves redirects and failures even while a predicate awaits.
  * Once a matching facade is returned, retain() transfers the Network lease to
- * the request and releases it only after that redirect chain terminates.
+ * the request. A matched Response caches its body before the lease is released
+ * so Network.disable cannot invalidate later body(), text(), or json() calls.
  */
 export function createNetworkLifecycleMonitor(lease: NetworkEventLease) {
   const requests = new Map<string, RequestInfo>();
   const eventRequests = new WeakMap<object, RequestInfo>();
   const completions = new Map<string, Completion>();
   let retainedKey: string | null = null;
+  let retainedResponse: object | undefined;
   let stopped = false;
   let releasePromise: Promise<void> | null = null;
 
@@ -61,14 +64,19 @@ export function createNetworkLifecycleMonitor(lease: NetworkEventLease) {
       if (errorText) request.failureText = errorText;
     }
     completions.set(key, { errorText });
-    if (retainedKey === key) void stopAndRelease();
+    if (retainedKey === key) void stopAndRelease(errorText);
   }
 
-  function stopAndRelease() {
+  function stopAndRelease(errorText: string | null = null) {
     if (releasePromise) return releasePromise;
     stopped = true;
     for (const remove of unsubscribe) remove();
-    releasePromise = lease.release();
+    releasePromise = (async () => {
+      if (retainedResponse && !errorText) {
+        await cacheResponseBody(retainedResponse).catch(() => {});
+      }
+      await lease.release();
+    })();
     return releasePromise;
   }
 
@@ -76,13 +84,14 @@ export function createNetworkLifecycleMonitor(lease: NetworkEventLease) {
     requestForEvent(event): RequestInfo | undefined {
       return eventRequests.get(event);
     },
-    retain(request: RequestInfo) {
+    retain(request: RequestInfo, response?: object) {
       retainedKey = requestKey(request.requestId, request.sessionId);
+      retainedResponse = response;
       const completion =
         completions.get(retainedKey) ||
         networkCompletion(request.requestId, request.sessionId);
       if (completion?.errorText) request.failureText = completion.errorText;
-      if (completion) return stopAndRelease();
+      if (completion) return stopAndRelease(completion.errorText);
     },
     async release() {
       if (stopped) {
@@ -109,7 +118,12 @@ export function retainResponseLifecycle(response, lease: NetworkEventLease) {
     stopped = true;
     if (errorText) info.request.failureText = errorText;
     for (const remove of unsubscribe) remove();
-    releasePromise = lease.release();
+    releasePromise = (async () => {
+      if (!errorText) {
+        await cacheResponseBody(response).catch(() => {});
+      }
+      await lease.release();
+    })();
     return releasePromise;
   };
   const matches = (event) =>

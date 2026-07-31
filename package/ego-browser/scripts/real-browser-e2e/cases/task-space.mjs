@@ -25,16 +25,26 @@ export function taskSpaceCase() {
     await taskSpaces.waitForAgentControl(taskName, { interval: 100, timeout: 3_000 });
 
     if (!keepTaskSpace) {
-      const scratch = await taskSpaces.new(taskName + " scratch");
-      assertEqual(scratch.name, taskName + " scratch", "taskSpaces.new creates a scratch space");
-      const scratchByName = await taskSpaces.switch(scratch.name);
-      assertEqual(scratchByName.id, scratch.id, "taskSpaces.new output can be selected by name");
-      const scratchTab = await tabs.open(baseUrl + "/secondary?task-space=scratch", {
+      const scratch = await egoBrowser.newTaskSpace(taskName + " scratch");
+      assertEqual(scratch.name, taskName + " scratch", "egoBrowser.newTaskSpace creates a scratch space");
+      assertEqual(typeof scratch.tabs.open, "function", "TaskSpace exposes bound tabs");
+      const scratchByName = await egoBrowser.switchTaskSpace(scratch.name);
+      assertEqual(scratchByName.id, scratch.id, "egoBrowser switches by TaskSpace name");
+      const scratchTab = await scratch.tabs.open(baseUrl + "/secondary?task-space=scratch", {
         wait: true,
         timeout: 10_000,
       });
+      assertEqual(scratchTab.page.targetId, scratchTab.targetId, "TaskSpace tabs expose target-bound Pages");
 
-      await taskSpaces.switch(task.id);
+      await egoBrowser.switchTaskSpace(task.id);
+      assertIncludes(await scratchTab.page.url(), "/secondary", "a bound Tab Page reselects its TaskSpace");
+      await egoBrowser.switchTaskSpace(task.id);
+      assertIncludes(
+        await scratchTab.page.snapshot(),
+        "Secondary tab",
+        "a bound Tab Page snapshots its own target"
+      );
+      await egoBrowser.switchTaskSpace(task.id);
       await assertRejects(
         () => tabs.activate(scratchTab),
         "tabs.activate target not found",
@@ -51,14 +61,13 @@ export function taskSpaceCase() {
         "tabs.evaluate rejects a target from another task space"
       );
 
-      await taskSpaces.switch(scratch.id);
-      const closed = await taskSpaces.complete(scratch.id, { keep: false });
-      assertEqual(closed.done, true, "taskSpaces.complete closes scratch task");
+      const closed = await egoBrowser.closeTaskSpace(scratch.id);
+      assertEqual(closed, undefined, "egoBrowser.closeTaskSpace resolves void after destroying scratch task");
 
       await assertRejects(
-        () => taskSpaces.complete(scratch.id, { keep: false }),
+        () => egoBrowser.closeTaskSpace(scratch.id),
         "task space not found",
-        "taskSpaces.complete reports already-closed task space"
+        "egoBrowser.closeTaskSpace reports already-closed task space"
       );
     }
 

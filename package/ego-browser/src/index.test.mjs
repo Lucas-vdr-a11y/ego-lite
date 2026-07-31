@@ -15,6 +15,16 @@ test("installEgoSdk keeps page.locator chainable while wrapping locator methods"
     installEgoSdk(target, { cliLog() {} });
     assert.equal(typeof target.click, "undefined");
     assert.equal(typeof target.browser, "undefined");
+    assert.deepEqual(Object.keys(target.egoBrowser).sort(), [
+      "closeTaskSpace",
+      "completeTaskSpace",
+      "newTaskSpace",
+      "switchTaskSpace",
+    ]);
+    assert.equal(target.egoBrowser.newPage, undefined);
+    assert.equal(target.egoBrowser.newContext, undefined);
+    assert.equal(target.egoBrowser.contexts, undefined);
+    assert.equal(target.egoBrowser.close, undefined);
     assert.equal(typeof target.tabs.openOrReuse, "function");
     assert.equal(typeof target.useOrCreateTaskSpace, "function");
     assert.equal(
@@ -65,6 +75,7 @@ test("installEgoSdk keeps page.locator chainable while wrapping locator methods"
         .getByRole("button", { name: "Pay" }).click,
       "function",
     );
+    assert.equal(typeof frameLocator.owner().getAttribute, "function");
     const locator = target.page.locator("#target");
     assert.equal(locator && typeof locator, "object");
     assert.equal(typeof locator.click, "function");
@@ -79,6 +90,7 @@ test("installEgoSdk keeps page.locator chainable while wrapping locator methods"
       "function",
     );
     assert.equal(typeof locator.locator(".child").fill, "function");
+    assert.equal(typeof locator.contentFrame().getByRole, "function");
     assert.equal(typeof locator.filter({ hasText: "Ready" }).click, "function");
     assert.equal(
       typeof target.page.getByText("Row").filter({ hasText: "Ready" }).nth(0)
@@ -87,6 +99,22 @@ test("installEgoSdk keeps page.locator chainable while wrapping locator methods"
     );
   } finally {
     resetSink();
+    console.log = originalLog;
+  }
+});
+
+test("installEgoSdk preserves Page identity for lifecycle events", async () => {
+  const originalLog = console.log;
+  const sourcePage = {};
+  sourcePage.waitForEvent = async () => sourcePage;
+  const target = {};
+  try {
+    installEgoSdk(target, {
+      cliLog() {},
+      context: { page: sourcePage },
+    });
+    assert.equal(await target.page.waitForEvent("load"), target.page);
+  } finally {
     console.log = originalLog;
   }
 });

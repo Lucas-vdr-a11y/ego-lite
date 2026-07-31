@@ -87,10 +87,147 @@ test("waitForEvent rejects unsupported events before browser setup", async () =>
   const calls = installAutoEgo();
   try {
     await assert.rejects(
-      waitForEvent("load", { timeout: 20 }),
-      /supports "console".*"requestfailed".*got "load"/,
+      waitForEvent("websocket", { timeout: 20 }),
+      /supports "console".*"requestfailed".*got "websocket"/,
     );
     assert.equal(calls.length, 0);
+  } finally {
+    cleanup();
+  }
+});
+
+test("waitForEvent resolves load with the current Page facade", async () => {
+  installAutoEgo();
+  const currentPage = { marker: "current-page" };
+  try {
+    const promise = waitForEvent(
+      "load",
+      { timeout: 1000 },
+      { page: currentPage },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    fireEvent("Page.loadEventFired", { timestamp: 1 });
+    assert.equal(await promise, currentPage);
+  } finally {
+    cleanup();
+  }
+});
+
+test("waitForEvent resolves domcontentloaded with the current Page facade", async () => {
+  installAutoEgo();
+  const currentPage = { marker: "current-page" };
+  try {
+    const promise = waitForEvent(
+      "domcontentloaded",
+      { timeout: 1000 },
+      { page: currentPage },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    fireEvent("Page.domContentEventFired", { timestamp: 1 });
+    assert.equal(await promise, currentPage);
+  } finally {
+    cleanup();
+  }
+});
+
+test("waitForEvent resolves close for the current target", async () => {
+  installAutoEgo();
+  const currentPage = { marker: "current-page" };
+  try {
+    const promise = waitForEvent(
+      "close",
+      { timeout: 1000 },
+      { page: currentPage },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    fireEvent("Target.targetDestroyed", { targetId: "tab-other" }, undefined);
+    fireEvent("Target.targetDestroyed", { targetId: "tab-1" }, undefined);
+    assert.equal(await promise, currentPage);
+  } finally {
+    cleanup();
+  }
+});
+
+test("waitForEvent('request') returns the matching Request facade", async () => {
+  installAutoEgo();
+  try {
+    const promise = waitForEvent("request", {
+      timeout: 1000,
+      predicate: (request) => request.url().endsWith("/wanted"),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    fireEvent("Network.requestWillBeSent", {
+      requestId: "request-event",
+      request: {
+        url: "https://example.com/wanted",
+        method: "POST",
+        headers: {},
+      },
+      type: "Fetch",
+    });
+    const request = await promise;
+    assert.equal(request.method(), "POST");
+    fireEvent("Network.loadingFinished", { requestId: "request-event" });
+  } finally {
+    cleanup();
+  }
+});
+
+test("waitForEvent('response') preserves the body after Network cleanup", async () => {
+  const calls = installAutoEgo({
+    resultByMethod: {
+      "Network.getResponseBody": {
+        body: "response event body",
+        base64Encoded: false,
+      },
+    },
+  });
+  try {
+    const promise = waitForEvent("response", { timeout: 1000 });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    fireEvent("Network.requestWillBeSent", {
+      requestId: "response-event",
+      request: { url: "https://example.com/data", method: "GET", headers: {} },
+      type: "Fetch",
+    });
+    fireEvent("Network.responseReceived", {
+      requestId: "response-event",
+      type: "Fetch",
+      response: {
+        url: "https://example.com/data",
+        status: 200,
+        statusText: "OK",
+        headers: {},
+      },
+    });
+    const response = await promise;
+    fireEvent("Network.loadingFinished", { requestId: "response-event" });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.ok(calls.some((call) => call.method === "Network.disable"));
+    assert.equal(await response.text(), "response event body");
+  } finally {
+    cleanup();
+  }
+});
+
+test("waitForEvent('requestfinished') returns the completed Request", async () => {
+  installAutoEgo();
+  try {
+    const promise = waitForEvent("requestfinished", { timeout: 1000 });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    fireEvent("Network.requestWillBeSent", {
+      requestId: "finished-event",
+      request: {
+        url: "https://example.com/finished",
+        method: "GET",
+        headers: {},
+      },
+      type: "Fetch",
+    });
+    fireEvent("Network.loadingFinished", { requestId: "finished-event" });
+    const request = await promise;
+    assert.equal(request.url(), "https://example.com/finished");
+    assert.equal(request.failure(), null);
   } finally {
     cleanup();
   }

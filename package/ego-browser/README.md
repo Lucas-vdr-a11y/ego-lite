@@ -14,13 +14,14 @@ npm run build     # bundle to dist/out/index.js
 npm test          # build + tsc --noEmit + node --test
 ```
 
-The build emits a single ESM file `dist/out/index.js`. The ego-browser browser dispatches `ego-browser nodejs <<'EOF' ... EOF` heredocs to that bundle. Inside the heredoc, the Playwright-style `page` facade and ego-specific `tabs`, `taskSpaces`, `site`, `fetch`, and `cdp` facades are preloaded.
+The build emits a single ESM file `dist/out/index.js`. The ego-browser browser dispatches `ego-browser nodejs <<'EOF' ... EOF` heredocs to that bundle. Inside the heredoc, the Playwright-style `page` facade and ego-specific `egoBrowser`, `tabs`, `taskSpaces`, `site`, `fetch`, and `cdp` facades are preloaded.
 
 ```bash
 ego-browser nodejs <<'EOF'
-await taskSpaces.useOrCreate('demo')
-await tabs.openOrReuse('https://example.com', { wait: true })
-console.log(await page.snapshot())
+const task = await egoBrowser.newTaskSpace('demo')
+const tab = await task.tabs.openOrReuse('https://example.com', { wait: true })
+console.log(await tab.page.snapshot())
+await egoBrowser.completeTaskSpace(task.id)
 EOF
 ```
 
@@ -87,6 +88,7 @@ The top-level repo README has the full helper inventory and the task-space / con
 
 - The browser runtime owns tabs, task spaces, CDP transport, snapshots, and event delivery. This package keeps only agent-facing ergonomics.
 - Snapshot helpers use the browser runtime contract: `ego.snapshot({ scope, includeActionMarks, includeStableLocator })`.
+- A TaskSpace Tab exposes a target-bound Page. Its snapshot operations internally select the correct TaskSpace and target, serialize native capture, and keep snapshot refs scoped to that Page.
 - Public agent-facing helpers are object-style facades; internal implementation helpers remain camelCase.
 - Site-specific reusable experience belongs under `skills/ego-browser/learnings/`, not in this package.
 

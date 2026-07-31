@@ -3,8 +3,10 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { setOverrides, state } from "./state.js";
+import { parseAriaRef } from "./aria-ref-map.js";
 import { assertNoEgoError, isEgoUserControlError } from "./ego-errors.js";
 import { help as helpRuntime, formatHelp } from "./help-runtime.js";
+import { targetClosedError } from "./playwright-errors.js";
 import { cdp, decodeUnserializableJsValue, evaluate } from "./cdp-eval.js";
 import * as pointer from "./driver/pointer.js";
 import * as keyboard from "./driver/keyboard.js";
@@ -18,6 +20,7 @@ import * as screencast from "./driver/screencast.js";
 import * as aria from "./driver/aria-snapshot.js";
 import { waitForActionableElement } from "./driver/actionability.js";
 import { locatorTarget } from "./frame-context.js";
+import { parseRef } from "./ref-map.js";
 import { browserFetch, serverFetch } from "./http.js";
 import {
   createTargetContext,
@@ -69,6 +72,7 @@ export {
   isEditable,
   getAttribute,
   blur,
+  selectText,
   boundingBox,
   count,
   allInnerTexts,
@@ -89,6 +93,10 @@ export {
   evaluateTab,
   goto,
   reload,
+  goBack,
+  goForward,
+  content,
+  setContent,
 } from "./driver/nav.js";
 export {
   snapshot,
@@ -154,6 +162,8 @@ export async function listTaskSpaces() {
 function isAgentOwned(ownership) {
   return ownership === "agent" || ownership === "agentDelegatedToUser";
 }
+
+let selectedTaskSpaceId: number | null = null;
 
 /**
  * Select an existing task space by id/name for the current Node invocation.
@@ -257,8 +267,17 @@ async function selectTaskSpace(ego, space, op: string) {
   if (!ego || typeof ego.useTaskSpace !== "function") {
     throw new Error(`${op} requires ego.useTaskSpace`);
   }
-  assertNoEgoError(await ego.useTaskSpace(taskSpaceNumericId(space, op)), op);
+  const id = taskSpaceNumericId(space, op);
+  assertNoEgoError(await ego.useTaskSpace(id), op);
+  selectedTaskSpaceId = id;
   return space;
+}
+
+async function ensureTaskSpaceSelected(space) {
+  const id = taskSpaceNumericId(space, "TaskSpace");
+  if (selectedTaskSpaceId !== id) {
+    await switchTaskSpace(id);
+  }
 }
 
 async function selectTaskSpaceIfProvided(
@@ -324,6 +343,7 @@ export async function completeTaskSpace(
     }
     assertNoEgoError(await ego.closeTaskSpace(), "completeTaskSpace");
   }
+  selectedTaskSpaceId = null;
   return { done: true };
 }
 
@@ -537,6 +557,18 @@ function createLocator(
 ) {
   const target = locatorTarget(selector, frameChain);
   const facade = {
+    all: async () => {
+      const length = await locator.count(target);
+      return Array.from({ length }, (_, index) =>
+        createLocator(
+          isDirectRefSelector(selector)
+            ? selector
+            : nthSelector(selector, index),
+          frameChain,
+          targetContext,
+        ),
+      );
+    },
     first: () =>
       createLocator(nthSelector(selector, 0), frameChain, targetContext),
     last: () =>
@@ -581,6 +613,13 @@ function createLocator(
         targetContext,
       );
     },
+    contentFrame: () => createFrameLocator(selector, frameChain, targetContext),
+    frameLocator: (child) =>
+      createFrameLocator(
+        scopedSelector(selector, String(child)),
+        frameChain,
+        targetContext,
+      ),
     getByRole: (role, options: any = {}) =>
       createLocator(
         scopedSelector(selector, roleSelector(role, options)),
@@ -658,6 +697,13 @@ function createLocator(
     dispatchEvent: (type, eventInit = {}, options = {}) =>
       keyboard.dispatchEvent(target, type, eventInit, options),
     blur: () => locator.blur(target),
+    selectText: async (options: any = {}) => {
+      await waitForActionableElement(target, {
+        timeout: options.timeout,
+        visible: true,
+      });
+      await locator.selectText(target, options);
+    },
     textContent: () => locator.textContent(target),
     innerText: () => locator.innerText(target),
     innerHTML: () => locator.innerHTML(target),
@@ -721,6 +767,10 @@ function createLocator(
   );
 }
 
+function isDirectRefSelector(selector) {
+  return Boolean(parseRef(selector) || parseAriaRef(selector));
+}
+
 function createFrameLocator(
   selector,
   parentFrameChain: string[] = [],
@@ -728,6 +778,8 @@ function createFrameLocator(
 ) {
   const frameChain = [...parentFrameChain, String(selector)];
   const facade = {
+    owner: () =>
+      createLocator(String(selector), parentFrameChain, targetContext),
     first: () =>
       createFrameLocator(
         nthSelector(String(selector), 0),
@@ -939,11 +991,25 @@ function roleNameMatcher(value, exact = false) {
   return { text: String(value), exact };
 }
 
-function createPageFacade(target?: { targetId: string }) {
+function createPageFacade(target?: {
+  targetId: string;
+  beforeOperation?: () => Promise<void>;
+}) {
   const targetContext = target
-    ? createTargetContext(target.targetId)
+    ? createTargetContext(target.targetId, target.beforeOperation)
     : undefined;
   const targetId = targetContext?.targetId;
+  const boundSnapshotRaw = targetContext
+    ? (options = {}) =>
+        captureTargetSnapshot(targetContext, () => observe.snapshotRaw(options))
+    : observe.snapshotRaw;
+  const boundSnapshot = targetContext
+    ? (options = {}) =>
+        captureTargetSnapshot(targetContext, () => observe.snapshot(options))
+    : observe.snapshot;
+  if (targetContext) {
+    targetContext.snapshotForRefRefresh = () => boundSnapshotRaw();
+  }
   const facade = {
     ...(targetId ? { targetId } : {}),
     setDefaultTimeout: (timeout) => {
@@ -966,6 +1032,10 @@ function createPageFacade(target?: { targetId: string }) {
     },
     goto: nav.goto,
     reload: nav.reload,
+    goBack: nav.goBack,
+    goForward: nav.goForward,
+    content: nav.content,
+    setContent: nav.setContent,
     info: nav.pageInfo,
     url: async () => (await nav.pageInfo()).url,
     title: async () => (await nav.pageInfo()).title,
@@ -1005,17 +1075,17 @@ function createPageFacade(target?: { targetId: string }) {
     waitForEvent: (eventName, optionsOrPredicate = {}) =>
       downloads.waitForEvent(eventName, optionsOrPredicate, {
         createPopup: (targetInfo) =>
-          createPageFacade({ targetId: targetInfo.targetId }),
+          createPageFacade({
+            targetId: targetInfo.targetId,
+            beforeOperation: target?.beforeOperation,
+          }),
+        page: facade,
       }),
     evaluate,
     screenshot: observe.screenshot,
     saveScreenshot: observe.saveScreenshot,
-    snapshot: targetId
-      ? async () => activeGlobalPageOnly("page.snapshot")
-      : observe.snapshot,
-    snapshotRaw: targetId
-      ? async () => activeGlobalPageOnly("page.snapshotRaw")
-      : observe.snapshotRaw,
+    snapshot: boundSnapshot,
+    snapshotRaw: boundSnapshotRaw,
     ariaSnapshot: (options = {}) =>
       aria.ariaSnapshot("body", options, "page.ariaSnapshot"),
     elementCenter: observe.elementCenter,
@@ -1051,12 +1121,43 @@ function createPageFacade(target?: { targetId: string }) {
     ...(targetId
       ? {
           bringToFront: async () => {
-            await nav.switchTab(targetId);
+            await activateTargetPage(targetContext);
           },
         }
       : {}),
   };
   return bindFacadeToTarget(facade, targetContext);
+}
+
+let targetSnapshotQueue = Promise.resolve();
+
+function captureTargetSnapshot<T>(
+  targetContext: TargetContext,
+  capture: () => Promise<T>,
+): Promise<T> {
+  const result = targetSnapshotQueue.then(() =>
+    runWithTarget(targetContext, async () => {
+      await activateTargetPage(targetContext);
+      return capture();
+    }),
+  );
+  targetSnapshotQueue = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  return result;
+}
+
+async function activateTargetPage(targetContext: TargetContext) {
+  await targetContext.beforeOperation?.();
+  try {
+    await nav.switchTab(targetContext.targetId);
+  } catch (error) {
+    if (/^tabs\.activate target not found:/.test(error?.message || "")) {
+      throw targetClosedError(targetContext.targetId);
+    }
+    throw error;
+  }
 }
 
 function activeGlobalPageOnly(apiName: string): never {
@@ -1098,6 +1199,68 @@ function createTabsFacade() {
   };
 }
 
+function createEgoBrowserFacade() {
+  const wrapTaskSpace = (space) => ({
+    ...space,
+    tabs: createTaskSpaceTabsFacade(space),
+  });
+  return {
+    newTaskSpace: async (name) => wrapTaskSpace(await newTaskSpace(name)),
+    switchTaskSpace: async (nameOrId) =>
+      wrapTaskSpace(await switchTaskSpace(nameOrId)),
+    completeTaskSpace: async (nameOrId) => {
+      const result = await completeTaskSpace(nameOrId, { keep: true });
+      if (!result.done) {
+        throw new Error(
+          `egoBrowser.completeTaskSpace did not complete TaskSpace ${String(nameOrId)}: ${result.skipped || "unknown reason"}`,
+        );
+      }
+    },
+    closeTaskSpace: async (nameOrId) => {
+      const result = await completeTaskSpace(nameOrId, { keep: false });
+      if (!result.done) {
+        throw new Error(
+          `egoBrowser.closeTaskSpace did not close TaskSpace ${String(nameOrId)}: ${result.skipped || "unknown reason"}`,
+        );
+      }
+    },
+  };
+}
+
+function createTaskSpaceTabsFacade(space) {
+  const inTaskSpace = async (operation) => {
+    await ensureTaskSpaceSelected(space);
+    return operation();
+  };
+  const wrapTab = (tab) => {
+    const facade = {
+      ...tab,
+      page: createPageFacade({
+        targetId: tab.targetId,
+        beforeOperation: () => ensureTaskSpaceSelected(space),
+      }),
+      activate: async () =>
+        wrapTab(await inTaskSpace(() => nav.switchTab(tab.targetId))),
+      close: () => inTaskSpace(() => nav.closeTab(tab.targetId)),
+    };
+    return facade;
+  };
+  return {
+    list: async (options = {}) =>
+      (await inTaskSpace(() => nav.listTabs(options))).map(wrapTab),
+    current: async () => wrapTab(await inTaskSpace(() => nav.currentTab())),
+    activate: async (target) =>
+      wrapTab(await inTaskSpace(() => nav.switchTab(target))),
+    open: async (url = "about:blank", options = {}) =>
+      wrapTab(await inTaskSpace(() => nav.openTab(url, options))),
+    openOrReuse: async (url, options = {}) =>
+      wrapTab(await inTaskSpace(() => nav.openOrReuseTab(url, options))),
+    close: (target = undefined) => inTaskSpace(() => nav.closeTab(target)),
+    evaluate: (target, pageFunction, arg = undefined) =>
+      inTaskSpace(() => nav.evaluateTab(target, pageFunction, arg)),
+  };
+}
+
 function createTaskSpacesFacade() {
   return {
     list: listTaskSpaces,
@@ -1123,10 +1286,12 @@ function createSiteFacade() {
 }
 
 const FACADE_HELP: Record<string, string> = {
-  page: "page: Playwright-style page facade. page.url() asynchronously returns the current URL; always call await page.url(). page.goto() and page.reload() return a main-document Response or null. Use page.setDefaultTimeout(ms), page.setDefaultNavigationTimeout(ms), locators, Playwright-style waits and supported page events, page.evaluate(fnOrExpression, arg), page.ariaSnapshot(options), page.screenshot(options) for a Buffer, page.saveScreenshot(options) for a path, page.screencast, page.keyboard, and page.mouse. A popup event returns a target-bound Page whose Page and Locator methods work without changing the active tab; bringToFront() changes it explicitly. waitForEvent, waitForRequest, and waitForResponse predicates may be async; waitForEvent also accepts AbortSignal cancellation. waitForURL predicates receive URL objects and waitUntil defaults to load. Wait timeouts throw TimeoutError.",
+  page: "page: Playwright-style page facade. page.url() asynchronously returns the current URL; always call await page.url(). page.goto(), page.reload(), page.goBack(), and page.goForward() return a main-document Response or null. page.content() serializes the document and page.setContent() replaces it. Use page.setDefaultTimeout(ms), page.setDefaultNavigationTimeout(ms), locators, Playwright-style waits and supported page events, page.evaluate(fnOrExpression, arg), page.ariaSnapshot(options), page.screenshot(options) for a Buffer, page.saveScreenshot(options) for a path, page.screencast, page.keyboard, and page.mouse. A popup event returns a target-bound Page whose Page and Locator methods work without changing the active tab; bringToFront() changes it explicitly. waitForEvent supports close, load, domcontentloaded, request, response, requestfailed, requestfinished, console, dialog, download, filechooser, pageerror, and popup. Event and network predicates may be async; waitForEvent also accepts AbortSignal cancellation. waitForURL predicates receive URL objects and waitUntil defaults to load. Wait timeouts throw TimeoutError.",
   locator:
-    "page.locator(selector): returns a strict locator facade with locator(), getByRole(), getByText(), filter(), and(), or(), first(), nth(index), last(), actionability-aware click(), hover(), dragTo(), fill(), focus(), check(), setChecked(), selectOption(), file upload, state/collection reads, evaluation, Buffer screenshots, and waitFor({ state: 'visible'|'attached'|'hidden'|'detached' }). Narrow multiple matches; use first()/nth() only for confirmed legitimate duplicates.",
+    "page.locator(selector): returns a strict locator facade with locator(), all(), frameLocator(), contentFrame(), getByRole(), getByText(), filter(), and(), or(), first(), nth(index), last(), actionability-aware click(), hover(), dragTo(), fill(), focus(), selectText(), check(), setChecked(), selectOption(), file upload, state/collection reads, evaluation, Buffer screenshots, and waitFor({ state: 'visible'|'attached'|'hidden'|'detached' }). FrameLocator.owner() returns its iframe element. Narrow multiple matches; use first()/nth() only for confirmed legitimate duplicates.",
   tabs: "tabs: ego-browser tab facade. list(), current(), open(), openOrReuse(), and activate() return { targetId, url, title, type: 'page' }. Use open(url, options) to always create a tab, or openOrReuse(url, options) to select a match when available. Use close(target) and evaluate(target, pageFunction, arg) for an explicit tab. Treat targetId as short-lived: obtain and validate it in the current script.",
+  egoBrowser:
+    "egoBrowser: ego-specific TaskSpace controller, not a Playwright Browser. It exposes only newTaskSpace(name), switchTaskSpace(nameOrId), completeTaskSpace(nameOrId), and closeTaskSpace(nameOrId). new/switch return a TaskSpace whose space.tabs methods return Tab objects with target-bound tab.page facades. completeTaskSpace and closeTaskSpace return Promise<void> and throw on failure; complete preserves the final result while close destroys the space.",
   taskSpaces:
     "taskSpaces: task-space facade. Use taskSpaces.useOrCreate(nameOrId), taskSpaces.claim(nameOrId), taskSpaces.switch(nameOrId), taskSpaces.complete(nameOrId, options), taskSpaces.handOff(nameOrId), taskSpaces.takeOver(nameOrId), and taskSpaces.waitForAgentControl(nameOrId, options). waitForAgentControl interval and timeout use milliseconds.",
   site: "site: learned site-skill facade. Use site.skills(url), site.skillsForUrl(url), site.runTool(siteId, toolName, args), site.runBrowserTool(siteId, toolName, args), and site.learnContext(url).",
@@ -1141,6 +1306,7 @@ export function helperContext(extra: any = {}) {
     page: createPageFacade(),
     tabs: createTabsFacade(),
     taskSpaces: createTaskSpacesFacade(),
+    egoBrowser: createEgoBrowserFacade(),
     site: createSiteFacade(),
     fetch: {
       server: serverFetch,

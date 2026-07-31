@@ -11,6 +11,20 @@ export const playwrightLocatorCases = [
       assertEqual(await page.getByTitle(/^counter button$/i).count(), 1, "getByTitle accepts RegExp");
       assertEqual(await page.getByTestId(/^stat(us)$/).count(), 1, "getByTestId accepts RegExp");
 
+      const duplicates = await page.locator(".duplicate-action").all();
+      assertEqual(duplicates.length, 2, "locator.all returns the current matches");
+      assertEqual(
+        await duplicates[1].innerText(),
+        "Duplicate action",
+        "locator.all returns usable nth locators",
+      );
+      await page.getByRole("heading", { name: "Helper e2e fixture" }).selectText();
+      assertIncludes(
+        await page.evaluate(() => getSelection()?.toString() || ""),
+        "Helper e2e fixture",
+        "locator.selectText selects the element contents",
+      );
+
       const card = page.locator(".card", {
         has: page.getByRole("button", { name: "Increment counter" }),
         hasText: /click counter/i,
@@ -43,6 +57,21 @@ export const playwrightLocatorCases = [
         await frame.locator("#iframe-marker").innerText(),
         "iframe target",
         "frame locator reads inside the child document"
+      );
+      assertEqual(
+        await frame.owner().getAttribute("id"),
+        "fixture-frame",
+        "frameLocator.owner returns the iframe element",
+      );
+      assertEqual(
+        await page.locator("#fixture-frame").contentFrame().locator("#iframe-marker").innerText(),
+        "iframe target",
+        "locator.contentFrame enters the matched iframe",
+      );
+      assertEqual(
+        await page.locator("body").frameLocator("#fixture-frame").locator("#iframe-marker").innerText(),
+        "iframe target",
+        "locator.frameLocator enters a descendant iframe",
       );
       assertEqual(
         await frame.getByRole("button", { name: "Increment counter" }).count(),

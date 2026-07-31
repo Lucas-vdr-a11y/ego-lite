@@ -1,4 +1,5 @@
 import { cdp, runtimeValue } from "../cdp-eval.js";
+import { parseAriaRef } from "../aria-ref-map.js";
 import {
   ElementResolutionError,
   queryRoleLocatorBackendNodeIds,
@@ -224,6 +225,38 @@ export async function blur(selector) {
 }
 
 /**
+ * Select the text contents of one matching element.
+ * @param {string} selector CSS selector / @ref / loc= / xpath= for the element.
+ * @param {{timeout?: number}} [options] timeout in milliseconds.
+ * @returns {Promise<void>}
+ */
+export async function selectText(selector, options: { timeout?: number } = {}) {
+  const timeout = normalizeTimeout(
+    "locator.selectText",
+    options.timeout ?? state.defaultTimeout,
+  );
+  await readElement(
+    selector,
+    `function(){
+      if (!(this instanceof Element)) throw new Error("selectText target must be an Element");
+      if (this instanceof HTMLInputElement || this instanceof HTMLTextAreaElement) {
+        this.select();
+        return;
+      }
+      const selection = this.ownerDocument.getSelection();
+      if (!selection) return;
+      const range = this.ownerDocument.createRange();
+      range.selectNodeContents(this);
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }`,
+    [],
+    timeout,
+    "locator.selectText",
+  );
+}
+
+/**
  * Return the element bounding box in viewport CSS pixels.
  * @param {string} selector CSS selector / @ref / loc= / xpath= for the element.
  * @returns {Promise<{x:number,y:number,width:number,height:number}|null>}
@@ -262,7 +295,22 @@ export async function boundingBox(selector) {
  * @returns {Promise<number>}
  */
 export async function count(selector) {
-  if (!isLocatorTarget(selector) && parseRef(selector)) {
+  if (parseAriaRef(selectorValue(selector))) {
+    try {
+      const handle = await resolveHandle(selector);
+      await releaseHandle(handle.objectId, handle.sessionId);
+      return 1;
+    } catch (error) {
+      if (
+        error instanceof ElementResolutionError &&
+        error.kind === "transient"
+      ) {
+        return 0;
+      }
+      throw error;
+    }
+  }
+  if (isDirectRef(selector)) {
     const handle = await resolveHandle(selector);
     await releaseHandle(handle.objectId, handle.sessionId);
     return 1;
@@ -276,12 +324,30 @@ export async function count(selector) {
   return readQueryAll(selector, "return elements.length;");
 }
 
+function isDirectRef(selector) {
+  const value = selectorValue(selector);
+  return Boolean(parseRef(value) || parseAriaRef(value));
+}
+
+function selectorValue(selector) {
+  return isLocatorTarget(selector) ? selector.selector : selector;
+}
+
 /**
  * Return innerText for all matching HTMLElement nodes.
  * @param {string} selector Selector to query.
  * @returns {Promise<string[]>}
  */
 export async function allInnerTexts(selector) {
+  if (isDirectRef(selector)) {
+    return readElement(
+      selector,
+      `function(){
+        if (!(this instanceof HTMLElement)) throw new Error("allInnerTexts targets must be HTMLElements");
+        return [this.innerText];
+      }`,
+    );
+  }
   return readQueryAll(
     selector,
     `return elements.map((element) => {
@@ -297,6 +363,9 @@ export async function allInnerTexts(selector) {
  * @returns {Promise<Array<string|null>>}
  */
 export async function allTextContents(selector) {
+  if (isDirectRef(selector)) {
+    return readElement(selector, "function(){return [this.textContent];}");
+  }
   return readQueryAll(
     selector,
     "return elements.map((element) => element.textContent);",
@@ -331,7 +400,7 @@ export async function evaluateLocator(selector, pageFunction, arg = undefined) {
  */
 export async function evaluateAll(selector, pageFunction, arg = undefined) {
   const functionSource = pageFunctionSource(pageFunction, "evaluateAll");
-  if (!isLocatorTarget(selector) && parseRef(selector)) {
+  if (isDirectRef(selector)) {
     return readElement(
       selector,
       `function(functionSource, arg){

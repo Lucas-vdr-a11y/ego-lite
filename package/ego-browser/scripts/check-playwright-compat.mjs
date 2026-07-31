@@ -118,3 +118,100 @@ if (process.argv.includes("--write")) {
     `Verified ${path.relative(packageRoot, manifestPath)} against playwright-core@${PLAYWRIGHT_VERSION}`,
   );
 }
+
+if (process.argv.includes("--report")) {
+  const formatSource = await readFile(
+    path.join(packageRoot, "src", "format.ts"),
+    "utf8",
+  );
+  const documentedPaths = publicApiPaths(formatSource);
+  const coverage = [
+    interfaceCoverage("Page", documentedPaths, interfaces, [
+      ...(documentedPaths.some((value) => value.startsWith("page.keyboard."))
+        ? ["keyboard"]
+        : []),
+      ...(documentedPaths.some((value) => value.startsWith("page.mouse."))
+        ? ["mouse"]
+        : []),
+    ]),
+    interfaceCoverage("Locator", documentedPaths, interfaces),
+    interfaceCoverage("FrameLocator", documentedPaths, interfaces),
+    interfaceCoverage("Keyboard", documentedPaths, interfaces),
+    interfaceCoverage("Mouse", documentedPaths, interfaces),
+  ];
+  let covered = 0;
+  let available = 0;
+  for (const item of coverage) {
+    covered += item.covered.length;
+    available += item.available;
+    console.log(
+      `${item.name}: ${item.covered.length}/${item.available} (${percentage(item.covered.length, item.available)})`,
+    );
+    console.log(`${item.name} missing: ${item.missing.join(", ") || "none"}`);
+  }
+  console.log(
+    `Total: ${covered}/${available} (${percentage(covered, available)})`,
+  );
+  console.log("Excluded by design: Browser, BrowserContext");
+}
+
+function publicApiPaths(formatSource) {
+  const formatFile = ts.createSourceFile(
+    "format.ts",
+    formatSource,
+    ts.ScriptTarget.Latest,
+    true,
+  );
+  const declaration = formatFile.statements
+    .filter(ts.isVariableStatement)
+    .flatMap((statement) => statement.declarationList.declarations)
+    .find((item) => item.name.getText(formatFile) === "PUBLIC_API_DOCS");
+  assert.ok(
+    declaration?.initializer &&
+      ts.isObjectLiteralExpression(declaration.initializer),
+    "Missing PUBLIC_API_DOCS object literal",
+  );
+  return declaration.initializer.properties
+    .filter((property) => property.name)
+    .map((property) =>
+      property.name.getText(formatFile).replace(/^["']|["']$/g, ""),
+    );
+}
+
+function interfaceCoverage(
+  name,
+  documentedPaths,
+  interfaceMembers,
+  extras = [],
+) {
+  const prefixes = {
+    Page: ["page."],
+    Locator: ["locator."],
+    FrameLocator: ["frameLocator."],
+    Keyboard: ["page.keyboard."],
+    Mouse: ["page.mouse."],
+  }[name];
+  const depth = name === "Keyboard" || name === "Mouse" ? 3 : 2;
+  const candidates = documentedPaths
+    .filter(
+      (value) =>
+        prefixes.some((prefix) => value.startsWith(prefix)) &&
+        value.split(".").length === depth,
+    )
+    .map((value) => value.split(".").at(-1));
+  const covered = [...new Set([...candidates, ...extras])]
+    .filter((member) => interfaceMembers[name].includes(member))
+    .sort();
+  return {
+    name,
+    covered,
+    available: interfaceMembers[name].length,
+    missing: interfaceMembers[name].filter(
+      (member) => !covered.includes(member),
+    ),
+  };
+}
+
+function percentage(covered, available) {
+  return `${((covered / available) * 100).toFixed(1)}%`;
+}

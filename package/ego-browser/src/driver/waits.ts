@@ -323,7 +323,10 @@ async function waitForNetworkMatch(
   void eventPromise.catch(() => {});
   try {
     await Promise.all([networkEvents.ready, eventPromise]);
-    await monitor.retain(matched.request);
+    await monitor.retain(
+      matched.request,
+      kind === "response" ? matched.facade : undefined,
+    );
     retained = true;
     return matched.facade;
   } catch (error) {

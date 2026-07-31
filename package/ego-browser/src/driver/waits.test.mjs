@@ -451,6 +451,64 @@ test("waitForResponse matches regex and exposes response body helpers", async ()
   }
 });
 
+test("Response body remains readable after the owned Network domain is released", async () => {
+  let networkEnabled = false;
+  const calls = installAutoEgo((call) => {
+    if (call.method === "Network.enable") {
+      networkEnabled = true;
+      return {};
+    }
+    if (call.method === "Network.disable") {
+      networkEnabled = false;
+      return {};
+    }
+    if (call.method === "Network.getResponseBody") {
+      return networkEnabled
+        ? { body: "delayed body", base64Encoded: false }
+        : { error: { message: "No resource with given identifier found" } };
+    }
+    return {};
+  });
+  try {
+    const promise = waitForResponse("https://example.com/api/delayed-body", {
+      timeout: 1000,
+    });
+    setTimeout(() => {
+      fireEvent("Network.requestWillBeSent", {
+        requestId: "req-delayed-body",
+        type: "Fetch",
+        request: {
+          url: "https://example.com/api/delayed-body",
+          method: "GET",
+          headers: {},
+        },
+      });
+      fireEvent("Network.responseReceived", {
+        requestId: "req-delayed-body",
+        type: "Fetch",
+        response: {
+          url: "https://example.com/api/delayed-body",
+          status: 200,
+          statusText: "OK",
+          headers: {},
+        },
+      });
+      fireEvent("Network.loadingFinished", {
+        requestId: "req-delayed-body",
+      });
+    }, 20);
+
+    const response = await promise;
+    assert.ok(
+      calls.some((call) => call.method === "Network.disable"),
+      "the wait releases its owned Network domain",
+    );
+    assert.equal(await response.text(), "delayed body");
+  } finally {
+    cleanupBrowserRuntime();
+  }
+});
+
 test("waitForResponse retains Network events until a slow response finishes", async () => {
   const calls = installAutoEgo();
   try {

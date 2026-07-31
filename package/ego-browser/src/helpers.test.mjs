@@ -122,6 +122,621 @@ test("listTaskSpaces throws on binding error objects", async () => {
   );
 });
 
+test("egoBrowser exposes only the TaskSpace lifecycle surface", () => {
+  const context = helperContext();
+
+  assert.deepEqual(Object.keys(context.egoBrowser).sort(), [
+    "closeTaskSpace",
+    "completeTaskSpace",
+    "newTaskSpace",
+    "switchTaskSpace",
+  ]);
+  assert.equal(context.egoBrowser.newPage, undefined);
+  assert.equal(context.egoBrowser.newContext, undefined);
+  assert.equal(context.egoBrowser.contexts, undefined);
+  assert.equal(context.egoBrowser.close, undefined);
+});
+
+test("egoBrowser returns TaskSpace and target-bound Tab objects", async () => {
+  const calls = [];
+  const task = {
+    taskId: "inspect-products",
+    id: 7,
+    name: "Inspect products",
+    createdBy: "agent",
+    ownership: "agent",
+  };
+  await withEgo(
+    {
+      async createTaskSpace(name) {
+        calls.push(["createTaskSpace", name]);
+        return task;
+      },
+      async listTaskSpaces() {
+        calls.push(["listTaskSpaces"]);
+        return { taskSpaces: [task] };
+      },
+      async useTaskSpace(id) {
+        calls.push(["useTaskSpace", id]);
+        return {};
+      },
+      async listTabs() {
+        calls.push(["listTabs"]);
+        return {
+          tabs: [
+            {
+              targetId: "target-products",
+              active: true,
+              title: "Products",
+              url: "https://example.com/products",
+            },
+          ],
+        };
+      },
+    },
+    async () => {
+      const space =
+        await helperContext().egoBrowser.newTaskSpace("inspect-products");
+      assert.equal(space.id, 7);
+      assert.equal(space.name, "Inspect products");
+      assert.equal(typeof space.tabs.list, "function");
+
+      const [tab] = await space.tabs.list();
+      assert.equal(tab.targetId, "target-products");
+      assert.equal(tab.page.targetId, "target-products");
+      assert.equal(typeof tab.page.locator, "function");
+      assert.equal(typeof tab.activate, "function");
+      assert.equal(typeof tab.close, "function");
+    },
+  );
+
+  assert.deepEqual(calls, [
+    ["createTaskSpace", "inspect-products"],
+    ["useTaskSpace", 7],
+    ["listTabs"],
+  ]);
+});
+
+test("a TaskSpace Tab Page reselects its space before target operations", async () => {
+  const spaces = [
+    {
+      taskId: "products",
+      id: 7,
+      name: "Products",
+      ownership: "agent",
+    },
+    {
+      taskId: "other",
+      id: 8,
+      name: "Other",
+      ownership: "agent",
+    },
+  ];
+  const calls = [];
+  let currentTaskSpaceId = 7;
+  const runtime = {
+    async listTaskSpaces() {
+      return { taskSpaces: spaces };
+    },
+    async useTaskSpace(id) {
+      calls.push(["useTaskSpace", id]);
+      currentTaskSpaceId = id;
+      return {};
+    },
+    async listTabs() {
+      calls.push(["listTabs", currentTaskSpaceId]);
+      return {
+        tabs: [
+          currentTaskSpaceId === 7
+            ? {
+                targetId: "target-products",
+                active: true,
+                title: "Products",
+                url: "https://example.com/products",
+              }
+            : {
+                targetId: "target-other",
+                active: true,
+                title: "Other",
+                url: "https://example.com/other",
+              },
+        ],
+      };
+    },
+    sendCDPMessage(payload) {
+      const call = JSON.parse(payload);
+      calls.push(call);
+      const result =
+        call.method === "Target.attachToTarget"
+          ? { sessionId: "session-products" }
+          : call.method === "Runtime.evaluate"
+            ? {
+                result: {
+                  value: JSON.stringify({
+                    url: "https://example.com/products",
+                    title: "Products",
+                    w: 800,
+                    h: 600,
+                    sx: 0,
+                    sy: 0,
+                    pw: 800,
+                    ph: 600,
+                  }),
+                },
+              }
+            : {};
+      queueMicrotask(() =>
+        runtime.onCDPMessage(JSON.stringify({ id: call.id, result })),
+      );
+    },
+  };
+
+  try {
+    await withEgo(runtime, async () => {
+      invalidateSession();
+      const context = helperContext();
+      const products = await context.egoBrowser.switchTaskSpace(7);
+      const tab = await products.tabs.current();
+      await context.egoBrowser.switchTaskSpace(8);
+
+      assert.equal(await tab.page.title(), "Products");
+      assert.deepEqual(
+        calls.findLast((call) => call[0] === "useTaskSpace"),
+        ["useTaskSpace", 7],
+      );
+    });
+  } finally {
+    invalidateSession();
+    clearPreferredTarget();
+  }
+});
+
+test("a TaskSpace Tab Page snapshots its bound target without explicit activation", async () => {
+  const spaces = [
+    { taskId: "products", id: 7, name: "Products", ownership: "agent" },
+    { taskId: "other", id: 8, name: "Other", ownership: "agent" },
+  ];
+  const calls = [];
+  let currentTaskSpaceId = 7;
+  let activeTargetId = "target-products";
+  const runtime = {
+    async listTaskSpaces() {
+      return { taskSpaces: spaces };
+    },
+    async useTaskSpace(id) {
+      calls.push(["useTaskSpace", id]);
+      currentTaskSpaceId = id;
+      activeTargetId = id === 7 ? "target-products" : "target-other";
+      return {};
+    },
+    async listTabs() {
+      const targetId =
+        currentTaskSpaceId === 7 ? "target-products" : "target-other";
+      return {
+        tabs: [
+          {
+            targetId,
+            active: targetId === activeTargetId,
+            title: currentTaskSpaceId === 7 ? "Products" : "Other",
+            url:
+              currentTaskSpaceId === 7
+                ? "https://example.com/products"
+                : "https://example.com/other",
+          },
+        ],
+      };
+    },
+    async snapshot(options) {
+      calls.push(["snapshot", currentTaskSpaceId, activeTargetId, options]);
+      return {
+        content: `${currentTaskSpaceId}:${activeTargetId}`,
+        refs: [],
+      };
+    },
+    sendCDPMessage(payload) {
+      const call = JSON.parse(payload);
+      calls.push(call);
+      if (call.method === "Target.activateTarget") {
+        activeTargetId = call.params.targetId;
+      }
+      queueMicrotask(() =>
+        runtime.onCDPMessage(JSON.stringify({ id: call.id, result: {} })),
+      );
+    },
+  };
+
+  try {
+    await withEgo(runtime, async () => {
+      invalidateSession();
+      clearPreferredTarget();
+      const context = helperContext();
+      const products = await context.egoBrowser.switchTaskSpace(7);
+      const tab = await products.tabs.current();
+      await context.egoBrowser.switchTaskSpace(8);
+
+      assert.equal(await tab.page.snapshot(), "7:target-products");
+      await context.egoBrowser.switchTaskSpace(8);
+      assert.deepEqual(await tab.page.snapshotRaw(), {
+        content: "7:target-products",
+        refs: [],
+      });
+      assert.deepEqual(
+        calls.filter((call) => call[0] === "snapshot").map((call) => call[1]),
+        [7, 7],
+      );
+    });
+  } finally {
+    invalidateSession();
+    clearPreferredTarget();
+  }
+});
+
+test("target-bound Page snapshots serialize native tab activation", async () => {
+  const task = {
+    taskId: "products",
+    id: 7,
+    name: "Products",
+    ownership: "agent",
+  };
+  let activeTargetId = "target-a";
+  const runtime = {
+    async listTaskSpaces() {
+      return { taskSpaces: [task] };
+    },
+    async useTaskSpace() {
+      return {};
+    },
+    async listTabs() {
+      return {
+        tabs: [
+          {
+            targetId: "target-a",
+            active: activeTargetId === "target-a",
+            title: "A",
+            url: "https://example.com/a",
+          },
+          {
+            targetId: "target-b",
+            active: activeTargetId === "target-b",
+            title: "B",
+            url: "https://example.com/b",
+          },
+        ],
+      };
+    },
+    async snapshot() {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      return { content: activeTargetId, refs: [] };
+    },
+    sendCDPMessage(payload) {
+      const call = JSON.parse(payload);
+      if (call.method === "Target.activateTarget") {
+        activeTargetId = call.params.targetId;
+      }
+      queueMicrotask(() =>
+        runtime.onCDPMessage(JSON.stringify({ id: call.id, result: {} })),
+      );
+    },
+  };
+
+  try {
+    await withEgo(runtime, async () => {
+      invalidateSession();
+      clearPreferredTarget();
+      const space = await helperContext().egoBrowser.switchTaskSpace(7);
+      const [first, second] = await space.tabs.list();
+
+      assert.deepEqual(
+        await Promise.all([first.page.snapshot(), second.page.snapshot()]),
+        ["target-a", "target-b"],
+      );
+    });
+  } finally {
+    invalidateSession();
+    clearPreferredTarget();
+  }
+});
+
+test("target-bound Page keeps snapshot refs scoped to its target", async () => {
+  const task = {
+    taskId: "products",
+    id: 7,
+    name: "Products",
+    ownership: "agent",
+  };
+  let activeTargetId = "target-a";
+  const resolvedBackendNodeIds = [];
+  const runtime = {
+    async listTaskSpaces() {
+      return { taskSpaces: [task] };
+    },
+    async useTaskSpace() {
+      return {};
+    },
+    async listTabs() {
+      return {
+        tabs: [
+          {
+            targetId: "target-a",
+            active: activeTargetId === "target-a",
+            title: "A",
+            url: "https://example.com/a",
+          },
+          {
+            targetId: "target-b",
+            active: activeTargetId === "target-b",
+            title: "B",
+            url: "https://example.com/b",
+          },
+        ],
+      };
+    },
+    async snapshot() {
+      const backendNodeId = activeTargetId === "target-a" ? 101 : 202;
+      return {
+        content: `${activeTargetId} @${backendNodeId}`,
+        refs: [{ backendNodeId, role: "button", name: activeTargetId }],
+      };
+    },
+  };
+  const restore = setOverrides({
+    cdpOverride(method, params) {
+      if (method === "Target.activateTarget") {
+        activeTargetId = params.targetId;
+        return {};
+      }
+      if (method === "DOM.resolveNode") {
+        resolvedBackendNodeIds.push(params.backendNodeId);
+        return { object: { objectId: `node-${params.backendNodeId}` } };
+      }
+      return {};
+    },
+  });
+
+  try {
+    await withEgo(runtime, async () => {
+      const space = await helperContext().egoBrowser.switchTaskSpace(7);
+      const [first, second] = await space.tabs.list();
+
+      await first.page.snapshot();
+      await second.page.snapshot();
+
+      assert.equal(await first.page.locator("@101").count(), 1);
+      assert.equal(await second.page.locator("@202").count(), 1);
+      assert.deepEqual(resolvedBackendNodeIds, [101, 202]);
+    });
+  } finally {
+    restore();
+  }
+});
+
+test("target-bound Page snapshot maps a missing target to the closed error", async () => {
+  const task = {
+    taskId: "products",
+    id: 7,
+    name: "Products",
+    ownership: "agent",
+  };
+  let targetOpen = true;
+  await withEgo(
+    {
+      async listTaskSpaces() {
+        return { taskSpaces: [task] };
+      },
+      async useTaskSpace() {
+        return {};
+      },
+      async listTabs() {
+        return {
+          tabs: targetOpen
+            ? [
+                {
+                  targetId: "target-products",
+                  active: true,
+                  title: "Products",
+                  url: "https://example.com/products",
+                },
+              ]
+            : [],
+        };
+      },
+      async snapshot() {
+        return { content: "Products", refs: [] };
+      },
+    },
+    async () => {
+      const space = await helperContext().egoBrowser.switchTaskSpace(7);
+      const tab = await space.tabs.current();
+      targetOpen = false;
+
+      await assert.rejects(
+        () => tab.page.snapshot(),
+        /Target page, context or browser has been closed.*target-products/,
+      );
+    },
+  );
+});
+
+test("a popup opened from a TaskSpace Tab Page inherits its space binding", async () => {
+  const spaces = [
+    { taskId: "products", id: 7, name: "Products", ownership: "agent" },
+    { taskId: "other", id: 8, name: "Other", ownership: "agent" },
+  ];
+  const calls = [];
+  let currentTaskSpaceId = 7;
+  const runtime = {
+    async listTaskSpaces() {
+      return { taskSpaces: spaces };
+    },
+    async useTaskSpace(id) {
+      calls.push(["useTaskSpace", id]);
+      currentTaskSpaceId = id;
+      return {};
+    },
+    async listTabs() {
+      return {
+        tabs:
+          currentTaskSpaceId === 7
+            ? [
+                {
+                  targetId: "target-products",
+                  active: true,
+                  title: "Products",
+                  url: "https://example.com/products",
+                },
+                {
+                  targetId: "target-popup",
+                  active: false,
+                  title: "Popup",
+                  url: "https://example.com/popup",
+                },
+              ]
+            : [
+                {
+                  targetId: "target-other",
+                  active: true,
+                  title: "Other",
+                  url: "https://example.com/other",
+                },
+              ],
+      };
+    },
+    sendCDPMessage(payload) {
+      const call = JSON.parse(payload);
+      calls.push(call);
+      const result =
+        call.method === "Target.attachToTarget"
+          ? { sessionId: `session-${call.params.targetId}` }
+          : call.method === "Runtime.evaluate"
+            ? {
+                result: {
+                  value: JSON.stringify({
+                    url: "https://example.com/popup",
+                    title: "Popup",
+                    w: 800,
+                    h: 600,
+                    sx: 0,
+                    sy: 0,
+                    pw: 800,
+                    ph: 600,
+                  }),
+                },
+              }
+            : {};
+      queueMicrotask(() =>
+        runtime.onCDPMessage(JSON.stringify({ id: call.id, result })),
+      );
+    },
+  };
+
+  try {
+    await withEgo(runtime, async () => {
+      invalidateSession();
+      clearPreferredTarget();
+      drainBrowserEvents();
+      const context = helperContext();
+      const products = await context.egoBrowser.switchTaskSpace(7);
+      const tab = await products.tabs.current();
+      const popupPromise = tab.page.waitForEvent("popup", { timeout: 1000 });
+      await waitForCdpCall(calls, "Target.setDiscoverTargets");
+      runtime.onCDPMessage(
+        JSON.stringify({
+          method: "Target.targetCreated",
+          params: {
+            targetInfo: {
+              targetId: "target-popup",
+              type: "page",
+              openerId: "target-products",
+              url: "https://example.com/popup",
+            },
+          },
+        }),
+      );
+      const popup = await popupPromise;
+      await context.egoBrowser.switchTaskSpace(8);
+
+      assert.equal(await popup.title(), "Popup");
+      assert.deepEqual(
+        calls.findLast((call) => call[0] === "useTaskSpace"),
+        ["useTaskSpace", 7],
+      );
+    });
+  } finally {
+    invalidateSession();
+    clearPreferredTarget();
+    drainBrowserEvents();
+  }
+});
+
+test("egoBrowser complete preserves a TaskSpace and close destroys it", async () => {
+  const calls = [];
+  const task = {
+    taskId: "inspect-products",
+    id: 7,
+    name: "Inspect products",
+    ownership: "agent",
+  };
+  await withEgo(
+    {
+      async listTaskSpaces() {
+        calls.push(["listTaskSpaces"]);
+        return { taskSpaces: [task] };
+      },
+      async useTaskSpace(id) {
+        calls.push(["useTaskSpace", id]);
+        return {};
+      },
+      async completeTaskSpace() {
+        calls.push(["completeTaskSpace"]);
+        return {};
+      },
+      async closeTaskSpace() {
+        calls.push(["closeTaskSpace"]);
+        return {};
+      },
+    },
+    async () => {
+      const context = helperContext();
+      assert.equal(
+        await context.egoBrowser.completeTaskSpace(task.id),
+        undefined,
+      );
+      assert.equal(await context.egoBrowser.closeTaskSpace(task.id), undefined);
+    },
+  );
+
+  assert.deepEqual(calls, [
+    ["listTaskSpaces"],
+    ["useTaskSpace", 7],
+    ["completeTaskSpace"],
+    ["listTaskSpaces"],
+    ["useTaskSpace", 7],
+    ["closeTaskSpace"],
+  ]);
+});
+
+test("egoBrowser complete throws when the TaskSpace cannot be completed", async () => {
+  const task = {
+    taskId: "user-space",
+    id: 7,
+    name: "User space",
+    ownership: "user",
+  };
+  await withEgo(
+    {
+      async listTaskSpaces() {
+        return { taskSpaces: [task] };
+      },
+    },
+    async () => {
+      await assert.rejects(
+        () => helperContext().egoBrowser.completeTaskSpace(task.id),
+        /egoBrowser\.completeTaskSpace did not complete TaskSpace 7: user-owned/,
+      );
+    },
+  );
+});
+
 test("helper surface exposes Playwright-style object facades", () => {
   const context = helperContext();
   assert.equal(typeof context.page, "object");
@@ -345,6 +960,7 @@ test("tabs.evaluate rejects targets outside the current task space before CDP at
 
 test("page.waitForEvent('popup') returns the complete Page facade", async () => {
   const calls = [];
+  let activeTargetId = "target-main";
   await withEgo(
     {
       async listTabs() {
@@ -352,22 +968,31 @@ test("page.waitForEvent('popup') returns the complete Page facade", async () => 
           tabs: [
             {
               targetId: "target-main",
-              active: true,
+              active: activeTargetId === "target-main",
               title: "Main",
               url: "https://example.com/",
             },
             {
               targetId: "target-popup",
-              active: false,
+              active: activeTargetId === "target-popup",
               title: "Popup",
               url: "https://example.com/popup",
             },
           ],
         };
       },
+      async snapshot() {
+        return {
+          content: `snapshot:${activeTargetId}`,
+          refs: [],
+        };
+      },
       sendCDPMessage(payload) {
         const call = JSON.parse(payload);
         calls.push(call);
+        if (call.method === "Target.activateTarget") {
+          activeTargetId = call.params.targetId;
+        }
         setTimeout(() => {
           const result =
             call.method === "Target.attachToTarget"
@@ -410,14 +1035,11 @@ test("page.waitForEvent('popup') returns the complete Page facade", async () => 
       assert.equal(typeof popup.keyboard.press, "function");
       assert.equal(typeof popup.mouse.click, "function");
       assert.equal(typeof popup.bringToFront, "function");
-      await assert.rejects(
-        () => popup.snapshot(),
-        /page\.snapshot is available only on the active global page/,
-      );
-      await assert.rejects(
-        () => popup.snapshotRaw(),
-        /page\.snapshotRaw is available only on the active global page/,
-      );
+      assert.equal(await popup.snapshot(), "snapshot:target-popup");
+      assert.deepEqual(await popup.snapshotRaw(), {
+        content: "snapshot:target-popup",
+        refs: [],
+      });
       assert.throws(
         () => popup.drainEvents(),
         /page\.drainEvents is available only on the active global page/,
@@ -709,6 +1331,86 @@ test("page.frameLocator creates nested frame-scoped locators", () => {
   assert.throws(() => outer.nth(-1), /non-negative integer/);
 });
 
+test("locator.all returns one nth locator for each current match", async () => {
+  const restore = setOverrides({
+    cdpOverride(method, params) {
+      assert.equal(method, "Runtime.evaluate");
+      assert.match(params.expression, /elements\.length/);
+      return { result: { value: 3 } };
+    },
+  });
+  try {
+    const locators = await helperContext().page.locator(".item").all();
+    assert.deepEqual(
+      locators.map((item) => item.selector),
+      ["internal:nth=0;.item", "internal:nth=1;.item", "internal:nth=2;.item"],
+    );
+  } finally {
+    restore();
+  }
+});
+
+test("locator and frameLocator convert between frame scopes", () => {
+  const page = helperContext().page;
+
+  const content = page.locator("iframe#checkout").contentFrame();
+  assert.deepEqual(content.frameChain, ["iframe#checkout"]);
+
+  const nested = page.locator(".shell").frameLocator("iframe.child");
+  assert.match(nested.selector, /^internal:scope:/);
+  assert.deepEqual(nested.frameChain, [nested.selector]);
+
+  const owner = page
+    .frameLocator("iframe#outer")
+    .frameLocator("iframe#inner")
+    .owner();
+  assert.equal(owner.selector, "iframe#inner");
+  assert.deepEqual(owner.frameChain, ["iframe#outer"]);
+});
+
+test("locator.selectText selects the resolved element contents", async () => {
+  const calls = [];
+  const restore = setOverrides({
+    cdpOverride(method, params) {
+      calls.push({ method, params });
+      if (method === "Runtime.evaluate") {
+        return { result: { objectId: "selectable" } };
+      }
+      if (method === "Runtime.callFunctionOn") {
+        return params.functionDeclaration.includes("selectNodeContents")
+          ? { result: { value: undefined } }
+          : {
+              result: {
+                value: {
+                  attached: true,
+                  visible: true,
+                  enabled: true,
+                  editable: false,
+                  receivesEvents: true,
+                  rect: { x: 0, y: 0, width: 100, height: 20 },
+                },
+              },
+            };
+      }
+      if (method === "Runtime.releaseObject") return {};
+      throw new Error(`unexpected CDP method: ${method}`);
+    },
+  });
+  try {
+    await helperContext().page.locator("#copy-me").selectText();
+  } finally {
+    restore();
+  }
+  assert.match(
+    calls.find(
+      (call) =>
+        call.method === "Runtime.callFunctionOn" &&
+        call.params.functionDeclaration.includes("selectNodeContents"),
+    ).params.functionDeclaration,
+    /selectNodeContents/,
+  );
+});
+
 test("frame-scoped locator composition rejects locators from another frame", () => {
   const page = helperContext().page;
   const left = page.frameLocator("#left-frame").locator(".item");
@@ -862,6 +1564,7 @@ test("help documents every public callable by its facade path", () => {
     ...callablePaths(context.page, "page"),
     ...callablePaths(context.tabs, "tabs"),
     ...callablePaths(context.taskSpaces, "taskSpaces"),
+    ...callablePaths(context.egoBrowser, "egoBrowser"),
     ...callablePaths(context.site, "site"),
     ...callablePaths(context.fetch, "fetch"),
     ...callablePaths(context.page.locator("#help-audit"), "locator"),
@@ -925,7 +1628,15 @@ test("help supports facade namespaces and disambiguates nested methods", () => {
   assert.match(context.help("page.mouse.missing"), /help\('page\.mouse'\)/);
   assert.match(
     context.help("switchTaskSpace"),
-    /Unknown helper: switchTaskSpace/,
+    /egoBrowser\.switchTaskSpace\(nameOrId\)/,
+  );
+  assert.match(
+    context.help("egoBrowser.completeTaskSpace"),
+    /egoBrowser\.completeTaskSpace\(nameOrId\) => Promise<void>/,
+  );
+  assert.match(
+    context.help("egoBrowser.closeTaskSpace"),
+    /egoBrowser\.closeTaskSpace\(nameOrId\) => Promise<void>/,
   );
 });
 

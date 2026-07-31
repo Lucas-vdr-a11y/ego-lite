@@ -55,8 +55,25 @@ export const ariaSnapshotCases = [
       assertIncludes(yaml, '- checkbox "Gift wrap" [checked]', "ARIA snapshot includes checked state");
       assert(!yaml.includes("Hidden promotion"), "ARIA snapshot excludes aria-hidden content");
 
+      const yamlWithRefs = await fixture.ariaSnapshot({ ref: true });
+      const checkoutLine = yamlWithRefs
+        .split("\\n")
+        .find((line) => line.includes('button "Checkout"'));
+      const checkoutRef = checkoutLine?.split("[ref=")[1]?.split("]")[0];
+      assert(checkoutRef, "ref mode emits a Playwright 1.52 generation ref");
+      assertEqual(
+        await page.locator(\`aria-ref=\${checkoutRef}\`).isDisabled(),
+        true,
+        "aria-ref resolves the captured element"
+      );
+
       const pageYaml = await page.ariaSnapshot({ timeout: 3000 });
       assertIncludes(pageYaml, "Helper e2e fixture", "page.ariaSnapshot captures the body");
+      await assertRejects(
+        () => page.locator(\`aria-ref=\${checkoutRef}\`).count(),
+        "Stale aria-ref",
+        "a later ARIA snapshot invalidates the earlier generation"
+      );
 
       const depthOne = await fixture.ariaSnapshot({ depth: 1 });
       assertIncludes(depthOne, '- list "Catalog"', "depth keeps the boundary node");
@@ -129,12 +146,6 @@ export const ariaSnapshotCases = [
         'mode "ai" is not supported',
         "AI mode reports the ego snapshot alternative"
       );
-      await assertRejects(
-        () => fixture.ariaSnapshot({ ref: true }),
-        "ref: true is not supported",
-        "Playwright 1.52 ref mode reports the ego snapshot alternative"
-      );
-
       const frameBody = page
         .frameLocator("#fixture-frame")
         .locator("body");

@@ -4,6 +4,10 @@ import assert from "node:assert/strict";
 import { helperContext } from "../../dist/src/helpers.js";
 import { TimeoutError } from "../../dist/src/playwright-errors.js";
 import { setOverrides } from "../../dist/src/state.js";
+import {
+  createTargetContext,
+  runWithTarget,
+} from "../../dist/src/target-context.js";
 
 function axNode(
   nodeId,
@@ -117,6 +121,17 @@ async function withAriaScenario(options, fn) {
     async cdpOverride(method, params, sessionId, timeoutMs) {
       calls.push({ method, params, sessionId, timeoutMs });
       if (method === "Runtime.evaluate") {
+        if (
+          options.rejectAriaRefCss &&
+          String(params.expression || "").includes("aria-ref=")
+        ) {
+          return {
+            exceptionDetails: {
+              text: "SyntaxError",
+              exception: { description: "Invalid CSS selector aria-ref" },
+            },
+          };
+        }
         resolveAttempts += 1;
         if (resolveAttempts <= (options.missingResolveAttempts || 0)) {
           return { result: {} };
@@ -155,6 +170,23 @@ async function withAriaScenario(options, fn) {
             cssLayoutViewport: { clientWidth: 100, clientHeight: 100 },
           }
         );
+      }
+      if (method === "DOM.resolveNode") {
+        if (options.resolveNodeError) throw options.resolveNodeError;
+        return {
+          object: { objectId: `aria-ref-node-${params.backendNodeId}` },
+        };
+      }
+      if (method === "Runtime.callFunctionOn") {
+        if (String(params.functionDeclaration).includes("isConnected")) {
+          return { result: { value: true } };
+        }
+        if (String(params.functionDeclaration).includes("getAttribute")) {
+          return { result: { value: options.attributeValue ?? null } };
+        }
+        if (String(params.functionDeclaration).includes("innerText")) {
+          return { result: { value: ["Target"] } };
+        }
       }
       if (method === "Runtime.releaseObject") return {};
       throw new Error(`Unexpected CDP method: ${method}`);
@@ -270,6 +302,207 @@ test("locator.ariaSnapshot renders roles, names, states, values, and DOM propert
           "  - checkbox [checked=mixed]",
         ].join("\n"),
       );
+    },
+  );
+});
+
+test("ariaSnapshot ref mode renders Playwright 1.52 generation-scoped refs", async () => {
+  const nodes = [
+    axNode("root", "button", {
+      backendDOMNodeId: 1,
+      name: "Target",
+    }),
+  ];
+
+  await withAriaScenario(
+    {
+      rootId: "root",
+      rootRole: "button",
+      partialBackendDOMNodeId: 1,
+      nodes,
+      dom: domSnapshot([{ backendDOMNodeId: 1, nodeName: "BUTTON" }]),
+    },
+    async () => {
+      const locator = helperContext().page.locator("#target");
+
+      const first = await locator.ariaSnapshot({ ref: true });
+      const firstGeneration = Number(/\[ref=s(\d+)e1\]/.exec(first)?.[1]);
+      assert.equal(Number.isInteger(firstGeneration), true);
+      assert.equal(first, `- button "Target" [ref=s${firstGeneration}e1]`);
+      assert.equal(await locator.ariaSnapshot(), '- button "Target"');
+      assert.equal(
+        await locator.ariaSnapshot({ ref: true }),
+        `- button "Target" [ref=s${firstGeneration + 2}e1]`,
+      );
+    },
+  );
+});
+
+test("aria-ref locator resolves an element from the latest ARIA snapshot", async () => {
+  const nodes = [
+    axNode("root", "button", {
+      backendDOMNodeId: 41,
+      name: "Target",
+    }),
+  ];
+
+  await withAriaScenario(
+    {
+      rootId: "root",
+      rootRole: "button",
+      partialBackendDOMNodeId: 41,
+      nodes,
+      dom: domSnapshot([{ backendDOMNodeId: 41, nodeName: "BUTTON" }]),
+      attributeValue: "resolved",
+      rejectAriaRefCss: true,
+    },
+    async ({ calls }) => {
+      const page = helperContext().page;
+      const yaml = await page.locator("#target").ariaSnapshot({ ref: true });
+      const ref = /ref=(s\d+e\d+)/.exec(yaml)?.[1];
+      assert.ok(ref);
+
+      assert.equal(
+        await page.locator(`aria-ref=${ref}`).getAttribute("data-id"),
+        "resolved",
+      );
+      assert.equal(await page.locator(`aria-ref=${ref}`).count(), 1);
+      assert.deepEqual(await page.locator(`aria-ref=${ref}`).allInnerTexts(), [
+        "Target",
+      ]);
+      const [sameElement] = await page.locator(`aria-ref=${ref}`).all();
+      assert.equal(await sameElement.getAttribute("data-id"), "resolved");
+      assert.equal(
+        calls.some(
+          (call) =>
+            call.method === "DOM.resolveNode" &&
+            call.params.backendNodeId === 41,
+        ),
+        true,
+      );
+    },
+  );
+});
+
+test("a later ariaSnapshot makes an earlier aria-ref stale", async () => {
+  const nodes = [
+    axNode("root", "button", {
+      backendDOMNodeId: 51,
+      name: "Target",
+    }),
+  ];
+
+  await withAriaScenario(
+    {
+      rootId: "root",
+      rootRole: "button",
+      partialBackendDOMNodeId: 51,
+      nodes,
+      dom: domSnapshot([{ backendDOMNodeId: 51, nodeName: "BUTTON" }]),
+      defaultTimeout: 200,
+    },
+    async () => {
+      const page = helperContext().page;
+      const first = await page.locator("#target").ariaSnapshot({ ref: true });
+      const oldRef = /ref=(s\d+e\d+)/.exec(first)?.[1];
+      assert.ok(oldRef);
+      const second = await page.locator("#target").ariaSnapshot({ ref: true });
+      const currentGeneration = /ref=s(\d+)e\d+/.exec(second)?.[1];
+
+      await assert.rejects(
+        () => page.locator(`aria-ref=${oldRef}`).getAttribute("data-id"),
+        new RegExp(
+          `Stale aria-ref, expected s${currentGeneration}e\\{number\\}, got ${oldRef}`,
+        ),
+      );
+    },
+  );
+});
+
+test("aria-ref generations stay isolated between target-bound Pages", async () => {
+  const nodes = [
+    axNode("root", "button", {
+      backendDOMNodeId: 61,
+      name: "Target",
+    }),
+  ];
+
+  await withAriaScenario(
+    {
+      rootId: "root",
+      rootRole: "button",
+      partialBackendDOMNodeId: 61,
+      nodes,
+      dom: domSnapshot([{ backendDOMNodeId: 61, nodeName: "BUTTON" }]),
+      attributeValue: "page-a",
+    },
+    async () => {
+      const page = helperContext().page;
+      const pageA = createTargetContext("page-a");
+      const pageB = createTargetContext("page-b");
+
+      assert.equal(
+        await runWithTarget(pageA, () =>
+          page.locator("#target").ariaSnapshot({ ref: true }),
+        ),
+        '- button "Target" [ref=s1e1]',
+      );
+      await runWithTarget(pageB, () =>
+        page.locator("#target").ariaSnapshot({ ref: true }),
+      );
+      await runWithTarget(pageB, () => page.locator("#target").ariaSnapshot());
+
+      assert.equal(
+        await runWithTarget(pageA, () =>
+          page.locator("aria-ref=s1e1").getAttribute("data-id"),
+        ),
+        "page-a",
+      );
+      await assert.rejects(
+        () =>
+          runWithTarget(pageB, () =>
+            page.locator("aria-ref=s1e1").getAttribute("data-id"),
+          ),
+        /Stale aria-ref, expected s2e\{number\}, got s1e1/,
+      );
+    },
+  );
+});
+
+test("aria-ref locator rejects malformed Playwright ref syntax", async () => {
+  await withAriaScenario({ rejectAriaRefCss: true }, async () => {
+    await assert.rejects(
+      () => helperContext().page.locator("aria-ref=e1").getAttribute("data-id"),
+      /Invalid aria-ref selector, should be of form s<number>e<number>/,
+    );
+  });
+});
+
+test("a detached aria-ref behaves like a missing locator", async () => {
+  const nodes = [
+    axNode("root", "button", {
+      backendDOMNodeId: 71,
+      name: "Target",
+    }),
+  ];
+
+  await withAriaScenario(
+    {
+      rootId: "root",
+      rootRole: "button",
+      partialBackendDOMNodeId: 71,
+      nodes,
+      dom: domSnapshot([{ backendDOMNodeId: 71, nodeName: "BUTTON" }]),
+      resolveNodeError: new Error("No node with given id found"),
+    },
+    async () => {
+      const page = helperContext().page;
+      const yaml = await page.locator("#target").ariaSnapshot({ ref: true });
+      const ref = /ref=(s\d+e\d+)/.exec(yaml)?.[1];
+      assert.ok(ref);
+
+      assert.equal(await page.locator(`aria-ref=${ref}`).isVisible(), false);
+      assert.equal(await page.locator(`aria-ref=${ref}`).count(), 0);
     },
   );
 });
@@ -1323,11 +1556,6 @@ test("ariaSnapshot validates options before sending CDP commands", async (t) => 
       name: "invalid ref",
       options: { ref: "yes" },
       pattern: /ref must be a boolean/,
-    },
-    {
-      name: "unsupported Playwright ref mode",
-      options: { ref: true },
-      pattern: /ref: true is not supported.*page\.snapshot/s,
     },
     {
       name: "unsupported ai mode",

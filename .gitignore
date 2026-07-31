@@ -82,3 +82,4 @@ test/
 !package/ego-browser/test/*.test.js
 # Local skill drafts and reference material
 skills/ego-browser/workbench/
+skills/ego-browser/SKILL.base.md

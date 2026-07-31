@@ -115,12 +115,130 @@ export async function reload(
   );
 }
 
+/**
+ * Navigate to the previous session-history entry.
+ * @param {{waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit", timeout?: number}} [options]
+ * @returns {Promise<object|null>} Main-document Response facade, or null when no previous entry exists.
+ */
+export async function goBack(options: GotoOptions = {}) {
+  return historyNavigation(-1, options, "page.goBack");
+}
+
+/**
+ * Navigate to the next session-history entry.
+ * @param {{waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit", timeout?: number}} [options]
+ * @returns {Promise<object|null>} Main-document Response facade, or null when no next entry exists.
+ */
+export async function goForward(options: GotoOptions = {}) {
+  return historyNavigation(1, options, "page.goForward");
+}
+
+async function historyNavigation(delta, options: GotoOptions, apiName) {
+  const timeout = navigationTimeout(options.timeout);
+  const deadline = timeoutDeadline(timeout, state.now());
+  const history = await cdp(
+    "Page.getNavigationHistory",
+    {},
+    undefined,
+    remaining(deadline),
+  );
+  const entry = history.entries?.[Number(history.currentIndex) + delta];
+  if (!entry) return null;
+  return navigateAndTrack(
+    (commandTimeout) =>
+      cdp(
+        "Page.navigateToHistoryEntry",
+        { entryId: entry.id },
+        undefined,
+        commandTimeout,
+      ),
+    { ...options, timeout: remaining(deadline) },
+    apiName,
+    undefined,
+    false,
+    true,
+  );
+}
+
+/**
+ * Return the full serialized HTML contents of the current document.
+ * @returns {Promise<string>}
+ */
+export async function content() {
+  return String(
+    await evaluate(`(() => {
+      const doctype = document.doctype;
+      let prefix = "";
+      if (doctype) {
+        prefix = "<!DOCTYPE " + doctype.name;
+        if (doctype.publicId) prefix += ' PUBLIC "' + doctype.publicId + '"';
+        if (doctype.systemId) prefix += (doctype.publicId ? ' "' : ' SYSTEM "') + doctype.systemId + '"';
+        prefix += ">";
+      }
+      return prefix + (document.documentElement?.outerHTML || "");
+    })()`),
+  );
+}
+
+/**
+ * Replace the current main-frame document contents.
+ * @param {string} html Document markup.
+ * @param {{waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit", timeout?: number}} [options]
+ * @returns {Promise<void>}
+ */
+export async function setContent(html: string, options: GotoOptions = {}) {
+  const waitUntil = normalizeWaitUntil("page.setContent", options.waitUntil);
+  const timeout = navigationTimeout(options.timeout);
+  const deadline = timeoutDeadline(timeout, state.now());
+  const sessionId = await ensureSession();
+  const frameId = await currentMainFrameId(sessionId, remaining(deadline));
+  if (!frameId)
+    throw new Error("page.setContent could not resolve the main frame");
+  const networkEvents =
+    waitUntil === "networkidle"
+      ? acquireNetworkEvents(sessionId, remaining(deadline))
+      : undefined;
+  const tracker =
+    waitUntil === "networkidle"
+      ? createNavigationTracker(sessionId, undefined, frameId)
+      : undefined;
+  try {
+    if (networkEvents) await networkEvents.ready;
+    tracker?.start();
+    await cdp(
+      "Page.setDocumentContent",
+      { frameId, html },
+      sessionId,
+      remaining(deadline),
+    );
+    if (waitUntil === "commit") return;
+    if (waitUntil === "networkidle") {
+      await tracker?.waitForNetworkIdle(
+        remaining(deadline),
+        timeout,
+        "page.setContent",
+      );
+      return;
+    }
+    const loaded = await waitForDocumentLoad({
+      timeout: remaining(deadline),
+      until: waitUntil === "domcontentloaded" ? "domcontentloaded" : "load",
+      requireCommitted: false,
+    });
+    if (!loaded) throw operationTimeout("page.setContent", timeout);
+  } finally {
+    tracker?.dispose();
+    await networkEvents?.release();
+  }
+}
+
 async function navigateAndTrack(
   invoke,
   options: GotoOptions,
   apiName,
   expectedUrl?,
   skipDocumentLifecycle = false,
+  allowNoResponseAfterCommit = false,
 ) {
   const waitUntil = normalizeWaitUntil(apiName, options.waitUntil);
   const timeout = navigationTimeout(options.timeout);
@@ -139,7 +257,7 @@ async function navigateAndTrack(
       navigation = await invoke(remaining(deadline));
     } catch (error) {
       if (
-        /CDP request timed out: Page\.(?:navigate|reload)/.test(
+        /CDP request timed out: Page\.(?:navigate|reload|navigateToHistoryEntry)/.test(
           error?.message || "",
         )
       ) {
@@ -157,7 +275,12 @@ async function navigateAndTrack(
       Boolean(expectedUrl && isImmediateNavigationUrl(expectedUrl));
     const response = immediateNavigation
       ? null
-      : await tracker.waitForResponse(remaining(deadline), timeout, apiName);
+      : await tracker.waitForResponse(
+          remaining(deadline),
+          timeout,
+          apiName,
+          allowNoResponseAfterCommit,
+        );
     if (
       waitUntil !== "commit" &&
       !navigation?.isDownload &&
@@ -196,6 +319,7 @@ function createNavigationTracker(sessionId, expectedUrl?, mainFrameId?) {
   let navigationResult: any = null;
   let started = false;
   let reloadLoaderId: string | null = null;
+  let committed = false;
 
   const onRequest = (event) => {
     if (!started) return;
@@ -252,11 +376,22 @@ function createNavigationTracker(sessionId, expectedUrl?, mainFrameId?) {
     inflight.delete(event?.params?.requestId);
     lastActivity = state.now();
   };
+  const onFrameNavigated = (event) => {
+    const frameId = event?.params?.frame?.id || event?.params?.frameId;
+    if (mainFrameId && frameId && frameId !== mainFrameId) return;
+    committed = true;
+  };
   const unsubscribe = [
     subscribeBrowserEvent("Network.requestWillBeSent", sessionId, onRequest),
     subscribeBrowserEvent("Network.responseReceived", sessionId, onResponse),
     subscribeBrowserEvent("Network.loadingFailed", sessionId, onFailure),
     subscribeBrowserEvent("Network.loadingFinished", sessionId, onFinished),
+    subscribeBrowserEvent("Page.frameNavigated", sessionId, onFrameNavigated),
+    subscribeBrowserEvent(
+      "Page.navigatedWithinDocument",
+      sessionId,
+      onFrameNavigated,
+    ),
   ];
   return {
     start() {
@@ -265,7 +400,12 @@ function createNavigationTracker(sessionId, expectedUrl?, mainFrameId?) {
     setNavigationResult(result) {
       navigationResult = result || {};
     },
-    async waitForResponse(available, originalTimeout, apiName) {
+    async waitForResponse(
+      available,
+      originalTimeout,
+      apiName,
+      allowNoResponseAfterCommit = false,
+    ) {
       if (navigationResult?.isDownload) return null;
       // Page.navigate omits loaderId for same-document navigations. Page.reload
       // has no loaderId in its command result, so its loader must arrive later
@@ -285,6 +425,7 @@ function createNavigationTracker(sessionId, expectedUrl?, mainFrameId?) {
             );
           }
         }
+        if (allowNoResponseAfterCommit && committed) return null;
         await state.sleep(20);
       }
       throw operationTimeout(apiName, originalTimeout);
