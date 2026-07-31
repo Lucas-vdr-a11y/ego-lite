@@ -19,7 +19,7 @@ htmlcov/
 venv/
 env/
 ENV/
-
+tmp/
 # Jupyter
 .ipynb_checkpoints/
 
