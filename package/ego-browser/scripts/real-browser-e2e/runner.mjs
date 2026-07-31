@@ -7,10 +7,12 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
+import { execFile } from "node:child_process";
 import { constants as fsConstants } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 
 import { e2eCases } from "./cases/index.mjs";
 import { egoSource } from "./ego-source.mjs";
@@ -21,9 +23,36 @@ const runnerDir = dirname(fileURLToPath(import.meta.url));
 const packageDir = join(runnerDir, "..", "..");
 const egoBrowserSdkPath = join(packageDir, "dist", "out", "index.js");
 const egoBrowserArgs = ["nodejs", "--sdk-path", egoBrowserSdkPath];
+const execFileAsync = promisify(execFile);
 const verboseCaseOutput =
   process.env.EGO_BROWSER_REAL_E2E_VERBOSE_CASE_OUTPUT === "1" ||
   process.env.EGO_BROWSER_REAL_E2E_VERBOSE_CASE_OUTPUT === "true";
+
+export function createCaseContext(context, keepTaskSpace) {
+  return { ...context, keepTaskSpace };
+}
+
+export function shouldRunE2eCase(testCase, onlyCases) {
+  return onlyCases.size > 0
+    ? onlyCases.has(testCase.name)
+    : testCase.optIn !== true;
+}
+
+export function browserProcessChanged(before, after) {
+  if (!before || !after || before.length === 0) return false;
+  return before.join(",") !== after.join(",");
+}
+
+export function missingCaseResultMessage(error) {
+  return (
+    "ego lite browser crashed, restarted, or disconnected before " +
+    `case-result.json was written (${error?.message || error})`
+  );
+}
+
+export function suitePassed(results) {
+  return results.every((result) => result.status !== "fail");
+}
 
 export async function runRealBrowserE2e() {
   const keepTaskSpace =
@@ -53,7 +82,7 @@ export async function runRealBrowserE2e() {
 
   let server;
   let tempDir;
-  let passed = false;
+  let summaryPrinted = false;
   const context = {};
   const caseResults = [];
 
@@ -125,11 +154,11 @@ export async function runRealBrowserE2e() {
   async function runEgoCase(name, body, timeoutMs = 45000, options = {}) {
     const visible = options.visible !== false;
     if (visible) console.log(`-- ${name}`);
-    const source = egoSource(body, {
-      ...context,
-      keepTaskSpace: keepTaskSpace && passed,
-    });
+    const source = egoSource(body, createCaseContext(context, keepTaskSpace));
     const startedAt = Date.now();
+    const processBefore = await egoLiteProcessIds();
+    let commandStdout = "";
+    let processAfter = null;
     await rm(caseResultPath(tempDir), { force: true });
     try {
       const { stdout } = await runCommand("ego-browser", egoBrowserArgs, {
@@ -139,10 +168,25 @@ export async function runRealBrowserE2e() {
         input: source,
         timeoutMs,
       });
+      commandStdout = stdout;
       const durationMs = Date.now() - startedAt;
       const caseResult = await readCaseResult(tempDir, stdout);
       if (!caseResult.ok) {
         const error = new Error(caseResult.error);
+        error.stdout = stdout;
+        throw error;
+      }
+      if (options.crashGraceMs > 0) {
+        await new Promise((resolve) =>
+          setTimeout(resolve, options.crashGraceMs),
+        );
+      }
+      processAfter = await egoLiteProcessIds();
+      if (browserProcessChanged(processBefore, processAfter)) {
+        const error = new Error(
+          browserDisconnectedMessage(name, processBefore, processAfter),
+        );
+        error.browserDisconnected = true;
         error.stdout = stdout;
         throw error;
       }
@@ -155,8 +199,19 @@ export async function runRealBrowserE2e() {
       }
     } catch (error) {
       const durationMs = Date.now() - startedAt;
-      const caseResult = await readCaseResult(tempDir, error?.stdout);
-      const message = caseResult.error || error?.message || String(error);
+      processAfter ??= await egoLiteProcessIds();
+      const disconnected =
+        error?.browserDisconnected ||
+        browserProcessChanged(processBefore, processAfter);
+      const caseResult = await readCaseResult(
+        tempDir,
+        error?.stdout || commandStdout,
+      );
+      const message = disconnected
+        ? browserDisconnectedMessage(name, processBefore, processAfter)
+        : !caseResult.ok
+          ? caseResult.error
+          : error?.message || String(error);
       const assertions = caseResult.assertions;
       recordResult(name, "fail", durationMs, assertions, message);
       if (visible) {
@@ -169,19 +224,20 @@ export async function runRealBrowserE2e() {
     }
   }
 
-  async function maybeRunEgoCase(name, body, timeoutMs = 45000) {
-    if (onlyCases.size > 0 && !onlyCases.has(name)) {
-      console.log(`-- ${name} (skipped)`);
-      recordResult(name, "skip", 0, 0);
+  async function maybeRunEgoCase(testCase, timeoutMs = 45000) {
+    if (!shouldRunE2eCase(testCase, onlyCases)) {
+      console.log(`-- ${testCase.name} (skipped)`);
+      recordResult(testCase.name, "skip", 0, 0);
       return;
     }
-    await runEgoCase(name, body, timeoutMs);
+    await runEgoCase(testCase.name, testCase.body(), timeoutMs, {
+      crashGraceMs: testCase.crashGraceMs,
+    });
   }
 
   async function cleanupTaskSpace() {
-    const beforeFails = caseResults.filter((r) => r.status === "fail").length;
     await runEgoCase(
-      "cleanup",
+      "task-space cleanup",
       `
         try {
           const result = await taskSpaces.complete(taskName, { keep: keepTaskSpace });
@@ -193,13 +249,8 @@ export async function runRealBrowserE2e() {
         }
       `,
       20000,
-      { visible: false },
+      { visible: false, crashGraceMs: 300 },
     );
-    // Remove cleanup result and any failures it produced
-    const cleanupResults = caseResults.filter((r) => r.name === "cleanup");
-    for (const r of cleanupResults) {
-      caseResults.splice(caseResults.indexOf(r), 1);
-    }
   }
 
   const totalStartedAt = Date.now();
@@ -261,19 +312,13 @@ export async function runRealBrowserE2e() {
     ) {
       context.skipCleanup = true;
       printSummary(caseResults, Date.now() - totalStartedAt);
+      summaryPrinted = true;
       process.exitCode = 1;
       return;
     }
 
     for (const testCase of e2eCases) {
-      await maybeRunEgoCase(testCase.name, testCase.body());
-    }
-
-    passed = caseResults.every((r) => r.status !== "fail");
-    printSummary(caseResults, Date.now() - totalStartedAt);
-
-    if (!passed) {
-      process.exitCode = 1;
+      await maybeRunEgoCase(testCase);
     }
   } catch (error) {
     console.error(error?.stack || error?.message || String(error));
@@ -281,7 +326,9 @@ export async function runRealBrowserE2e() {
   } finally {
     if (context.taskName && !context.skipCleanup) {
       await cleanupTaskSpace().catch((error) => {
-        console.error(`[cleanup] ${error?.message || error}`);
+        const message = error?.message || String(error);
+        recordResult("task-space cleanup", "fail", 0, 0, message);
+        console.error(`[task-space cleanup] ${message}`);
       });
     }
     if (server) {
@@ -290,7 +337,41 @@ export async function runRealBrowserE2e() {
     if (tempDir) {
       await rm(tempDir, { recursive: true, force: true });
     }
+    if (!summaryPrinted && caseResults.length > 0) {
+      printSummary(caseResults, Date.now() - totalStartedAt);
+      if (!suitePassed(caseResults)) process.exitCode = 1;
+    }
   }
+}
+
+async function egoLiteProcessIds() {
+  if (process.platform !== "darwin") return null;
+  try {
+    const { stdout } = await execFileAsync("/usr/bin/pgrep", [
+      "-x",
+      "ego lite",
+    ]);
+    return stdout
+      .split(/\s+/)
+      .map((value) => value.trim())
+      .filter(Boolean)
+      .sort();
+  } catch (error) {
+    return error?.code === 1 ? [] : null;
+  }
+}
+
+function browserDisconnectedMessage(name, before, after) {
+  return (
+    `ego lite browser crashed, restarted, or disconnected during ${name}; ` +
+    `process changed from ${formatProcessIds(before)} to ${formatProcessIds(after)}`
+  );
+}
+
+function formatProcessIds(processIds) {
+  if (processIds === null) return "unavailable";
+  if (processIds.length === 0) return "not running";
+  return processIds.join(",");
 }
 
 async function resolveExecutable(command) {
@@ -408,7 +489,7 @@ async function readCaseResult(tempDir, stdout) {
     return {
       ok: false,
       assertions: extractAssertionCount(stdout),
-      error: `case-result.json was not written or readable; ego-browser nodejs may have exited without executing stdin (${error?.message || error})`,
+      error: missingCaseResultMessage(error),
     };
   }
 }

@@ -34,6 +34,7 @@ import { playwrightPermissionCases } from "./playwright-permissions.mjs";
 import { damaiRushCase } from "./damai-rush.mjs";
 import { videoRecordingCase } from "./video-recording.mjs";
 import { ariaSnapshotCases } from "./aria-snapshot.mjs";
+import { nativeTaskSpaceCloseRegressionCase } from "./native-task-space-close-regression.mjs";
 
 export const e2eCases = [
   { name: "environment initialization", body: environmentCase },
@@ -74,4 +75,5 @@ export const e2eCases = [
   ...playwrightTargetCases,
   ...playwrightPermissionCases,
   ...ariaSnapshotCases,
+  nativeTaskSpaceCloseRegressionCase,
 ];

@@ -24,18 +24,20 @@ export function taskSpaceCase() {
     await taskSpaces.takeOver(taskName);
     await taskSpaces.waitForAgentControl(taskName, { interval: 100, timeout: 3_000 });
 
-    const scratch = await taskSpaces.new(taskName + " scratch");
-    assertEqual(scratch.name, taskName + " scratch", "taskSpaces.new creates a scratch space");
-    const scratchByName = await taskSpaces.switch(scratch.name);
-    assertEqual(scratchByName.id, scratch.id, "taskSpaces.new output can be selected by name");
-    const closed = await taskSpaces.complete(scratch.id, { keep: false });
-    assertEqual(closed.done, true, "taskSpaces.complete closes scratch task");
+    if (!keepTaskSpace) {
+      const scratch = await taskSpaces.new(taskName + " scratch");
+      assertEqual(scratch.name, taskName + " scratch", "taskSpaces.new creates a scratch space");
+      const scratchByName = await taskSpaces.switch(scratch.name);
+      assertEqual(scratchByName.id, scratch.id, "taskSpaces.new output can be selected by name");
+      const closed = await taskSpaces.complete(scratch.id, { keep: false });
+      assertEqual(closed.done, true, "taskSpaces.complete closes scratch task");
 
-    await assertRejects(
-      () => taskSpaces.complete(scratch.id, { keep: false }),
-      "task space not found",
-      "taskSpaces.complete reports already-closed task space"
-    );
+      await assertRejects(
+        () => taskSpaces.complete(scratch.id, { keep: false }),
+        "task space not found",
+        "taskSpaces.complete reports already-closed task space"
+      );
+    }
 
     await taskSpaces.switch(taskName);
     await assertRejects(

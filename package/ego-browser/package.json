@@ -10,6 +10,7 @@
     "clean": "rm -rf dist artifacts",
     "build": "node scripts/build.mjs",
     "e2e": "node scripts/run-real-browser-e2e.mjs",
+    "e2e:native-close": "EGO_BROWSER_REAL_E2E_ONLY='native task space close regression' node scripts/run-real-browser-e2e.mjs",
     "prepare": "if [ \"$CI\" = \"true\" ]; then exit 0; fi; cd ../.. && lefthook install",
     "style:check": "prettier --check",
     "typecheck": "tsc --noEmit",
