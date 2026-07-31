@@ -532,10 +532,7 @@ export async function learnContext(url = undefined) {
 
 function createLocator(selector, frameChain: string[] = []) {
   const target = locatorTarget(selector, frameChain);
-  return {
-    selector,
-    frameChain: [...frameChain],
-    target,
+  const facade = {
     first: () => createLocator(nthSelector(selector, 0), frameChain),
     last: () => createLocator(`internal:last;${selector}`, frameChain),
     nth: (index) => {
@@ -561,11 +558,16 @@ function createLocator(selector, frameChain: string[] = []) {
         }),
         frameChain,
       ),
-    locator: (child) =>
-      createLocator(
-        scopedSelector(selector, locatorSelector(child, frameChain)),
+    locator: (child, options: any = {}) => {
+      const scoped = scopedSelector(
+        selector,
+        locatorSelector(child, frameChain),
+      );
+      return createLocator(
+        locatorOptionsSelector(scoped, options, frameChain),
         frameChain,
-      ),
+      );
+    },
     getByRole: (role, options: any = {}) =>
       createLocator(
         scopedSelector(selector, roleSelector(role, options)),
@@ -685,13 +687,16 @@ function createLocator(selector, frameChain: string[] = []) {
       await waits.waitForSelector(target, options);
     },
   };
+  return defineInternalState(facade, {
+    selector,
+    frameChain: [...frameChain],
+    target,
+  });
 }
 
 function createFrameLocator(selector, parentFrameChain: string[] = []) {
   const frameChain = [...parentFrameChain, String(selector)];
-  return {
-    selector: String(selector),
-    frameChain,
+  const facade = {
     first: () =>
       createFrameLocator(nthSelector(String(selector), 0), parentFrameChain),
     last: () =>
@@ -707,8 +712,13 @@ function createFrameLocator(selector, parentFrameChain: string[] = []) {
       );
     },
     frameLocator: (child) => createFrameLocator(child, frameChain),
-    locator: (child) =>
-      createLocator(locatorSelector(child, frameChain), frameChain),
+    locator: (child, options: any = {}) => {
+      const childSelector = locatorSelector(child, frameChain);
+      return createLocator(
+        locatorOptionsSelector(childSelector, options, frameChain),
+        frameChain,
+      );
+    },
     getByRole: (role, options: any = {}) =>
       createLocator(roleSelector(role, options), frameChain),
     getByText: (text, options: any = {}) =>
@@ -723,6 +733,10 @@ function createFrameLocator(selector, parentFrameChain: string[] = []) {
       createLocator(textSelector("title", text, options), frameChain),
     getByTestId: (testId) => createLocator(testIdSelector(testId), frameChain),
   };
+  return defineInternalState(facade, {
+    selector: String(selector),
+    frameChain,
+  });
 }
 
 function nthSelector(selector, index) {
@@ -735,6 +749,16 @@ function internalSelector(kind, data) {
 
 function scopedSelector(base, child) {
   return internalSelector("scope", { base, child });
+}
+
+function defineInternalState(facade, values) {
+  for (const [name, value] of Object.entries(values)) {
+    Object.defineProperty(facade, name, {
+      value,
+      enumerable: false,
+    });
+  }
+  return facade;
 }
 
 function locatorSelector(value, expectedFrameChain?: string[]) {
@@ -765,6 +789,12 @@ function sameFrameChain(left: string[], right: string[]) {
 }
 
 function textSelector(prefix, text, options: any = {}) {
+  if (text instanceof RegExp) {
+    const value = encodeURIComponent(
+      JSON.stringify({ source: text.source, flags: text.flags }),
+    );
+    return `loc=${prefix}:regex:${value}`;
+  }
   const value = `${options.exact ? "exact:" : ""}${JSON.stringify(String(text))}`;
   return `loc=${prefix}:${value}`;
 }
@@ -821,6 +851,17 @@ function filterSelector(base, options: any = {}, frameChain?: string[]) {
   return internalSelector("filter", data);
 }
 
+function locatorOptionsSelector(
+  base,
+  options: any = {},
+  frameChain?: string[],
+) {
+  const keys = ["hasText", "hasNotText", "has", "hasNot"];
+  return keys.some((key) => Object.prototype.hasOwnProperty.call(options, key))
+    ? filterSelector(base, options, frameChain)
+    : base;
+}
+
 function textMatcher(value) {
   if (value instanceof RegExp) {
     return { regex: value.source, flags: value.flags };
@@ -860,7 +901,8 @@ function createPageFacade() {
     info: nav.pageInfo,
     url: async () => (await nav.pageInfo()).url,
     title: async () => (await nav.pageInfo()).title,
-    locator: createLocator,
+    locator: (selector, options: any = {}) =>
+      createLocator(locatorOptionsSelector(selector, options, [])),
     frameLocator: createFrameLocator,
     getByRole: (role, options: any = {}) => {
       return createLocator(roleSelector(role, options));
@@ -929,16 +971,14 @@ function mousePointArgs(x, y, options) {
   return [[x, y], options || {}];
 }
 
-function createBrowserFacade() {
+function createTabsFacade() {
   return {
-    listTabs: nav.listTabs,
-    currentTab: nav.currentTab,
-    switchTab: nav.switchTab,
-    openOrReuseTab: nav.openOrReuseTab,
-    closeTab: nav.closeTab,
-    ensureRealTab: nav.ensureRealTab,
-    iframeTarget: nav.iframeTarget,
-    evaluateInTab: (target, pageFunction, arg = undefined) =>
+    list: nav.listTabs,
+    current: nav.currentTab,
+    activate: nav.switchTab,
+    openOrReuse: nav.openOrReuseTab,
+    close: nav.closeTab,
+    evaluate: (target, pageFunction, arg = undefined) =>
       evaluateInTarget(
         typeof target === "string" ? target : target?.targetId,
         pageFunction,
@@ -975,8 +1015,7 @@ const FACADE_HELP: Record<string, string> = {
   page: "page: Playwright-style page facade. page.url() asynchronously returns the current URL; always call await page.url(). page.goto() and page.reload() return a main-document Response or null. Use page.setDefaultTimeout(ms), page.setDefaultNavigationTimeout(ms), locators, Playwright-style waits and supported page events, page.evaluate(fnOrExpression, arg), page.ariaSnapshot(options), page.screenshot(options) for a Buffer, page.saveScreenshot(options) for a path, page.screencast, page.keyboard, and page.mouse. waitForEvent, waitForRequest, and waitForResponse predicates may be async; waitForEvent also accepts AbortSignal cancellation. waitForURL predicates receive URL objects and waitUntil defaults to load. Wait timeouts throw TimeoutError.",
   locator:
     "page.locator(selector): returns a strict locator facade with locator(), getByRole(), getByText(), filter(), and(), or(), first(), nth(index), last(), actionability-aware click(), hover(), dragTo(), fill(), focus(), check(), setChecked(), selectOption(), file upload, state/collection reads, evaluation, Buffer screenshots, and waitFor({ state: 'visible'|'attached'|'hidden'|'detached' }). Narrow multiple matches; use first()/nth() only for confirmed legitimate duplicates.",
-  browser:
-    "browser: ego-browser tab facade. Use listTabs(), currentTab(), switchTab(target), openOrReuseTab(url, options), closeTab(target), and evaluateInTab(target, pageFunction, arg). Treat targetId as short-lived: obtain and validate it in the current script.",
+  tabs: "tabs: ego-browser tab facade. Use list(), current(), activate(target), openOrReuse(url, options), close(target), and evaluate(target, pageFunction, arg). Treat targetId as short-lived: obtain and validate it in the current script.",
   taskSpaces:
     "taskSpaces: task-space facade. Use taskSpaces.useOrCreate(nameOrId), taskSpaces.claim(nameOrId), taskSpaces.switch(nameOrId), taskSpaces.complete(nameOrId, options), taskSpaces.handOff(nameOrId), taskSpaces.takeOver(nameOrId), and taskSpaces.waitForAgentControl(nameOrId, options). waitForAgentControl interval and timeout use milliseconds.",
   site: "site: learned site-skill facade. Use site.skills(url), site.skillsForUrl(url), site.runTool(siteId, toolName, args), site.runBrowserTool(siteId, toolName, args), and site.learnContext(url).",
@@ -989,7 +1028,7 @@ const FACADE_HELP: Record<string, string> = {
 export function helperContext(extra: any = {}) {
   const all = {
     page: createPageFacade(),
-    browser: createBrowserFacade(),
+    tabs: createTabsFacade(),
     taskSpaces: createTaskSpacesFacade(),
     site: createSiteFacade(),
     fetch: {

@@ -93,26 +93,31 @@ export const pageEventCases = [
   {
     name: "page popup event helper",
     body: homeCase(`
-      const originalTab = await browser.currentTab();
-      const popupPromise = page.waitForEvent("popup", {
-        timeout: 5000,
-        predicate: (popup) => Boolean(popup.targetId),
-      });
-      await cdp("Runtime.evaluate", {
-        expression: "window.open(location.origin + '/secondary', '_blank')",
-        userGesture: true,
-        awaitPromise: false,
-      });
-      const popup = await popupPromise;
-      assert(popup.targetId, "popup exposes its target id");
-      await popup.bringToFront();
-      await page.waitForURL(
-        (url) => url.pathname === "/secondary",
-        { timeout: 5000, waitUntil: "load" }
-      );
-      assertIncludes(await page.url(), "/secondary", "popup bringToFront selects the popup");
-      assertIncludes(await popup.url(), "/secondary", "popup facade resolves its committed URL");
-      await browser.switchTab(originalTab.targetId);
+      const originalTab = await tabs.current();
+      let popup;
+      try {
+        const popupPromise = page.waitForEvent("popup", {
+          timeout: 5000,
+          predicate: (candidate) => Boolean(candidate.targetId),
+        });
+        await cdp("Runtime.evaluate", {
+          expression: "window.open(location.origin + '/secondary', '_blank')",
+          userGesture: true,
+          awaitPromise: false,
+        });
+        popup = await popupPromise;
+        assert(popup.targetId, "popup exposes its target id");
+        await popup.bringToFront();
+        await page.waitForURL(
+          (url) => url.pathname === "/secondary",
+          { timeout: 5000, waitUntil: "load" }
+        );
+        assertIncludes(await page.url(), "/secondary", "popup bringToFront selects the popup");
+        assertIncludes(await popup.url(), "/secondary", "popup facade resolves its committed URL");
+      } finally {
+        if (popup?.targetId) await tabs.close(popup.targetId);
+        await tabs.activate(originalTab);
+      }
     `),
   },
 ];

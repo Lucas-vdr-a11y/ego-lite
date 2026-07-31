@@ -17,6 +17,7 @@ import {
 
 export type AriaSnapshotOptions = {
   timeout?: number;
+  ref?: boolean;
   depth?: number;
   boxes?: boolean;
   mode?: "default" | "ai";
@@ -136,6 +137,14 @@ function validateOptions(
   }
   if (options.boxes !== undefined && typeof options.boxes !== "boolean") {
     throw new TypeError(`${apiName} boxes must be a boolean`);
+  }
+  if (options.ref !== undefined && typeof options.ref !== "boolean") {
+    throw new TypeError(`${apiName} ref must be a boolean`);
+  }
+  if (options.ref) {
+    throw new TypeError(
+      `${apiName} ref: true is not supported; use page.snapshot() for ego-browser @N refs`,
+    );
   }
   if (options.mode === "ai") {
     throw new TypeError(

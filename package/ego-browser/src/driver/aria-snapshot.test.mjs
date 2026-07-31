@@ -1320,6 +1320,16 @@ test("ariaSnapshot validates options before sending CDP commands", async (t) => 
       pattern: /boxes must be a boolean/,
     },
     {
+      name: "invalid ref",
+      options: { ref: "yes" },
+      pattern: /ref must be a boolean/,
+    },
+    {
+      name: "unsupported Playwright ref mode",
+      options: { ref: true },
+      pattern: /ref: true is not supported.*page\.snapshot/s,
+    },
+    {
       name: "unsupported ai mode",
       options: { mode: "ai" },
       pattern: /mode "ai" is not supported.*page\.snapshot/s,

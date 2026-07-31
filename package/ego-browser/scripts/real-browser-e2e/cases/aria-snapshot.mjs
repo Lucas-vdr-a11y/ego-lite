@@ -129,6 +129,11 @@ export const ariaSnapshotCases = [
         'mode "ai" is not supported',
         "AI mode reports the ego snapshot alternative"
       );
+      await assertRejects(
+        () => fixture.ariaSnapshot({ ref: true }),
+        "ref: true is not supported",
+        "Playwright 1.52 ref mode reports the ego snapshot alternative"
+      );
 
       const frameBody = page
         .frameLocator("#fixture-frame")

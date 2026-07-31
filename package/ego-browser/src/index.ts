@@ -215,6 +215,11 @@ function wrapReady(
       readyImmediately,
     );
   }
+  for (const key of Reflect.ownKeys(value)) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor || descriptor.enumerable) continue;
+    Object.defineProperty(wrapped, key, descriptor);
+  }
   return wrapped;
 }
 

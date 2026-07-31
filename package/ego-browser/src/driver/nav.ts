@@ -404,9 +404,9 @@ export async function currentTab() {
  * @returns {Promise<string>} Target id.
  */
 export async function switchTab(target: string | { targetId: string }) {
-  const targetId = targetIdFrom(target, "switchTab");
+  const targetId = targetIdFrom(target, "tabs.activate");
   const tabs = await listTabs();
-  currentTargetFrom(tabs, targetId, "switchTab");
+  currentTargetFrom(tabs, targetId, "tabs.activate");
   await cdp("Target.activateTarget", { targetId });
   invalidateSession();
   setPreferredTarget(targetId);
@@ -445,7 +445,7 @@ export async function openOrReuseTab(
       const timeout = options.timeout ?? navigationTimeout(undefined);
       const loaded = await waitForDocumentLoad({ timeout });
       if (!loaded) {
-        throw operationTimeout("browser.openOrReuseTab", timeout);
+        throw operationTimeout("tabs.openOrReuse", timeout);
       }
     }
     const settle = Number(options.settle ?? 0);
@@ -459,7 +459,7 @@ export async function openOrReuseTab(
     const timeout = options.timeout ?? navigationTimeout(undefined);
     const loaded = await waitForDocumentLoad({ timeout });
     if (!loaded) {
-      throw operationTimeout("browser.openOrReuseTab", timeout);
+      throw operationTimeout("tabs.openOrReuse", timeout);
     }
   }
   const settle = Number(options.settle ?? 0);
@@ -479,9 +479,9 @@ export async function closeTab(target: TabTarget | undefined = undefined) {
   const targetId =
     target === undefined
       ? (tabs.find((tab) => tab.active) || tabs[0])?.targetId
-      : targetIdFrom(target, "closeTab");
-  if (!targetId) throw new Error("closeTab requires a targetId");
-  currentTargetFrom(tabs, targetId, "closeTab");
+      : targetIdFrom(target, "tabs.close");
+  if (!targetId) throw new Error("tabs.close requires a targetId");
+  currentTargetFrom(tabs, targetId, "tabs.close");
   await cdp("Target.closeTarget", { targetId });
   invalidateSession();
   if (state.preferredTargetId === targetId) {
@@ -612,7 +612,7 @@ function currentTargetFrom(
   }));
   throw new Error(
     `${operation} target not found: ${JSON.stringify(targetId)}. ` +
-      `Refresh browser.listTabs() and select a current targetId. ` +
+      `Refresh tabs.list() and select a current targetId. ` +
       `Available tabs: ${JSON.stringify(available)}`,
   );
 }
@@ -624,7 +624,7 @@ async function waitForClosedTarget(targetId: string) {
     if (!tabs.some((tab) => tab.targetId === targetId)) return tabs;
     if (state.now() >= deadline) {
       throw new Error(
-        `closeTab timed out waiting for target to close: ${JSON.stringify(targetId)}`,
+        `tabs.close timed out waiting for target to close: ${JSON.stringify(targetId)}`,
       );
     }
     await state.sleep(50);

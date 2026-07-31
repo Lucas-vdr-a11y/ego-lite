@@ -11,7 +11,7 @@
 
 ## Navigation
 
-- Use `browser.openOrReuseTab` with `https://www.google.com/search?q=...`
+- Use `tabs.openOrReuse` with `https://www.google.com/search?q=...`
 - Results load immediately, no infinite scroll on first page
 - Pagination links at bottom: `a[href*="/search?q="]`
 

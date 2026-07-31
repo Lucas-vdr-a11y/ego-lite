@@ -478,7 +478,9 @@ function pageHtml(kind) {
           <button id="house-option-primary" type="button" role="option" aria-selected="false">House</button>
           <button id="house-option-secondary" type="button" role="option" aria-selected="false">House</button>
           <!-- Hidden responsive-variant dupe: visible to a naive DOM role scan, ignored by the AX tree. -->
-          <button id="house-option-hidden" type="button" role="option" aria-selected="false" style="display:none">House</button>
+          <div style="display:none">
+            <button id="house-option-hidden" type="button" role="option" aria-selected="false">House</button>
+          </div>
         </div>
       </div>
 

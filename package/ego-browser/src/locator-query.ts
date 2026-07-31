@@ -266,6 +266,20 @@ function hrefElementsExpression(href, rootExpression = "document") {
 }
 
 function parseTextLocator(raw) {
+  if (raw.startsWith("regex:")) {
+    try {
+      const value = JSON.parse(decodeURIComponent(raw.slice(6)));
+      if (
+        value &&
+        typeof value.source === "string" &&
+        typeof value.flags === "string"
+      ) {
+        return { regex: value.source, flags: value.flags };
+      }
+    } catch {
+      // Fall through and treat malformed input as literal text.
+    }
+  }
   if (raw.startsWith("exact:")) {
     return { text: parseLocatorString(raw.slice(6)), exact: true };
   }
@@ -311,15 +325,13 @@ function textElementsExpression(locator, rootExpression = "document") {
     rootExpression === "document"
       ? "document.querySelectorAll('body *')"
       : `${rootExpression}.querySelectorAll('*')`;
-  const match = textMatchExpression(
+  const match = textMatcherExpression(
     "el.innerText || el.textContent",
-    locator.text,
-    locator.exact,
+    locator,
   );
-  const childMatch = textMatchExpression(
+  const childMatch = textMatcherExpression(
     "child.innerText || child.textContent",
-    locator.text,
-    locator.exact,
+    locator,
   );
   return `Array.from(${query}).filter((el) => {
     if (!(${match})) return false;
@@ -328,21 +340,15 @@ function textElementsExpression(locator, rootExpression = "document") {
 }
 
 function labelElementsExpression(locator, rootExpression = "document") {
-  const labelMatch = textMatchExpression(
+  const labelMatch = textMatcherExpression(
     "label.innerText || label.textContent",
-    locator.text,
-    locator.exact,
+    locator,
   );
-  const ariaMatch = textMatchExpression(
+  const ariaMatch = textMatcherExpression(
     "el.getAttribute('aria-label')",
-    locator.text,
-    locator.exact,
+    locator,
   );
-  const labelledByMatch = textMatchExpression(
-    "labelledBy",
-    locator.text,
-    locator.exact,
-  );
+  const labelledByMatch = textMatcherExpression("labelledBy", locator);
   return `(() => {
     const controls = [];
     for (const label of ${querySelectorAllExpression(rootExpression, "label")}) {
@@ -368,10 +374,9 @@ function attributeElementsExpression(
   locator,
   rootExpression = "document",
 ) {
-  const match = textMatchExpression(
+  const match = textMatcherExpression(
     `el.getAttribute(${JSON.stringify(attribute)})`,
-    locator.text,
-    locator.exact,
+    locator,
   );
   return `${querySelectorAllExpression(rootExpression, selector)}.filter((el) => ${match})`;
 }
@@ -440,6 +445,9 @@ function roleElementsExpression(
       if (role !== ${JSON.stringify(locator.role)}) return false;
       if (!${JSON.stringify(Boolean(locator.includeHidden))}) {
         if (el.hidden || el.closest('[hidden], [aria-hidden="true"]')) return false;
+        for (let current = el; current; current = current.parentElement) {
+          if (getComputedStyle(current).display === 'none') return false;
+        }
         const style = getComputedStyle(el);
         if (style.display === 'none' || style.visibility === 'hidden') return false;
       }

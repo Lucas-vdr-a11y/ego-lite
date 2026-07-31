@@ -2,11 +2,10 @@ import { caseBody } from "./shared.mjs";
 
 export const damaiRushCase = caseBody(`
   await closeFixtureTabs();
-  const tab = await browser.openOrReuseTab(baseUrl + "/e2e/damai-rush/", {
+  await tabs.openOrReuse(baseUrl + "/e2e/damai-rush/", {
     wait: true,
     timeout: 10000,
   });
-  await browser.switchTab(tab.targetId);
   await setStableViewport();
 
   assertEqual(

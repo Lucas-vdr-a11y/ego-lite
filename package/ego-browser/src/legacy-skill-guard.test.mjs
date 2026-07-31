@@ -27,6 +27,7 @@ test("legacy skill guards cover only the removed task-space global surface", () 
   );
 
   const target = {
+    browser: { listTabs() {} },
     click() {},
     siteSkills() {},
   };
@@ -37,6 +38,7 @@ test("legacy skill guards cover only the removed task-space global surface", () 
   installLegacySkillGuards(target);
 
   assert.equal(target.click, undefined);
+  assert.equal(target.browser, undefined);
   assert.equal(target.siteSkills, undefined);
   for (const [legacyHelper, replacement] of Object.entries(
     EXPECTED_TASK_SPACE_REPLACEMENTS,

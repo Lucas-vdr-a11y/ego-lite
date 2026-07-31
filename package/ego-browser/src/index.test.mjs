@@ -6,10 +6,16 @@ import { resetSink } from "../dist/src/output-sink.js";
 
 test("installEgoSdk keeps page.locator chainable while wrapping locator methods", () => {
   const originalLog = console.log;
-  const target = { click() {}, useOrCreateTaskSpace() {} };
+  const target = {
+    browser: { listTabs() {} },
+    click() {},
+    useOrCreateTaskSpace() {},
+  };
   try {
     installEgoSdk(target, { cliLog() {} });
     assert.equal(typeof target.click, "undefined");
+    assert.equal(typeof target.browser, "undefined");
+    assert.equal(typeof target.tabs.openOrReuse, "function");
     assert.equal(typeof target.useOrCreateTaskSpace, "function");
     assert.equal(
       Object.prototype.propertyIsEnumerable.call(
@@ -40,9 +46,11 @@ test("installEgoSdk keeps page.locator chainable while wrapping locator methods"
     const frameLocator = target.page.frameLocator("#checkout-frame");
     assert.equal(frameLocator && typeof frameLocator, "object");
     assert.deepEqual(frameLocator.frameChain, ["#checkout-frame"]);
+    assert.ok(!Object.keys(frameLocator).includes("frameChain"));
     assert.equal(typeof frameLocator.locator("#card-number").fill, "function");
     const framedField = frameLocator.locator("#card-number");
     assert.deepEqual(framedField.target.frameChain, ["#checkout-frame"]);
+    assert.ok(!Object.keys(framedField).includes("target"));
     assert.equal(
       typeof framedField.and(frameLocator.locator("[required]")).fill,
       "function",

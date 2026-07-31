@@ -1,4 +1,10 @@
-import { PUBLIC_API_DOCS, type FunctionDoc } from "./format.js";
+import {
+  PLAYWRIGHT_COMPATIBILITY_BASELINE,
+  PUBLIC_API_DOCS,
+  playwrightCompatibilitySummary,
+  type CompatibilityStatus,
+  type FunctionDoc,
+} from "./format.js";
 
 type ParamInfo = {
   name: string;
@@ -17,6 +23,10 @@ type HelperDoc = {
   returns: string | null;
   async: boolean;
   example?: string;
+  compatibility?: {
+    baseline: string;
+    status: CompatibilityStatus;
+  };
 };
 
 const PUBLIC_HELP_ALIASES: Record<string, string> = {
@@ -71,6 +81,11 @@ export function formatHelp(doc: HelperDoc): string {
   if (doc.example) {
     lines.push(`@example ${doc.example}`);
   }
+  if (doc.compatibility) {
+    lines.push(
+      `@compatibility playwright@${doc.compatibility.baseline} ${doc.compatibility.status}`,
+    );
+  }
   lines.push("");
   lines.push(doc.signature);
   return lines.join("\n");
@@ -81,6 +96,9 @@ function resolveHelpName(
   embeddedDocs: Map<string, HelperDoc>,
   requestedName: string,
 ): HelperDoc | string {
+  if (requestedName === "compat") {
+    return playwrightCompatibilitySummary();
+  }
   const name = PUBLIC_HELP_ALIASES[requestedName] || requestedName;
   const publicDoc = PUBLIC_API_DOCS[name];
   if (publicDoc) {
@@ -140,6 +158,14 @@ function publicDocToHelperDoc(name: string, doc: FunctionDoc): HelperDoc {
     returns: doc.returns || null,
     async: /(?:^|[<(])Promise(?:<|[>)]|$)/.test(doc.signature),
     ...(doc.example ? { example: doc.example } : {}),
+    ...(doc.compatibility
+      ? {
+          compatibility: {
+            baseline: PLAYWRIGHT_COMPATIBILITY_BASELINE,
+            status: doc.compatibility.status,
+          },
+        }
+      : {}),
   };
 }
 

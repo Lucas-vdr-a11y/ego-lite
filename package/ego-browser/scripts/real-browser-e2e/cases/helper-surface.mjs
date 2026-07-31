@@ -34,9 +34,12 @@ export function helperSurfaceCase() {
     assertEqual(typeof page.getByPlaceholder("Type text").fill, "function", "getByPlaceholder returns a locator");
     assertEqual(typeof page.getByAltText("Ego fixture logo").count, "function", "getByAltText returns a locator");
     assertEqual(typeof page.getByTitle("Counter button").click, "function", "getByTitle returns a locator");
-    assertEqual(typeof globalThis.browser, "object", "browser facade is installed");
-    assertEqual(typeof browser.openOrReuseTab, "function", "browser.openOrReuseTab is installed");
-    assertEqual(typeof browser.closeTab, "function", "browser.closeTab is installed");
+    assertEqual(typeof globalThis.tabs, "object", "tabs facade is installed");
+    assertEqual(typeof tabs.openOrReuse, "function", "tabs.openOrReuse is installed");
+    assertEqual(typeof tabs.close, "function", "tabs.close is installed");
+    assertEqual(typeof tabs.ensureRealTab, "undefined", "internal ensureRealTab is not exposed");
+    assertEqual(typeof tabs.iframeTarget, "undefined", "internal iframeTarget is not exposed");
+    assertEqual(typeof globalThis.browser, "undefined", "Playwright Browser is not emulated");
     assertEqual(typeof globalThis.taskSpaces, "object", "taskSpaces facade is installed");
     assertEqual(typeof taskSpaces.useOrCreate, "function", "taskSpaces.useOrCreate is installed");
     assertEqual(typeof taskSpaces.claim, "function", "taskSpaces.claim is installed");
@@ -63,13 +66,18 @@ export function helperSurfaceCase() {
     assertEqual(await page.getByAltText("Ego fixture logo").count(), 1, "getByAltText finds the image");
     assertEqual(await page.getByTitle("Counter button").count(), 1, "getByTitle finds titled elements");
     // Role-locator match-set consistency (the Redfin "Locator miss" regression).
-    // The listbox holds two visible "House" options plus one display:none dupe.
+    // The listbox holds two visible "House" options plus one inside a display:none ancestor.
     // A DOM role scan counts all three (no visibility filtering); the AX tree
     // ignores the hidden one. count()/nth()/click() must all agree on the same
     // AX set, otherwise "read count, act on the last index" targets past the end.
     const houseOptions = page.getByRole("option", { name: "House" });
     const houseCount = await houseOptions.count();
-    assertEqual(houseCount, 2, "count() reports only AX-actionable options (display:none dupe excluded)");
+    assertEqual(houseCount, 2, "count() excludes an option under a display:none ancestor");
+    assertEqual(
+      await page.getByRole("option", { name: "House", includeHidden: true }).count(),
+      3,
+      "includeHidden keeps the option under a display:none ancestor"
+    );
     assertEqual(await houseOptions.nth(houseCount - 1).innerText(), "House", "nth reads from the same AX match set count() used");
     await houseOptions.nth(houseCount - 1).click();
     assertEqual(

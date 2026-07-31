@@ -5,12 +5,28 @@ export type FunctionParamDoc = {
   description?: string;
 };
 
+export const PLAYWRIGHT_COMPATIBILITY_BASELINE = "1.52.0";
+
+export type CompatibilityStatus =
+  | "exact"
+  | "superset"
+  | "subset"
+  | "ego-extension"
+  | "deprecated"
+  | "internal";
+
+export type CompatibilityDoc = {
+  baseline: typeof PLAYWRIGHT_COMPATIBILITY_BASELINE;
+  status: CompatibilityStatus;
+};
+
 export type FunctionDoc = {
   signature: string;
   description: string;
   params?: FunctionParamDoc[];
   returns?: string;
   example?: string;
+  compatibility?: CompatibilityDoc;
 };
 
 function conciseDoc(
@@ -111,7 +127,7 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
     example: "console.log(await page.title())",
   },
   "page.locator": {
-    signature: "page.locator(selector) => Locator",
+    signature: "page.locator(selector, options?) => Locator",
     description:
       "Create a locator for CSS, XPath, text, loc=..., or @ref selectors.",
     params: [
@@ -121,6 +137,11 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
         required: true,
         description:
           "CSS selector, xpath=..., text=..., loc=..., or @N snapshot ref.",
+      },
+      {
+        name: "options",
+        type: "{ has?: Locator, hasNot?: Locator, hasText?: string | RegExp, hasNotText?: string | RegExp }",
+        description: "Playwright locator filtering options.",
       },
     ],
     returns: "Locator",
@@ -168,7 +189,7 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
     params: [
       {
         name: "text",
-        type: "string",
+        type: "string | RegExp",
         required: true,
         description: "Text to match.",
       },
@@ -187,7 +208,7 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
     params: [
       {
         name: "text",
-        type: "string",
+        type: "string | RegExp",
         required: true,
         description: "Label text.",
       },
@@ -206,7 +227,7 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
     params: [
       {
         name: "text",
-        type: "string",
+        type: "string | RegExp",
         required: true,
         description: "Placeholder text.",
       },
@@ -225,7 +246,7 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
     params: [
       {
         name: "text",
-        type: "string",
+        type: "string | RegExp",
         required: true,
         description: "Alt text.",
       },
@@ -244,7 +265,7 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
     params: [
       {
         name: "text",
-        type: "string",
+        type: "string | RegExp",
         required: true,
         description: "Title text.",
       },
@@ -258,7 +279,7 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
     example: "await page.getByTitle('More').click()",
   },
   "page.getByTestId": conciseDoc(
-    "page.getByTestId(testId) => Locator",
+    "page.getByTestId(testId: string | RegExp) => Locator",
     "Create a locator by the data-testid attribute.",
     "Locator",
     "await page.getByTestId('save-button').click()",
@@ -434,9 +455,9 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
       },
     ],
     returns:
-      "Promise<ConsoleMessage|Dialog|Download|FileChooser|Error|Popup|Request>. Facades expose their Playwright-style subset; Popup includes targetId and bringToFront().",
+      "Promise<ConsoleMessage|Dialog|Download|FileChooser|Error|Popup|Request>. Facades expose their Playwright-style subset; Popup includes targetId and bringToFront() and does not require tabs.list() in the same execution round.",
     example:
-      "const popupPromise = page.waitForEvent('popup', { predicate: p => p.targetId, timeout: 5000 }); await page.getByText('Open').click(); const popup = await popupPromise",
+      "const popupPromise = page.waitForEvent('popup', { predicate: p => p.targetId, timeout: 5000 }); await page.getByText('Open').click(); const popup = await popupPromise; await popup.bringToFront()",
   },
   "page.evaluate": {
     signature: "page.evaluate(pageFunction, arg?) => Promise<any>",
@@ -743,8 +764,8 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
     "FrameLocator",
   ),
   "frameLocator.locator": conciseDoc(
-    "frameLocator.locator(selector) => Locator",
-    "Create an element locator inside the frame document.",
+    "frameLocator.locator(selectorOrLocator, options?) => Locator",
+    "Create a filtered element locator inside the frame document.",
     "Locator",
   ),
   "frameLocator.getByRole": conciseDoc(
@@ -753,32 +774,32 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
     "Locator",
   ),
   "frameLocator.getByText": conciseDoc(
-    "frameLocator.getByText(text, options?) => Locator",
+    "frameLocator.getByText(text: string | RegExp, options?) => Locator",
     "Create a visible-text locator inside the frame document.",
     "Locator",
   ),
   "frameLocator.getByLabel": conciseDoc(
-    "frameLocator.getByLabel(text, options?) => Locator",
+    "frameLocator.getByLabel(text: string | RegExp, options?) => Locator",
     "Create a label locator inside the frame document.",
     "Locator",
   ),
   "frameLocator.getByPlaceholder": conciseDoc(
-    "frameLocator.getByPlaceholder(text, options?) => Locator",
+    "frameLocator.getByPlaceholder(text: string | RegExp, options?) => Locator",
     "Create a placeholder locator inside the frame document.",
     "Locator",
   ),
   "frameLocator.getByAltText": conciseDoc(
-    "frameLocator.getByAltText(text, options?) => Locator",
+    "frameLocator.getByAltText(text: string | RegExp, options?) => Locator",
     "Create an alt-text locator inside the frame document.",
     "Locator",
   ),
   "frameLocator.getByTitle": conciseDoc(
-    "frameLocator.getByTitle(text, options?) => Locator",
+    "frameLocator.getByTitle(text: string | RegExp, options?) => Locator",
     "Create a title locator inside the frame document.",
     "Locator",
   ),
   "frameLocator.getByTestId": conciseDoc(
-    "frameLocator.getByTestId(testId) => Locator",
+    "frameLocator.getByTestId(testId: string | RegExp) => Locator",
     "Create a data-testid locator inside the frame document.",
     "Locator",
   ),
@@ -808,8 +829,8 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
     "Locator",
   ),
   "locator.locator": conciseDoc(
-    "locator.locator(selector) => Locator",
-    "Create a descendant locator scoped to the current locator.",
+    "locator.locator(selectorOrLocator, options?) => Locator",
+    "Create a filtered descendant locator scoped to the current locator.",
     "Locator",
   ),
   "locator.getByRole": conciseDoc(
@@ -818,32 +839,32 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
     "Locator",
   ),
   "locator.getByText": conciseDoc(
-    "locator.getByText(text, options?) => Locator",
+    "locator.getByText(text: string | RegExp, options?) => Locator",
     "Create a descendant locator by visible text.",
     "Locator",
   ),
   "locator.getByLabel": conciseDoc(
-    "locator.getByLabel(text, options?) => Locator",
+    "locator.getByLabel(text: string | RegExp, options?) => Locator",
     "Create a descendant form-control locator by label.",
     "Locator",
   ),
   "locator.getByPlaceholder": conciseDoc(
-    "locator.getByPlaceholder(text, options?) => Locator",
+    "locator.getByPlaceholder(text: string | RegExp, options?) => Locator",
     "Create a descendant locator by placeholder.",
     "Locator",
   ),
   "locator.getByAltText": conciseDoc(
-    "locator.getByAltText(text, options?) => Locator",
+    "locator.getByAltText(text: string | RegExp, options?) => Locator",
     "Create a descendant locator by image alt text.",
     "Locator",
   ),
   "locator.getByTitle": conciseDoc(
-    "locator.getByTitle(text, options?) => Locator",
+    "locator.getByTitle(text: string | RegExp, options?) => Locator",
     "Create a descendant locator by title.",
     "Locator",
   ),
   "locator.getByTestId": conciseDoc(
-    "locator.getByTestId(testId) => Locator",
+    "locator.getByTestId(testId: string | RegExp) => Locator",
     "Create a descendant locator by data-testid.",
     "Locator",
   ),
@@ -1009,9 +1030,9 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
     params: [
       {
         name: "options",
-        type: "{ timeout?: number, depth?: number, boxes?: boolean, mode?: 'default', signal?: AbortSignal }",
+        type: "{ timeout?: number, ref?: boolean, depth?: number, boxes?: boolean, mode?: 'default', signal?: AbortSignal }",
         description:
-          "Capture timeout, maximum depth, main-viewport boxes, default mode, and cancellation signal. mode: 'ai' is not supported; use page.snapshot() for ego refs.",
+          "Capture timeout, maximum depth, main-viewport boxes, default mode, and cancellation signal. Playwright 1.52 ref: true and mode: 'ai' are not supported; use page.snapshot() for ego refs.",
       },
     ],
     returns: "Promise<string>",
@@ -1047,8 +1068,8 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
     "Wait for attached, detached, visible, or hidden state.",
     "Promise<void>",
   ),
-  "browser.listTabs": {
-    signature: "browser.listTabs(options?) => Promise<object[]>",
+  "tabs.list": {
+    signature: "tabs.list(options?) => Promise<object[]>",
     description: "List tabs in the current task space.",
     params: [
       {
@@ -1059,16 +1080,16 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
       },
     ],
     returns: "Promise<object[]>",
-    example: "console.log(await browser.listTabs())",
+    example: "console.log(await tabs.list())",
   },
-  "browser.currentTab": {
-    signature: "browser.currentTab() => Promise<object>",
+  "tabs.current": {
+    signature: "tabs.current() => Promise<object>",
     description: "Return the current selected tab.",
     returns: "Promise<object>",
-    example: "console.log(await browser.currentTab())",
+    example: "console.log(await tabs.current())",
   },
-  "browser.switchTab": {
-    signature: "browser.switchTab(target) => Promise<string>",
+  "tabs.activate": {
+    signature: "tabs.activate(target) => Promise<string>",
     description:
       "Refresh the current tab list, validate a target id/tab object, then switch to that tab.",
     params: [
@@ -1081,10 +1102,10 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
     ],
     returns: "Promise<string>",
     example:
-      "const tab = (await browser.listTabs()).find(t => t.url.includes('/docs')); if (!tab) throw new Error('docs tab not found'); await browser.switchTab(tab.targetId)",
+      "const tab = (await tabs.list()).find(t => t.url.includes('/docs')); if (!tab) throw new Error('docs tab not found'); await tabs.activate(tab)",
   },
-  "browser.openOrReuseTab": {
-    signature: "browser.openOrReuseTab(url, options?) => Promise<object>",
+  "tabs.openOrReuse": {
+    signature: "tabs.openOrReuse(url, options?) => Promise<object>",
     description: "Open a URL in a new or reusable tab, then select it.",
     params: [
       {
@@ -1101,10 +1122,10 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
     ],
     returns: "Promise<object>",
     example:
-      "await browser.openOrReuseTab('https://example.com', { wait: true, timeout: 20000 })",
+      "await tabs.openOrReuse('https://example.com', { wait: true, timeout: 20000 })",
   },
-  "browser.closeTab": {
-    signature: "browser.closeTab(target?) => Promise<string>",
+  "tabs.close": {
+    signature: "tabs.close(target?) => Promise<string>",
     description:
       "Refresh the current tab list, validate, and close a tab by target id/object, or close the current tab when omitted.",
     params: [
@@ -1115,31 +1136,10 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
       },
     ],
     returns: "Promise<string>",
-    example: "await browser.closeTab()",
+    example: "await tabs.close()",
   },
-  "browser.ensureRealTab": {
-    signature: "browser.ensureRealTab() => Promise<object | null>",
-    description: "Switch to an existing non-internal page tab if one exists.",
-    returns: "Promise<object | null>",
-    example: "await browser.ensureRealTab()",
-  },
-  "browser.iframeTarget": {
-    signature: "browser.iframeTarget(urlSubstring) => Promise<string | null>",
-    description:
-      "Return the unique target id of an iframe under the current tab whose URL contains a substring; return null when none match and reject ambiguous matches.",
-    params: [
-      {
-        name: "urlSubstring",
-        type: "string",
-        required: true,
-        description: "URL substring.",
-      },
-    ],
-    returns: "Promise<string | null>",
-    example: "console.log(await browser.iframeTarget('/embedded/'))",
-  },
-  "browser.evaluateInTab": conciseDoc(
-    "browser.evaluateInTab(target, pageFunction, arg?) => Promise<any>",
+  "tabs.evaluate": conciseDoc(
+    "tabs.evaluate(target, pageFunction, arg?) => Promise<any>",
     "Evaluate browser-side JavaScript in an explicit target id or tab object without changing page.evaluate argument semantics.",
     "Promise<any>",
   ),
@@ -1467,6 +1467,64 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
     example: "console.log(help('page.mouse.move'))",
   },
 };
+
+const EGO_EXTENSION_PATHS = new Set([
+  "page.info",
+  "page.saveScreenshot",
+  "page.snapshot",
+  "page.ariaSnapshot",
+  "page.snapshotRaw",
+  "page.elementCenter",
+  "page.drainEvents",
+  "page.screencast.start",
+  "page.screencast.stop",
+  "page.mouse.drag",
+]);
+
+for (const [path, doc] of Object.entries(PUBLIC_API_DOCS)) {
+  doc.compatibility = {
+    baseline: PLAYWRIGHT_COMPATIBILITY_BASELINE,
+    status: compatibilityStatus(path),
+  };
+}
+
+export function playwrightCompatibilitySummary() {
+  const counts = new Map<CompatibilityStatus, number>();
+  for (const doc of Object.values(PUBLIC_API_DOCS)) {
+    const status = doc.compatibility?.status;
+    if (status) counts.set(status, (counts.get(status) || 0) + 1);
+  }
+  const orderedStatuses: CompatibilityStatus[] = [
+    "exact",
+    "superset",
+    "subset",
+    "ego-extension",
+    "deprecated",
+    "internal",
+  ];
+  return [
+    `Playwright compatibility baseline: ${PLAYWRIGHT_COMPATIBILITY_BASELINE}`,
+    "Statuses: exact, superset, subset, ego-extension, deprecated, internal.",
+    ...orderedStatuses
+      .filter((status) => counts.has(status))
+      .map((status) => `${status}: ${counts.get(status)}`),
+  ].join("\n");
+}
+
+function compatibilityStatus(path: string): CompatibilityStatus {
+  if (
+    EGO_EXTENSION_PATHS.has(path) ||
+    /^(tabs|taskSpaces|site|fetch)\./.test(path) ||
+    path === "cdp" ||
+    path === "help"
+  ) {
+    return "ego-extension";
+  }
+  if (/^frameLocator\.(first|last|nth)$/.test(path)) {
+    return "deprecated";
+  }
+  return "subset";
+}
 
 export function formatCliLogValue(value: unknown) {
   if (typeof value === "string") {

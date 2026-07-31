@@ -15,7 +15,9 @@ ego-browser is a Chromium-based browser. It provides an `ego-browser nodejs` ent
 Scripts receive two categories of preloaded APIs:
 
 - **Playwright subset**: centered on `page` and locators, including semantic location, page actions, waits, screenshots, evaluate, keyboard, and mouse. See §4 for the remaining differences from full Playwright.
-- **ego-browser-specific APIs**: `browser`, `taskSpaces`, `site`, `fetch`, `cdp`, `help`, and `page` extensions such as snapshot. See §5.
+- **ego-browser-specific APIs**: `tabs`, `taskSpaces`, `site`, `fetch`, `cdp`, `help`, and `page` extensions such as snapshot. See §5.
+
+The Playwright-shaped surface targets `playwright@1.52.0`. Same-named APIs follow that version unless §4 documents a difference; use `help(path)` when an exact signature, option, return value, or compatibility status matters.
 
 The Playwright-shaped surface is meant to be used directly. For ordinary page and locator work, rely on familiar Playwright methods and the needs of the task instead of querying help before every call. When a familiar call fails, a less common capability is needed, or an exact signature, option, or return value matters, query the current runtime by namespace or public path:
 
@@ -57,13 +59,7 @@ ego-browser nodejs <<'EOF'
 const task = await taskSpaces.useOrCreate('inspect example page')
 console.log({ taskSpaceId: task.id })
 
-await browser.openOrReuseTab('https://example.com', { wait: true, timeout: 20000 })
-
-const heading = page.getByRole('heading', { name: 'Example Domain' })
-console.log({
-  heading: await heading.innerText(),
-  url: await page.url(),
-})
+await tabs.openOrReuse('https://example.com', { wait: true, timeout: 20000 })
 console.log(await page.snapshot())
 EOF
 ```
@@ -74,9 +70,9 @@ Use “establish context → observe → choose a path → act → verify” as 
 
 ### 3.1 Establish context
 
-Use one task space for one user goal. In the first round, call `taskSpaces.useOrCreate(shortGoalName)`, immediately print the returned numeric `task.id`, and then begin page operations. In every later working Bash round, use that ID to call `await taskSpaces.switch(taskId)` before any `page` or `browser` operation; failure recovery, retries, and follow-up work for the same goal use the same ID. `switch` selects an existing space and does not create one.
+Use one task space for one user goal. In the first round, call `taskSpaces.useOrCreate(shortGoalName)`, immediately print the returned numeric `task.id`, and then begin page operations. In every later working Bash round, use that ID to call `await taskSpaces.switch(taskId)` before any `page` or `tabs` operation; failure recovery, retries, and follow-up work for the same goal use the same ID. `switch` selects an existing space and does not create one.
 
-When the user refers to the current page, an open page, or a particular tab, use `browser.currentTab()` / `browser.listTabs()` to find and reuse it. When the target URL needs to be opened, use `browser.openOrReuseTab(...)`.
+For the active tab, use `page` directly. Use `tabs` only to discover, activate, or close another tab, or to evaluate in an explicit tab. Navigate the active page with `page.goto(...)`; use `tabs.openOrReuse(...)` only when the task specifically needs to reuse a matching tab or open another one.
 
 If `task.id` is lost, use `taskSpaces.list()` to identify the original space unambiguously, then call `taskSpaces.switch(id)`. If the result is ambiguous or the space no longer exists, stop and ask the user; do not create a replacement space.
 
@@ -113,7 +109,7 @@ Within one heredoc, base subsequent decisions on locators, URLs, or other state 
 
 For “today”, “current”, or “latest” tasks, establish the current time and the task time range before collecting data, then keep that range fixed throughout the task. Treat newly encountered dates on the page as record data.
 
-`targetId` is a short-lived handle. Obtain and validate it with `browser.listTabs()` in the current Bash invocation and use it there. Fetch it again in a new execution round.
+`targetId` is a short-lived handle. For an existing tab, obtain and validate it with `tabs.list()` in the current Bash invocation and fetch it again in a new execution round. Pass the returned tab object directly to `tabs.activate(tab)` / `tabs.close(tab)` when possible. A `Popup` returned by `page.waitForEvent("popup")` already carries the current round's target; call `popup.bringToFront()` and do not rediscover it with `tabs.list()`.
 
 ## 4. Playwright subset and remaining differences
 
@@ -121,21 +117,22 @@ The Playwright subset is concentrated in `page`, locators including `page.frameL
 
 The table lists only remaining differences in same-named APIs that affect how they are called:
 
-| Difference                                            | ego-browser behavior                                                                                                                                                                                         |
-| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `page.url()`                                          | It is asynchronous; call it as `await page.url()`.                                                                                                                                                           |
-| `page.waitForURL(...)` matcher                        | Accepts a string, `RegExp`, or synchronous predicate that receives a `URL`; it does not support `URLPattern`.                                                                                                |
-| `page.waitForEvent(...)` events                       | Supports `console`, `dialog`, `download`, `filechooser`, `pageerror`, `popup`, and `requestfailed`.                                                                                                          |
-| `page.evaluate(fnOrExpression, arg)` argument         | Functions and string expressions are both supported. The second argument accepts serializable values but does not accept mixed-in Playwright `JSHandle` values.                                              |
-| `page.ariaSnapshot()` / `locator.ariaSnapshot()` mode | Supports Playwright default-mode YAML plus `timeout`, `depth`, `boxes`, and `signal`, including frame-scoped locators. `mode: "ai"` is not supported; use `page.snapshot()` for ego-browser `@N` refs.       |
-| `page.screenshot(options)` options                    | Returning a `Buffer` and writing a file when `path` is supplied match Playwright. Supported options are `path`, `type`, `quality`, `fullPage`, `clip`, `omitBackground`, `animations`, `caret`, and `style`. |
+| Difference                                    | ego-browser behavior                                                                                                                                                                                                              |
+| --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `page.url()`                                  | It is asynchronous; call it as `await page.url()`.                                                                                                                                                                                |
+| `page.waitForURL(...)` matcher                | Accepts a string, `RegExp`, or synchronous predicate that receives a `URL`; it does not support `URLPattern`.                                                                                                                     |
+| `page.waitForEvent(...)` events               | Supports `console`, `dialog`, `download`, `filechooser`, `pageerror`, `popup`, and `requestfailed`.                                                                                                                               |
+| `page.evaluate(fnOrExpression, arg)` argument | Functions and string expressions are both supported. The second argument accepts serializable values but does not accept mixed-in Playwright `JSHandle` values.                                                                   |
+| `locator.ariaSnapshot()` options              | This is a Playwright 1.52 API. ego-browser supports its default-mode YAML and `timeout`, plus `depth`, `boxes`, and `signal`; `ref: true` and `mode: "ai"` are not supported, so use `page.snapshot()` for ego-browser `@N` refs. |
+| `page.ariaSnapshot()`                         | This is ego-browser-specific in the 1.52 baseline. It applies the same default-mode YAML capture to the page body; use `page.snapshot()` for ego-browser `@N` refs.                                                               |
+| `page.screenshot(options)` options            | Returning a `Buffer` and writing a file when `path` is supplied match Playwright. Supported options are `path`, `type`, `quality`, `fullPage`, `clip`, `omitBackground`, `animations`, `caret`, and `style`.                      |
 
 Locators and actionability are also a compatible subset rather than Playwright's complete selector and actionability engines. Actions such as click, hover, fill, focus, check, and select wait for their relevant attached, visible, stable, enabled, editable, or hit-target conditions. Supported actions can use `force` to skip non-essential checks or `trial` to run checks without input. When no element matches, `isVisible` / `isEnabled` return `false`, while `isHidden` / `isDisabled` return `true`.
 
 ## 5. ego-browser-specific APIs
 
 - **`page` extensions**: `snapshot` / `snapshotRaw` provide semantic page state with refs; `info` provides page, viewport, and dialog state; `saveScreenshot`, `screencast`, `elementCenter`, and `drainEvents` add path-oriented screenshots, recording, coordinates, and events.
-- **`browser`**: manages ego-browser tabs with `listTabs`, `currentTab`, `switchTab`, `openOrReuseTab`, `closeTab`, `ensureRealTab`, and `iframeTarget`, and evaluates in an explicit tab with `evaluateInTab`.
+- **`tabs`**: manages tabs in the current task space with `list`, `current`, `activate`, `openOrReuse`, and `close`, and evaluates in an explicit tab with `evaluate`. Opening or reusing a tab activates it. Internal recovery and iframe-target helpers are not public APIs.
 - **`taskSpaces`**: manages the ownership lifecycle of isolated browsing contexts, including create or reuse, switch, claim, handoff, takeover, and completion.
 - **`site`**: discovers and runs reusable site skills and reads site learning context.
 - **`fetch`**: `fetch.server` requests from Node.js; `fetch.browser` requests from the current page origin.
@@ -144,15 +141,13 @@ Locators and actionability are also a compatible subset rather than Playwright's
 
 When `page.info()` returns `{ dialog: ... }`, handle the JavaScript dialog first. When the returned `w` or `h` is `0`, stop screenshot and coordinate operations until a real tab or viewport is restored and revalidated.
 
-The task-space bridge does not expose `Browser.grantPermissions` or `Browser.setPermission`. Use supported controls provided by the page or report the capability boundary; do not probe these commands repeatedly.
-
 ## 6. Ownership and control
 
 A task space can have ownership `agent`, `agentDelegatedToUser`, or `user`. `useOrCreate` does not automatically claim a user-owned space.
 
 A “user is controlling”, “inactive”, or “not assigned” error is a hard stop for the entire browser task. Do not retry, work around it, or call `taskSpaces.takeOver` automatically. Ask the user first, then follow the claim / takeOver flow below only after explicit confirmation.
 
-After the user explicitly permits work in a user-owned space, list the spaces again and call `taskSpaces.claim(id)`. Then use `browser.listTabs()` to obtain a valid `targetId` for the current round and switch to the tab.
+After the user explicitly permits work in a user-owned space, list the spaces again and call `taskSpaces.claim(id)`. Continue with the active `page`; use `tabs` only if the task requires another tab.
 
 For login, captcha, or another manual step:
 

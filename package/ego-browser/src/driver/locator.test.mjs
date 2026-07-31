@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
+import { queryAllExpression } from "../../dist/src/locator-query.js";
 import { setOverrides } from "../../dist/src/state.js";
 import { browserRefMap } from "../../dist/src/ref-state.js";
 import {
@@ -26,6 +27,61 @@ import {
 
 function internalSelector(kind, data) {
   return `internal:${kind}:${encodeURIComponent(JSON.stringify(data))}`;
+}
+
+function roleFixtureElement({
+  id,
+  parentElement = null,
+  display = "block",
+  visibility = "visible",
+}) {
+  return {
+    id,
+    tagName: "BUTTON",
+    hidden: false,
+    innerText: id,
+    textContent: id,
+    parentElement,
+    computedStyle: { display, visibility },
+    getAttribute(name) {
+      return name === "type" ? "button" : null;
+    },
+    hasAttribute() {
+      return false;
+    },
+    closest() {
+      return null;
+    },
+  };
+}
+
+function evaluateRoleQuery(options, elements) {
+  const expression = queryAllExpression(internalSelector("role", options));
+  const document = {
+    querySelectorAll() {
+      return elements;
+    },
+    getElementById() {
+      return null;
+    },
+  };
+  class HTMLImageElement {}
+  class HTMLInputElement {}
+  class HTMLOptionElement {}
+  return Function(
+    "document",
+    "getComputedStyle",
+    "HTMLImageElement",
+    "HTMLInputElement",
+    "HTMLOptionElement",
+    `return ${expression};`,
+  )(
+    document,
+    (element) => element.computedStyle,
+    HTMLImageElement,
+    HTMLInputElement,
+    HTMLOptionElement,
+  );
 }
 
 test("locator read helpers call a resolved element", async () => {
@@ -191,6 +247,28 @@ test("frame-scoped collection helpers evaluate in the child execution context", 
   );
 });
 
+test("text, label, attribute, and test-id locators evaluate regular expressions", () => {
+  const cases = [
+    ["text", "ready\\s+now", "i"],
+    ["label", "email|user", "i"],
+    ["placeholder", "^search", ""],
+    ["alt", "controller$", "i"],
+    ["title", "details", "i"],
+    ["testid", "^product-\\d+$", ""],
+  ];
+
+  for (const [prefix, source, flags] of cases) {
+    const encoded = encodeURIComponent(JSON.stringify({ source, flags }));
+    const expression = queryAllExpression(`loc=${prefix}:regex:${encoded}`);
+    assert.ok(
+      expression.includes(
+        `new RegExp(${JSON.stringify(source)}, ${JSON.stringify(flags)})`,
+      ),
+      `${prefix} must preserve the regular expression`,
+    );
+  }
+});
+
 test("test id locators query data-testid attributes exactly", async () => {
   const restore = setOverrides({
     cdpOverride(method, params) {
@@ -307,6 +385,57 @@ test("role state locators filter Playwright role options in the page", async () 
   assert.match(expression, /aria-disabled/);
   assert.match(expression, /accessibleName\(el\)/);
   assert.match(expression, /if \(!true\)/);
+});
+
+test("role locators exclude descendants of display-none ancestors unless includeHidden is true", () => {
+  const visible = roleFixtureElement({ id: "visible" });
+  const hiddenParent = roleFixtureElement({
+    id: "hidden-parent",
+    display: "none",
+  });
+  const hiddenDescendant = roleFixtureElement({
+    id: "hidden-descendant",
+    parentElement: hiddenParent,
+  });
+
+  assert.deepEqual(
+    evaluateRoleQuery({ role: "button" }, [visible, hiddenDescendant]).map(
+      (element) => element.id,
+    ),
+    ["visible"],
+  );
+  assert.deepEqual(
+    evaluateRoleQuery({ role: "button", includeHidden: true }, [
+      visible,
+      hiddenDescendant,
+    ]).map((element) => element.id),
+    ["visible", "hidden-descendant"],
+  );
+});
+
+test("role locators honor a descendant visibility override", () => {
+  const hiddenParent = roleFixtureElement({
+    id: "hidden-parent",
+    visibility: "hidden",
+  });
+  const inheritedHidden = roleFixtureElement({
+    id: "inherited-hidden",
+    parentElement: hiddenParent,
+    visibility: "hidden",
+  });
+  const visibleOverride = roleFixtureElement({
+    id: "visible-override",
+    parentElement: hiddenParent,
+    visibility: "visible",
+  });
+
+  assert.deepEqual(
+    evaluateRoleQuery({ role: "button" }, [
+      inheritedHidden,
+      visibleOverride,
+    ]).map((element) => element.id),
+    ["visible-override"],
+  );
 });
 
 test("role locators do not treat zero-size elements as ARIA-hidden", async () => {

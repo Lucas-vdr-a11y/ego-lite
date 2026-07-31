@@ -225,10 +225,10 @@ async function hitTestClickButton() {
 }
 
 async function closeFixtureTabs() {
-  const tabs = await browser.listTabs({ includeChrome: false }).catch(() => []);
-  for (const tab of tabs) {
+  const openTabs = await tabs.list({ includeChrome: false }).catch(() => []);
+  for (const tab of openTabs) {
     if (String(tab.url || "").startsWith(baseUrl)) {
-      await browser.closeTab(tab.targetId).catch(() => {});
+      await tabs.close(tab).catch(() => {});
     }
   }
 }
@@ -240,14 +240,10 @@ async function resetHome() {
     timeout: 5_000,
   });
   await closeFixtureTabs();
-  const tab = await browser.openOrReuseTab(
-    baseUrl + "/?e2e-reset=" + Date.now(),
-    {
-      wait: true,
-      timeout: 10000,
-    },
-  );
-  await browser.switchTab(tab.targetId);
+  const tab = await tabs.openOrReuse(baseUrl + "/?e2e-reset=" + Date.now(), {
+    wait: true,
+    timeout: 10000,
+  });
   await setStableViewport();
   const nav = await page.goto(baseUrl + "/", { timeout: 10000 });
   assert(

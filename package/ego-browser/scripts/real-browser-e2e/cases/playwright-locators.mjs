@@ -2,6 +2,38 @@ import { homeCase } from "./shared.mjs";
 
 export const playwrightLocatorCases = [
   {
+    name: "Playwright 1.52 locator regex and filtering",
+    body: homeCase(`
+      assertEqual(await page.getByText(/duplicate action/i).count(), 2, "getByText accepts RegExp");
+      assertEqual(await page.getByLabel(/^email$/i).count(), 1, "getByLabel accepts RegExp");
+      assertEqual(await page.getByPlaceholder(/^type text$/i).count(), 1, "getByPlaceholder accepts RegExp");
+      assertEqual(await page.getByAltText(/fixture logo$/i).count(), 1, "getByAltText accepts RegExp");
+      assertEqual(await page.getByTitle(/^counter button$/i).count(), 1, "getByTitle accepts RegExp");
+      assertEqual(await page.getByTestId(/^stat(us)$/).count(), 1, "getByTestId accepts RegExp");
+
+      const card = page.locator(".card", {
+        has: page.getByRole("button", { name: "Increment counter" }),
+        hasText: /click counter/i,
+        hasNotText: /awaiting drag/i,
+      });
+      assertEqual(await card.count(), 1, "page.locator applies has and text options");
+      assertEqual(
+        await page.locator("main").locator(".card", {
+          has: page.getByTitle(/counter button/i),
+        }).count(),
+        1,
+        "locator.locator applies descendant filter options"
+      );
+      assertEqual(
+        await page.frameLocator("#fixture-frame").locator(".card", {
+          has: page.frameLocator("#fixture-frame").getByText(/click counter/i),
+        }).count(),
+        1,
+        "frameLocator.locator applies same-frame filter options"
+      );
+    `),
+  },
+  {
     name: "frame locator helpers",
     body: homeCase(`
       assertEqual(typeof page.frameLocator, "function", "page.frameLocator is installed synchronously");

@@ -23,20 +23,19 @@ export const workflowCases = [
       assertIncludes(navInfo.url, "/nav-target", "workflow: URL reflects nav-target");
 
       /* Step 3: open a secondary page in a new tab. */
-      const secondary = await browser.openOrReuseTab(baseUrl + "/secondary", {
+      const secondary = await tabs.openOrReuse(baseUrl + "/secondary", {
         wait: true,
         timeout: 10000,
       });
       assertEqual(secondary.reused, false, "workflow: secondary tab is new");
-      await browser.switchTab(secondary);
       const secTitle = await page.evaluate(() => document.title);
       assertEqual(secTitle, "ego-lite secondary", "workflow: secondary tab title is correct");
 
       /* Step 4: switch back to the nav-target tab and verify its state persisted. */
-      const tabs = await browser.listTabs({ includeChrome: false });
-      const navTab = tabs.find((t) => String(t.url || "").includes("/nav-target"));
+      const openTabs = await tabs.list({ includeChrome: false });
+      const navTab = openTabs.find((t) => String(t.url || "").includes("/nav-target"));
       assert(navTab, "workflow: nav-target tab still exists in tab list");
-      await browser.switchTab(navTab.targetId);
+      await tabs.activate(navTab);
       const navTitleAfterSwitch = await page.evaluate(() => document.title);
       assertEqual(navTitleAfterSwitch, "ego-lite nav target", "workflow: nav-target title persists across tab switches");
 
@@ -47,13 +46,13 @@ export const workflowCases = [
       assertEqual(backHomeInfo.title, "ego-lite helper e2e", "workflow: home title restored after multi-tab navigation");
 
       /* Step 6: close the secondary tab and verify tab count. */
-      const tabsBeforeClose = (await browser.listTabs({ includeChrome: false })).length;
-      await browser.closeTab(secondary.targetId);
+      const tabsBeforeClose = (await tabs.list({ includeChrome: false })).length;
+      await tabs.close(secondary);
       // Poll for tab count to decrease (closeTab may resolve before the tab list updates)
       const deadline = Date.now() + 2000;
       let remaining;
       do {
-        remaining = await browser.listTabs({ includeChrome: false });
+        remaining = await tabs.list({ includeChrome: false });
         if (remaining.length < tabsBeforeClose) break;
         await page.waitForTimeout(100);
       } while (Date.now() < deadline);

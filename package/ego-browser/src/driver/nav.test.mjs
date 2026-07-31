@@ -283,10 +283,7 @@ test("openOrReuseTab rejects when a newly opened tab misses an explicit load tim
         (error) => {
           assert.ok(error instanceof TimeoutError);
           assert.equal(error.name, "TimeoutError");
-          assert.equal(
-            error.message,
-            "browser.openOrReuseTab timed out after 23ms",
-          );
+          assert.equal(error.message, "tabs.openOrReuse timed out after 23ms");
           return true;
         },
       );
@@ -315,10 +312,7 @@ test("openOrReuseTab rejects when a reused tab misses the default navigation tim
           }),
         (error) => {
           assert.ok(error instanceof TimeoutError);
-          assert.equal(
-            error.message,
-            "browser.openOrReuseTab timed out after 17ms",
-          );
+          assert.equal(error.message, "tabs.openOrReuse timed out after 17ms");
           return true;
         },
       );
@@ -338,10 +332,7 @@ test("openOrReuseTab falls back to the default action timeout when no navigation
         () => openOrReuseTab("https://example.com/target"),
         (error) => {
           assert.ok(error instanceof TimeoutError);
-          assert.equal(
-            error.message,
-            "browser.openOrReuseTab timed out after 19ms",
-          );
+          assert.equal(error.message, "tabs.openOrReuse timed out after 19ms");
           return true;
         },
       );
@@ -727,7 +718,7 @@ test("switchTab rejects a stale target with the refreshed tab list", async () =>
         await assert.rejects(
           () => switchTab("target-stale"),
           (error) => {
-            assert.match(error.message, /switchTab target not found/);
+            assert.match(error.message, /tabs\.activate target not found/);
             assert.match(error.message, /target-stale/);
             assert.match(error.message, /target-current/);
             assert.match(error.message, /https:\/\/example\.com\/current/);
@@ -745,7 +736,7 @@ test("switchTab rejects a stale target with the refreshed tab list", async () =>
 test("switchTab rejects tab objects without targetId at the boundary", async () => {
   await assert.rejects(
     () => switchTab({ id: "target-2" }),
-    /switchTab requires a targetId.*received.*id/,
+    /tabs\.activate requires a targetId.*received.*id/,
   );
 });
 
@@ -817,7 +808,7 @@ test("closeTab rejects a stale explicit target before CDP dispatch", async () =>
       try {
         await assert.rejects(
           () => closeTab("target-stale"),
-          /closeTab target not found.*target-stale.*target-current/,
+          /tabs\.close target not found.*target-stale.*target-current/,
         );
       } finally {
         restore();

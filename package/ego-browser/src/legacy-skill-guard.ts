@@ -7,6 +7,7 @@ type InstallTarget = Record<string, unknown>;
  * Keep this list as the single cleanup source for both embedded and direct-CLI runs.
  */
 const LEGACY_GLOBAL_HELPERS = [
+  "browser",
   "click",
   "dblclick",
   "hover",

@@ -10,8 +10,8 @@ test("formatCliLogValue renders documented function properties in object output"
         waitForRequest() {},
         waitForResponse() {},
       },
-      browser: {
-        openOrReuseTab() {},
+      tabs: {
+        openOrReuse() {},
       },
       site: {
         runTool: async function runSiteTool() {},
@@ -20,10 +20,10 @@ test("formatCliLogValue renders documented function properties in object output"
   });
 
   const parsed = JSON.parse(formatted);
-  assert.equal(parsed.helpers.browser.openOrReuseTab.kind, "function");
+  assert.equal(parsed.helpers.tabs.openOrReuse.kind, "function");
   assert.equal(
-    parsed.helpers.browser.openOrReuseTab.signature,
-    "browser.openOrReuseTab(url, options?) => Promise<object>",
+    parsed.helpers.tabs.openOrReuse.signature,
+    "tabs.openOrReuse(url, options?) => Promise<object>",
   );
   assert.equal(
     parsed.helpers.page.waitForRequest.signature,
@@ -52,6 +52,37 @@ test("formatCliLogValue documents page.url as asynchronous", () => {
     "page.url() => Promise<string>",
   );
   assert.match(parsed.helpers.page.url.example, /await page\.url\(\)/);
+});
+
+test("formatCliLogValue documents Playwright 1.52 locator matcher options", () => {
+  const formatted = formatCliLogValue({
+    helpers: {
+      page: {
+        locator() {},
+        getByText() {},
+      },
+    },
+    locator: {
+      locator() {},
+      getByTestId() {},
+    },
+  });
+
+  const parsed = JSON.parse(formatted);
+  assert.match(
+    parsed.helpers.page.locator.signature,
+    /page\.locator\(selector, options\?\)/,
+  );
+  assert.match(parsed.helpers.page.locator.params[1].type, /hasNotText/);
+  assert.equal(parsed.helpers.page.getByText.params[0].type, "string | RegExp");
+  assert.match(
+    parsed.locator.locator.signature,
+    /locator\.locator\(selectorOrLocator, options\?\)/,
+  );
+  assert.match(
+    parsed.locator.getByTestId.signature,
+    /getByTestId\(testId: string \| RegExp\)/,
+  );
 });
 
 test("formatCliLogValue documents ego.learnings as the site facade alias", () => {
@@ -138,6 +169,14 @@ test("formatCliLogValue keeps facade signatures and returned subsets current", (
   assert.match(
     parsed.helpers.page.waitForEvent.returns,
     /ConsoleMessage.*Dialog.*Download.*FileChooser.*Error.*Popup.*Request/,
+  );
+  assert.match(
+    parsed.helpers.page.waitForEvent.returns,
+    /does not require tabs\.list\(\)/,
+  );
+  assert.match(
+    parsed.helpers.page.waitForEvent.example,
+    /await popup\.bringToFront\(\)/,
   );
   assert.match(
     parsed.helpers.page.waitForFunction.returns,

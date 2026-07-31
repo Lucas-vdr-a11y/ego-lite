@@ -2,7 +2,7 @@ export async function searchUsers(ctx, args = {}) {
   const query = args.query || "";
   if (!query) throw new Error("search query is required");
 
-  await ctx.browser.openOrReuseTab(
+  await ctx.tabs.openOrReuse(
     `https://x.com/search?f=user&q=${encodeURIComponent(query)}`,
     { wait: true },
   );

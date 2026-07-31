@@ -246,9 +246,18 @@ test("helper surface exposes Playwright-style object facades", () => {
   assert.equal(typeof context.page.setDefaultTimeout, "function");
   assert.equal(typeof context.page.setDefaultNavigationTimeout, "function");
   assert.equal(typeof context.page.waitForEvent, "function");
-  assert.equal(typeof context.browser.openOrReuseTab, "function");
-  assert.equal(typeof context.browser.closeTab, "function");
-  assert.equal(typeof context.browser.evaluateInTab, "function");
+  assert.deepEqual(Object.keys(context.tabs).sort(), [
+    "activate",
+    "close",
+    "current",
+    "evaluate",
+    "list",
+    "openOrReuse",
+  ]);
+  assert.equal(typeof context.tabs.openOrReuse, "function");
+  assert.equal(typeof context.tabs.close, "function");
+  assert.equal(typeof context.tabs.evaluate, "function");
+  assert.equal(typeof context.browser, "undefined");
   assert.equal(typeof context.taskSpaces.useOrCreate, "function");
   assert.equal(typeof context.taskSpaces.claim, "function");
   assert.equal(typeof context.site.runTool, "function");
@@ -273,6 +282,73 @@ test("helper surface exposes Playwright-style object facades", () => {
   assert.equal("newTab" in context, false);
   assert.equal("elementEval" in helperExports, false);
   assert.equal("elementEval" in context, false);
+});
+
+test("all text-based getBy locators preserve regular expressions", () => {
+  const context = helperContext();
+  const locators = [
+    context.page.getByText(/ready\s+now/i),
+    context.page.getByLabel(/email|user/i),
+    context.page.getByPlaceholder(/^search/),
+    context.page.getByAltText(/controller$/i),
+    context.page.getByTitle(/details/i),
+    context.page.getByTestId(/^product-\d+$/),
+    context.page.locator(".card").getByText(/buy/i),
+    context.page.frameLocator("#catalog").getByText(/frame item/i),
+  ];
+
+  for (const locator of locators) {
+    const decoded = decodeURIComponent(locator.selector);
+    assert.match(decoded, /:regex:/);
+    assert.doesNotMatch(decoded, /"\/.*\/[a-z]*"/i);
+  }
+});
+
+test("locator factories accept Playwright has and text filter options", () => {
+  const context = helperContext();
+  const child = context.page.locator(".card", {
+    hasText: /ready/i,
+    hasNotText: "Archived",
+    has: context.page.getByText("Buy"),
+    hasNot: context.page.locator(".disabled"),
+  });
+  const nested = context.page.locator("#catalog").locator(".item", {
+    hasText: "Available",
+  });
+  const framed = context.page.frameLocator("#frame").locator(".item", {
+    hasNotText: /sold/i,
+  });
+
+  assert.match(child.selector, /^internal:filter:/);
+  assert.match(nested.selector, /^internal:filter:/);
+  assert.match(framed.selector, /^internal:filter:/);
+
+  const nestedFilter = JSON.parse(
+    decodeURIComponent(nested.selector.slice("internal:filter:".length)),
+  );
+  assert.match(nestedFilter.base, /^internal:scope:/);
+  assert.deepEqual(nestedFilter.hasText, {
+    text: "Available",
+    exact: false,
+  });
+});
+
+test("locator implementation state is accessible but not publicly enumerable", () => {
+  const context = helperContext();
+  const locator = context.page.locator(".item");
+  const frameLocator = context.page.frameLocator("#frame");
+
+  assert.equal(locator.selector, ".item");
+  assert.deepEqual(locator.frameChain, []);
+  assert.ok(locator.target);
+  assert.ok(!Object.keys(locator).includes("selector"));
+  assert.ok(!Object.keys(locator).includes("frameChain"));
+  assert.ok(!Object.keys(locator).includes("target"));
+
+  assert.equal(frameLocator.selector, "#frame");
+  assert.deepEqual(frameLocator.frameChain, ["#frame"]);
+  assert.ok(!Object.keys(frameLocator).includes("selector"));
+  assert.ok(!Object.keys(frameLocator).includes("frameChain"));
 });
 
 test("page.frameLocator creates nested frame-scoped locators", () => {
@@ -305,6 +381,11 @@ test("frame-scoped locator composition rejects locators from another frame", () 
     () => left.locator(right),
     () => left.filter({ has: right }),
     () => left.filter({ hasNot: right }),
+    () => page.locator(".item", { has: right }),
+    () =>
+      page.frameLocator("#left-frame").locator(".item", {
+        has: right,
+      }),
   ]) {
     assert.throws(compose, /same frame/);
   }
@@ -440,7 +521,7 @@ test("help documents every public callable by its facade path", () => {
   const context = helperContext();
   const publicPaths = [
     ...callablePaths(context.page, "page"),
-    ...callablePaths(context.browser, "browser"),
+    ...callablePaths(context.tabs, "tabs"),
     ...callablePaths(context.taskSpaces, "taskSpaces"),
     ...callablePaths(context.site, "site"),
     ...callablePaths(context.fetch, "fetch"),

@@ -53,7 +53,7 @@ export function environmentCase() {
     const envShotStat = await stat(environmentScreenshotPath);
     assert(envShotStat.size > 0, "environment screenshot artifact is non-empty");
 
-    const tabs = await browser.listTabs({ includeChrome: false });
-    assert(tabs.some((tab) => tab.targetId === home.targetId), "environment tab appears in listTabs");
+    const openTabs = await tabs.list({ includeChrome: false });
+    assert(openTabs.some((tab) => tab.targetId === home.targetId), "environment tab appears in tabs.list");
   `;
 }

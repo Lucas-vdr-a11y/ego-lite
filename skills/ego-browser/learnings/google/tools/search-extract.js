@@ -9,7 +9,7 @@ export async function searchAndExtract(ctx, args = {}) {
   const maxResults = boundedInteger(args.maxResults, 10, 100);
   if (!query) throw new Error("search query is required");
 
-  await ctx.browser.openOrReuseTab(
+  await ctx.tabs.openOrReuse(
     `https://www.google.com/search?q=${encodeURIComponent(query)}`,
     { wait: true },
   );

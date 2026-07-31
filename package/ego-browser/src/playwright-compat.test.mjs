@@ -1,0 +1,159 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import test from "node:test";
+
+import * as formatModule from "../dist/src/format.js";
+import { helperContext } from "../dist/src/helpers.js";
+
+test("public API compatibility baseline is pinned to Playwright 1.52.0", () => {
+  assert.equal(formatModule.PLAYWRIGHT_COMPATIBILITY_BASELINE, "1.52.0");
+});
+
+test("every documented public API has an explicit compatibility classification", () => {
+  for (const [path, doc] of Object.entries(formatModule.PUBLIC_API_DOCS)) {
+    assert.match(
+      doc.compatibility?.status || "",
+      /^(exact|superset|subset|ego-extension|deprecated|internal)$/,
+      `${path} must declare a supported compatibility status`,
+    );
+    assert.equal(
+      doc.compatibility?.baseline,
+      "1.52.0",
+      `${path} must use the pinned Playwright baseline`,
+    );
+  }
+});
+
+test("Playwright and ego-specific methods are classified honestly", () => {
+  const docs = formatModule.PUBLIC_API_DOCS;
+
+  assert.equal(docs["locator.ariaSnapshot"].compatibility.status, "subset");
+  assert.equal(docs["page.ariaSnapshot"].compatibility.status, "ego-extension");
+  assert.equal(
+    docs["page.screencast.start"].compatibility.status,
+    "ego-extension",
+  );
+  assert.equal(docs["tabs.list"].compatibility.status, "ego-extension");
+  assert.equal(docs["browser.listTabs"], undefined);
+  assert.equal(
+    docs["taskSpaces.useOrCreate"].compatibility.status,
+    "ego-extension",
+  );
+});
+
+test("help exposes the pinned compatibility baseline without model knowledge", () => {
+  const output = helperContext().help("compat");
+
+  assert.match(output, /Playwright compatibility baseline: 1\.52\.0/);
+  assert.match(output, /exact|superset|subset/);
+  assert.match(output, /ego-extension/);
+});
+
+test("checked-in Playwright surface is the 1.52.0 contract, not a later version", async () => {
+  const manifest = await readCompatibilityManifest();
+
+  assert.equal(manifest.version, "1.52.0");
+  assert.equal(manifest.package, "playwright-core");
+  assert.ok(manifest.interfaces.Page.includes("waitForEvent"));
+  assert.ok(manifest.interfaces.Page.includes("accessibility"));
+  assert.ok(!manifest.interfaces.Page.includes("consoleMessages"));
+  assert.ok(!manifest.interfaces.Page.includes("pageErrors"));
+  assert.ok(!manifest.interfaces.Page.includes("requests"));
+  assert.ok(!manifest.interfaces.Page.includes("ariaSnapshot"));
+  assert.ok(!manifest.interfaces.Page.includes("screencast"));
+  assert.ok(manifest.interfaces.Locator.includes("ariaSnapshot"));
+  assert.ok(!manifest.interfaces.Locator.includes("describe"));
+  assert.ok(!manifest.interfaces.Locator.includes("description"));
+  assert.ok(!manifest.interfaces.Locator.includes("drop"));
+  assert.ok(manifest.interfaces.FrameLocator.includes("owner"));
+});
+
+test("checked-in Playwright surface records signatures and option drift", async () => {
+  const manifest = await readCompatibilityManifest();
+  const ariaSnapshot = manifest.signatures.Locator.ariaSnapshot.join("\n");
+  const locatorClick = manifest.signatures.Locator.click.join("\n");
+  const mouseMove = manifest.signatures.Mouse.move.join("\n");
+
+  assert.match(ariaSnapshot, /ref\?: boolean/);
+  assert.match(ariaSnapshot, /timeout\?: number/);
+  assert.doesNotMatch(locatorClick, /steps\?: number/);
+  assert.match(mouseMove, /steps\?: number/);
+});
+
+test("classifications agree with the checked-in Playwright surface", async () => {
+  const manifest = await readCompatibilityManifest();
+
+  for (const [path, doc] of Object.entries(formatModule.PUBLIC_API_DOCS)) {
+    const [namespace, firstMember, secondMember] = path.split(".");
+    let interfaceName;
+    let memberName;
+
+    if (namespace === "page" && firstMember === "keyboard") {
+      interfaceName = "Keyboard";
+      memberName = secondMember;
+    } else if (namespace === "page" && firstMember === "mouse") {
+      interfaceName = "Mouse";
+      memberName = secondMember;
+    } else if (namespace === "page") {
+      interfaceName = "Page";
+      memberName = firstMember;
+    } else if (namespace === "locator") {
+      interfaceName = "Locator";
+      memberName = firstMember;
+    } else if (namespace === "frameLocator") {
+      interfaceName = "FrameLocator";
+      memberName = firstMember;
+    } else if (namespace === "browser") {
+      interfaceName = "Browser";
+      memberName = firstMember;
+    }
+
+    const isPlaywrightMember =
+      interfaceName && manifest.interfaces[interfaceName]?.includes(memberName);
+    if (doc.compatibility.status === "ego-extension") {
+      assert.ok(!isPlaywrightMember, `${path} is a Playwright 1.52.0 member`);
+    } else {
+      assert.ok(isPlaywrightMember, `${path} is not in Playwright 1.52.0`);
+    }
+  }
+});
+
+test("compatibility checker verifies the manifest against installed Playwright types", () => {
+  const result = spawnSync(
+    process.execPath,
+    ["scripts/check-playwright-compat.mjs"],
+    {
+      cwd: new URL("..", import.meta.url),
+      encoding: "utf8",
+    },
+  );
+
+  assert.equal(
+    result.status,
+    0,
+    `compatibility check failed:\n${result.stdout}\n${result.stderr}`,
+  );
+  assert.match(result.stdout, /playwright-core@1\.52\.0/);
+});
+
+test("agent skill names the pinned baseline and distinguishes ARIA snapshot scopes", async () => {
+  const skill = await readFile(
+    new URL("../../../skills/ego-browser/SKILL.md", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(skill, /targets `playwright@1\.52\.0`/);
+  assert.match(skill, /`locator\.ariaSnapshot\(\)`.*Playwright/);
+  assert.match(skill, /`ref: true`.*not supported.*`page\.snapshot\(\)`/);
+  assert.match(skill, /`page\.ariaSnapshot\(\)`.*ego-browser-specific/);
+});
+
+async function readCompatibilityManifest() {
+  return JSON.parse(
+    await readFile(
+      new URL("../compat/playwright-1.52.0.json", import.meta.url),
+      "utf8",
+    ),
+  );
+}
