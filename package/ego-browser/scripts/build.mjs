@@ -71,6 +71,7 @@ try {
       ...builtinModules,
       ...builtinModules.map((m) => `node:${m}`),
       "playwright-core",
+      "playwright-core/lib/utilsBundle",
     ],
     plugins: [
       resolve(),

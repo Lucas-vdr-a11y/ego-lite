@@ -24,6 +24,20 @@ test("real-browser e2e runs opt-in cases only when explicitly selected", () => {
   );
 });
 
+test("real-browser e2e accepts the local CDP bridge when the host has no endpoint", () => {
+  assert.equal(typeof runner.nodeBridgeSupportsPlaywright, "function");
+  assert.equal(
+    runner.nodeBridgeSupportsPlaywright({
+      egoType: "object",
+      hasSendCDPMessage: "function",
+      hasGetCDPEndpoint: "undefined",
+      processVersion: "v24.18.0",
+      helperCount: 5,
+    }),
+    true,
+  );
+});
+
 test("TaskSpace context lifecycle runs before existing real-browser cases", () => {
   assert.equal(e2eCases[0]?.name, "TaskSpace context lifecycle");
 });

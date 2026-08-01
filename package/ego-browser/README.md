@@ -25,7 +25,7 @@ await egoBrowser.completeTaskSpace(task.id)
 EOF
 ```
 
-The host must expose `ego.getCDPEndpoint(taskSpaceId)`, returning either a browser-level CDP endpoint string or `{ endpoint }`. The endpoint must support the complete browser CDP session lifecycle used by `chromium.connectOverCDP` and expose only the selected TaskSpace's targets. Give different TaskSpaces distinct endpoint values so the SDK can reconnect without crossing their isolation boundary. The command-only `ego.sendCDPMessage` API is intentionally not adapted into a Playwright transport.
+When the host exposes `ego.getCDPEndpoint(taskSpaceId)`, the runtime connects to that browser-level endpoint directly. The endpoint must support the complete browser CDP session lifecycle used by `chromium.connectOverCDP` and expose only the selected TaskSpace's targets. Give different TaskSpaces distinct endpoint values so the SDK can reconnect without crossing their isolation boundary. Older hosts that expose only `ego.sendCDPMessage` use an SDK-owned local WebSocket bridge automatically (a Unix domain socket on macOS/Linux and loopback TCP on Windows); Playwright requests are assigned isolated native message ids and native responses and events are routed back to the Playwright connection.
 
 Local invocation without the browser (for debugging the helper bundle itself) reads stdin:
 

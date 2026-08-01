@@ -54,6 +54,15 @@ export function suitePassed(results) {
   return results.every((result) => result.status !== "fail");
 }
 
+export function nodeBridgeSupportsPlaywright(probe) {
+  return (
+    probe.egoType === "object" &&
+    probe.hasSendCDPMessage === "function" &&
+    typeof probe.processVersion === "string" &&
+    probe.helperCount > 0
+  );
+}
+
 export async function runRealBrowserE2e() {
   const keepTaskSpace =
     process.env.EGO_BROWSER_REAL_E2E_KEEP === "1" ||
@@ -123,13 +132,7 @@ export async function runRealBrowserE2e() {
         },
       );
       const probe = parseNodeBridgeSmoke(`${stdout}\n${stderr}`, marker);
-      if (
-        probe.egoType !== "object" ||
-        probe.hasSendCDPMessage !== "function" ||
-        probe.hasGetCDPEndpoint !== "function" ||
-        typeof probe.processVersion !== "string" ||
-        probe.helperCount <= 0
-      ) {
+      if (!nodeBridgeSupportsPlaywright(probe)) {
         throw new Error(
           `nodejs bridge smoke returned invalid runtime data: ${JSON.stringify(probe)}`,
         );

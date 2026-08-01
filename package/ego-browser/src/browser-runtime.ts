@@ -31,6 +31,52 @@ const eventSubscribers = new Set<BrowserEventSubscriber>();
 const pageEnabledSessions = new Set();
 const pendingDialogs = new Map();
 const networkCompletions = new Map();
+type EgoCdpTransportSubscriber = {
+  message: (payload: string) => void;
+  error?: (message: unknown, errorCode?: string) => void;
+};
+type EgoCdpCallbackRuntime = {
+  onCDPMessage?: (payload: string) => void;
+  onSendCDPMessageError?: (message: unknown, errorCode?: string) => void;
+};
+const transportSubscribers = new Set<EgoCdpTransportSubscriber>();
+
+function bindRuntimeCallbacks(runtime: EgoCdpCallbackRuntime) {
+  runtime.onCDPMessage = dispatchCdpMessage;
+  runtime.onSendCDPMessageError = dispatchCdpSendError;
+}
+
+function dispatchCdpMessage(payload: string) {
+  handleMessage(payload);
+  for (const subscriber of transportSubscribers) {
+    try {
+      subscriber.message(payload);
+    } catch {
+      // A disconnected auxiliary transport must not break the native callback.
+    }
+  }
+}
+
+function dispatchCdpSendError(message: unknown, errorCode?: string) {
+  handleSendError(message, errorCode);
+  for (const subscriber of transportSubscribers) {
+    try {
+      subscriber.error?.(message, errorCode);
+    } catch {
+      // Keep error delivery isolated between auxiliary transports.
+    }
+  }
+}
+
+export function subscribeEgoCdpTransport(
+  runtime: EgoCdpCallbackRuntime,
+  subscriber: EgoCdpTransportSubscriber,
+) {
+  bindRuntimeCallbacks(runtime);
+  transportSubscribers.add(subscriber);
+  return () => transportSubscribers.delete(subscriber);
+}
+
 export function isBrowserRuntime() {
   return Boolean(
     globalThis.ego && typeof globalThis.ego.sendCDPMessage === "function",
@@ -51,8 +97,7 @@ function rawCdp(
   timeoutMs = RESPONSE_TIMEOUT_MS,
 ) {
   const runtime = browserEgo();
-  runtime.onCDPMessage = handleMessage;
-  runtime.onSendCDPMessageError = handleSendError;
+  bindRuntimeCallbacks(runtime);
   const id = nextMessageId++;
   const payload = JSON.stringify({
     id,
