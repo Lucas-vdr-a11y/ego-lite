@@ -33,6 +33,15 @@ test("task-space keep mode does not create a destructively closed scratch space"
   );
 });
 
+test("task-space e2e verifies structured egoBrowser action results", () => {
+  const source = taskSpaceCase();
+
+  assert.match(source, /assertEqual\(closed\.done, true/);
+  assert.match(source, /assertEqual\(handOffResult\.done, true/);
+  assert.match(source, /assertEqual\(takeOverResult\.done, true/);
+  assert.match(source, /assertEqual\(waitResult\.done, true/);
+});
+
 test("popup event e2e closes the popup it creates", () => {
   const popupCase = pageEventCases.find(
     (testCase) => testCase.name === "page popup event helper",

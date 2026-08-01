@@ -229,7 +229,7 @@ test("egoBrowser handOffTaskSpace preserves the handoff result", async () => {
   );
 });
 
-test("egoBrowser takeOverTaskSpace restores control", async () => {
+test("egoBrowser takeOverTaskSpace reports restored control", async () => {
   const calls = [];
   const task = {
     taskId: "checkout-flow",
@@ -253,9 +253,9 @@ test("egoBrowser takeOverTaskSpace restores control", async () => {
       },
     },
     async () => {
-      assert.equal(
+      assert.deepEqual(
         await helperContext().egoBrowser.takeOverTaskSpace(task.id),
-        undefined,
+        { done: true },
       );
     },
   );
@@ -836,7 +836,7 @@ test("a popup opened from a TaskSpace Tab Page inherits its space binding", asyn
   }
 });
 
-test("egoBrowser complete preserves a TaskSpace and close destroys it", async () => {
+test("egoBrowser complete and close return structured success results", async () => {
   const calls = [];
   const task = {
     taskId: "inspect-products",
@@ -865,11 +865,12 @@ test("egoBrowser complete preserves a TaskSpace and close destroys it", async ()
     },
     async () => {
       const context = helperContext();
-      assert.equal(
-        await context.egoBrowser.completeTaskSpace(task.id),
-        undefined,
-      );
-      assert.equal(await context.egoBrowser.closeTaskSpace(task.id), undefined);
+      assert.deepEqual(await context.egoBrowser.completeTaskSpace(task.id), {
+        done: true,
+      });
+      assert.deepEqual(await context.egoBrowser.closeTaskSpace(task.id), {
+        done: true,
+      });
     },
   );
 
@@ -883,7 +884,7 @@ test("egoBrowser complete preserves a TaskSpace and close destroys it", async ()
   ]);
 });
 
-test("egoBrowser complete throws when the TaskSpace cannot be completed", async () => {
+test("egoBrowser complete reports when a user-owned TaskSpace is skipped", async () => {
   const task = {
     taskId: "user-space",
     id: 7,
@@ -897,9 +898,9 @@ test("egoBrowser complete throws when the TaskSpace cannot be completed", async 
       },
     },
     async () => {
-      await assert.rejects(
-        () => helperContext().egoBrowser.completeTaskSpace(task.id),
-        /egoBrowser\.completeTaskSpace did not complete TaskSpace 7: user-owned/,
+      assert.deepEqual(
+        await helperContext().egoBrowser.completeTaskSpace(task.id),
+        { done: false, skipped: "user-owned" },
       );
     },
   );
@@ -2286,11 +2287,11 @@ test("help supports facade namespaces and disambiguates nested methods", () => {
   );
   assert.match(
     context.help("egoBrowser.completeTaskSpace"),
-    /egoBrowser\.completeTaskSpace\(nameOrId\) => Promise<void>/,
+    /egoBrowser\.completeTaskSpace\(nameOrId\) => Promise<TaskSpaceActionResult>/,
   );
   assert.match(
     context.help("egoBrowser.closeTaskSpace"),
-    /egoBrowser\.closeTaskSpace\(nameOrId\) => Promise<void>/,
+    /egoBrowser\.closeTaskSpace\(nameOrId\) => Promise<TaskSpaceActionResult>/,
   );
 });
 
@@ -3046,10 +3047,13 @@ test("waitForAgentControl retries while snapshot reports user control", async ()
         return { content: "" };
       }),
       async () => {
-        await helperContext().egoBrowser.waitForAgentControlTaskSpace("t", {
-          interval: 25,
-          timeout: 5_000,
-        });
+        assert.deepEqual(
+          await helperContext().egoBrowser.waitForAgentControlTaskSpace("t", {
+            interval: 25,
+            timeout: 5_000,
+          }),
+          { done: true },
+        );
       },
     );
   } finally {

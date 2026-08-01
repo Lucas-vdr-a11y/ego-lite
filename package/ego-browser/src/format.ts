@@ -1476,9 +1476,10 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
     example: "const space = await egoBrowser.switchTaskSpace(taskSpaceId)",
   },
   "egoBrowser.completeTaskSpace": {
-    signature: "egoBrowser.completeTaskSpace(nameOrId) => Promise<void>",
+    signature:
+      "egoBrowser.completeTaskSpace(nameOrId) => Promise<TaskSpaceActionResult>",
     description:
-      "Complete a TaskSpace while preserving its tabs and final result for the user. Throws when the space cannot be completed.",
+      "Complete a TaskSpace while preserving its tabs and final result for the user. Returns a structured completion result; runtime failures throw with their reason.",
     params: [
       {
         name: "nameOrId",
@@ -1487,13 +1488,14 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
         description: "TaskSpace name or numeric id.",
       },
     ],
-    returns: "Promise<void>",
-    example: "await egoBrowser.completeTaskSpace(space.id)",
+    returns: 'Promise<{ done: true } | { done: false, skipped: "user-owned" }>',
+    example: "console.log(await egoBrowser.completeTaskSpace(space.id))",
   },
   "egoBrowser.closeTaskSpace": {
-    signature: "egoBrowser.closeTaskSpace(nameOrId) => Promise<void>",
+    signature:
+      "egoBrowser.closeTaskSpace(nameOrId) => Promise<TaskSpaceActionResult>",
     description:
-      "Destructively close a TaskSpace and all of its tabs. Use completeTaskSpace when the result should remain visible. Throws when the space cannot be closed.",
+      "Destructively close a TaskSpace and all of its tabs. Use completeTaskSpace when the result should remain visible. Returns a structured completion result; runtime failures throw with their reason.",
     params: [
       {
         name: "nameOrId",
@@ -1502,8 +1504,8 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
         description: "TaskSpace name or numeric id.",
       },
     ],
-    returns: "Promise<void>",
-    example: "await egoBrowser.closeTaskSpace(space.id)",
+    returns: 'Promise<{ done: true } | { done: false, skipped: "user-owned" }>',
+    example: "console.log(await egoBrowser.closeTaskSpace(space.id))",
   },
   "egoBrowser.useOrCreateTaskSpace": {
     signature:
@@ -1538,7 +1540,8 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
     example: "const task = await egoBrowser.claimTaskSpace(3)",
   },
   "egoBrowser.handOffTaskSpace": {
-    signature: "egoBrowser.handOffTaskSpace(nameOrId?) => Promise<object>",
+    signature:
+      "egoBrowser.handOffTaskSpace(nameOrId?) => Promise<TaskSpaceActionResult>",
     description: "Hand control of a task space to the user for manual action.",
     params: [
       {
@@ -1548,11 +1551,12 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
           "Task space name, taskId, or numeric id. Defaults to current task space.",
       },
     ],
-    returns: "Promise<object>",
-    example: "await egoBrowser.handOffTaskSpace(task.id)",
+    returns: 'Promise<{ done: true } | { done: false, skipped: "user-owned" }>',
+    example: "console.log(await egoBrowser.handOffTaskSpace(task.id))",
   },
   "egoBrowser.takeOverTaskSpace": {
-    signature: "egoBrowser.takeOverTaskSpace(nameOrId?) => Promise<void>",
+    signature:
+      "egoBrowser.takeOverTaskSpace(nameOrId?) => Promise<TaskSpaceActionResult>",
     description:
       "Take control back after the user explicitly confirms continuation.",
     params: [
@@ -1563,12 +1567,12 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
           "Task space name, taskId, or numeric id. Defaults to current task space.",
       },
     ],
-    returns: "Promise<void>",
-    example: "await egoBrowser.takeOverTaskSpace(task.id)",
+    returns: "Promise<{ done: true }>",
+    example: "console.log(await egoBrowser.takeOverTaskSpace(task.id))",
   },
   "egoBrowser.waitForAgentControlTaskSpace": {
     signature:
-      "egoBrowser.waitForAgentControlTaskSpace(nameOrId, options?) => Promise<void>",
+      "egoBrowser.waitForAgentControlTaskSpace(nameOrId, options?) => Promise<TaskSpaceActionResult>",
     description: "Poll until agent control is restored without taking control.",
     params: [
       {
@@ -1583,8 +1587,9 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
         description: "Polling interval and timeout in milliseconds.",
       },
     ],
-    returns: "Promise<void>",
-    example: "await egoBrowser.waitForAgentControlTaskSpace(task.id)",
+    returns: "Promise<{ done: true }>",
+    example:
+      "console.log(await egoBrowser.waitForAgentControlTaskSpace(task.id))",
   },
   "site.skills": {
     signature: "site.skills(url?) => Promise<object[]>",

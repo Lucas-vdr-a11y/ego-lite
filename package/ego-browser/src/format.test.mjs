@@ -57,12 +57,13 @@ test("formatCliLogValue documents page.url as synchronous", () => {
   assert.doesNotMatch(parsed.helpers.page.url.example, /await page\.url\(\)/);
 });
 
-test("formatCliLogValue documents egoBrowser terminal methods as void", () => {
+test("formatCliLogValue documents egoBrowser structured action results", () => {
   const formatted = formatCliLogValue({
     helpers: {
       egoBrowser: {
         completeTaskSpace() {},
         closeTaskSpace() {},
+        handOffTaskSpace() {},
       },
     },
   });
@@ -70,11 +71,27 @@ test("formatCliLogValue documents egoBrowser terminal methods as void", () => {
   const parsed = JSON.parse(formatted);
   assert.equal(
     parsed.helpers.egoBrowser.completeTaskSpace.signature,
-    "egoBrowser.completeTaskSpace(nameOrId) => Promise<void>",
+    "egoBrowser.completeTaskSpace(nameOrId) => Promise<TaskSpaceActionResult>",
   );
   assert.equal(
     parsed.helpers.egoBrowser.closeTaskSpace.signature,
-    "egoBrowser.closeTaskSpace(nameOrId) => Promise<void>",
+    "egoBrowser.closeTaskSpace(nameOrId) => Promise<TaskSpaceActionResult>",
+  );
+  assert.equal(
+    parsed.helpers.egoBrowser.handOffTaskSpace.signature,
+    "egoBrowser.handOffTaskSpace(nameOrId?) => Promise<TaskSpaceActionResult>",
+  );
+  assert.match(
+    parsed.helpers.egoBrowser.completeTaskSpace.example,
+    /console\.log\(await egoBrowser\.completeTaskSpace/,
+  );
+  assert.match(
+    parsed.helpers.egoBrowser.closeTaskSpace.example,
+    /console\.log\(await egoBrowser\.closeTaskSpace/,
+  );
+  assert.match(
+    parsed.helpers.egoBrowser.handOffTaskSpace.example,
+    /console\.log\(await egoBrowser\.handOffTaskSpace/,
   );
 });
 
@@ -206,11 +223,19 @@ test("formatCliLogValue keeps facade signatures and returned subsets current", (
   );
   assert.equal(
     parsed.helpers.egoBrowser.takeOverTaskSpace.signature,
-    "egoBrowser.takeOverTaskSpace(nameOrId?) => Promise<void>",
+    "egoBrowser.takeOverTaskSpace(nameOrId?) => Promise<TaskSpaceActionResult>",
   );
   assert.equal(
     parsed.helpers.egoBrowser.waitForAgentControlTaskSpace.signature,
-    "egoBrowser.waitForAgentControlTaskSpace(nameOrId, options?) => Promise<void>",
+    "egoBrowser.waitForAgentControlTaskSpace(nameOrId, options?) => Promise<TaskSpaceActionResult>",
+  );
+  assert.match(
+    parsed.helpers.egoBrowser.takeOverTaskSpace.example,
+    /console\.log\(await egoBrowser\.takeOverTaskSpace/,
+  );
+  assert.match(
+    parsed.helpers.egoBrowser.waitForAgentControlTaskSpace.example,
+    /console\.log\(await egoBrowser\.waitForAgentControlTaskSpace/,
   );
   assert.equal(
     parsed.helpers.egoBrowser.waitForAgentControlTaskSpace.params[0].required,

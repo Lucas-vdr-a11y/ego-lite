@@ -62,7 +62,7 @@ export function taskSpaceCase() {
       );
 
       const closed = await egoBrowser.closeTaskSpace(scratch.id);
-      assertEqual(closed, undefined, "egoBrowser.closeTaskSpace resolves void after destroying scratch task");
+      assertEqual(closed.done, true, "egoBrowser.closeTaskSpace reports successful scratch task destruction");
 
       await assertRejects(
         () => egoBrowser.closeTaskSpace(scratch.id),
@@ -114,17 +114,20 @@ export function taskSpaceCase() {
     );
 
     // handOffTaskSpace -> takeOverTaskSpace cycle: verify ownership transitions.
-    await egoBrowser.handOffTaskSpace();
+    const handOffResult = await egoBrowser.handOffTaskSpace();
+    assertEqual(handOffResult.done, true, "egoBrowser.handOffTaskSpace reports successful handoff");
     const afterHandoff = await egoBrowser.listTaskSpaces();
     const handedOff = afterHandoff.find((s) => s.name === taskName);
     assert(handedOff.ownership !== "agent", "egoBrowser.handOffTaskSpace transfers ownership away from agent");
 
-    await egoBrowser.takeOverTaskSpace();
+    const takeOverResult = await egoBrowser.takeOverTaskSpace();
+    assertEqual(takeOverResult.done, true, "egoBrowser.takeOverTaskSpace reports restored control");
     const afterTakeover = await egoBrowser.listTaskSpaces();
     const taken = afterTakeover.find((s) => s.name === taskName);
     assertEqual(taken.ownership, "agent", "egoBrowser.takeOverTaskSpace restores agent ownership");
 
-    await egoBrowser.waitForAgentControlTaskSpace(taskName, { interval: 100, timeout: 5_000 });
+    const waitResult = await egoBrowser.waitForAgentControlTaskSpace(taskName, { interval: 100, timeout: 5_000 });
+    assertEqual(waitResult.done, true, "egoBrowser.waitForAgentControlTaskSpace reports agent control");
 
     // Repeat with explicit name parameter
     await egoBrowser.handOffTaskSpace(taskName);

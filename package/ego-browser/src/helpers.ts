@@ -176,6 +176,10 @@ function isAgentOwned(ownership) {
 
 let selectedTaskSpaceId: number | null = null;
 
+export type TaskSpaceActionResult =
+  | { done: true }
+  | { done: false; skipped: "user-owned" };
+
 /**
  * Select an existing task space by id/name for the current Node invocation.
  * @param {string|number} nameOrId Task space id or name.
@@ -315,7 +319,7 @@ async function selectTaskSpaceIfProvided(
 export async function completeTaskSpace(
   nameOrId: string | number,
   options: { keep: boolean },
-) {
+): Promise<TaskSpaceActionResult> {
   if (
     (typeof nameOrId !== "string" && typeof nameOrId !== "number") ||
     nameOrId === ""
@@ -365,7 +369,9 @@ export async function completeTaskSpace(
  * @param {string|number} [nameOrId] Task space id or name. If provided, switches to that space first.
  * @returns {Promise<{done: boolean, skipped?: "user-owned"}>} `{ done: true }` when control was handed off; `{ done: false, skipped: "user-owned" }` when nothing was done.
  */
-export async function handOffTaskSpace(nameOrId?: string | number) {
+export async function handOffTaskSpace(
+  nameOrId?: string | number,
+): Promise<TaskSpaceActionResult> {
   const ego = globalThis.ego;
   if (!ego || typeof ego.handOffTaskSpace !== "function") {
     throw new Error("handOffTaskSpace requires ego.handOffTaskSpace");
@@ -1484,24 +1490,18 @@ function createEgoBrowserFacade() {
     claimTaskSpace: async (nameOrId) =>
       wrapTaskSpace(await claimTaskSpace(nameOrId)),
     handOffTaskSpace,
-    takeOverTaskSpace,
-    waitForAgentControlTaskSpace: waitForAgentControl,
-    completeTaskSpace: async (nameOrId) => {
-      const result = await completeTaskSpace(nameOrId, { keep: true });
-      if (!result.done) {
-        throw new Error(
-          `egoBrowser.completeTaskSpace did not complete TaskSpace ${String(nameOrId)}: ${result.skipped || "unknown reason"}`,
-        );
-      }
+    takeOverTaskSpace: async (nameOrId) => {
+      await takeOverTaskSpace(nameOrId);
+      return { done: true as const };
     },
-    closeTaskSpace: async (nameOrId) => {
-      const result = await completeTaskSpace(nameOrId, { keep: false });
-      if (!result.done) {
-        throw new Error(
-          `egoBrowser.closeTaskSpace did not close TaskSpace ${String(nameOrId)}: ${result.skipped || "unknown reason"}`,
-        );
-      }
+    waitForAgentControlTaskSpace: async (nameOrId, options) => {
+      await waitForAgentControl(nameOrId, options);
+      return { done: true as const };
     },
+    completeTaskSpace: async (nameOrId) =>
+      completeTaskSpace(nameOrId, { keep: true }),
+    closeTaskSpace: async (nameOrId) =>
+      completeTaskSpace(nameOrId, { keep: false }),
   };
 }
 
@@ -1564,7 +1564,7 @@ const FACADE_HELP: Record<string, string> = {
     "page.locator(selector): returns a strict locator facade with locator(), all(), frameLocator(), contentFrame(), getByRole(), getByText(), filter(), and(), or(), first(), nth(index), last(), actionability-aware actions, state/collection reads, evaluate/evaluateAll/evaluateHandle, page(), Buffer screenshots, and waitFor(). FrameLocator.owner() returns its iframe element. Narrow multiple matches; use first()/nth() only for confirmed legitimate duplicates.",
   tabs: "tabs: ego-browser tab facade. list(), current(), open(), openOrReuse(), and activate() return { targetId, url, title, type: 'page' }. Use open(url, options) to always create a tab, or openOrReuse(url, options) to select a match when available. open/openOrReuse accept waitUntil: 'load' (default), 'domcontentloaded', or 'commit'; wait: false is the legacy spelling for commit. Use close(target) and evaluate(target, pageFunction, arg) for an explicit tab. Treat targetId as short-lived: obtain and validate it in the current script.",
   egoBrowser:
-    "egoBrowser: ego-specific TaskSpace controller, not a Playwright Browser. listTaskSpaces() returns lightweight TaskSpace information without selecting a space. newTaskSpace(name), switchTaskSpace(nameOrId), useOrCreateTaskSpace(nameOrId), and claimTaskSpace(nameOrId) return a TaskSpace whose space.tabs methods return Tab objects with target-bound tab.page facades. handOffTaskSpace(), takeOverTaskSpace(), and waitForAgentControlTaskSpace() manage manual control. waitForAgentControlTaskSpace interval and timeout use milliseconds. completeTaskSpace(nameOrId) and closeTaskSpace(nameOrId) return Promise<void> and throw on failure; complete preserves the final result while close destroys the space.",
+    "egoBrowser: ego-specific TaskSpace controller, not a Playwright Browser. listTaskSpaces() returns lightweight TaskSpace information without selecting a space. newTaskSpace(name), switchTaskSpace(nameOrId), useOrCreateTaskSpace(nameOrId), and claimTaskSpace(nameOrId) return a TaskSpace whose space.tabs methods return Tab objects with target-bound tab.page facades. handOffTaskSpace(), takeOverTaskSpace(), waitForAgentControlTaskSpace(), completeTaskSpace(), and closeTaskSpace() return structured action results; runtime failures throw with their reason. waitForAgentControlTaskSpace interval and timeout use milliseconds. complete preserves the final result while close destroys the space.",
   site: "site: learned site-skill facade. Use site.skills(url), site.skillsForUrl(url), site.runTool(siteId, toolName, args), site.runBrowserTool(siteId, toolName, args), and site.learnContext(url).",
   fetch:
     "fetch: network facade. Use fetch.server(url, options) for Node-side fetch and fetch.browser(url, options) for browser-origin fetch. timeout uses milliseconds.",
