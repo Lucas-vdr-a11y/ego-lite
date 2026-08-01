@@ -1,28 +1,28 @@
 export function taskSpaceCase() {
   return `
-    const task = await taskSpaces.useOrCreate(taskName);
-    assertEqual(task.name, taskName, "taskSpaces.useOrCreate selects named task");
+    const task = await egoBrowser.useOrCreateTaskSpace(taskName);
+    assertEqual(task.name, taskName, "egoBrowser.useOrCreateTaskSpace selects named task");
 
-    const reusedTask = await taskSpaces.useOrCreate(taskName);
-    assertEqual(reusedTask.id, task.id, "taskSpaces.useOrCreate reuses an existing named task");
+    const reusedTask = await egoBrowser.useOrCreateTaskSpace(taskName);
+    assertEqual(reusedTask.id, task.id, "egoBrowser.useOrCreateTaskSpace reuses an existing named task");
 
-    const spaces = await taskSpaces.list();
-    assert(spaces.some((space) => space.name === taskName), "taskSpaces.list includes e2e task");
+    const spaces = await egoBrowser.listTaskSpaces();
+    assert(spaces.some((space) => space.name === taskName), "egoBrowser.listTaskSpaces includes e2e task");
     const listed = spaces.find((space) => space.name === taskName);
-    assertEqual(typeof listed.id, "number", "taskSpaces.list returns numeric ids");
-    assertEqual(listed.taskId !== undefined, true, "taskSpaces.list returns taskId");
-    assertEqual(typeof listed.ownership, "string", "taskSpaces.list returns ownership");
+    assertEqual(typeof listed.id, "number", "egoBrowser.listTaskSpaces returns numeric ids");
+    assertEqual(listed.taskId !== undefined, true, "egoBrowser.listTaskSpaces returns taskId");
+    assertEqual(typeof listed.ownership, "string", "egoBrowser.listTaskSpaces returns ownership");
 
-    const switched = await taskSpaces.switch(task.id);
-    assertEqual(switched.id, task.id, "taskSpaces.switch selects by numeric id");
-    const switchedByName = await taskSpaces.switch(taskName);
-    assertEqual(switchedByName.id, task.id, "taskSpaces.switch selects by name");
-    const switchedByNumericString = await taskSpaces.switch(String(task.id));
-    assertEqual(switchedByNumericString.id, task.id, "taskSpaces.switch selects by numeric string id");
+    const switched = await egoBrowser.switchTaskSpace(task.id);
+    assertEqual(switched.id, task.id, "egoBrowser.switchTaskSpace selects by numeric id");
+    const switchedByName = await egoBrowser.switchTaskSpace(taskName);
+    assertEqual(switchedByName.id, task.id, "egoBrowser.switchTaskSpace selects by name");
+    const switchedByNumericString = await egoBrowser.switchTaskSpace(String(task.id));
+    assertEqual(switchedByNumericString.id, task.id, "egoBrowser.switchTaskSpace selects by numeric string id");
 
-    await taskSpaces.waitForAgentControl(taskName, { interval: 100, timeout: 3_000 });
-    await taskSpaces.takeOver(taskName);
-    await taskSpaces.waitForAgentControl(taskName, { interval: 100, timeout: 3_000 });
+    await egoBrowser.waitForAgentControlTaskSpace(taskName, { interval: 100, timeout: 3_000 });
+    await egoBrowser.takeOverTaskSpace(taskName);
+    await egoBrowser.waitForAgentControlTaskSpace(taskName, { interval: 100, timeout: 3_000 });
 
     if (!keepTaskSpace) {
       const scratch = await egoBrowser.newTaskSpace(taskName + " scratch");
@@ -71,70 +71,70 @@ export function taskSpaceCase() {
       );
     }
 
-    await taskSpaces.switch(taskName);
+    await egoBrowser.switchTaskSpace(taskName);
     await assertRejects(
-      () => taskSpaces.switch(taskName + " missing"),
+      () => egoBrowser.switchTaskSpace(taskName + " missing"),
       "task space not found",
-      "taskSpaces.switch reports missing task space"
+      "egoBrowser.switchTaskSpace reports missing task space"
     );
     await assertRejects(
-      () => taskSpaces.useOrCreate(99999999),
+      () => egoBrowser.useOrCreateTaskSpace(99999999),
       "task space not found",
-      "taskSpaces.useOrCreate rejects missing numeric id"
+      "egoBrowser.useOrCreateTaskSpace rejects missing numeric id"
     );
     await assertRejects(
-      () => taskSpaces.complete(taskName, {}),
-      "requires { keep: boolean }",
-      "taskSpaces.complete validates keep option"
-    );
-    await assertRejects(
-      () => taskSpaces.complete("", { keep: false }),
+      () => egoBrowser.completeTaskSpace(""),
       "requires a task space name or id",
-      "taskSpaces.complete validates empty task id"
+      "egoBrowser.completeTaskSpace validates empty task id"
     );
     await assertRejects(
-      () => taskSpaces.waitForAgentControl("", { timeout: 100 }),
+      () => egoBrowser.closeTaskSpace(""),
       "requires a task space name or id",
-      "taskSpaces.waitForAgentControl validates task space id"
+      "egoBrowser.closeTaskSpace validates empty task id"
     );
     await assertRejects(
-      () => taskSpaces.takeOver(taskName + " missing"),
-      "task space not found",
-      "taskSpaces.takeOver reports missing task space"
+      () => egoBrowser.waitForAgentControlTaskSpace("", { timeout: 100 }),
+      "requires a task space name or id",
+      "egoBrowser.waitForAgentControlTaskSpace validates task space id"
     );
     await assertRejects(
-      () => taskSpaces.claim(taskName + " missing"),
+      () => egoBrowser.takeOverTaskSpace(taskName + " missing"),
       "task space not found",
-      "taskSpaces.claim reports missing task space"
+      "egoBrowser.takeOverTaskSpace reports missing task space"
     );
     await assertRejects(
-      () => taskSpaces.handOff(taskName + " missing"),
+      () => egoBrowser.claimTaskSpace(taskName + " missing"),
       "task space not found",
-      "taskSpaces.handOff reports missing task space"
+      "egoBrowser.claimTaskSpace reports missing task space"
+    );
+    await assertRejects(
+      () => egoBrowser.handOffTaskSpace(taskName + " missing"),
+      "task space not found",
+      "egoBrowser.handOffTaskSpace reports missing task space"
     );
 
-    // taskSpaces.handOff -> taskSpaces.takeOver cycle: verify ownership transitions via taskSpaces.list
-    await taskSpaces.handOff();
-    const afterHandoff = await taskSpaces.list();
+    // handOffTaskSpace -> takeOverTaskSpace cycle: verify ownership transitions.
+    await egoBrowser.handOffTaskSpace();
+    const afterHandoff = await egoBrowser.listTaskSpaces();
     const handedOff = afterHandoff.find((s) => s.name === taskName);
-    assert(handedOff.ownership !== "agent", "taskSpaces.handOff transfers ownership away from agent");
+    assert(handedOff.ownership !== "agent", "egoBrowser.handOffTaskSpace transfers ownership away from agent");
 
-    await taskSpaces.takeOver();
-    const afterTakeover = await taskSpaces.list();
+    await egoBrowser.takeOverTaskSpace();
+    const afterTakeover = await egoBrowser.listTaskSpaces();
     const taken = afterTakeover.find((s) => s.name === taskName);
-    assertEqual(taken.ownership, "agent", "taskSpaces.takeOver restores agent ownership");
+    assertEqual(taken.ownership, "agent", "egoBrowser.takeOverTaskSpace restores agent ownership");
 
-    await taskSpaces.waitForAgentControl(taskName, { interval: 100, timeout: 5_000 });
+    await egoBrowser.waitForAgentControlTaskSpace(taskName, { interval: 100, timeout: 5_000 });
 
     // Repeat with explicit name parameter
-    await taskSpaces.handOff(taskName);
-    const afterHandoff2 = await taskSpaces.list();
-    assert(afterHandoff2.find((s) => s.name === taskName).ownership !== "agent", "taskSpaces.handOff(name) transfers ownership away from agent");
+    await egoBrowser.handOffTaskSpace(taskName);
+    const afterHandoff2 = await egoBrowser.listTaskSpaces();
+    assert(afterHandoff2.find((s) => s.name === taskName).ownership !== "agent", "egoBrowser.handOffTaskSpace(name) transfers ownership away from agent");
 
-    await taskSpaces.takeOver(taskName);
-    const afterTakeover2 = await taskSpaces.list();
-    assertEqual(afterTakeover2.find((s) => s.name === taskName).ownership, "agent", "taskSpaces.takeOver(name) restores agent ownership");
+    await egoBrowser.takeOverTaskSpace(taskName);
+    const afterTakeover2 = await egoBrowser.listTaskSpaces();
+    assertEqual(afterTakeover2.find((s) => s.name === taskName).ownership, "agent", "egoBrowser.takeOverTaskSpace(name) restores agent ownership");
 
-    await taskSpaces.waitForAgentControl(taskName, { interval: 100, timeout: 5_000 });
+    await egoBrowser.waitForAgentControlTaskSpace(taskName, { interval: 100, timeout: 5_000 });
   `;
 }

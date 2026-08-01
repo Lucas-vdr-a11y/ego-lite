@@ -1505,44 +1505,11 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
     returns: "Promise<void>",
     example: "await egoBrowser.closeTaskSpace(space.id)",
   },
-  "taskSpaces.list": {
-    signature: "taskSpaces.list() => Promise<object[]>",
-    description: "List browser task spaces.",
-    returns: "Promise<object[]>",
-    example: "console.log(await taskSpaces.list())",
-  },
-  "taskSpaces.switch": {
-    signature: "taskSpaces.switch(nameOrId) => Promise<object>",
-    description: "Switch to an agent-owned task space.",
-    params: [
-      {
-        name: "nameOrId",
-        type: "string | number",
-        required: true,
-        description: "Task space name, taskId, or numeric id.",
-      },
-    ],
-    returns: "Promise<object>",
-    example: "await taskSpaces.switch(3)",
-  },
-  "taskSpaces.new": {
-    signature: "taskSpaces.new(name) => Promise<object>",
-    description: "Create and select a new task space.",
-    params: [
-      {
-        name: "name",
-        type: "string",
-        required: true,
-        description: "Task space name.",
-      },
-    ],
-    returns: "Promise<object>",
-    example: "const task = await taskSpaces.new('research task')",
-  },
-  "taskSpaces.useOrCreate": {
-    signature: "taskSpaces.useOrCreate(nameOrId) => Promise<object>",
+  "egoBrowser.useOrCreateTaskSpace": {
+    signature:
+      "egoBrowser.useOrCreateTaskSpace(nameOrId) => Promise<TaskSpace>",
     description:
-      "Select an existing task space or create one by name. A user-owned match remains user-owned and is not claimed.",
+      "Select an existing TaskSpace or create one by name, returning its bound object facade. A user-owned match remains user-owned and is not claimed.",
     params: [
       {
         name: "nameOrId",
@@ -1551,12 +1518,14 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
         description: "Task space name, taskId, or numeric id.",
       },
     ],
-    returns: "Promise<object>",
-    example: "const task = await taskSpaces.useOrCreate('google sheets task')",
+    returns: "Promise<TaskSpace>",
+    example:
+      "const task = await egoBrowser.useOrCreateTaskSpace('google sheets task')",
   },
-  "taskSpaces.claim": {
-    signature: "taskSpaces.claim(nameOrId) => Promise<object>",
-    description: "Claim a user-owned task space and select it.",
+  "egoBrowser.claimTaskSpace": {
+    signature: "egoBrowser.claimTaskSpace(nameOrId) => Promise<TaskSpace>",
+    description:
+      "Claim a user-owned TaskSpace, select it, and return its bound object facade.",
     params: [
       {
         name: "nameOrId",
@@ -1565,31 +1534,11 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
         description: "Task space name, taskId, or numeric id.",
       },
     ],
-    returns: "Promise<object>",
-    example: "await taskSpaces.claim(3)",
+    returns: "Promise<TaskSpace>",
+    example: "const task = await egoBrowser.claimTaskSpace(3)",
   },
-  "taskSpaces.complete": {
-    signature: "taskSpaces.complete(nameOrId, options) => Promise<object>",
-    description: "Finish a task space. options.keep is required.",
-    params: [
-      {
-        name: "nameOrId",
-        type: "string | number",
-        required: true,
-        description: "Task space name, taskId, or numeric id.",
-      },
-      {
-        name: "options",
-        type: "{ keep: boolean }",
-        required: true,
-        description: "Whether to keep the task space open.",
-      },
-    ],
-    returns: "Promise<object>",
-    example: "await taskSpaces.complete(task.id, { keep: false })",
-  },
-  "taskSpaces.handOff": {
-    signature: "taskSpaces.handOff(nameOrId?) => Promise<object>",
+  "egoBrowser.handOffTaskSpace": {
+    signature: "egoBrowser.handOffTaskSpace(nameOrId?) => Promise<object>",
     description: "Hand control of a task space to the user for manual action.",
     params: [
       {
@@ -1600,10 +1549,10 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
       },
     ],
     returns: "Promise<object>",
-    example: "await taskSpaces.handOff(task.id)",
+    example: "await egoBrowser.handOffTaskSpace(task.id)",
   },
-  "taskSpaces.takeOver": {
-    signature: "taskSpaces.takeOver(nameOrId?) => Promise<void>",
+  "egoBrowser.takeOverTaskSpace": {
+    signature: "egoBrowser.takeOverTaskSpace(nameOrId?) => Promise<void>",
     description:
       "Take control back after the user explicitly confirms continuation.",
     params: [
@@ -1615,11 +1564,11 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
       },
     ],
     returns: "Promise<void>",
-    example: "await taskSpaces.takeOver(task.id)",
+    example: "await egoBrowser.takeOverTaskSpace(task.id)",
   },
-  "taskSpaces.waitForAgentControl": {
+  "egoBrowser.waitForAgentControlTaskSpace": {
     signature:
-      "taskSpaces.waitForAgentControl(nameOrId, options?) => Promise<void>",
+      "egoBrowser.waitForAgentControlTaskSpace(nameOrId, options?) => Promise<void>",
     description: "Poll until agent control is restored without taking control.",
     params: [
       {
@@ -1635,7 +1584,7 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
       },
     ],
     returns: "Promise<void>",
-    example: "await taskSpaces.waitForAgentControl(task.id)",
+    example: "await egoBrowser.waitForAgentControlTaskSpace(task.id)",
   },
   "site.skills": {
     signature: "site.skills(url?) => Promise<object[]>",
@@ -1887,7 +1836,7 @@ export function playwrightCompatibilitySummary() {
 function compatibilityStatus(path: string): CompatibilityStatus {
   if (
     EGO_EXTENSION_PATHS.has(path) ||
-    /^(egoBrowser|tabs|taskSpaces|site|fetch)\./.test(path) ||
+    /^(egoBrowser|tabs|site|fetch)\./.test(path) ||
     path === "cdp" ||
     path === "help"
   ) {

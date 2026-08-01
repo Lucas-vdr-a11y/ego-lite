@@ -2,14 +2,14 @@
  * Shared case-construction helpers for E2E case files.
  *
  * caseBody / homeCase wrap a case body string with the common boilerplate
- * (taskSpaces.useOrCreate + resetHome) so each case file only expresses its
+ * (egoBrowser.useOrCreateTaskSpace + resetHome) so each case file only expresses its
  * unique logic. buttonRefSetup returns a reusable snippet for snapshot-based
  * ref resolution.
  */
 
 export function caseBody(body) {
   return () => `
-    await taskSpaces.useOrCreate(taskName);
+    await egoBrowser.useOrCreateTaskSpace(taskName);
     ${body}
   `;
 }

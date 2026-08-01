@@ -106,6 +106,7 @@ export function installEgoSdk(
   if (!target || typeof target !== "object") {
     return target;
   }
+  Reflect.deleteProperty(target, "taskSpaces");
   const context = options.context || helpers.helperContext();
   const readyImmediately = options.ready === undefined;
   const readySignal = Promise.resolve(options.ready);

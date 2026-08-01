@@ -123,20 +123,144 @@ test("listTaskSpaces throws on binding error objects", async () => {
   );
 });
 
-test("egoBrowser exposes only the TaskSpace lifecycle surface", () => {
+test("egoBrowser owns the canonical TaskSpace surface", () => {
   const context = helperContext();
 
   assert.deepEqual(Object.keys(context.egoBrowser).sort(), [
+    "claimTaskSpace",
     "closeTaskSpace",
     "completeTaskSpace",
+    "handOffTaskSpace",
     "listTaskSpaces",
     "newTaskSpace",
     "switchTaskSpace",
+    "takeOverTaskSpace",
+    "useOrCreateTaskSpace",
+    "waitForAgentControlTaskSpace",
   ]);
+  assert.equal(context.taskSpaces, undefined);
   assert.equal(context.egoBrowser.newPage, undefined);
   assert.equal(context.egoBrowser.newContext, undefined);
   assert.equal(context.egoBrowser.contexts, undefined);
   assert.equal(context.egoBrowser.close, undefined);
+});
+
+test("egoBrowser useOrCreateTaskSpace returns a bound TaskSpace", async () => {
+  const task = {
+    taskId: "checkout-flow",
+    id: 17,
+    name: "Checkout flow",
+    ownership: "agent",
+  };
+
+  await withEgo(
+    {
+      async listTaskSpaces() {
+        return { taskSpaces: [task] };
+      },
+      async useTaskSpace() {
+        return {};
+      },
+    },
+    async () => {
+      const space = await helperContext().egoBrowser.useOrCreateTaskSpace(
+        task.id,
+      );
+      assert.equal(space.id, task.id);
+      assert.equal(typeof space.tabs.current, "function");
+    },
+  );
+});
+
+test("egoBrowser claimTaskSpace returns a bound TaskSpace", async () => {
+  const task = {
+    taskId: "checkout-flow",
+    id: 18,
+    name: "Checkout flow",
+    ownership: "user",
+  };
+
+  await withEgo(
+    {
+      async listTaskSpaces() {
+        return { taskSpaces: [task] };
+      },
+      async claimTaskSpace(id, name) {
+        return { ...task, id, name, ownership: "agent" };
+      },
+      async useTaskSpace() {
+        return {};
+      },
+    },
+    async () => {
+      const space = await helperContext().egoBrowser.claimTaskSpace(task.id);
+      assert.equal(space.ownership, "agent");
+      assert.equal(typeof space.tabs.current, "function");
+    },
+  );
+});
+
+test("egoBrowser handOffTaskSpace preserves the handoff result", async () => {
+  const task = {
+    taskId: "checkout-flow",
+    id: 19,
+    name: "Checkout flow",
+    ownership: "agent",
+  };
+
+  await withEgo(
+    {
+      async listTaskSpaces() {
+        return { taskSpaces: [task] };
+      },
+      async useTaskSpace() {
+        return {};
+      },
+      async handOffTaskSpace() {
+        return {};
+      },
+    },
+    async () => {
+      assert.deepEqual(
+        await helperContext().egoBrowser.handOffTaskSpace(task.id),
+        { done: true },
+      );
+    },
+  );
+});
+
+test("egoBrowser takeOverTaskSpace restores control", async () => {
+  const calls = [];
+  const task = {
+    taskId: "checkout-flow",
+    id: 20,
+    name: "Checkout flow",
+    ownership: "agentDelegatedToUser",
+  };
+
+  await withEgo(
+    {
+      async listTaskSpaces() {
+        return { taskSpaces: [task] };
+      },
+      async useTaskSpace(id) {
+        calls.push(["useTaskSpace", id]);
+        return {};
+      },
+      async takeOverTaskSpace() {
+        calls.push(["takeOverTaskSpace"]);
+        return {};
+      },
+    },
+    async () => {
+      assert.equal(
+        await helperContext().egoBrowser.takeOverTaskSpace(task.id),
+        undefined,
+      );
+    },
+  );
+
+  assert.deepEqual(calls, [["useTaskSpace", task.id], ["takeOverTaskSpace"]]);
 });
 
 test("egoBrowser lists lightweight TaskSpace information without switching", async () => {
@@ -971,8 +1095,8 @@ test("helper surface exposes Playwright-style object facades", () => {
   assert.equal(typeof context.tabs.close, "function");
   assert.equal(typeof context.tabs.evaluate, "function");
   assert.equal(typeof context.browser, "undefined");
-  assert.equal(typeof context.taskSpaces.useOrCreate, "function");
-  assert.equal(typeof context.taskSpaces.claim, "function");
+  assert.equal(typeof context.egoBrowser.useOrCreateTaskSpace, "function");
+  assert.equal(typeof context.egoBrowser.claimTaskSpace, "function");
   assert.equal(typeof context.site.runTool, "function");
   assert.equal(typeof context.fetch.server, "function");
   assert.equal(typeof context.fetch.browser, "function");
@@ -980,7 +1104,7 @@ test("helper surface exposes Playwright-style object facades", () => {
   assert.equal(typeof context.help, "function");
   assert.match(context.help("fetch"), /timeout uses milliseconds/);
   assert.match(
-    context.help("taskSpaces"),
+    context.help("egoBrowser"),
     /interval and timeout use milliseconds/,
   );
   assert.equal(typeof helperExports.focus, "function");
@@ -2087,7 +2211,6 @@ test("help documents every public callable by its facade path", () => {
   const publicPaths = [
     ...callablePaths(context.page, "page"),
     ...callablePaths(context.tabs, "tabs"),
-    ...callablePaths(context.taskSpaces, "taskSpaces"),
     ...callablePaths(context.egoBrowser, "egoBrowser"),
     ...callablePaths(context.site, "site"),
     ...callablePaths(context.fetch, "fetch"),
@@ -2129,7 +2252,6 @@ test("help supports facade namespaces and disambiguates nested methods", () => {
   assert.match(context.help("mouse"), /page\.mouse\.move\(/);
   assert.match(context.help("page"), /page\.goto\(/);
   assert.match(context.help("locator"), /locator\.fill\(/);
-  assert.match(context.help("taskSpaces"), /taskSpaces\.switch\(/);
   assert.match(context.help(), /\bcdp\b/);
   assert.match(context.help(), /help\(name\?\)/);
   assert.match(context.help("page.keyboard.down"), /Dispatch a keydown event/);
@@ -2142,10 +2264,6 @@ test("help supports facade namespaces and disambiguates nested methods", () => {
     context.help("page.saveScreenshot"),
     /page\.saveScreenshot\(options\?\) => Promise<string>/,
   );
-  assert.match(
-    context.help("taskSpaces.switch"),
-    /taskSpaces\.switch\(nameOrId\)/,
-  );
   assert.match(context.help("down"), /Ambiguous helper name/);
   assert.match(context.help("down"), /page\.keyboard\.down/);
   assert.match(context.help("down"), /page\.mouse\.down/);
@@ -2157,6 +2275,14 @@ test("help supports facade namespaces and disambiguates nested methods", () => {
   assert.match(
     context.help("egoBrowser.listTaskSpaces"),
     /egoBrowser\.listTaskSpaces\(\) => Promise<TaskSpaceInfo\[\]>/,
+  );
+  assert.match(
+    context.help("egoBrowser.useOrCreateTaskSpace"),
+    /egoBrowser\.useOrCreateTaskSpace\(nameOrId\) => Promise<TaskSpace>/,
+  );
+  assert.match(
+    context.help("egoBrowser.claimTaskSpace"),
+    /egoBrowser\.claimTaskSpace\(nameOrId\) => Promise<TaskSpace>/,
   );
   assert.match(
     context.help("egoBrowser.completeTaskSpace"),
@@ -2920,7 +3046,10 @@ test("waitForAgentControl retries while snapshot reports user control", async ()
         return { content: "" };
       }),
       async () => {
-        await waitForAgentControl("t", { interval: 25, timeout: 5_000 });
+        await helperContext().egoBrowser.waitForAgentControlTaskSpace("t", {
+          interval: 25,
+          timeout: 5_000,
+        });
       },
     );
   } finally {

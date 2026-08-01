@@ -11,7 +11,7 @@ export function macosInputRegressionCase() {
       return /bundleID="com\\.apple\\.SystemProfiler"/.test(stdout);
     }
 
-    await taskSpaces.useOrCreate(taskName);
+    await egoBrowser.useOrCreateTaskSpace(taskName);
     await resetHome();
 
     const systemInformationWasRunning = await isSystemInformationRunning();

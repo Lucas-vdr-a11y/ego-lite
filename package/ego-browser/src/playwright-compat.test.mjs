@@ -38,9 +38,10 @@ test("Playwright and ego-specific methods are classified honestly", () => {
   assert.equal(docs["tabs.open"].compatibility.status, "ego-extension");
   assert.equal(docs["browser.listTabs"], undefined);
   assert.equal(
-    docs["taskSpaces.useOrCreate"].compatibility.status,
+    docs["egoBrowser.useOrCreateTaskSpace"].compatibility.status,
     "ego-extension",
   );
+  assert.equal(docs["taskSpaces.useOrCreate"], undefined);
 });
 
 test("every exact classification has an explicit executable contract", async () => {

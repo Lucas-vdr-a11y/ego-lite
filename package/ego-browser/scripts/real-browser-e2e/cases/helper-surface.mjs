@@ -1,6 +1,6 @@
 export function helperSurfaceCase() {
   return `
-    await taskSpaces.useOrCreate(taskName);
+    await egoBrowser.useOrCreateTaskSpace(taskName);
     await resetHome();
     assertEqual(typeof globalThis.page, "object", "page facade is installed");
     assertEqual(typeof page.goto, "function", "page.goto is installed");
@@ -61,16 +61,14 @@ export function helperSurfaceCase() {
     assertEqual(typeof tabs.iframeTarget, "undefined", "internal iframeTarget is not exposed");
     assertEqual(typeof globalThis.browser, "undefined", "Playwright Browser is not emulated");
     assertEqual(typeof globalThis.egoBrowser, "object", "egoBrowser facade is installed");
-    assertEqual(Object.keys(egoBrowser).sort().join(","), "closeTaskSpace,completeTaskSpace,listTaskSpaces,newTaskSpace,switchTaskSpace", "egoBrowser exposes only TaskSpace lifecycle methods");
+    assertEqual(Object.keys(egoBrowser).sort().join(","), "claimTaskSpace,closeTaskSpace,completeTaskSpace,handOffTaskSpace,listTaskSpaces,newTaskSpace,switchTaskSpace,takeOverTaskSpace,useOrCreateTaskSpace,waitForAgentControlTaskSpace", "egoBrowser exposes the complete TaskSpace surface");
     assertEqual(typeof egoBrowser.newPage, "undefined", "egoBrowser.newPage is not exposed");
     assertEqual(typeof egoBrowser.newContext, "undefined", "egoBrowser.newContext is not exposed");
     assertEqual(typeof egoBrowser.contexts, "undefined", "egoBrowser.contexts is not exposed");
     assertEqual(typeof egoBrowser.close, "undefined", "egoBrowser.close is not exposed");
     assertEqual(typeof globalThis.listTabs, "undefined", "native listTabs is not exposed at the top level");
     assertEqual(typeof globalThis.createTab, "undefined", "native createTab is not exposed at the top level");
-    assertEqual(typeof globalThis.taskSpaces, "object", "taskSpaces facade is installed");
-    assertEqual(typeof taskSpaces.useOrCreate, "function", "taskSpaces.useOrCreate is installed");
-    assertEqual(typeof taskSpaces.claim, "function", "taskSpaces.claim is installed");
+    assertEqual(typeof globalThis.taskSpaces, "undefined", "taskSpaces facade is removed");
     assertEqual(typeof globalThis.site, "object", "site facade is installed");
     assertEqual(typeof site.runTool, "function", "site.runTool is installed");
     assertEqual(typeof globalThis.fetch, "object", "fetch facade is installed");

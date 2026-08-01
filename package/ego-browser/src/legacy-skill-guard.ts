@@ -79,14 +79,14 @@ const LEGACY_GLOBAL_HELPERS = [
  */
 export const LEGACY_TASK_SPACE_REPLACEMENTS = {
   listTaskSpaces: "egoBrowser.listTaskSpaces()",
-  switchTaskSpace: "taskSpaces.switch(nameOrId)",
-  newTaskSpace: "taskSpaces.new(name)",
-  useOrCreateTaskSpace: "taskSpaces.useOrCreate(nameOrId)",
-  claimTaskSpace: "taskSpaces.claim(nameOrId)",
-  completeTaskSpace: "taskSpaces.complete(nameOrId, { keep })",
-  handOffTaskSpace: "taskSpaces.handOff(nameOrId)",
-  takeOverTaskSpace: "taskSpaces.takeOver(nameOrId)",
-  waitForAgentControl: "taskSpaces.waitForAgentControl(nameOrId)",
+  switchTaskSpace: "egoBrowser.switchTaskSpace(nameOrId)",
+  newTaskSpace: "egoBrowser.newTaskSpace(name)",
+  useOrCreateTaskSpace: "egoBrowser.useOrCreateTaskSpace(nameOrId)",
+  claimTaskSpace: "egoBrowser.claimTaskSpace(nameOrId)",
+  completeTaskSpace: "egoBrowser.completeTaskSpace(nameOrId)",
+  handOffTaskSpace: "egoBrowser.handOffTaskSpace(nameOrId)",
+  takeOverTaskSpace: "egoBrowser.takeOverTaskSpace(nameOrId)",
+  waitForAgentControl: "egoBrowser.waitForAgentControlTaskSpace(nameOrId)",
 } as const;
 
 export const STALE_SKILL_PREFIX = "[ego-browser:skill-stale]";

@@ -4,8 +4,8 @@ export const nativeTaskSpaceCloseRegressionCase = {
   crashGraceMs: 300,
   body() {
     return `
-      const originalTask = await taskSpaces.useOrCreate(taskName);
-      const scratch = await taskSpaces.new(taskName + " native close regression");
+      const originalTask = await egoBrowser.useOrCreateTaskSpace(taskName);
+      const scratch = await egoBrowser.newTaskSpace(taskName + " native close regression");
       let scratchClosed = false;
       try {
         await page.goto(baseUrl + "/?native-close-regression=" + Date.now(), {
@@ -32,19 +32,18 @@ export const nativeTaskSpaceCloseRegressionCase = {
         const dialog = await dialogPromise;
         await dialog.dismiss();
 
-        const closed = await taskSpaces.complete(scratch.id, { keep: false });
-        scratchClosed = closed.done;
-        assertEqual(closed.done, true, "native close completes a task space with popup and dialog history");
-        const spaces = await taskSpaces.list();
+        await egoBrowser.closeTaskSpace(scratch.id);
+        scratchClosed = true;
+        const spaces = await egoBrowser.listTaskSpaces();
         assert(
           !spaces.some((space) => space.id === scratch.id),
           "native close removes the task space"
         );
       } finally {
         if (!scratchClosed) {
-          await taskSpaces.complete(scratch.id, { keep: true }).catch(() => {});
+          await egoBrowser.completeTaskSpace(scratch.id).catch(() => {});
         }
-        await taskSpaces.switch(originalTask.id).catch(() => {});
+        await egoBrowser.switchTaskSpace(originalTask.id).catch(() => {});
       }
     `;
   },

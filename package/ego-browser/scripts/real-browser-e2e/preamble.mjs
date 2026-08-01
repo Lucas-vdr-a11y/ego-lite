@@ -234,8 +234,8 @@ async function closeFixtureTabs() {
 }
 
 async function resetHome() {
-  await taskSpaces.takeOver(taskName).catch(() => {});
-  await taskSpaces.waitForAgentControl(taskName, {
+  await egoBrowser.takeOverTaskSpace(taskName).catch(() => {});
+  await egoBrowser.waitForAgentControlTaskSpace(taskName, {
     interval: 100,
     timeout: 5_000,
   });

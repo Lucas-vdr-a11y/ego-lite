@@ -13,7 +13,7 @@ export function environmentCase() {
     assertEqual(health.ok, true, "fixture health endpoint is ok through serverFetch");
     assertEqual(health.taskName, taskName, "fixture health endpoint carries the current task name");
 
-    const task = await taskSpaces.useOrCreate(taskName);
+    const task = await egoBrowser.useOrCreateTaskSpace(taskName);
     assertEqual(task.name, taskName, "environment creates/selects isolated task space");
 
     let home = await resetHome();

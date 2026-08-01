@@ -10,14 +10,14 @@ import { resetSink } from "../dist/src/output-sink.js";
 
 const EXPECTED_TASK_SPACE_REPLACEMENTS = {
   listTaskSpaces: "egoBrowser.listTaskSpaces()",
-  switchTaskSpace: "taskSpaces.switch(nameOrId)",
-  newTaskSpace: "taskSpaces.new(name)",
-  useOrCreateTaskSpace: "taskSpaces.useOrCreate(nameOrId)",
-  claimTaskSpace: "taskSpaces.claim(nameOrId)",
-  completeTaskSpace: "taskSpaces.complete(nameOrId, { keep })",
-  handOffTaskSpace: "taskSpaces.handOff(nameOrId)",
-  takeOverTaskSpace: "taskSpaces.takeOver(nameOrId)",
-  waitForAgentControl: "taskSpaces.waitForAgentControl(nameOrId)",
+  switchTaskSpace: "egoBrowser.switchTaskSpace(nameOrId)",
+  newTaskSpace: "egoBrowser.newTaskSpace(name)",
+  useOrCreateTaskSpace: "egoBrowser.useOrCreateTaskSpace(nameOrId)",
+  claimTaskSpace: "egoBrowser.claimTaskSpace(nameOrId)",
+  completeTaskSpace: "egoBrowser.completeTaskSpace(nameOrId)",
+  handOffTaskSpace: "egoBrowser.handOffTaskSpace(nameOrId)",
+  takeOverTaskSpace: "egoBrowser.takeOverTaskSpace(nameOrId)",
+  waitForAgentControl: "egoBrowser.waitForAgentControlTaskSpace(nameOrId)",
 };
 
 test("legacy skill guards cover only the removed task-space global surface", () => {

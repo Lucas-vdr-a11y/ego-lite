@@ -1,6 +1,6 @@
 export function pointerClickCase() {
   return `
-    await taskSpaces.useOrCreate(taskName);
+    await egoBrowser.useOrCreateTaskSpace(taskName);
     await resetHome();
     console.log(JSON.stringify({ pointerStep: "click ready" }));
 
@@ -53,7 +53,7 @@ export function pointerClickCase() {
 
 export function pointerHoverDragCase() {
   return `
-    await taskSpaces.useOrCreate(taskName);
+    await egoBrowser.useOrCreateTaskSpace(taskName);
     await resetHome();
     console.log(JSON.stringify({ pointerStep: "hover drag ready" }));
 
@@ -106,7 +106,7 @@ export function pointerHoverDragCase() {
 
 export function scrollHelpersCase() {
   return `
-    await taskSpaces.useOrCreate(taskName);
+    await egoBrowser.useOrCreateTaskSpace(taskName);
     await resetHome();
     console.log(JSON.stringify({ pointerStep: "scroll ready" }));
 
@@ -183,7 +183,7 @@ export function scrollHelpersCase() {
 
 export function pointerValidationCase() {
   return `
-    await taskSpaces.useOrCreate(taskName);
+    await egoBrowser.useOrCreateTaskSpace(taskName);
     await resetHome();
 
     await assertRejects(
@@ -221,7 +221,7 @@ export function pointerValidationCase() {
 
 export function pointerInteractionRegressionCase() {
   return `
-    await taskSpaces.useOrCreate(taskName);
+    await egoBrowser.useOrCreateTaskSpace(taskName);
     await resetHome();
     console.log(JSON.stringify({ pointerStep: "interaction regression ready" }));
 

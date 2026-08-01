@@ -164,10 +164,7 @@ test("native task-space close regression remains a dedicated opt-in e2e", () => 
   const source = regression.body();
   assert.match(source, /page\.waitForEvent\("popup"/);
   assert.match(source, /page\.waitForEvent\("dialog"/);
-  assert.match(
-    source,
-    /taskSpaces\.complete\(scratch\.id, \{ keep: false \}\)/,
-  );
+  assert.match(source, /egoBrowser\.closeTaskSpace\(scratch\.id\)/);
 });
 
 test("native task-space close regression has a dedicated npm entry point", () => {

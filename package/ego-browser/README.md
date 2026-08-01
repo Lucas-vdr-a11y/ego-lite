@@ -14,7 +14,7 @@ npm run build     # bundle to dist/out/index.js
 npm test          # build + tsc --noEmit + node --test
 ```
 
-The build emits a single ESM file `dist/out/index.js`. The ego-browser browser dispatches `ego-browser nodejs <<'EOF' ... EOF` heredocs to that bundle. Inside the heredoc, the Playwright-style `page` facade and ego-specific `egoBrowser`, `tabs`, `taskSpaces`, `site`, `fetch`, and `cdp` facades are preloaded.
+The build emits a single ESM file `dist/out/index.js`. The ego-browser browser dispatches `ego-browser nodejs <<'EOF' ... EOF` heredocs to that bundle. Inside the heredoc, the Playwright-style `page` facade and ego-specific `egoBrowser`, `tabs`, `site`, `fetch`, and `cdp` facades are preloaded.
 
 ```bash
 ego-browser nodejs <<'EOF'

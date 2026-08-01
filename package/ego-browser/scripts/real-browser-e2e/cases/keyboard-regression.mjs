@@ -1,6 +1,6 @@
 export function keyboardRegressionCase() {
   return `
-    await taskSpaces.useOrCreate(taskName);
+    await egoBrowser.useOrCreateTaskSpace(taskName);
     await resetHome();
 
     /* Issue 1: fill on type=email replaces the prior value without crashing.

@@ -2,7 +2,7 @@ import { parse } from "acorn";
 
 // Build-time implementation-doc extraction.
 //
-// Public facade paths such as page.mouse.move and taskSpaces.switch are
+// Public facade paths such as page.mouse.move and egoBrowser.switchTaskSpace are
 // documented by PUBLIC_API_DOCS. These extracted JSDoc records are retained as
 // a compatibility fallback for top-level extension helpers that are genuinely
 // present in helperContext but do not belong to the built-in facade. Extraction

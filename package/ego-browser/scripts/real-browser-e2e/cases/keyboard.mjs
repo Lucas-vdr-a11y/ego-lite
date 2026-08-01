@@ -1,6 +1,6 @@
 export function keyboardCase() {
   return `
-    await taskSpaces.useOrCreate(taskName);
+    await egoBrowser.useOrCreateTaskSpace(taskName);
     await resetHome();
 
     await page.locator("#text-input").fill("filled", { timeout: 3000 });

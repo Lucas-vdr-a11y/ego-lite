@@ -9,6 +9,7 @@ test("installEgoSdk keeps page.locator chainable while wrapping locator methods"
   const target = {
     browser: { listTabs() {} },
     click() {},
+    taskSpaces: { useOrCreate() {} },
     useOrCreateTaskSpace() {},
   };
   try {
@@ -16,12 +17,18 @@ test("installEgoSdk keeps page.locator chainable while wrapping locator methods"
     assert.equal(typeof target.click, "undefined");
     assert.equal(typeof target.browser, "undefined");
     assert.deepEqual(Object.keys(target.egoBrowser).sort(), [
+      "claimTaskSpace",
       "closeTaskSpace",
       "completeTaskSpace",
+      "handOffTaskSpace",
       "listTaskSpaces",
       "newTaskSpace",
       "switchTaskSpace",
+      "takeOverTaskSpace",
+      "useOrCreateTaskSpace",
+      "waitForAgentControlTaskSpace",
     ]);
+    assert.equal(target.taskSpaces, undefined);
     assert.equal(target.egoBrowser.newPage, undefined);
     assert.equal(target.egoBrowser.newContext, undefined);
     assert.equal(target.egoBrowser.contexts, undefined);
@@ -41,7 +48,7 @@ test("installEgoSdk keeps page.locator chainable while wrapping locator methods"
         assert.equal(error.name, "EgoBrowserSkillStaleError");
         assert.match(error.message, /^\[ego-browser:skill-stale\]/);
         assert.match(error.message, /useOrCreateTaskSpace/);
-        assert.match(error.message, /taskSpaces\.useOrCreate/);
+        assert.match(error.message, /egoBrowser\.useOrCreateTaskSpace/);
         return true;
       },
     );

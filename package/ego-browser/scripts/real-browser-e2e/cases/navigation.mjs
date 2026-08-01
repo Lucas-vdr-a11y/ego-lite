@@ -1,6 +1,6 @@
 export function navigationCase() {
   return `
-    await taskSpaces.useOrCreate(taskName);
+    await egoBrowser.useOrCreateTaskSpace(taskName);
     const home = await resetHome();
 
     const info = await page.info();

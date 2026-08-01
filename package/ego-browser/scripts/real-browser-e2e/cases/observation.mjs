@@ -1,6 +1,6 @@
 export function observationCase() {
   return `
-    await taskSpaces.useOrCreate(taskName);
+    await egoBrowser.useOrCreateTaskSpace(taskName);
     await resetHome();
 
     const raw = await page.snapshotRaw({ includeStableLocator: true });

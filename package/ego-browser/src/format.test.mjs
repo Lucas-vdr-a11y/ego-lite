@@ -145,7 +145,7 @@ test("formatCliLogValue documents the waitForURL matcher and default", () => {
 test("formatCliLogValue documents all public time options in milliseconds", () => {
   const formatted = formatCliLogValue({
     helpers: {
-      taskSpaces: { waitForAgentControl() {} },
+      egoBrowser: { waitForAgentControlTaskSpace() {} },
       fetch: {
         server() {},
         browser() {},
@@ -155,7 +155,8 @@ test("formatCliLogValue documents all public time options in milliseconds", () =
 
   const parsed = JSON.parse(formatted);
   assert.match(
-    parsed.helpers.taskSpaces.waitForAgentControl.params[1].description,
+    parsed.helpers.egoBrowser.waitForAgentControlTaskSpace.params[1]
+      .description,
     /milliseconds/,
   );
   assert.match(
@@ -177,9 +178,9 @@ test("formatCliLogValue keeps facade signatures and returned subsets current", (
         waitForEvent() {},
         waitForFunction() {},
       },
-      taskSpaces: {
-        takeOver() {},
-        waitForAgentControl() {},
+      egoBrowser: {
+        takeOverTaskSpace() {},
+        waitForAgentControlTaskSpace() {},
       },
     },
   });
@@ -204,15 +205,15 @@ test("formatCliLogValue keeps facade signatures and returned subsets current", (
     /jsonValue\(\).*dispose\(\)/,
   );
   assert.equal(
-    parsed.helpers.taskSpaces.takeOver.signature,
-    "taskSpaces.takeOver(nameOrId?) => Promise<void>",
+    parsed.helpers.egoBrowser.takeOverTaskSpace.signature,
+    "egoBrowser.takeOverTaskSpace(nameOrId?) => Promise<void>",
   );
   assert.equal(
-    parsed.helpers.taskSpaces.waitForAgentControl.signature,
-    "taskSpaces.waitForAgentControl(nameOrId, options?) => Promise<void>",
+    parsed.helpers.egoBrowser.waitForAgentControlTaskSpace.signature,
+    "egoBrowser.waitForAgentControlTaskSpace(nameOrId, options?) => Promise<void>",
   );
   assert.equal(
-    parsed.helpers.taskSpaces.waitForAgentControl.params[0].required,
+    parsed.helpers.egoBrowser.waitForAgentControlTaskSpace.params[0].required,
     true,
   );
 });

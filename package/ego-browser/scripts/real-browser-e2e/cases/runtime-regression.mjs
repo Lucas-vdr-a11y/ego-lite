@@ -1,6 +1,6 @@
 export function runtimeRegressionCase() {
   return `
-    await taskSpaces.useOrCreate(taskName);
+    await egoBrowser.useOrCreateTaskSpace(taskName);
     await resetHome();
 
     /* Issue 2: waitForSelector shares the unified resolver — xpath= must resolve a

@@ -57,7 +57,7 @@ test("help works when the shipped bundle runs as an eval module", () => {
   const probe = [
     'console.log(globalThis.help("click"))',
     'console.log(globalThis.help("page.mouse.move"))',
-    'console.log(globalThis.help("taskSpaces.switch"))',
+    'console.log(globalThis.help("egoBrowser.switchTaskSpace"))',
   ].join(";\n");
   const result = spawnSync(process.execPath, ["--input-type=module"], {
     input: `${bundle}\n${probe}\n`,
@@ -80,7 +80,7 @@ test("help works when the shipped bundle runs as an eval module", () => {
     `expected facade-path mouse help in:\n${result.stdout}`,
   );
   assert.ok(
-    result.stdout.includes("taskSpaces.switch("),
+    result.stdout.includes("egoBrowser.switchTaskSpace("),
     `expected facade-path task-space help in:\n${result.stdout}`,
   );
 });

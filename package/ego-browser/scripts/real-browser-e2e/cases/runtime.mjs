@@ -1,6 +1,6 @@
 export function waitHelpersCase() {
   return `
-    await taskSpaces.useOrCreate(taskName);
+    await egoBrowser.useOrCreateTaskSpace(taskName);
     await resetHome();
 
     const waitedAt = Date.now();
@@ -22,7 +22,7 @@ export function waitHelpersCase() {
 
 export function fetchHelpersCase() {
   return `
-    await taskSpaces.useOrCreate(taskName);
+    await egoBrowser.useOrCreateTaskSpace(taskName);
     await resetHome();
 
     const serverText = await fetch.server(baseUrl + "/api/text", { timeout: 5_000 });
@@ -92,7 +92,7 @@ export function fetchHelpersCase() {
 
 export function cdpJsHelpCase() {
   return `
-    await taskSpaces.useOrCreate(taskName);
+    await egoBrowser.useOrCreateTaskSpace(taskName);
     await resetHome();
 
     await cdp("Network.enable");

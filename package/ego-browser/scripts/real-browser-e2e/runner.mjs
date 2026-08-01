@@ -240,8 +240,12 @@ export async function runRealBrowserE2e() {
       "task-space cleanup",
       `
         try {
-          const result = await taskSpaces.complete(taskName, { keep: keepTaskSpace });
-          console.log(JSON.stringify({ cleanup: result }));
+          if (keepTaskSpace) {
+            await egoBrowser.completeTaskSpace(taskName);
+          } else {
+            await egoBrowser.closeTaskSpace(taskName);
+          }
+          console.log(JSON.stringify({ cleanup: true }));
         } catch (error) {
           if (!String(error?.message || error).includes("task space not found")) {
             throw error;
