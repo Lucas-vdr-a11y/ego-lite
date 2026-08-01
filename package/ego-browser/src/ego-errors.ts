@@ -12,7 +12,7 @@
  * other code (and any unknown future code) defers to the native error message.
  *
  * Single source of truth — error handling was previously duplicated across
- * helpers.ts and driver/nav.ts.
+ * helpers.ts and browser-runtime.ts.
  */
 
 import { markHardStop } from "./output-sink.js";

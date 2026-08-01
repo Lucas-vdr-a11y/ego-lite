@@ -1,7 +1,7 @@
 {
   "name": "ego-browser-v2",
   "version": "0.1.0",
-  "description": "A TypeScript single-file build of the ego-browser CDP harness.",
+  "description": "TaskSpace control and native Playwright integration for ego-browser.",
   "type": "module",
   "bin": {
     "ego-browser": "./dist/out/index.js"
@@ -14,10 +14,7 @@
     "prepare": "if [ \"$CI\" = \"true\" ]; then exit 0; fi; cd ../.. && lefthook install",
     "style:check": "prettier --check",
     "typecheck": "tsc --noEmit",
-    "compat:check": "node scripts/check-playwright-compat.mjs --report",
-    "compat:report": "node scripts/check-playwright-compat.mjs --report",
-    "compat:update": "node scripts/check-playwright-compat.mjs --write",
-    "test": "npm run compat:check && npm run build && npm run typecheck && node --test \"src/**/*.test.mjs\" \"test/*.test.js\"",
+    "test": "npm run build && npm run typecheck && node --test \"src/**/*.test.mjs\" \"test/*.test.js\"",
     "mutation-check": "npm run build && node scripts/mutation-check.mjs",
     "validate:agent-style": "node scripts/validate-agent-style.mjs",
     "validate:learnings": "npm run build && EGO_BROWSER_AGENT_WORKSPACE=../../skills/ego-browser node dist/scripts/validate-site-skills.js",
@@ -33,13 +30,13 @@
     "@types/node": "^22.15.29",
     "esbuild": "^0.28.1",
     "lefthook": "^2.1.9",
-    "playwright-core": "1.52.0",
     "prettier": "^3.8.4",
     "rollup": "^4.60.4",
     "tslib": "^2.8.1",
     "typescript": "^5.8.3"
   },
   "dependencies": {
-    "acorn": "^8.16.0"
+    "acorn": "^8.16.0",
+    "playwright-core": "1.52.0"
   }
 }

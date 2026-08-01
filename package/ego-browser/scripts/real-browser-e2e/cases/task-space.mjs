@@ -27,39 +27,23 @@ export function taskSpaceCase() {
     if (!keepTaskSpace) {
       const scratch = await egoBrowser.newTaskSpace(taskName + " scratch");
       assertEqual(scratch.name, taskName + " scratch", "egoBrowser.newTaskSpace creates a scratch space");
-      assertEqual(typeof scratch.tabs.open, "function", "TaskSpace exposes bound tabs");
+      assertEqual(typeof scratch.tabs, "undefined", "TaskSpace does not expose legacy tabs");
+      assertEqual(typeof scratch.page.goto, "function", "TaskSpace exposes a native Playwright Page");
+      assertEqual(typeof scratch.context.newPage, "function", "TaskSpace exposes a native Playwright BrowserContext");
+      await scratch.page
+        .goto(baseUrl + "/secondary?task-space=scratch", {
+          waitUntil: "load",
+          timeout: 10_000,
+        })
+        .catch((error) => {
+          error.message += "; current URL: " + scratch.page.url();
+          throw error;
+        });
+      assertIncludes(scratch.page.url(), "/secondary", "TaskSpace Page navigates with Playwright");
+
       const scratchByName = await egoBrowser.switchTaskSpace(scratch.name);
       assertEqual(scratchByName.id, scratch.id, "egoBrowser switches by TaskSpace name");
-      const scratchTab = await scratch.tabs.open(baseUrl + "/secondary?task-space=scratch", {
-        wait: true,
-        timeout: 10_000,
-      });
-      assertEqual(scratchTab.page.targetId, scratchTab.targetId, "TaskSpace tabs expose target-bound Pages");
-
-      await egoBrowser.switchTaskSpace(task.id);
-      assertIncludes(scratchTab.page.url(), "/secondary", "a bound Tab Page reselects its TaskSpace");
-      await egoBrowser.switchTaskSpace(task.id);
-      assertIncludes(
-        await scratchTab.page.snapshot(),
-        "Secondary tab",
-        "a bound Tab Page snapshots its own target"
-      );
-      await egoBrowser.switchTaskSpace(task.id);
-      await assertRejects(
-        () => tabs.activate(scratchTab),
-        "tabs.activate target not found",
-        "tabs.activate rejects a target from another task space"
-      );
-      await assertRejects(
-        () => tabs.close(scratchTab),
-        "tabs.close target not found",
-        "tabs.close rejects a target from another task space"
-      );
-      await assertRejects(
-        () => tabs.evaluate(scratchTab, "document.title"),
-        "tabs.evaluate target not found",
-        "tabs.evaluate rejects a target from another task space"
-      );
+      assertIncludes(scratchByName.page.url(), "/secondary", "TaskSpace preserves its Playwright Page");
 
       const closed = await egoBrowser.closeTaskSpace(scratch.id);
       assertEqual(closed.done, true, "egoBrowser.closeTaskSpace reports successful scratch task destruction");

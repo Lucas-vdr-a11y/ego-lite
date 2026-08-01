@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 import * as runner from "../scripts/real-browser-e2e/runner.mjs";
-import { pageEventCases } from "../scripts/real-browser-e2e/cases/page-events.mjs";
 import { taskSpaceCase } from "../scripts/real-browser-e2e/cases/task-space.mjs";
 import { e2eCases } from "../scripts/real-browser-e2e/cases/index.mjs";
 
@@ -25,6 +24,25 @@ test("real-browser e2e runs opt-in cases only when explicitly selected", () => {
   );
 });
 
+test("TaskSpace context lifecycle runs before existing real-browser cases", () => {
+  assert.equal(e2eCases[0]?.name, "TaskSpace context lifecycle");
+});
+
+test("TaskSpace context lifecycle covers isolation and stale Playwright handles", () => {
+  const lifecycleCase = e2eCases.find(
+    (testCase) => testCase.name === "TaskSpace context lifecycle",
+  );
+
+  assert.ok(lifecycleCase);
+  const source = lifecycleCase.body();
+  assert.match(source, /const lifecycleSpaceCount = 3/);
+  assert.match(source, /context\.newPage/);
+  assert.match(source, /switchTaskSpace/);
+  assert.match(source, /assertDisconnected/);
+  assert.match(source, /every\(\(url\) => url\.includes/);
+  assert.match(source, /closeTaskSpace/);
+});
+
 test("task-space keep mode does not create a destructively closed scratch space", () => {
   const source = taskSpaceCase();
   assert.match(
@@ -40,17 +58,6 @@ test("task-space e2e verifies structured egoBrowser action results", () => {
   assert.match(source, /assertEqual\(handOffResult\.done, true/);
   assert.match(source, /assertEqual\(takeOverResult\.done, true/);
   assert.match(source, /assertEqual\(waitResult\.done, true/);
-});
-
-test("popup event e2e closes the popup it creates", () => {
-  const popupCase = pageEventCases.find(
-    (testCase) => testCase.name === "page popup event helper",
-  );
-  assert.ok(popupCase);
-  assert.match(
-    popupCase.body(),
-    /finally \{[\s\S]*popup\.close\(\)[\s\S]*tabs\.activate\(originalTab\)/,
-  );
 });
 
 test("agent-facing sources do not publish the removed browser tab namespace", () => {
@@ -109,11 +116,11 @@ test("skill uses the TaskSpace object model without documenting the removed Brow
   );
   assert.match(
     quickStart,
-    /await task\.tabs\.openOrReuse\('https:\/\/example\.com', \{ waitUntil: 'load', timeout: 20000 \}\)/,
+    /await task\.page\.goto\('https:\/\/example\.com', \{ waitUntil: 'load', timeout: 20000 \}\)/,
   );
-  assert.match(quickStart, /console\.log\(await tab\.page\.snapshot\(\)\)/);
+  assert.match(quickStart, /task\.page\.(?:title|url)\(/);
   assert.match(quickStart, /await egoBrowser\.completeTaskSpace\(task\.id\)/);
-  assert.doesNotMatch(quickStart, /getByRole|innerText|page\.url/);
+  assert.doesNotMatch(quickStart, /task\.tabs|openOrReuse/);
   assert.doesNotMatch(skill, /Playwright `Browser`/);
   assert.doesNotMatch(skill, /`Browser\.(?:grantPermissions|setPermission)`/);
   assert.match(
@@ -171,9 +178,21 @@ test("native task-space close regression remains a dedicated opt-in e2e", () => 
   assert.ok(regression);
   assert.equal(regression.optIn, true);
   const source = regression.body();
-  assert.match(source, /page\.waitForEvent\("popup"/);
-  assert.match(source, /page\.waitForEvent\("dialog"/);
+  assert.match(source, /scratch\.page\.waitForEvent\("popup"/);
+  assert.match(source, /scratch\.page\.waitForEvent\("dialog"/);
   assert.match(source, /egoBrowser\.closeTaskSpace\(scratch\.id\)/);
+});
+
+test("real-browser e2e exercises native Playwright by default", () => {
+  const playwrightCase = e2eCases.find(
+    (testCase) => testCase.name === "native Playwright TaskSpace",
+  );
+  assert.ok(playwrightCase);
+  assert.notEqual(playwrightCase.optIn, true);
+  const source = playwrightCase.body();
+  assert.match(source, /task\.page\.goto/);
+  assert.match(source, /task\.context\.newPage/);
+  assert.doesNotMatch(source, /task\.tabs|openOrReuse/);
 });
 
 test("native task-space close regression has a dedicated npm entry point", () => {

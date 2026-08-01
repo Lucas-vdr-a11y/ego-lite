@@ -3,37 +3,15 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { setOverrides, state } from "./state.js";
-import { parseAriaRef } from "./aria-ref-map.js";
 import { assertNoEgoError, isEgoUserControlError } from "./ego-errors.js";
 import { help as helpRuntime, formatHelp } from "./help-runtime.js";
-import { targetClosedError } from "./playwright-errors.js";
-import { isBrowserRuntime, subscribeBrowserEvent } from "./browser-runtime.js";
 import { cdp, decodeUnserializableJsValue, evaluate } from "./cdp-eval.js";
-import * as pointer from "./driver/pointer.js";
-import * as keyboard from "./driver/keyboard.js";
-import * as locator from "./driver/locator.js";
-import * as nav from "./driver/nav.js";
-import * as observe from "./driver/observe.js";
-import * as waits from "./driver/waits.js";
-import * as files from "./driver/files.js";
-import * as downloads from "./driver/downloads.js";
-import * as screencast from "./driver/screencast.js";
-import * as aria from "./driver/aria-snapshot.js";
-import { waitForActionableElement } from "./driver/actionability.js";
-import { locatorTarget } from "./frame-context.js";
-import { parseRef } from "./ref-map.js";
 import { browserFetch, serverFetch } from "./http.js";
-import { createPageNetworkController } from "./page-network.js";
-import { createPageScriptController } from "./page-scripts.js";
-import { createPageClock } from "./page-clock.js";
-import { createPageEnvironmentController } from "./page-environment.js";
-import { createPageHandleController } from "./page-handles.js";
-import { createPageFrameController } from "./page-frames.js";
 import {
-  createTargetContext,
-  runWithTarget,
-  type TargetContext,
-} from "./target-context.js";
+  connectPlaywrightTaskSpace,
+  disconnectPlaywrightTaskSpace,
+  setPlaywrightTaskSpaceConnector,
+} from "./playwright-taskspace.js";
 import {
   loadBrowserToolSource,
   loadLearnedContext,
@@ -42,92 +20,8 @@ import {
   wrapBrowserTool,
 } from "./learning/index.js";
 
-const pageByTargetContext = new WeakMap<TargetContext, any>();
-const initializePageState = Symbol("initializePageState");
-let globalPageFacade: any;
-
 export { NAME } from "./state.js";
-export { cdp, evaluate, evaluateInTarget } from "./cdp-eval.js";
-export {
-  click,
-  dblclick,
-  hover,
-  drag,
-  dragTo,
-  wheel,
-  scrollIntoViewIfNeeded,
-} from "./driver/pointer.js";
-export {
-  press,
-  down,
-  up,
-  insertText,
-  focus,
-  fill,
-  pressSequentially,
-  check,
-  uncheck,
-  setChecked,
-  selectOption,
-  dispatchEvent,
-} from "./driver/keyboard.js";
-export {
-  textContent,
-  innerText,
-  inputValue,
-  isChecked,
-  isVisible,
-  isHidden,
-  isEnabled,
-  isDisabled,
-  isEditable,
-  getAttribute,
-  blur,
-  selectText,
-  boundingBox,
-  count,
-  allInnerTexts,
-  allTextContents,
-  innerHTML,
-  evaluateLocator,
-  evaluateAll,
-} from "./driver/locator.js";
-export {
-  INTERNAL_URL_PREFIXES,
-  pageInfo,
-  listTabs,
-  currentTab,
-  switchTab,
-  openTab,
-  openOrReuseTab,
-  closeTab,
-  evaluateTab,
-  goto,
-  reload,
-  goBack,
-  goForward,
-  content,
-  setContent,
-} from "./driver/nav.js";
-export {
-  snapshot,
-  snapshotRaw,
-  screenshot,
-  saveScreenshot,
-  elementCenter,
-  drainEvents,
-} from "./driver/observe.js";
-export {
-  waitForTimeout,
-  waitForLoadState,
-  waitForSelector,
-  waitForFunction,
-  waitForURL,
-  waitForRequest,
-  waitForResponse,
-} from "./driver/waits.js";
-export { setInputFiles } from "./driver/files.js";
-export { startScreencast, stopScreencast } from "./driver/screencast.js";
+export { cdp } from "./cdp-eval.js";
 export { browserFetch, serverFetch } from "./http.js";
 
 /**
@@ -173,8 +67,6 @@ export async function listTaskSpaces() {
 function isAgentOwned(ownership) {
   return ownership === "agent" || ownership === "agentDelegatedToUser";
 }
-
-let selectedTaskSpaceId: number | null = null;
 
 export type TaskSpaceActionResult =
   | { done: true }
@@ -284,15 +176,7 @@ async function selectTaskSpace(ego, space, op: string) {
   }
   const id = taskSpaceNumericId(space, op);
   assertNoEgoError(await ego.useTaskSpace(id), op);
-  selectedTaskSpaceId = id;
   return space;
-}
-
-async function ensureTaskSpaceSelected(space) {
-  const id = taskSpaceNumericId(space, "TaskSpace");
-  if (selectedTaskSpaceId !== id) {
-    await switchTaskSpace(id);
-  }
 }
 
 async function selectTaskSpaceIfProvided(
@@ -358,7 +242,6 @@ export async function completeTaskSpace(
     }
     assertNoEgoError(await ego.closeTaskSpace(), "completeTaskSpace");
   }
-  selectedTaskSpaceId = null;
   return { done: true };
 }
 
@@ -454,7 +337,7 @@ export async function waitForAgentControl(
     if (Date.now() >= deadline) {
       throw new Error(`waitForAgentControl timed out after ${timeout}ms`);
     }
-    await waits.waitForTimeout(interval);
+    await state.sleep(interval);
   }
 }
 
@@ -523,7 +406,7 @@ export async function siteSkillsForUrl(url) {
  * @returns {Promise<Array<object|string>>}
  */
 export async function siteSkills(url = undefined) {
-  const targetUrl = url ?? (await nav.pageInfo()).url ?? "";
+  const targetUrl = url ?? (await currentTaskSpaceUrl());
   return siteSkillsForUrl(targetUrl);
 }
 
@@ -561,925 +444,33 @@ export async function runSiteBrowserTool(siteId, toolName, args: any = {}) {
  * @returns {Promise<object>} Learned context with knowledge and tool signatures.
  */
 export async function learnContext(url = undefined) {
-  const targetUrl = url ?? (await nav.pageInfo()).url ?? "";
+  const targetUrl = url ?? (await currentTaskSpaceUrl());
   return loadLearnedContext(targetUrl, {
     agentWorkspace: state.agentWorkspace(),
   });
 }
 
-function createLocator(
-  selector,
-  frameChain: string[] = [],
-  targetContext?: TargetContext,
-) {
-  const target = locatorTarget(selector, frameChain);
-  const facade = {
-    all: async () => {
-      const length = await locator.count(target);
-      return Array.from({ length }, (_, index) =>
-        createLocator(
-          isDirectRefSelector(selector)
-            ? selector
-            : nthSelector(selector, index),
-          frameChain,
-          targetContext,
-        ),
-      );
-    },
-    first: () =>
-      createLocator(nthSelector(selector, 0), frameChain, targetContext),
-    last: () =>
-      createLocator(`internal:last;${selector}`, frameChain, targetContext),
-    nth: (index) => {
-      const value = Number(index);
-      if (!Number.isInteger(value) || value < 0) {
-        throw new Error("locator.nth requires a non-negative integer");
-      }
-      return createLocator(
-        nthSelector(selector, value),
-        frameChain,
-        targetContext,
-      );
-    },
-    and: (other) =>
-      createLocator(
-        internalSelector("and", {
-          left: selector,
-          right: locatorSelector(other, frameChain),
-        }),
-        frameChain,
-        targetContext,
-      ),
-    or: (other) =>
-      createLocator(
-        internalSelector("or", {
-          left: selector,
-          right: locatorSelector(other, frameChain),
-        }),
-        frameChain,
-        targetContext,
-      ),
-    locator: (child, options: any = {}) => {
-      const scoped = scopedSelector(
-        selector,
-        locatorSelector(child, frameChain),
-      );
-      return createLocator(
-        locatorOptionsSelector(scoped, options, frameChain),
-        frameChain,
-        targetContext,
-      );
-    },
-    contentFrame: () => createFrameLocator(selector, frameChain, targetContext),
-    frameLocator: (child) =>
-      createFrameLocator(
-        scopedSelector(selector, String(child)),
-        frameChain,
-        targetContext,
-      ),
-    getByRole: (role, options: any = {}) =>
-      createLocator(
-        scopedSelector(selector, roleSelector(role, options)),
-        frameChain,
-        targetContext,
-      ),
-    getByText: (text, options: any = {}) =>
-      createLocator(
-        scopedSelector(selector, textSelector("text", text, options)),
-        frameChain,
-        targetContext,
-      ),
-    getByLabel: (text, options: any = {}) =>
-      createLocator(
-        scopedSelector(selector, textSelector("label", text, options)),
-        frameChain,
-        targetContext,
-      ),
-    getByPlaceholder: (text, options: any = {}) =>
-      createLocator(
-        scopedSelector(selector, textSelector("placeholder", text, options)),
-        frameChain,
-        targetContext,
-      ),
-    getByAltText: (text, options: any = {}) =>
-      createLocator(
-        scopedSelector(selector, textSelector("alt", text, options)),
-        frameChain,
-        targetContext,
-      ),
-    getByTitle: (text, options: any = {}) =>
-      createLocator(
-        scopedSelector(selector, textSelector("title", text, options)),
-        frameChain,
-        targetContext,
-      ),
-    getByTestId: (testId) =>
-      createLocator(
-        scopedSelector(selector, testIdSelector(testId)),
-        frameChain,
-        targetContext,
-      ),
-    filter: (options: any = {}) =>
-      createLocator(
-        filterSelector(selector, options, frameChain),
-        frameChain,
-        targetContext,
-      ),
-    click: (options = {}) =>
-      pointer.click(target, {
-        ...options,
-        __apiName: "locator.click",
-        __waitForNavigation: true,
-      }),
-    dblclick: (options = {}) =>
-      pointer.dblclick(target, {
-        ...options,
-        __apiName: "locator.dblclick",
-      }),
-    hover: (options = {}) => pointer.hover(target, options),
-    dragTo: (destination, options = {}) =>
-      pointer.dragTo(
-        locatorTarget(selector, frameChain),
-        destination?.target || destination?.selector || destination,
-        options,
-      ),
-    scrollIntoViewIfNeeded: (options = {}) =>
-      pointer.scrollIntoViewIfNeeded(target, options),
-    focus: (options = {}) => keyboard.focus(target, options),
-    fill: (value, options = {}) => keyboard.fill(target, value, options),
-    clear: (options = {}) => keyboard.fill(target, "", options),
-    press: (key, options = {}) =>
-      keyboard.pressOnSelector(target, key, options),
-    pressSequentially: (text, options = {}) =>
-      keyboard.pressSequentially(target, text, options),
-    check: (options = {}) => keyboard.check(target, options),
-    uncheck: (options = {}) => keyboard.uncheck(target, options),
-    setChecked: (checked, options = {}) =>
-      keyboard.setChecked(target, checked, options),
-    selectOption: (values, options = {}) =>
-      keyboard.selectOption(target, values, options),
-    setInputFiles: (filesValue, options = {}) =>
-      files.setInputFiles(target, filesValue, options),
-    dispatchEvent: (type, eventInit = {}, options = {}) =>
-      keyboard.dispatchEvent(target, type, eventInit, options),
-    blur: () => locator.blur(target),
-    selectText: async (options: any = {}) => {
-      await waitForActionableElement(target, {
-        timeout: options.timeout,
-        visible: true,
-      });
-      await locator.selectText(target, options);
-    },
-    textContent: () => locator.textContent(target),
-    innerText: () => locator.innerText(target),
-    innerHTML: () => locator.innerHTML(target),
-    inputValue: () => locator.inputValue(target),
-    isChecked: (options = {}) => locator.isChecked(target, options),
-    isVisible: () => locator.isVisible(target),
-    isHidden: () => locator.isHidden(target),
-    isEnabled: () => locator.isEnabled(target),
-    isDisabled: () => locator.isDisabled(target),
-    isEditable: () => locator.isEditable(target),
-    getAttribute: (name) => locator.getAttribute(target, name),
-    boundingBox: () => locator.boundingBox(target),
-    screenshot: async (options: any = {}) => {
-      await waitForActionableElement(target, {
-        timeout: options.timeout,
-        visible: true,
-        stable: true,
-      });
-      const box = await locator.boundingBox(target);
-      if (!box) {
-        throw new Error(
-          `locator.screenshot target has no bounding box: ${selector}`,
-        );
-      }
-      const info = await nav.pageInfo();
-      if ("dialog" in info) {
-        throw new Error(
-          `locator.screenshot cannot capture while a JavaScript dialog is open: ${selector}`,
-        );
-      }
-      return observe.screenshot({
-        ...options,
-        clip: {
-          x: box.x + info.sx,
-          y: box.y + info.sy,
-          width: box.width,
-          height: box.height,
-        },
-      });
-    },
-    ariaSnapshot: (options = {}) =>
-      aria.ariaSnapshot(target, options, "locator.ariaSnapshot"),
-    count: () => locator.count(target),
-    allInnerTexts: () => locator.allInnerTexts(target),
-    allTextContents: () => locator.allTextContents(target),
-    evaluate: (pageFunction, arg = undefined) =>
-      locator.evaluateLocator(target, pageFunction, arg),
-    evaluateAll: (pageFunction, arg = undefined) =>
-      locator.evaluateAll(target, pageFunction, arg),
-    evaluateHandle: (pageFunction, arg = undefined) =>
-      locator.evaluateLocatorHandle(target, pageFunction, arg),
-    page: () =>
-      targetContext ? pageByTargetContext.get(targetContext) : globalPageFacade,
-    waitFor: async (options = {}) => {
-      await waits.waitForSelector(target, options);
-    },
-  };
-  return bindFacadeToTarget(
-    defineInternalState(facade, {
-      selector,
-      frameChain: [...frameChain],
-      target,
-    }),
-    targetContext,
-  );
-}
-
-function isDirectRefSelector(selector) {
-  return Boolean(parseRef(selector) || parseAriaRef(selector));
-}
-
-function createFrameLocator(
-  selector,
-  parentFrameChain: string[] = [],
-  targetContext?: TargetContext,
-) {
-  const frameChain = [...parentFrameChain, String(selector)];
-  const facade = {
-    owner: () =>
-      createLocator(String(selector), parentFrameChain, targetContext),
-    first: () =>
-      createFrameLocator(
-        nthSelector(String(selector), 0),
-        parentFrameChain,
-        targetContext,
-      ),
-    last: () =>
-      createFrameLocator(
-        `internal:last;${String(selector)}`,
-        parentFrameChain,
-        targetContext,
-      ),
-    nth: (index) => {
-      const value = Number(index);
-      if (!Number.isInteger(value) || value < 0) {
-        throw new Error("frameLocator.nth requires a non-negative integer");
-      }
-      return createFrameLocator(
-        nthSelector(String(selector), value),
-        parentFrameChain,
-        targetContext,
-      );
-    },
-    frameLocator: (child) =>
-      createFrameLocator(child, frameChain, targetContext),
-    locator: (child, options: any = {}) => {
-      const childSelector = locatorSelector(child, frameChain);
-      return createLocator(
-        locatorOptionsSelector(childSelector, options, frameChain),
-        frameChain,
-        targetContext,
-      );
-    },
-    getByRole: (role, options: any = {}) =>
-      createLocator(roleSelector(role, options), frameChain, targetContext),
-    getByText: (text, options: any = {}) =>
-      createLocator(
-        textSelector("text", text, options),
-        frameChain,
-        targetContext,
-      ),
-    getByLabel: (text, options: any = {}) =>
-      createLocator(
-        textSelector("label", text, options),
-        frameChain,
-        targetContext,
-      ),
-    getByPlaceholder: (text, options: any = {}) =>
-      createLocator(
-        textSelector("placeholder", text, options),
-        frameChain,
-        targetContext,
-      ),
-    getByAltText: (text, options: any = {}) =>
-      createLocator(
-        textSelector("alt", text, options),
-        frameChain,
-        targetContext,
-      ),
-    getByTitle: (text, options: any = {}) =>
-      createLocator(
-        textSelector("title", text, options),
-        frameChain,
-        targetContext,
-      ),
-    getByTestId: (testId) =>
-      createLocator(testIdSelector(testId), frameChain, targetContext),
-  };
-  return defineInternalState(facade, {
-    selector: String(selector),
-    frameChain,
-  });
-}
-
-function nthSelector(selector, index) {
-  return `internal:nth=${index};${selector}`;
-}
-
-function internalSelector(kind, data) {
-  return `internal:${kind}:${encodeURIComponent(JSON.stringify(data))}`;
-}
-
-function scopedSelector(base, child) {
-  return internalSelector("scope", { base, child });
-}
-
-function defineInternalState(facade, values) {
-  for (const [name, value] of Object.entries(values)) {
-    Object.defineProperty(facade, name, {
-      value,
-      enumerable: false,
-    });
-  }
-  return facade;
-}
-
-function locatorSelector(value, expectedFrameChain?: string[]) {
-  if (
-    value &&
-    typeof value === "object" &&
-    typeof value.selector === "string"
-  ) {
-    if (
-      expectedFrameChain &&
-      Array.isArray(value.frameChain) &&
-      !sameFrameChain(expectedFrameChain, value.frameChain)
-    ) {
-      throw new Error(
-        "locator composition requires locators from the same frame",
-      );
-    }
-    return value.selector;
-  }
-  return String(value);
-}
-
-function sameFrameChain(left: string[], right: string[]) {
-  return (
-    left.length === right.length &&
-    left.every((selector, index) => selector === right[index])
-  );
-}
-
-function textSelector(prefix, text, options: any = {}) {
-  if (text instanceof RegExp) {
-    const value = encodeURIComponent(
-      JSON.stringify({ source: text.source, flags: text.flags }),
-    );
-    return `loc=${prefix}:regex:${value}`;
-  }
-  const value = `${options.exact ? "exact:" : ""}${JSON.stringify(String(text))}`;
-  return `loc=${prefix}:${value}`;
-}
-
-function roleSelector(role, options: any = {}) {
-  const nameMatcher =
-    options && Object.prototype.hasOwnProperty.call(options, "name")
-      ? roleNameMatcher(options.name, Boolean(options.exact))
-      : undefined;
-  const stateKeys = [
-    "checked",
-    "disabled",
-    "expanded",
-    "includeHidden",
-    "level",
-    "pressed",
-    "selected",
-  ];
-  if (
-    stateKeys.some((key) => Object.prototype.hasOwnProperty.call(options, key))
-  ) {
-    const data: any = { role: String(role) };
-    if (nameMatcher !== undefined) data.name = nameMatcher;
-    for (const key of stateKeys) {
-      if (Object.prototype.hasOwnProperty.call(options, key)) {
-        data[key] = options[key];
-      }
-    }
-    return internalSelector("role", data);
-  }
-  const name =
-    nameMatcher === undefined ? "" : `[name=${JSON.stringify(nameMatcher)}]`;
-  return `loc=role:${role}${name}`;
-}
-
-function testIdSelector(testId) {
-  return textSelector("testid", testId, { exact: true });
-}
-
-function filterSelector(base, options: any = {}, frameChain?: string[]) {
-  const data: any = { base };
-  if (Object.prototype.hasOwnProperty.call(options, "hasText")) {
-    data.hasText = textMatcher(options.hasText);
-  }
-  if (Object.prototype.hasOwnProperty.call(options, "hasNotText")) {
-    data.hasNotText = textMatcher(options.hasNotText);
-  }
-  if (options.has !== undefined) {
-    data.has = locatorSelector(options.has, frameChain);
-  }
-  if (options.hasNot !== undefined) {
-    data.hasNot = locatorSelector(options.hasNot, frameChain);
-  }
-  return internalSelector("filter", data);
-}
-
-function locatorOptionsSelector(
-  base,
-  options: any = {},
-  frameChain?: string[],
-) {
-  const keys = ["hasText", "hasNotText", "has", "hasNot"];
-  return keys.some((key) => Object.prototype.hasOwnProperty.call(options, key))
-    ? filterSelector(base, options, frameChain)
-    : base;
-}
-
-function textMatcher(value) {
-  if (value instanceof RegExp) {
-    return { regex: value.source, flags: value.flags };
-  }
-  return { text: String(value), exact: false };
-}
-
-function roleNameMatcher(value, exact = false) {
-  if (value instanceof RegExp) {
-    return { regex: value.source, flags: value.flags };
-  }
-  return { text: String(value), exact };
-}
-
-function createPageFacade(target?: {
-  targetId: string;
-  url?: string;
-  beforeOperation?: () => Promise<void>;
-  openerId?: string;
-}) {
-  const targetContext = target
-    ? createTargetContext(
-        target.targetId,
-        target.beforeOperation,
-        target.openerId,
-      )
-    : undefined;
-  const targetId = targetContext?.targetId;
-  let currentUrl = target?.url || "";
-  let frameController: ReturnType<typeof createPageFrameController> | undefined;
-  let environmentController:
-    | ReturnType<typeof createPageEnvironmentController>
-    | undefined;
-  const updateBasicState = (info) => {
-    if (typeof info?.url === "string") currentUrl = info.url;
-    environmentController?.updateViewportSize(info);
-    return info;
-  };
-  const readPageInfo = async () => updateBasicState(await nav.pageInfo());
-  const boundSnapshotRaw = targetContext
-    ? (options = {}) =>
-        captureTargetSnapshot(targetContext, () => observe.snapshotRaw(options))
-    : observe.snapshotRaw;
-  const boundSnapshot = targetContext
-    ? (options = {}) =>
-        captureTargetSnapshot(targetContext, () => observe.snapshot(options))
-    : observe.snapshot;
-  if (targetContext) {
-    targetContext.snapshotForRefRefresh = () => boundSnapshotRaw();
-  }
-  let removeClosedListener: (() => void) | undefined;
-  if (targetContext) {
-    removeClosedListener = subscribeBrowserEvent(
-      "Target.targetDestroyed",
-      undefined,
-      (event) => {
-        if (event.params?.targetId !== targetContext.targetId) return;
-        targetContext.closed = true;
-        removeClosedListener?.();
-        removeClosedListener = undefined;
-      },
-    );
-  }
-  const facade: any = {
-    ...(targetId ? { targetId } : {}),
-    setDefaultTimeout: (timeout) => {
-      const value = Number(timeout);
-      if (!Number.isFinite(value) || value < 0) {
-        throw new Error(
-          "page.setDefaultTimeout requires a non-negative number",
-        );
-      }
-      state.defaultTimeout = value;
-    },
-    setDefaultNavigationTimeout: (timeout) => {
-      const value = Number(timeout);
-      if (!Number.isFinite(value) || value < 0) {
-        throw new Error(
-          "page.setDefaultNavigationTimeout requires a non-negative number",
-        );
-      }
-      state.defaultNavigationTimeout = value;
-    },
-    goto: nav.goto,
-    reload: nav.reload,
-    goBack: nav.goBack,
-    goForward: nav.goForward,
-    content: nav.content,
-    setContent: nav.setContent,
-    info: readPageInfo,
-    url: () => frameController?.url() || currentUrl,
-    title: async () => (await readPageInfo()).title,
-    locator: (selector, options: any = {}) =>
-      createLocator(
-        locatorOptionsSelector(selector, options, []),
-        [],
-        targetContext,
-      ),
-    frameLocator: (selector) => createFrameLocator(selector, [], targetContext),
-    getByRole: (role, options: any = {}) => {
-      return createLocator(roleSelector(role, options), [], targetContext);
-    },
-    getByText: (text, options: any = {}) =>
-      createLocator(textSelector("text", text, options), [], targetContext),
-    getByLabel: (text, options: any = {}) =>
-      createLocator(textSelector("label", text, options), [], targetContext),
-    getByPlaceholder: (text, options: any = {}) =>
-      createLocator(
-        textSelector("placeholder", text, options),
-        [],
-        targetContext,
-      ),
-    getByAltText: (text, options: any = {}) =>
-      createLocator(textSelector("alt", text, options), [], targetContext),
-    getByTitle: (text, options: any = {}) =>
-      createLocator(textSelector("title", text, options), [], targetContext),
-    getByTestId: (testId) =>
-      createLocator(testIdSelector(testId), [], targetContext),
-    waitForTimeout: waits.waitForTimeout,
-    waitForLoadState: waits.waitForLoadState,
-    waitForSelector: waits.waitForSelector,
-    waitForFunction: waits.waitForFunction,
-    waitForURL: waits.waitForURL,
-    waitForRequest: waits.waitForRequest,
-    waitForResponse: waits.waitForResponse,
-    waitForEvent: (eventName, optionsOrPredicate = {}) =>
-      downloads.waitForEvent(eventName, optionsOrPredicate, {
-        createPopup: async (targetInfo) => {
-          const popup = createPageFacade({
-            targetId: targetInfo.targetId,
-            url: targetInfo.url,
-            beforeOperation: target?.beforeOperation,
-            openerId: targetInfo.openerId,
-          });
-          if (isBrowserRuntime()) await initializePageFacade(popup);
-          return popup;
-        },
-        page: facade,
-      }),
-    evaluate,
-    screenshot: observe.screenshot,
-    saveScreenshot: observe.saveScreenshot,
-    snapshot: boundSnapshot,
-    snapshotRaw: boundSnapshotRaw,
-    ariaSnapshot: (options = {}) =>
-      aria.ariaSnapshot("body", options, "page.ariaSnapshot"),
-    elementCenter: observe.elementCenter,
-    drainEvents: targetId
-      ? () => activeGlobalPageOnly("page.drainEvents")
-      : observe.drainEvents,
-    screencast: {
-      start: screencast.startScreencast,
-      stop: screencast.stopScreencast,
-    },
-    keyboard: {
-      press: keyboard.press,
-      down: keyboard.down,
-      up: keyboard.up,
-      insertText: keyboard.insertText,
-      type: keyboard.typeText,
-    },
-    mouse: {
-      click: (x, y, options = {}) => {
-        const [target, effectiveOptions] = mousePointArgs(x, y, options);
-        return pointer.click(target, {
-          ...effectiveOptions,
-          __apiName: "mouse.click",
-        });
-      },
-      dblclick: (x, y, options = {}) => {
-        const [target, effectiveOptions] = mousePointArgs(x, y, options);
-        return pointer.dblclick(target, {
-          ...effectiveOptions,
-          __apiName: "mouse.dblclick",
-        });
-      },
-      move: (x, y, options = {}) => pointer.move(x, y, options),
-      down: pointer.down,
-      up: pointer.up,
-      wheel: pointer.wheel,
-      drag: pointer.drag,
-    },
-    close: async (options: any = {}) => {
-      if (!options || typeof options !== "object" || Array.isArray(options)) {
-        throw new TypeError("page.close options must be an object");
-      }
-      if (options.runBeforeUnload) {
-        await cdp("Page.close");
-      } else {
-        await nav.closeTab(targetId ? { targetId } : undefined);
-      }
-      if (targetContext) targetContext.closed = true;
-      removeClosedListener?.();
-      removeClosedListener = undefined;
-    },
-    bringToFront: async () => {
-      if (targetContext) {
-        await activateTargetPage(targetContext);
-        return;
-      }
-      await nav.switchTab(await nav.currentTab());
-    },
-    isClosed: () => Boolean(targetContext?.closed),
-    opener: async () => {
-      const pageTargetId = targetId || (await nav.currentTab()).targetId;
-      const openerId =
-        targetContext?.openerId ||
-        (
-          await cdp("Target.getTargetInfo", {
-            targetId: pageTargetId,
-          })
-        ).targetInfo?.openerId;
-      if (!openerId) return null;
-      const opener = createPageFacade({
-        targetId: openerId,
-        beforeOperation: target?.beforeOperation,
-      });
-      if (isBrowserRuntime()) await initializePageFacade(opener);
-      return opener;
-    },
-  };
-  const scripts = createPageScriptController(facade);
-  const network = createPageNetworkController(facade, scripts);
-  const frames = createPageFrameController(facade, {
-    initialUrl: currentUrl,
-    sessionId: () => targetContext?.sessionId || state.sessionId || undefined,
-    onMainFrameUrl: (url) => {
-      currentUrl = url;
-    },
-  });
-  const environment = createPageEnvironmentController();
-  frameController = frames;
-  environmentController = environment;
-  const handles = createPageHandleController();
-  if (targetContext) pageByTargetContext.set(targetContext, facade);
-  else globalPageFacade = facade;
-  Object.assign(facade, {
-    route: network.route,
-    unroute: network.unroute,
-    unrouteAll: network.unrouteAll,
-    routeFromHAR: network.routeFromHAR,
-    routeWebSocket: network.routeWebSocket,
-    setExtraHTTPHeaders: async (headers) => {
-      if (!headers || typeof headers !== "object" || Array.isArray(headers)) {
-        throw new TypeError(
-          "page.setExtraHTTPHeaders expects a headers object",
-        );
-      }
-      const normalized = Object.fromEntries(
-        Object.entries(headers).map(([name, value]) => [
-          String(name),
-          String(value),
-        ]),
-      );
-      await cdp("Network.enable");
-      await cdp("Network.setExtraHTTPHeaders", { headers: normalized });
-    },
-    addInitScript: scripts.addInitScript,
-    exposeFunction: scripts.exposeFunction,
-    exposeBinding: scripts.exposeBinding,
-    frames: frames.frames,
-    frame: frames.frame,
-    mainFrame: frames.mainFrame,
-    setViewportSize: environment.setViewportSize,
-    viewportSize: environment.viewportSize,
-    emulateMedia: environment.emulateMedia,
-    requestGC: () => cdp("HeapProfiler.collectGarbage"),
-    clock: createPageClock(),
-    evaluateHandle: handles.evaluateHandle,
-    addScriptTag: handles.addScriptTag,
-    addStyleTag: handles.addStyleTag,
-  });
-  Object.defineProperty(facade, initializePageState, {
-    value: () =>
-      targetContext
-        ? runWithTarget(targetContext, async () => {
-            await Promise.allSettled([frames.initialize(), readPageInfo()]);
-          })
-        : Promise.allSettled([frames.initialize(), readPageInfo()]).then(
-            () => undefined,
-          ),
-  });
-  installPageEventEmitter(facade, targetContext, target);
-  return bindFacadeToTarget(facade, targetContext);
-}
-
-export async function initializePageFacade(page) {
-  await page?.[initializePageState]?.();
-  return page;
-}
-
-function installPageEventEmitter(
-  page,
-  targetContext?: TargetContext,
-  target?: { beforeOperation?: () => Promise<void> },
-) {
-  type ListenerRecord = {
-    eventName: string;
-    listener: (...args: any[]) => any;
-    once: boolean;
-    controller: AbortController;
-    active: boolean;
-    task?: Promise<void>;
-  };
-  const records = new Set<ListenerRecord>();
-
-  const remove = (record: ListenerRecord) => {
-    if (!record.active) return;
-    record.active = false;
-    records.delete(record);
-    record.controller.abort();
-  };
-
-  const arm = (record: ListenerRecord) => {
-    if (!record.active) return;
-    record.task = downloads
-      .waitForEvent(
-        record.eventName,
-        { timeout: 0, signal: record.controller.signal },
-        {
-          createPopup: async (targetInfo) => {
-            const popup = createPageFacade({
-              targetId: targetInfo.targetId,
-              url: targetInfo.url,
-              beforeOperation: target?.beforeOperation,
-              openerId: targetInfo.openerId,
-            });
-            if (isBrowserRuntime()) await initializePageFacade(popup);
-            return popup;
-          },
-          page,
-        },
-      )
-      .then((value) => {
-        if (!record.active) return;
-        if (record.once) remove(record);
-        else arm(record);
-        return record.listener(value);
-      })
-      .catch((error) => {
-        if (!record.controller.signal.aborted) {
-          queueMicrotask(() => {
-            throw error;
-          });
-        }
-      });
-  };
-
-  const add = (eventName, listener, once) => {
-    if (typeof listener !== "function") {
-      throw new TypeError("page event listener must be a function");
-    }
-    const record: ListenerRecord = {
-      eventName: String(eventName),
-      listener,
-      once,
-      controller: new AbortController(),
-      active: true,
-    };
-    records.add(record);
-    queueMicrotask(() => {
-      if (targetContext) {
-        runWithTarget(targetContext, () => arm(record));
-      } else {
-        arm(record);
-      }
-    });
-    return page;
-  };
-
-  page.on = (eventName, listener) => add(eventName, listener, false);
-  page.once = (eventName, listener) => add(eventName, listener, true);
-  page.off = (eventName, listener) => {
-    for (const record of records) {
-      if (
-        record.eventName === String(eventName) &&
-        record.listener === listener
-      ) {
-        remove(record);
-      }
-    }
-    return page;
-  };
-  page.removeAllListeners = (eventName = undefined, options = undefined) => {
-    const selected = [...records].filter(
-      (record) =>
-        eventName === undefined || record.eventName === String(eventName),
-    );
-    for (const record of selected) remove(record);
-    if (options?.behavior === "wait") {
-      return Promise.allSettled(
-        selected.map((record) => record.task).filter(Boolean),
-      ).then(() => undefined);
-    }
-    return page;
-  };
-}
-
-let targetSnapshotQueue = Promise.resolve();
-
-function captureTargetSnapshot<T>(
-  targetContext: TargetContext,
-  capture: () => Promise<T>,
-): Promise<T> {
-  const result = targetSnapshotQueue.then(() =>
-    runWithTarget(targetContext, async () => {
-      await activateTargetPage(targetContext);
-      return capture();
-    }),
-  );
-  targetSnapshotQueue = result.then(
-    () => undefined,
-    () => undefined,
-  );
-  return result;
-}
-
-async function activateTargetPage(targetContext: TargetContext) {
-  await targetContext.beforeOperation?.();
-  try {
-    await nav.switchTab(targetContext.targetId);
-  } catch (error) {
-    if (/^tabs\.activate target not found:/.test(error?.message || "")) {
-      throw targetClosedError(targetContext.targetId);
-    }
-    throw error;
-  }
-}
-
-function activeGlobalPageOnly(apiName: string): never {
-  throw new Error(`${apiName} is available only on the active global page`);
-}
-
-function bindFacadeToTarget<T extends object>(
-  facade: T,
-  targetContext?: TargetContext,
-): T {
-  if (!targetContext) return facade;
-  for (const [name, value] of Object.entries(facade)) {
-    if (typeof value === "function") {
-      facade[name] = (...args) =>
-        runWithTarget(targetContext, () => value(...args));
-    } else if (value && typeof value === "object") {
-      bindFacadeToTarget(value, targetContext);
-    }
-  }
-  return facade;
-}
-
-function mousePointArgs(x, y, options) {
-  if (Array.isArray(x) || (x && typeof x === "object")) {
-    return [x, y || {}];
-  }
-  return [[x, y], options || {}];
-}
-
-function createTabsFacade() {
-  return {
-    list: nav.listTabs,
-    current: nav.currentTab,
-    activate: nav.switchTab,
-    open: nav.openTab,
-    openOrReuse: nav.openOrReuseTab,
-    close: nav.closeTab,
-    evaluate: nav.evaluateTab,
-  };
+async function currentTaskSpaceUrl() {
+  const ego = globalThis.ego;
+  if (!ego || typeof ego.listTabs !== "function") return "";
+  const result = assertNoEgoError(await ego.listTabs(), "listTabs");
+  const tabs = result?.tabs || result?.targetInfos || [];
+  return tabs.find((tab) => tab.active)?.url || tabs.at(-1)?.url || "";
 }
 
 function createEgoBrowserFacade() {
-  const wrapTaskSpace = (space) => ({
-    ...space,
-    tabs: createTaskSpaceTabsFacade(space),
-  });
+  const wrapTaskSpace = async (space) => {
+    const playwright = await connectPlaywrightTaskSpace(space);
+    const task = {
+      ...space,
+    };
+    delete task.tabs;
+    Object.defineProperties(task, {
+      page: { value: playwright.page },
+      context: { value: playwright.context },
+    });
+    return task;
+  };
   return {
     listTaskSpaces,
     newTaskSpace: async (name) => wrapTaskSpace(await newTaskSpace(name)),
@@ -1489,7 +480,10 @@ function createEgoBrowserFacade() {
       wrapTaskSpace(await useOrCreateTaskSpace(nameOrId)),
     claimTaskSpace: async (nameOrId) =>
       wrapTaskSpace(await claimTaskSpace(nameOrId)),
-    handOffTaskSpace,
+    handOffTaskSpace: async (nameOrId) => {
+      await disconnectPlaywrightTaskSpace();
+      return handOffTaskSpace(nameOrId);
+    },
     takeOverTaskSpace: async (nameOrId) => {
       await takeOverTaskSpace(nameOrId);
       return { done: true as const };
@@ -1498,53 +492,14 @@ function createEgoBrowserFacade() {
       await waitForAgentControl(nameOrId, options);
       return { done: true as const };
     },
-    completeTaskSpace: async (nameOrId) =>
-      completeTaskSpace(nameOrId, { keep: true }),
-    closeTaskSpace: async (nameOrId) =>
-      completeTaskSpace(nameOrId, { keep: false }),
-  };
-}
-
-function createTaskSpaceTabsFacade(space) {
-  const inTaskSpace = async (operation) => {
-    await ensureTaskSpaceSelected(space);
-    return operation();
-  };
-  const wrapTab = async (tab) => {
-    const page = createPageFacade({
-      targetId: tab.targetId,
-      url: tab.url,
-      beforeOperation: () => ensureTaskSpaceSelected(space),
-    });
-    if (isBrowserRuntime()) await initializePageFacade(page);
-    const facade = { ...tab };
-    Object.defineProperties(facade, {
-      page: { value: page },
-      activate: {
-        value: async () =>
-          wrapTab(await inTaskSpace(() => nav.switchTab(tab.targetId))),
-      },
-      close: {
-        value: () => inTaskSpace(() => nav.closeTab(tab.targetId)),
-      },
-    });
-    return facade;
-  };
-  return {
-    list: async (options = {}) =>
-      Promise.all(
-        (await inTaskSpace(() => nav.listTabs(options))).map(wrapTab),
-      ),
-    current: async () => wrapTab(await inTaskSpace(() => nav.currentTab())),
-    activate: async (target) =>
-      wrapTab(await inTaskSpace(() => nav.switchTab(target))),
-    open: async (url = "about:blank", options = {}) =>
-      wrapTab(await inTaskSpace(() => nav.openTab(url, options))),
-    openOrReuse: async (url, options = {}) =>
-      wrapTab(await inTaskSpace(() => nav.openOrReuseTab(url, options))),
-    close: (target = undefined) => inTaskSpace(() => nav.closeTab(target)),
-    evaluate: (target, pageFunction, arg = undefined) =>
-      inTaskSpace(() => nav.evaluateTab(target, pageFunction, arg)),
+    completeTaskSpace: async (nameOrId) => {
+      await disconnectPlaywrightTaskSpace();
+      return completeTaskSpace(nameOrId, { keep: true });
+    },
+    closeTaskSpace: async (nameOrId) => {
+      await disconnectPlaywrightTaskSpace();
+      return completeTaskSpace(nameOrId, { keep: false });
+    },
   };
 }
 
@@ -1559,12 +514,8 @@ function createSiteFacade() {
 }
 
 const FACADE_HELP: Record<string, string> = {
-  page: "page: Playwright-style page facade. Navigation returns a main-document Response or null. Use locators, waits, on/once/off events, route/unroute, init scripts and bindings, evaluate/evaluateHandle, requestGC, screenshots, ARIA/snapshot, viewport/media emulation, page.clock, keyboard, and mouse. A popup returns a target-bound Page with close(), isClosed(), opener(), and bringToFront(). waitForEvent and event listeners support close, load, domcontentloaded, request, response, requestfailed, requestfinished, console, dialog, download, filechooser, pageerror, and popup. Predicates may be async; waitForEvent also accepts AbortSignal cancellation. Wait timeouts throw TimeoutError.",
-  locator:
-    "page.locator(selector): returns a strict locator facade with locator(), all(), frameLocator(), contentFrame(), getByRole(), getByText(), filter(), and(), or(), first(), nth(index), last(), actionability-aware actions, state/collection reads, evaluate/evaluateAll/evaluateHandle, page(), Buffer screenshots, and waitFor(). FrameLocator.owner() returns its iframe element. Narrow multiple matches; use first()/nth() only for confirmed legitimate duplicates.",
-  tabs: "tabs: ego-browser tab facade. list(), current(), open(), openOrReuse(), and activate() return { targetId, url, title, type: 'page' }. Use open(url, options) to always create a tab, or openOrReuse(url, options) to select a match when available. open/openOrReuse accept waitUntil: 'load' (default), 'domcontentloaded', or 'commit'; wait: false is the legacy spelling for commit. Use close(target) and evaluate(target, pageFunction, arg) for an explicit tab. Treat targetId as short-lived: obtain and validate it in the current script.",
   egoBrowser:
-    "egoBrowser: ego-specific TaskSpace controller, not a Playwright Browser. listTaskSpaces() returns lightweight TaskSpace information without selecting a space. newTaskSpace(name), switchTaskSpace(nameOrId), useOrCreateTaskSpace(nameOrId), and claimTaskSpace(nameOrId) return a TaskSpace whose space.tabs methods return Tab objects with target-bound tab.page facades. handOffTaskSpace(), takeOverTaskSpace(), waitForAgentControlTaskSpace(), completeTaskSpace(), and closeTaskSpace() return structured action results; runtime failures throw with their reason. waitForAgentControlTaskSpace interval and timeout use milliseconds. complete preserves the final result while close destroys the space.",
+    "egoBrowser: ego-specific TaskSpace controller, not a Playwright Browser. listTaskSpaces() returns lightweight TaskSpace information without selecting a space. newTaskSpace(name), switchTaskSpace(nameOrId), useOrCreateTaskSpace(nameOrId), and claimTaskSpace(nameOrId) return a TaskSpace with native Playwright page and context objects. handOffTaskSpace(), takeOverTaskSpace(), waitForAgentControlTaskSpace(), completeTaskSpace(), and closeTaskSpace() return structured action results; runtime failures throw with their reason. waitForAgentControlTaskSpace interval and timeout use milliseconds. complete preserves the final result while close destroys the space.",
   site: "site: learned site-skill facade. Use site.skills(url), site.skillsForUrl(url), site.runTool(siteId, toolName, args), site.runBrowserTool(siteId, toolName, args), and site.learnContext(url).",
   fetch:
     "fetch: network facade. Use fetch.server(url, options) for Node-side fetch and fetch.browser(url, options) for browser-origin fetch. timeout uses milliseconds.",
@@ -1574,8 +525,6 @@ const FACADE_HELP: Record<string, string> = {
 
 export function helperContext(extra: any = {}) {
   const all = {
-    page: createPageFacade(),
-    tabs: createTabsFacade(),
     egoBrowser: createEgoBrowserFacade(),
     site: createSiteFacade(),
     fetch: {
@@ -1632,4 +581,8 @@ export async function loadAgentHelpers() {
   return out;
 }
 
-export const __testing = { setOverrides, decodeUnserializableJsValue };
+export const __testing = {
+  setOverrides,
+  decodeUnserializableJsValue,
+  setPlaywrightTaskSpaceConnector,
+};

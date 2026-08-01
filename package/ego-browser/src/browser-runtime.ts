@@ -1,7 +1,6 @@
 import { state } from "./state.js";
 import { assertNoEgoError, buildEgoError } from "./ego-errors.js";
 import { currentTargetContext } from "./target-context.js";
-import { targetClosedError } from "./playwright-errors.js";
 
 const RESPONSE_TIMEOUT_MS = 15000;
 const SESSION_TTL_MS = 2000;
@@ -13,6 +12,12 @@ const SESSION_LOST =
   /Session (?:with given id )?not found|Target closed|No session|No target with given id found/i;
 const BROWSER_LEVEL = (method) =>
   method.startsWith("Target.") || method.startsWith("Browser.");
+
+function targetClosedError(targetId?: string | null) {
+  return new Error(
+    `Target page, context or browser has been closed${targetId ? ` (targetId: ${targetId})` : ""}`,
+  );
+}
 type BrowserEventSubscriber = {
   method: string;
   sessionId?: string;

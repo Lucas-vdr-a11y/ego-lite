@@ -1,4 +1,12 @@
-import type { FrameOwnerContext } from "./frame-context.js";
+type FrameOwnerContext = {
+  selector: string;
+  sessionId: string;
+  executionContextId?: number;
+  x: number;
+  y: number;
+  scaleX: number;
+  scaleY: number;
+};
 
 export type AriaRefEntry = {
   backendNodeId: number;

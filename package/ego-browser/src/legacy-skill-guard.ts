@@ -3,7 +3,7 @@ import { markHardStop } from "./output-sink.js";
 type InstallTarget = Record<string, unknown>;
 
 /**
- * Globals removed when the agent-facing API moved to Playwright-style facades.
+ * Globals removed when the agent-facing API moved to TaskSpace-bound Playwright.
  * Keep this list as the single cleanup source for both embedded and direct-CLI runs.
  */
 const LEGACY_GLOBAL_HELPERS = [

@@ -35,16 +35,6 @@ const MODULE_MAP = {
       "runtimeValue",
     ],
   },
-  "element-resolver": {
-    src: "element-resolver.js",
-    test: "src/element-resolver.test.mjs",
-    focus: [
-      "matchCountKind",
-      "boxModelCenter",
-      "isStaleBackendNodeError",
-      "isBoxModelUnavailableError",
-    ],
-  },
   "browser-runtime": {
     src: "browser-runtime.js",
     test: "src/browser-runtime.test.mjs",

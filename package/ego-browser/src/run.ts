@@ -6,9 +6,9 @@ import {
 
 import { formatCliLogValue } from "./format.js";
 import * as helpers from "./helpers.js";
-import { isBrowserRuntime } from "./browser-runtime.js";
 import { installLegacySkillGuards } from "./legacy-skill-guard.js";
 import { bufferOutput, flushSink, resetSink } from "./output-sink.js";
+import { disconnectPlaywrightTaskSpace } from "./playwright-taskspace.js";
 
 type WritableLike = {
   write(chunk: string): unknown;
@@ -43,8 +43,9 @@ Read the ego-browser skill for the default workflow and examples.
 
 Typical usage:
   ego-browser <<'JS'
-  await page.waitForLoadState()
-  console.log(await page.info())
+  const task = await egoBrowser.newTaskSpace('inspect example page')
+  await task.page.goto('https://example.com')
+  console.log(await task.page.title())
   JS
 
 Helpers are pre-imported and the browser connection is prepared automatically.
@@ -56,7 +57,8 @@ Commands:
 
 export const USAGE = `Usage:
   ego-browser <<'JS'
-  console.log(await page.info())
+  const task = await egoBrowser.newTaskSpace('inspect example page')
+  console.log(await task.page.title())
   JS
 `;
 
@@ -123,7 +125,7 @@ async function execute(code: string, stdout: WritableLike) {
     thrown = error;
   }
   try {
-    await helpers.stopScreencast();
+    await disconnectPlaywrightTaskSpace();
   } catch (error) {
     thrown ??= error;
   }
@@ -144,7 +146,7 @@ function addExecutionHint(error: unknown) {
   if (!browserGlobal) return error;
 
   const previousStack = error.stack;
-  error.message += `\nHint: ${browserGlobal} is a browser global; use it inside page.evaluate().`;
+  error.message += `\nHint: ${browserGlobal} is a browser global; use it inside task.page.evaluate().`;
   if (previousStack) {
     error.stack = [
       `${error.name}: ${error.message}`,
@@ -160,9 +162,6 @@ export async function executionContext() {
   // that installEgoSdk() exposes in the browser runtime, so the CLI and SDK paths
   // cannot drift apart (and `help` exists in both).
   const context: Record<string, any> = helpers.helperContext(agentHelpers);
-  if (isBrowserRuntime()) {
-    await helpers.initializePageFacade(context.page);
-  }
   // Route the agent's primary output channel (console.log) through the output sink:
   // execute() flushes (or discards on hard stop) once the script settles, keeping the
   // CLI path identical to the SDK path. console.error/warn are left untouched. Each

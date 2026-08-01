@@ -253,7 +253,7 @@ test("cdp tracks Network domain state on enable", async () => {
 });
 
 /* ------------------------------------------------------------------ */
-/*  evaluate() — Playwright-style pageFunction evaluation              */
+/*  evaluate() — CDP pageFunction evaluation                           */
 /* ------------------------------------------------------------------ */
 
 test("evaluate auto-wraps string expressions with top-level return", async () => {

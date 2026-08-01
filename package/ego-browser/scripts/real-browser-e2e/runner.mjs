@@ -97,14 +97,15 @@ export async function runRealBrowserE2e() {
     const marker = `EGO_NODEJS_BRIDGE_SMOKE_${Date.now()}`;
     // The output channel is the overridden console.log. typeof console.log is always
     // "function" (it is a Node built-in), so it cannot prove the SDK wired its sink.
-    // Two real signals cover it instead: the marker round-trip below proves console.log
-    // output reaches stdout, and helperCount > 0 proves installEgoSdk ran (it sets the
-    // console.log override and ego.helpers in the same call), so the override ran too.
+    // The marker round-trip proves console.log output reaches stdout, helperCount > 0
+    // proves installEgoSdk ran, and the endpoint probe verifies the host can support
+    // native Playwright before any task space is created.
     const source = `
       console.log(${JSON.stringify(marker)});
       console.log(JSON.stringify({
         egoType: typeof globalThis.ego,
         hasSendCDPMessage: typeof globalThis.ego?.sendCDPMessage,
+        hasGetCDPEndpoint: typeof globalThis.ego?.getCDPEndpoint,
         processVersion: process.version,
         helperCount: Object.keys(globalThis.ego?.helpers || {}).length
       }));
@@ -125,6 +126,7 @@ export async function runRealBrowserE2e() {
       if (
         probe.egoType !== "object" ||
         probe.hasSendCDPMessage !== "function" ||
+        probe.hasGetCDPEndpoint !== "function" ||
         typeof probe.processVersion !== "string" ||
         probe.helperCount <= 0
       ) {
@@ -133,9 +135,9 @@ export async function runRealBrowserE2e() {
         );
       }
       const durationMs = Date.now() - startedAt;
-      recordResult(name, "pass", durationMs, 4);
+      recordResult(name, "pass", durationMs, 5);
       console.log(
-        `-- ${name} passed (${formatDuration(durationMs)}, 4 assertions)`,
+        `-- ${name} passed (${formatDuration(durationMs)}, 5 assertions)`,
       );
     } catch (error) {
       const durationMs = Date.now() - startedAt;
@@ -416,15 +418,6 @@ async function initializeE2eEnvironment(context, tempDir) {
   if (health.taskName !== taskName || health.ok !== true) {
     throw new Error(
       `fixture health payload mismatch: ${JSON.stringify(health)}`,
-    );
-  }
-  const ticketPageResponse = await fetch(`${baseUrl}/e2e/damai-rush/`, {
-    signal: AbortSignal.timeout(5000),
-  });
-  const ticketPage = await ticketPageResponse.text();
-  if (!ticketPageResponse.ok || !ticketPage.includes("EGO STARLIGHT TOUR")) {
-    throw new Error(
-      `shared ticket fixture check failed: HTTP ${ticketPageResponse.status}`,
     );
   }
   await stat(uploadPath);

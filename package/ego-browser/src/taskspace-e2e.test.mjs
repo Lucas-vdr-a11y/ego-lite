@@ -2,6 +2,20 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { runMain } from "../dist/src/run.js";
+import { __testing } from "../dist/src/helpers.js";
+import { disconnectPlaywrightTaskSpace } from "../dist/src/playwright-taskspace.js";
+
+const restoreDefaultPlaywrightConnector =
+  __testing.setPlaywrightTaskSpaceConnector(async () => ({
+    page: {},
+    context: {},
+    close: async () => {},
+  }));
+
+test.after(async () => {
+  await disconnectPlaywrightTaskSpace();
+  restoreDefaultPlaywrightConnector();
+});
 
 class FakeEgo {
   constructor(taskSpaces = []) {
@@ -118,6 +132,31 @@ function firstJsonLine(output) {
   return JSON.parse(output.trim().split(/\r?\n/)[0]);
 }
 
+test("the CLI disposes its Playwright TaskSpace connection after the script", async () => {
+  const ego = new FakeEgo();
+  const calls = [];
+  const restore = __testing.setPlaywrightTaskSpaceConnector(async (space) => ({
+    page: { taskSpaceId: space.id },
+    context: { taskSpaceId: space.id },
+    async close() {
+      calls.push(["close", space.id]);
+    },
+  }));
+
+  try {
+    const result = await runTaskspaceScript(
+      ego,
+      `await egoBrowser.newTaskSpace("playwright-cleanup")`,
+    );
+
+    assert.equal(result.exitCode, 0);
+    assert.deepEqual(calls, [["close", 1]]);
+  } finally {
+    await disconnectPlaywrightTaskSpace();
+    restore();
+  }
+});
+
 test("taskspace e2e creates and selects a missing task space", async () => {
   const ego = new FakeEgo();
   const result = await runTaskspaceScript(
@@ -136,7 +175,6 @@ test("taskspace e2e creates and selects a missing task space", async () => {
       name: "checkout-flow",
       createdBy: "agent",
       ownership: "agent",
-      tabs: {},
       recentTabTitles: [],
     },
     selected: 1,
@@ -156,7 +194,6 @@ test("taskspace e2e reuses an existing agent-owned task space", async () => {
       name: "Checkout flow",
       createdBy: "agent",
       ownership: "agent",
-      tabs: {},
     },
   ]);
   const result = await runTaskspaceScript(
@@ -175,7 +212,6 @@ test("taskspace e2e reuses an existing agent-owned task space", async () => {
       name: "Checkout flow",
       createdBy: "agent",
       ownership: "agent",
-      tabs: {},
     },
     selected: 7,
   });
@@ -208,7 +244,6 @@ test("taskspace e2e claims and selects an existing user-owned task space", async
       name: "checkout-flow",
       createdBy: "agent",
       ownership: "agent",
-      tabs: {},
     },
     selected: 7,
   });
@@ -297,7 +332,7 @@ test("cli e2e exposes the unified helperContext surface (help present, internals
     helpType: "function",
     helpResultType: "string",
     newTabType: "undefined",
-    pageType: "object",
+    pageType: "undefined",
     oldClickType: "undefined",
     helperContextType: "undefined",
     loadAgentHelpersType: "undefined",

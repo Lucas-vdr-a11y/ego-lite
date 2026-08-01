@@ -45,14 +45,14 @@ export async function cdp(
 }
 
 /**
- * Evaluate JavaScript in the current page, Playwright-style.
+ * Evaluate JavaScript in the current CDP target for ego-specific helpers.
  * @param {string | Function} pageFunction JavaScript expression string or function called with arg.
  *   String expressions with top-level return statements are auto-wrapped in an IIFE for compatibility.
  * @param {unknown} [arg] Optional Playwright-serializable argument, including JSHandles from this context.
  * @returns {Promise<any>} Runtime.evaluate return-by-value result.
  */
 export async function evaluate(pageFunction, arg = undefined) {
-  let expression = evaluationSource(pageFunction, "page.evaluate");
+  let expression = evaluationSource(pageFunction, "evaluate");
   const isFunction = typeof pageFunction === "function";
   if (
     !isFunction &&
@@ -62,7 +62,7 @@ export async function evaluate(pageFunction, arg = undefined) {
     expression = `(function(){${expression}})()`;
   }
   return evaluateWithArguments(expression, isFunction, arg, {
-    apiName: "page.evaluate",
+    apiName: "evaluate",
   });
 }
 
@@ -194,8 +194,7 @@ export async function evaluateWithArguments(
 }
 
 /**
- * Evaluate in an explicit target. Kept outside page.evaluate so its second
- * argument remains Playwright-compatible.
+ * Evaluate in an explicit CDP target.
  */
 export async function evaluateInTarget(
   targetId,
@@ -396,7 +395,7 @@ function evaluationExpression(pageFunction, arg) {
       : `(${pageFunction})(${serializedArg(arg)})`;
   }
   throw new TypeError(
-    `page.evaluate expects a string expression or function pageFunction, got ${pageFunction === null ? "null" : typeof pageFunction}`,
+    `evaluate expects a string expression or function pageFunction, got ${pageFunction === null ? "null" : typeof pageFunction}`,
   );
 }
 

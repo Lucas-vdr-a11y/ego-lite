@@ -1,10 +1,4 @@
-import {
-  PLAYWRIGHT_COMPATIBILITY_BASELINE,
-  PUBLIC_API_DOCS,
-  playwrightCompatibilitySummary,
-  type CompatibilityStatus,
-  type FunctionDoc,
-} from "./format.js";
+import { PUBLIC_API_DOCS, type FunctionDoc } from "./format.js";
 
 type ParamInfo = {
   name: string;
@@ -23,16 +17,6 @@ type HelperDoc = {
   returns: string | null;
   async: boolean;
   example?: string;
-  compatibility?: {
-    baseline: string;
-    status: CompatibilityStatus;
-  };
-};
-
-const PUBLIC_HELP_ALIASES: Record<string, string> = {
-  keyboard: "page.keyboard",
-  mouse: "page.mouse",
-  screencast: "page.screencast",
 };
 
 // Implementation docs are extracted from the bundle at build time and injected
@@ -52,8 +36,16 @@ export function help(
 ): HelperDoc | Array<HelperDoc | string> | string {
   const docs = getDocsMap();
   if (names.length === 0) {
-    const all = [...docs.values()].filter((d) => d.name in helpers);
-    return all;
+    const namespaces = [
+      ...new Set(
+        Object.keys(PUBLIC_API_DOCS).map((path) => path.split(".")[0]),
+      ),
+    ].filter((name) => name in helpers);
+    const embedded = [...docs.values()].filter((doc) => doc.name in helpers);
+    return [
+      ...namespaces.map((name) => resolveHelpName(helpers, docs, name)),
+      ...embedded,
+    ];
   }
   if (names.length === 1) {
     return resolveHelpName(helpers, docs, names[0]);
@@ -81,11 +73,6 @@ export function formatHelp(doc: HelperDoc): string {
   if (doc.example) {
     lines.push(`@example ${doc.example}`);
   }
-  if (doc.compatibility) {
-    lines.push(
-      `@compatibility playwright@${doc.compatibility.baseline} ${doc.compatibility.status}`,
-    );
-  }
   lines.push("");
   lines.push(doc.signature);
   return lines.join("\n");
@@ -96,10 +83,7 @@ function resolveHelpName(
   embeddedDocs: Map<string, HelperDoc>,
   requestedName: string,
 ): HelperDoc | string {
-  if (requestedName === "compat") {
-    return playwrightCompatibilitySummary();
-  }
-  const name = PUBLIC_HELP_ALIASES[requestedName] || requestedName;
+  const name = requestedName;
   const publicDoc = PUBLIC_API_DOCS[name];
   if (publicDoc) {
     return publicDocToHelperDoc(name, publicDoc);
@@ -109,9 +93,7 @@ function resolveHelpName(
     .filter(([path]) => path.startsWith(`${name}.`))
     .sort(([left], [right]) => left.localeCompare(right));
   if (namespaceDocs.length > 0) {
-    const aliasNote =
-      name === requestedName ? "" : `${requestedName} → ${name}\n`;
-    return `${aliasNote}${name}:\n${namespaceDocs
+    return `${name}:\n${namespaceDocs
       .map(([, doc]) => `- ${doc.signature} — ${doc.description}`)
       .join("\n")}`;
   }
@@ -158,14 +140,6 @@ function publicDocToHelperDoc(name: string, doc: FunctionDoc): HelperDoc {
     returns: doc.returns || null,
     async: /(?:^|[<(])Promise(?:<|[>)]|$)/.test(doc.signature),
     ...(doc.example ? { example: doc.example } : {}),
-    ...(doc.compatibility
-      ? {
-          compatibility: {
-            baseline: PLAYWRIGHT_COMPATIBILITY_BASELINE,
-            status: doc.compatibility.status,
-          },
-        }
-      : {}),
   };
 }
 

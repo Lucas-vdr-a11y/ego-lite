@@ -26,9 +26,9 @@ export function currentTargetId() {
   return currentTargetContext()?.targetId;
 }
 
-// Page facades retain this context so their CDP session also remains valid for
-// returned handles and event facades. A string passed to runWithTarget instead
-// creates an operation-scoped context that is detached when the call finishes.
+// A retained target context keeps its CDP session valid across related internal
+// operations. A string creates an operation-scoped context that is detached when
+// the call finishes.
 export function createTargetContext(
   targetId: string,
   beforeOperation?: () => Promise<void>,

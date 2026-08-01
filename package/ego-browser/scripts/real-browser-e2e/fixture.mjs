@@ -1,7 +1,5 @@
 import { createServer } from "node:http";
 
-import { createDamaiRushRoutes } from "./damai-rush/fixture-routes.mjs";
-
 export async function closeFixtureServer(fixtureServer) {
   await new Promise((resolve) => {
     const timer = setTimeout(resolve, 1000);
@@ -16,20 +14,8 @@ export async function closeFixtureServer(fixtureServer) {
 }
 
 export async function startFixtureServer(taskName) {
-  const handleDamaiRushRoute = createDamaiRushRoutes();
   const fixtureServer = createServer(async (req, res) => {
     const url = new URL(req.url || "/", "http://127.0.0.1");
-    try {
-      if (await handleDamaiRushRoute(req, res, url)) return;
-    } catch (error) {
-      if (res.headersSent) {
-        res.destroy(error);
-      } else {
-        res.writeHead(500, { "content-type": "text/plain; charset=utf-8" });
-        res.end("Internal Server Error");
-      }
-      return;
-    }
     if (url.pathname === "/healthz") {
       res.writeHead(200, {
         "content-type": "application/json",

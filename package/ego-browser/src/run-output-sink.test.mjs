@@ -2,10 +2,6 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { runMain } from "../dist/src/run.js";
-import {
-  __testing as screencastTesting,
-  stopScreencast,
-} from "../dist/src/driver/screencast.js";
 
 // A minimal native ego whose only method reports a hard stop, the same shape the real
 // bindings return when the user holds (or has not handed over) the task space. The
@@ -20,22 +16,6 @@ function hardStopEgo(error_code) {
         error: "native wording that should never reach the agent",
         error_code,
       };
-    },
-  };
-}
-
-// A native ego whose `snapshot` REJECTS with a hard-stop code — the shape the real
-// bindings use under user control (helpers.ts probeAgentControl relies on it). driver/
-// observe.ts calls browserEgo().snapshot() directly, so the rejection only reaches the
-// sink if snapshot() routes it through buildEgoError.
-function snapshotHardStopEgo(error_code) {
-  return {
-    calls: 0,
-    async snapshot() {
-      this.calls += 1;
-      const err = new Error("native wording that should never reach the agent");
-      err.error_code = error_code;
-      throw err;
     },
   };
 }
@@ -140,42 +120,6 @@ test("an inactive / unassigned task space is also a hard stop", async () => {
   assert.doesNotMatch(result.stdout, /swallowed|business/);
 });
 
-test("a swallowed snapshot hard stop (rejected, not resolved) also collapses to one message", async () => {
-  // snapshot rejects directly instead of resolving with { error }, so it bypasses
-  // assertNoEgoError; the collapse only works if snapshot() rebuilds it via buildEgoError.
-  const ego = snapshotHardStopEgo("EGO_TASK_SPACE_USER_IN_CONTROL");
-  const result = await runScript(
-    `
-      for (const site of ["a", "b", "c"]) {
-        console.log("visiting " + site);
-        try {
-          await page.snapshot();
-          console.log("ok " + site);
-        } catch (e) {
-          console.log("failed " + site + ": " + e.message);
-        }
-      }
-      console.log("summary: done");
-    `,
-    ego,
-  );
-
-  assert.equal(result.exitCode, 0);
-  // The owned guidance survives once; the native wording and business logs are dropped.
-  assert.match(result.stdout, /taken control of this task space/);
-  assert.match(result.stdout, /egoBrowser\.takeOverTaskSpace\(\)/);
-  assert.doesNotMatch(result.stdout, /native wording/);
-  assert.doesNotMatch(result.stdout, /visiting|failed|ok |summary/);
-  assert.equal(
-    result.stdout.match(/egoBrowser\.takeOverTaskSpace\(\)/g).length,
-    1,
-  );
-  assert.ok(
-    ego.calls >= 3,
-    "every iteration should have hit the snapshot hard stop",
-  );
-});
-
 test("an uncaught hard stop discards output without double-printing the message", async () => {
   const ego = hardStopEgo("EGO_TASK_SPACE_USER_IN_CONTROL");
   const result = await runScript(
@@ -205,13 +149,13 @@ test("an ordinary uncaught error still flushes the output logged before it", asy
   assert.equal(result.stdout, "partial result\n");
 });
 
-test("an uncaught browser-global ReferenceError points to page.evaluate", async () => {
+test("an uncaught browser-global ReferenceError points to task.page.evaluate", async () => {
   const result = await runScript(`CSS.escape("price");`);
 
   assert.ok(result.error, "expected runMain to reject");
   assert.match(result.error.message, /CSS is not defined/);
-  assert.match(result.error.message, /page\.evaluate\(\)/);
-  assert.match(result.error.stack, /page\.evaluate\(\)/);
+  assert.match(result.error.message, /task\.page\.evaluate\(\)/);
+  assert.match(result.error.stack, /task\.page\.evaluate\(\)/);
   assert.equal(result.stdout, "");
 });
 
@@ -246,41 +190,4 @@ test("a swallowed legacy task-space helper collapses output to one stale-skill m
   assert.match(result.stdout, /egoBrowser\.useOrCreateTaskSpace/);
   assert.doesNotMatch(result.stdout, /before|swallowed|after/);
   assert.equal(result.stdout.match(/\[ego-browser:skill-stale\]/g)?.length, 1);
-});
-
-test("runMain finalizes an active screencast when the script ends", async () => {
-  let stopCalls = 0;
-  const restore = screencastTesting.setOverrides({
-    ensureSession: async () => "session-1",
-    subscribeBrowserEvent: () => () => {},
-    browserCdp: async (method) => {
-      if (method === "Page.captureScreenshot") {
-        return { result: { data: Buffer.from("fallback").toString("base64") } };
-      }
-      return { result: {} };
-    },
-    createRecorder: () => ({
-      async start() {},
-      writeFrame() {},
-      async stop() {
-        stopCalls += 1;
-      },
-    }),
-  });
-  try {
-    const result = await runScript(`
-      await page.screencast.start({
-        path: "/tmp/auto-finalized.webm",
-        size: { width: 640, height: 480 },
-      });
-      console.log("recorded");
-    `);
-
-    assert.equal(result.exitCode, 0);
-    assert.equal(result.stdout, "recorded\n");
-    assert.equal(stopCalls, 1);
-  } finally {
-    await stopScreencast().catch(() => {});
-    restore();
-  }
 });

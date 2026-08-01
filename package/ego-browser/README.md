@@ -3,7 +3,7 @@
 The Node.js helper layer that runs inside the `ego-browser` Chromium browser. The browser exposes an `ego` runtime (tabs, CDP, snapshots, task spaces); this package bundles the agent-facing helpers that script that runtime.
 
 ```text
-ego-browser (Chromium) -> globalThis.ego -> Playwright-style helper facades -> agent heredoc
+ego-browser (Chromium) -> globalThis.ego -> TaskSpace -> native Playwright -> agent heredoc
 ```
 
 ## Build and run
@@ -14,22 +14,24 @@ npm run build     # bundle to dist/out/index.js
 npm test          # build + tsc --noEmit + node --test
 ```
 
-The build emits a single ESM file `dist/out/index.js`. The ego-browser browser dispatches `ego-browser nodejs <<'EOF' ... EOF` heredocs to that bundle. Inside the heredoc, the Playwright-style `page` facade and ego-specific `egoBrowser`, `tabs`, `site`, `fetch`, and `cdp` facades are preloaded.
+The build emits `dist/out/index.js`; its runtime dependency is `playwright-core`. The ego-browser browser dispatches `ego-browser nodejs <<'EOF' ... EOF` heredocs to that bundle. TaskSpace creation and selection return the active native Playwright `page` and `context`.
 
 ```bash
 ego-browser nodejs <<'EOF'
 const task = await egoBrowser.newTaskSpace('demo')
-const tab = await task.tabs.openOrReuse('https://example.com', { waitUntil: 'load' })
-console.log(await tab.page.snapshot())
+await task.page.goto('https://example.com', { waitUntil: 'load' })
+console.log(await task.page.title())
 await egoBrowser.completeTaskSpace(task.id)
 EOF
 ```
+
+The host must expose `ego.getCDPEndpoint(taskSpaceId)`, returning either a browser-level CDP endpoint string or `{ endpoint }`. The endpoint must support the complete browser CDP session lifecycle used by `chromium.connectOverCDP` and expose only the selected TaskSpace's targets. Give different TaskSpaces distinct endpoint values so the SDK can reconnect without crossing their isolation boundary. The command-only `ego.sendCDPMessage` API is intentionally not adapted into a Playwright transport.
 
 Local invocation without the browser (for debugging the helper bundle itself) reads stdin:
 
 ```bash
 node dist/out/index.js <<'JS'
-console.log(await page.info())
+console.log(help())
 JS
 ```
 
@@ -62,27 +64,11 @@ npm run validate:site-skills    # alias: validate:learnings
 ```
 src/
   run.ts                 CLI entry; reads stdin, injects helpers, executes
-  helpers.ts             public Playwright-style facades plus internal helper glue
+  helpers.ts             TaskSpace, site, fetch, CDP, and help surfaces
+  playwright-taskspace.ts native Playwright connection and TaskSpace binding
   browser-runtime.ts     bridge to globalThis.ego (CDP, sessions, events)
-  element-resolver.ts    resolves @eN / CSS / XPath / ARIA targets
-  page-network.ts        Page HTTP/HAR/WebSocket routing
-  page-scripts.ts        init scripts and exposed Node bindings
-  page-frames.ts         lightweight Frame facades
-  page-environment.ts    viewport and media emulation
-  page-clock.ts          target-local Playwright Clock subset
-  page-handles.ts        retained Page JSHandle and injected tags
-  driver/
-    pointer.ts           click, hover, drag, wheel, scrollIntoViewIfNeeded
-    observe.ts           snapshot, screenshot, elementCenter
-    keyboard.ts          focus, insertText, press, pressSequentially, fill, check, uncheck, setChecked, selectOption, dispatchEvent
-    locator.ts           first/nth/last selectors, getBy* text-style locators, textContent, innerText, inputValue, isChecked, getAttribute, count, allInnerTexts, allTextContents, evaluate, evaluateAll, extractAll
-    nav.ts               tabs, goto, openOrReuseTab, closeTab
-    load.ts              waitForDocumentLoad and load orchestration
-    waits.ts             waitForTimeout, waitForLoadState, waitForSelector, waitForFunction, waitForURL
-    files.ts             setInputFiles
-    downloads.ts         page.waitForEvent("download") and download facade
   http.ts                serverFetch, browserFetch
-  cdp-eval.ts            cdp() and evaluate() raw eval
+  cdp-eval.ts            direct CDP access and site-tool evaluation
   learning/              site-learnings discovery and manifest validation
 scripts/
   build.mjs              esbuild bundling
@@ -92,10 +78,9 @@ The top-level repo README has the full helper inventory and the task-space / con
 
 ## Design constraints
 
-- The browser runtime owns tabs, task spaces, CDP transport, snapshots, and event delivery. This package keeps only agent-facing ergonomics.
-- Snapshot helpers use the browser runtime contract: `ego.snapshot({ scope, includeActionMarks, includeStableLocator })`.
-- A TaskSpace Tab exposes a target-bound Page. Its snapshot operations internally select the correct TaskSpace and target, serialize native capture, and keep snapshot refs scoped to that Page.
-- Public agent-facing helpers are object-style facades; internal implementation helpers remain camelCase.
+- The browser runtime owns task spaces and CDP transport. Playwright owns Page, BrowserContext, Locator, input, navigation, events, and downloads.
+- A TaskSpace exposes its active native Playwright `Page` and `BrowserContext`; additional pages use `task.context.pages()` and `task.context.newPage()`.
+- `egoBrowser`, `site`, `fetch`, `cdp`, and `help` remain ego-browser-specific control surfaces.
 - Site-specific reusable experience belongs under `skills/ego-browser/learnings/`, not in this package.
 
 ## License
