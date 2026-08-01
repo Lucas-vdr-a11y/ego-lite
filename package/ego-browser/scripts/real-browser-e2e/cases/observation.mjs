@@ -136,6 +136,30 @@ export function observationCase() {
     });
     assert(rawScreenshot.length > 0, "screenshot supports raw clips");
 
+    try {
+      await cdp("Emulation.setDeviceMetricsOverride", {
+        width: 640,
+        height: 480,
+        deviceScaleFactor: 2,
+        mobile: false,
+      });
+      await page.waitForTimeout(100);
+      const deviceScaleScreenshot = await page.screenshot({ caret: "initial" });
+      const cssScaleScreenshot = await page.screenshot({ caret: "initial", scale: "css" });
+      assertEqual(
+        deviceScaleScreenshot.readUInt32BE(16),
+        1280,
+        "screenshot defaults to one output pixel per device pixel"
+      );
+      assertEqual(
+        cssScaleScreenshot.readUInt32BE(16),
+        640,
+        "screenshot css scale returns one output pixel per CSS pixel"
+      );
+    } finally {
+      await setStableViewport();
+    }
+
     const savedScreenshotPath = await page.saveScreenshot({ fullPage: false });
     const savedScreenshotStat = await stat(savedScreenshotPath);
     assert(savedScreenshotStat.size > 0, "saveScreenshot returns a generated path");

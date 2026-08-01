@@ -195,11 +195,14 @@ test("frame-scoped collection helpers evaluate in the child execution context", 
     cdpOverride(method, params, sessionId) {
       calls.push({ method, params, sessionId });
       if (method === "Runtime.evaluate" && params.contextId === 101) {
+        if (params.expression === "void 0") {
+          return { result: {} };
+        }
         assert.match(params.expression, /querySelectorAll\("\.item"\)/);
         if (params.expression.includes("elements.length")) {
           return { result: { value: 3 } };
         }
-        return { result: { value: ["One", "Two", "Three"] } };
+        return { result: { objectId: "frame-elements" } };
       }
       if (method === "Runtime.evaluate") {
         assert.match(params.expression, /iframe#catalog/);
@@ -214,6 +217,12 @@ test("frame-scoped collection helpers evaluate in the child execution context", 
             value: { x: 10, y: 20, width: 300, height: 200 },
           },
         };
+      }
+      if (
+        method === "Runtime.callFunctionOn" &&
+        params.objectId === "frame-elements"
+      ) {
+        return { result: { value: ["One", "Two", "Three"] } };
       }
       if (method === "DOM.describeNode") {
         return { node: { frameId: "frame-1" } };
@@ -239,7 +248,9 @@ test("frame-scoped collection helpers evaluate in the child execution context", 
 
   const childEvaluations = calls.filter(
     (call) =>
-      call.method === "Runtime.evaluate" && call.params.contextId === 101,
+      call.method === "Runtime.evaluate" &&
+      call.params.contextId === 101 &&
+      call.params.expression !== "void 0",
   );
   assert.equal(childEvaluations.length, 2);
   assert.ok(
@@ -267,6 +278,45 @@ test("text, label, attribute, and test-id locators evaluate regular expressions"
       `${prefix} must preserve the regular expression`,
     );
   }
+});
+
+test("locator auto-detects Playwright-style implicit XPath selectors", () => {
+  for (const selector of ["//button", "..", "(//button)[1]"]) {
+    const expression = queryAllExpression(selector, "root");
+    assert.match(expression, /document\.evaluate/);
+    assert.match(
+      expression,
+      new RegExp(
+        JSON.stringify(selector).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+      ),
+    );
+    assert.doesNotMatch(expression, /querySelectorAll/);
+  }
+});
+
+test("scoped XPath selectors stay relative to the locator root", () => {
+  let evaluatedSelector;
+  let evaluatedRoot;
+  const root = { nodeType: 1 };
+  const document = {
+    evaluate(selector, context) {
+      evaluatedSelector = selector;
+      evaluatedRoot = context;
+      return { snapshotLength: 0 };
+    },
+  };
+  const XPathResult = { ORDERED_NODE_SNAPSHOT_TYPE: 7 };
+  const expression = queryAllExpression("//button", "root");
+
+  Function(
+    "document",
+    "root",
+    "XPathResult",
+    `return ${expression};`,
+  )(document, root, XPathResult);
+
+  assert.equal(evaluatedSelector, ".//button");
+  assert.equal(evaluatedRoot, root);
 });
 
 test("test id locators query data-testid attributes exactly", async () => {
@@ -385,6 +435,42 @@ test("role state locators filter Playwright role options in the page", async () 
   assert.match(expression, /aria-disabled/);
   assert.match(expression, /accessibleName\(el\)/);
   assert.match(expression, /if \(!true\)/);
+});
+
+test("role locators resolve a fieldset as a group named by its legend", () => {
+  const legend = {
+    tagName: "LEGEND",
+    innerText: "Gender",
+    textContent: "Gender",
+  };
+  const fieldset = {
+    tagName: "FIELDSET",
+    hidden: false,
+    innerText: "Gender\nFemale\nMale\nDecline to self-identify",
+    textContent: "Gender Female Male Decline to self-identify",
+    children: [legend],
+    parentElement: null,
+    computedStyle: { display: "block", visibility: "visible" },
+    getAttribute() {
+      return null;
+    },
+    hasAttribute() {
+      return false;
+    },
+    closest() {
+      return null;
+    },
+  };
+  const options = {
+    role: "group",
+    name: { text: "Gender", exact: true },
+  };
+
+  assert.deepEqual(evaluateRoleQuery(options, [fieldset]), [fieldset]);
+  assert.match(
+    queryAllExpression(internalSelector("role", options)),
+    /querySelectorAll\([^)]*fieldset/,
+  );
 });
 
 test("role locators exclude descendants of display-none ancestors unless includeHidden is true", () => {
@@ -524,6 +610,12 @@ test("role collections use the same AX match set as nth element operations", asy
         if (params.functionDeclaration.includes("innerText target")) {
           assert.equal(params.objectId, "node-200");
           return { result: { value: "House 2" } };
+        }
+        if (params.functionDeclaration.includes("return [this, ...elements]")) {
+          return { result: { objectId: "role-elements" } };
+        }
+        if (params.objectId === "role-elements") {
+          return { result: { value: ["HOUSE 1", "HOUSE 2"] } };
         }
         assert.deepEqual(
           [
@@ -830,17 +922,27 @@ test("boundingBox preserves locator auto-waiting", async () => {
 });
 
 test("evaluateAll runs a page function with matching elements and an argument", async () => {
+  const calls = [];
   const restore = setOverrides({
     cdpOverride(method, params) {
-      assert.equal(method, "Runtime.evaluate");
-      assert.equal(params.awaitPromise, true);
-      assert.match(params.expression, /querySelectorAll\("\.item"\)/);
-      assert.match(
-        params.expression,
-        /pageFunction\(elements, \{"prefix":"#"\}\)/,
-      );
-      assert.match(params.expression, /elements\.map/);
-      return { result: { value: ["#One", "#Two"] } };
+      calls.push({ method, params });
+      if (method === "Runtime.evaluate") {
+        assert.equal(params.returnByValue, false);
+        assert.match(params.expression, /querySelectorAll\("\.item"\)/);
+        return { result: { objectId: "item-elements" } };
+      }
+      if (method === "Runtime.callFunctionOn") {
+        assert.equal(params.objectId, "item-elements");
+        assert.equal(params.awaitPromise, true);
+        assert.match(params.arguments[2].value, /elements\.map/);
+        assert.deepEqual(params.arguments[3].value, {
+          o: [{ k: "prefix", v: "#" }],
+          id: 1,
+        });
+        return { result: { value: ["#One", "#Two"] } };
+      }
+      if (method === "Runtime.releaseObject") return {};
+      throw new Error(`Unexpected CDP method: ${method}`);
     },
   });
   try {
@@ -854,6 +956,10 @@ test("evaluateAll runs a page function with matching elements and an argument", 
   } finally {
     restore();
   }
+  assert.deepEqual(
+    calls.map(({ method }) => method),
+    ["Runtime.evaluate", "Runtime.callFunctionOn", "Runtime.releaseObject"],
+  );
 });
 
 test("evaluateLocator runs a page function with one resolved element and an argument", async () => {
@@ -865,14 +971,15 @@ test("evaluateLocator runs a page function with one resolved element and an argu
         return { result: { objectId: "node-1" } };
       }
       if (method === "Runtime.callFunctionOn") {
-        assert.match(params.functionDeclaration, /pageFunction\(this, arg\)/);
-        assert.deepEqual(
-          params.arguments.map((item) => item.value),
-          [
-            "(element, options) => options.prefix + element.textContent",
-            { prefix: "#" },
-          ],
+        assert.match(params.functionDeclaration, /result\(this, argument\)/);
+        assert.equal(
+          params.arguments[2].value,
+          "(element, options) => options.prefix + element.textContent",
         );
+        assert.deepEqual(params.arguments[3].value, {
+          o: [{ k: "prefix", v: "#" }],
+          id: 1,
+        });
         return { result: { value: "#One" } };
       }
       return {};
@@ -908,12 +1015,10 @@ test("evaluateAll supports refs as a single-element array", async () => {
         }
         assert.match(
           params.functionDeclaration,
-          /pageFunction\(\[this\], arg\)/,
+          /result\(\[this\], argument\)/,
         );
-        assert.deepEqual(
-          params.arguments.map((item) => item.value),
-          ["elements => elements.length", undefined],
-        );
+        assert.equal(params.arguments[2].value, "elements => elements.length");
+        assert.deepEqual(params.arguments[3].value, { v: "undefined" });
         return { result: { value: 1 } };
       }
       return {};

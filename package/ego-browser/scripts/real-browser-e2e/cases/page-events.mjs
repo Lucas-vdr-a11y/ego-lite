@@ -144,13 +144,17 @@ export const pageEventCases = [
         });
         popup = await popupPromise;
         assert(popup.targetId, "popup exposes its target id");
+        assertEqual(popup.isClosed(), false, "popup starts open");
         await tabs.activate(originalTab);
         await popup.waitForURL(
           (url) => url.pathname === "/secondary",
           { timeout: 5000, waitUntil: "load" }
         );
-        assertIncludes(await popup.url(), "/secondary", "popup Page resolves its committed URL");
+        assertIncludes(popup.url(), "/secondary", "popup Page resolves its committed URL");
         assertEqual(await popup.title(), "ego-lite secondary", "popup Page reads its own title");
+        const opener = await popup.opener();
+        assert(opener, "popup.opener returns its opening Page");
+        assertIncludes(opener.url(), baseUrl, "popup.opener remains bound to the original Page");
         assertEqual(
           await popup.getByRole("heading", { name: "Secondary tab" }).innerText(),
           "Secondary tab",
@@ -189,14 +193,26 @@ export const pageEventCases = [
           originalTab.targetId,
           "target-bound popup operations do not change the active tab"
         );
+        const popupFrames = popup.frames();
+        const childFrame = popupFrames.find((frame) => frame.url().includes("/frame.html"));
+        assert(childFrame, "popup.frames returns its child frame");
+        assertEqual(
+          await childFrame.evaluate(() => document.querySelector("#iframe-marker")?.textContent),
+          "iframe target",
+          "a Frame returned from an inactive popup stays bound to that popup"
+        );
         await popup.bringToFront();
         assertEqual(
           (await tabs.current()).targetId,
           popup.targetId,
           "popup.bringToFront explicitly activates the popup"
         );
+        const closePromise = popup.waitForEvent("close", { timeout: 5000 });
+        await popup.close();
+        await closePromise;
+        assertEqual(popup.isClosed(), true, "popup.close marks the Page closed");
       } finally {
-        if (popup?.targetId) await tabs.close(popup.targetId);
+        if (popup?.targetId && !popup.isClosed()) await popup.close();
         await tabs.activate(originalTab);
       }
     `),

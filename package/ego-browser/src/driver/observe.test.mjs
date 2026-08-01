@@ -192,13 +192,88 @@ test("screenshot forwards common CDP format and quality options", async () => {
   });
 });
 
-test("viewport screenshot clips from the current scroll position", async () => {
+test("viewport screenshot defaults to Playwright device scale", async () => {
   const calls = [];
   const restore = setOverrides({
     cdpOverride(method, params) {
       calls.push({ method, params });
+      if (method === "Page.getLayoutMetrics") {
+        return {
+          visualViewport: {
+            pageX: 17,
+            pageY: 625,
+            clientWidth: 800,
+            clientHeight: 600,
+            scale: 1,
+          },
+        };
+      }
       if (method === "Runtime.evaluate") {
-        if (params.expression === "window.devicePixelRatio") {
+        if (String(params.expression).includes("window.devicePixelRatio")) {
+          throw new Error("device scale must not read devicePixelRatio");
+        }
+        return {
+          result: {
+            value: JSON.stringify({
+              url: "https://example.com/scrolled",
+              title: "Scrolled",
+              w: 800,
+              h: 600,
+              sx: 17,
+              sy: 625,
+              pw: 1200,
+              ph: 2400,
+            }),
+          },
+        };
+      }
+      if (method === "Page.captureScreenshot") {
+        return { data: Buffer.from("png").toString("base64") };
+      }
+      return {};
+    },
+  });
+  try {
+    await screenshot({ caret: "initial" });
+  } finally {
+    restore();
+  }
+
+  const capture = calls.find(
+    (request) => request.method === "Page.captureScreenshot",
+  );
+  assert.deepEqual(capture.params, {
+    format: "png",
+    captureBeyondViewport: false,
+    clip: {
+      x: 17,
+      y: 625,
+      width: 800,
+      height: 600,
+      scale: 1,
+    },
+  });
+});
+
+test("viewport screenshot uses Playwright css scale when requested", async () => {
+  const calls = [];
+  const restore = setOverrides({
+    cdpOverride(method, params) {
+      calls.push({ method, params });
+      if (method === "Page.getLayoutMetrics") {
+        return {
+          visualViewport: {
+            pageX: 17,
+            pageY: 625,
+            clientWidth: 800,
+            clientHeight: 600,
+            scale: 1,
+          },
+        };
+      }
+      if (method === "Runtime.evaluate") {
+        if (String(params.expression).includes("window.devicePixelRatio")) {
+          assert.equal(params.expression, "window.devicePixelRatio");
           return { result: { value: 2 } };
         }
         return {
@@ -223,7 +298,7 @@ test("viewport screenshot clips from the current scroll position", async () => {
     },
   });
   try {
-    await screenshot();
+    await screenshot({ caret: "initial", scale: "css" });
   } finally {
     restore();
   }
@@ -242,6 +317,13 @@ test("viewport screenshot clips from the current scroll position", async () => {
       scale: 0.5,
     },
   });
+});
+
+test("screenshot rejects an unsupported Playwright scale", async () => {
+  await assert.rejects(
+    () => screenshot({ scale: "physical", caret: "initial" }),
+    /screenshot scale must be "css" or "device"/,
+  );
 });
 
 test("drainEvents returns the current event array synchronously", () => {

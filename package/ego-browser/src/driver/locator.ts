@@ -1,4 +1,5 @@
-import { cdp, runtimeValue } from "../cdp-eval.js";
+import { cdp, evaluateWithArguments, runtimeValue } from "../cdp-eval.js";
+import { ensureSession } from "../browser-runtime.js";
 import { parseAriaRef } from "../aria-ref-map.js";
 import {
   ElementResolutionError,
@@ -13,6 +14,7 @@ import {
   timeoutDeadline,
 } from "../playwright-errors.js";
 import { state } from "../state.js";
+import { createJSHandle } from "../js-handle.js";
 import { releaseHandle, resolveAndCall, resolveHandle } from "./element-ops.js";
 
 /**
@@ -376,47 +378,243 @@ export async function allTextContents(selector) {
  * Execute JavaScript against one matching element, Playwright-style.
  * @param {string} selector CSS selector / @ref / loc= / xpath= for the element.
  * @param {Function|string} pageFunction Function source called with (element, arg).
- * @param {unknown} [arg] Optional serializable argument.
+ * @param {unknown} [arg] Optional Playwright-serializable argument, including same-context JSHandles.
  * @returns {Promise<unknown>} Serializable return value from pageFunction.
  */
 export async function evaluateLocator(selector, pageFunction, arg = undefined) {
   const functionSource = pageFunctionSource(pageFunction, "locator.evaluate");
-  return readElement(
+  return evaluateResolvedElement(
     selector,
-    `function(functionSource, arg){
-      const pageFunction = (0, eval)("(" + functionSource + ")");
-      return pageFunction(this, arg);
-    }`,
-    [functionSource, arg],
+    functionSource,
+    arg,
+    false,
+    "element",
+    "locator.evaluate",
   );
+}
+
+/**
+ * Execute JavaScript against one matching element and retain the remote result.
+ * @param {string} selector Selector for the element.
+ * @param {Function|string} pageFunction Function called with (element, arg).
+ * @param {unknown} [arg] Optional Playwright-serializable argument, including same-context JSHandles.
+ * @returns {Promise<object>} Target-scoped JSHandle.
+ */
+export async function evaluateLocatorHandle(
+  selector,
+  pageFunction,
+  arg = undefined,
+) {
+  const functionSource = pageFunctionSource(
+    pageFunction,
+    "locator.evaluateHandle",
+  );
+  return evaluateResolvedElement(
+    selector,
+    functionSource,
+    arg,
+    true,
+    "element",
+    "locator.evaluateHandle",
+  );
+}
+
+async function evaluateResolvedElement(
+  selector,
+  functionSource,
+  arg,
+  returnHandle,
+  receiverMode,
+  apiName,
+) {
+  const timeout = state.defaultTimeout;
+  const deadline = timeoutDeadline(timeout, state.now());
+  while (true) {
+    let handle;
+    try {
+      handle = await resolveHandle(selector);
+      const result = await evaluateWithArguments(functionSource, true, arg, {
+        apiName,
+        sessionId: handle.sessionId,
+        executionContextId: handle.probeExecutionContextId,
+        receiverObjectId: handle.objectId,
+        receiverMode,
+        returnHandle,
+        objectGroup: "ego-browser-locator-handles",
+      });
+      return returnHandle
+        ? createJSHandle(
+            result,
+            handle.sessionId,
+            handle.probeExecutionContextId,
+          )
+        : result;
+    } catch (error) {
+      if (
+        !(error instanceof ElementResolutionError) ||
+        error.kind !== "transient" ||
+        state.now() >= deadline
+      ) {
+        throw error;
+      }
+      await state.sleep(Math.min(100, deadline - state.now()));
+    } finally {
+      if (handle) await releaseHandle(handle.objectId, handle.sessionId);
+    }
+  }
 }
 
 /**
  * Execute JavaScript against all matching elements, Playwright-style.
  * @param {string} selector Selector to query.
  * @param {Function|string} pageFunction Function source called with (elements, arg).
- * @param {unknown} [arg] Optional serializable argument.
+ * @param {unknown} [arg] Optional Playwright-serializable argument, including same-context JSHandles.
  * @returns {Promise<unknown>} Serializable return value from pageFunction.
  */
 export async function evaluateAll(selector, pageFunction, arg = undefined) {
   const functionSource = pageFunctionSource(pageFunction, "evaluateAll");
   if (isDirectRef(selector)) {
-    return readElement(
+    return evaluateResolvedElement(
       selector,
-      `function(functionSource, arg){
-        const pageFunction = (0, eval)("(" + functionSource + ")");
-        return pageFunction([this], arg);
-      }`,
-      [functionSource, arg],
+      functionSource,
+      arg,
+      false,
+      "elementArray",
+      "locator.evaluateAll",
     );
   }
+  const collection = await resolveElementCollection(selector);
+  try {
+    return await evaluateWithArguments(functionSource, true, arg, {
+      apiName: "locator.evaluateAll",
+      sessionId: collection.sessionId,
+      executionContextId: collection.executionContextId,
+      receiverObjectId: collection.objectId,
+      receiverMode: "elements",
+      objectGroup: "ego-browser-locator-collection",
+    });
+  } finally {
+    await releaseHandle(collection.objectId, collection.sessionId);
+  }
+}
+
+async function resolveElementCollection(selector) {
   const backendNodeIds = isLocatorTarget(selector)
     ? null
     : await queryRoleBackendNodeIds(selector);
   if (backendNodeIds !== null) {
-    return evaluateRoleBackendNodes(backendNodeIds, functionSource, arg, true);
+    return resolveRoleElementCollection(backendNodeIds);
   }
-  return evaluateQueryAll(selector, functionSource, arg);
+  const selectorValue = isLocatorTarget(selector)
+    ? selector.selector
+    : selector;
+  const expression = `Array.from(${buildQueryAllExpression(selectorValue)})`;
+  if (isLocatorTarget(selector) && selector.frameChain.length > 0) {
+    const context = await resolveFrameContext(selector.frameChain);
+    const result = await cdp(
+      "Runtime.evaluate",
+      {
+        expression,
+        contextId: context.executionContextId,
+        returnByValue: false,
+        awaitPromise: false,
+        objectGroup: "ego-browser-locator-collection",
+      },
+      context.sessionId,
+    );
+    return collectionObject(
+      result,
+      expression,
+      context.sessionId,
+      context.executionContextId,
+    );
+  }
+  const sessionId = state.cdpOverride
+    ? state.sessionId || undefined
+    : await ensureSession();
+  const result = await cdp(
+    "Runtime.evaluate",
+    {
+      expression,
+      returnByValue: false,
+      awaitPromise: false,
+      objectGroup: "ego-browser-locator-collection",
+    },
+    sessionId,
+  );
+  return collectionObject(result, expression, sessionId);
+}
+
+async function resolveRoleElementCollection(backendNodeIds) {
+  const sessionId = state.cdpOverride
+    ? state.sessionId || undefined
+    : await ensureSession();
+  if (backendNodeIds.length === 0) {
+    const result = await cdp(
+      "Runtime.evaluate",
+      {
+        expression: "[]",
+        returnByValue: false,
+        awaitPromise: false,
+        objectGroup: "ego-browser-locator-collection",
+      },
+      sessionId,
+    );
+    return collectionObject(result, "[]", sessionId);
+  }
+  const elements = [];
+  try {
+    for (const backendNodeId of backendNodeIds) {
+      const resolved = await cdp(
+        "DOM.resolveNode",
+        {
+          backendNodeId,
+          objectGroup: "ego-browser-locator-collection",
+        },
+        sessionId,
+      );
+      const objectId = resolved.object?.objectId;
+      if (!objectId) {
+        throw new ElementResolutionError(
+          `No objectId for AX backend node ${backendNodeId}`,
+          "permanent",
+        );
+      }
+      elements.push(objectId);
+    }
+    const [first, ...rest] = elements;
+    const result = await cdp(
+      "Runtime.callFunctionOn",
+      {
+        functionDeclaration:
+          "function(...elements){ return [this, ...elements]; }",
+        objectId: first,
+        arguments: rest.map((objectId) => ({ objectId })),
+        returnByValue: false,
+        awaitPromise: false,
+        objectGroup: "ego-browser-locator-collection",
+      },
+      sessionId,
+    );
+    return collectionObject(result, "role element collection", sessionId);
+  } finally {
+    for (const objectId of elements) {
+      await releaseHandle(objectId, sessionId);
+    }
+  }
+}
+
+function collectionObject(result, expression, sessionId, executionContextId?) {
+  if (result.exceptionDetails || result.result?.subtype === "error") {
+    runtimeValue(result, expression);
+  }
+  const objectId = result.result?.objectId;
+  if (!objectId) {
+    throw new Error(
+      `Could not create Locator element collection: ${expression}`,
+    );
+  }
+  return { objectId, sessionId, executionContextId };
 }
 
 async function readElement(

@@ -40,6 +40,10 @@ export type FrameOwnerContext = {
 
 const oopifSessions = new Map<string, string>();
 const oopifSessionInflight = new Map<string, Promise<string | null>>();
+const frameWorlds = new Map<
+  string,
+  { executionContextId: number; sessionId: string }
+>();
 
 subscribeBrowserEvent("Target.detachedFromTarget", undefined, (event) => {
   const sessionId = event.params?.sessionId;
@@ -50,14 +54,48 @@ subscribeBrowserEvent("Target.detachedFromTarget", undefined, (event) => {
       oopifSessionInflight.delete(frameId);
     }
   }
+  invalidateFrameWorlds((_key, world) => world.sessionId === sessionId);
 });
 subscribeBrowserEvent("Target.targetDestroyed", undefined, (event) => {
   const targetId = event.params?.targetId;
   if (targetId) {
     oopifSessions.delete(targetId);
     oopifSessionInflight.delete(targetId);
+    invalidateFrameWorld(targetId);
   }
 });
+subscribeBrowserEvent("Page.frameNavigated", undefined, (event) => {
+  const frameId = event.params?.frame?.id;
+  if (frameId) invalidateFrameWorld(frameId);
+});
+subscribeBrowserEvent("Page.frameDetached", undefined, (event) => {
+  const frameId = event.params?.frameId;
+  if (frameId) invalidateFrameWorld(frameId);
+});
+subscribeBrowserEvent(
+  "Runtime.executionContextDestroyed",
+  undefined,
+  (event) => {
+    const executionContextId = event.params?.executionContextId;
+    if (executionContextId === undefined) return;
+    invalidateFrameWorlds(
+      (_key, world) =>
+        world.executionContextId === executionContextId &&
+        (!event.sessionId || world.sessionId === event.sessionId),
+    );
+  },
+);
+subscribeBrowserEvent(
+  "Runtime.executionContextsCleared",
+  undefined,
+  (event) => {
+    if (!event.sessionId) {
+      frameWorlds.clear();
+      return;
+    }
+    invalidateFrameWorlds((_key, world) => world.sessionId === event.sessionId);
+  },
+);
 
 export function locatorTarget(
   selector: string,
@@ -170,7 +208,7 @@ async function resolveChildFrame(
         "transient",
       );
     }
-    const isolated = await createFrameWorld(
+    const isolated = await ensureFrameWorld(
       frameId,
       parent.sessionId,
       options.cdpTimeoutMs,
@@ -290,11 +328,36 @@ function finiteScale(value: unknown) {
   return Number.isFinite(scale) && scale > 0 ? scale : 1;
 }
 
-async function createFrameWorld(
+export async function ensureFrameWorld(
   frameId: string,
-  parentSessionId: string,
+  parentSessionId: string | undefined,
   cdpTimeoutMs?: number,
 ) {
+  const effectiveParentSessionId = parentSessionId || (await ensureSession());
+  const cacheKey = frameWorldKey(effectiveParentSessionId, frameId);
+  const cached = frameWorlds.get(cacheKey);
+  if (cached) {
+    try {
+      await cdp(
+        "Runtime.evaluate",
+        {
+          expression: "void 0",
+          contextId: cached.executionContextId,
+          returnByValue: true,
+          awaitPromise: false,
+        },
+        cached.sessionId,
+        cdpTimeoutMs,
+      );
+      return cached;
+    } catch (error) {
+      if (!isFrameLifecycleError(error)) throw error;
+      frameWorlds.delete(cacheKey);
+      if (cached.sessionId !== effectiveParentSessionId) {
+        oopifSessions.delete(frameId);
+      }
+    }
+  }
   const params = {
     frameId,
     worldName: "ego-browser-frame",
@@ -304,10 +367,10 @@ async function createFrameWorld(
     const result = await cdp(
       "Page.createIsolatedWorld",
       params,
-      parentSessionId,
+      effectiveParentSessionId,
       cdpTimeoutMs,
     );
-    return { ...result, sessionId: parentSessionId };
+    return rememberFrameWorld(cacheKey, result, effectiveParentSessionId);
   } catch (error) {
     let sessionId = await oopifSession(frameId, cdpTimeoutMs);
     if (!sessionId) throw error;
@@ -318,7 +381,7 @@ async function createFrameWorld(
         sessionId,
         cdpTimeoutMs,
       );
-      return { ...result, sessionId };
+      return rememberFrameWorld(cacheKey, result, sessionId);
     } catch (childError) {
       if (!isSessionLost(childError)) throw childError;
       oopifSessions.delete(frameId);
@@ -330,8 +393,30 @@ async function createFrameWorld(
         sessionId,
         cdpTimeoutMs,
       );
-      return { ...result, sessionId };
+      return rememberFrameWorld(cacheKey, result, sessionId);
     }
+  }
+}
+
+export function invalidateFrameWorld(frameId: string) {
+  invalidateFrameWorlds((key) => key.endsWith(`:${frameId}`));
+}
+
+function rememberFrameWorld(cacheKey, result, sessionId) {
+  const executionContextId = result.executionContextId;
+  if (executionContextId === undefined) return { ...result, sessionId };
+  const world = { executionContextId, sessionId };
+  frameWorlds.set(cacheKey, world);
+  return world;
+}
+
+function frameWorldKey(sessionId, frameId) {
+  return `${sessionId}:${frameId}`;
+}
+
+function invalidateFrameWorlds(predicate) {
+  for (const [key, world] of frameWorlds) {
+    if (predicate(key, world)) frameWorlds.delete(key);
   }
 }
 

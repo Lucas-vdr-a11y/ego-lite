@@ -80,9 +80,13 @@ export function queryAllExpression(selector, rootExpression = "document") {
     return roleElementsExpression(internalRole, rootExpression);
   }
   const normalized = raw.startsWith("loc=") ? raw.slice(4) : raw;
-  if (raw.startsWith("xpath=")) {
+  const xpath = xpathSelector(raw);
+  if (xpath !== null) {
     return `(() => {
-      const snapshot = document.evaluate(${JSON.stringify(raw.slice(6))}, ${rootExpression}, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+      const scopeRoot = ${rootExpression};
+      let expression = ${JSON.stringify(xpath)};
+      if (expression.startsWith("/") && scopeRoot.nodeType !== 9) expression = "." + expression;
+      const snapshot = document.evaluate(expression, scopeRoot, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
       const elements = [];
       for (let i = 0; i < snapshot.snapshotLength; i += 1) elements.push(snapshot.snapshotItem(i));
       return elements;
@@ -149,6 +153,12 @@ export function queryAllExpression(selector, rootExpression = "document") {
     return roleElementsExpression(role, rootExpression);
   }
   return querySelectorAllExpression(rootExpression, raw);
+}
+
+function xpathSelector(selector: string) {
+  if (selector.startsWith("xpath=")) return selector.slice(6);
+  if (/^\(*\/\//.test(selector) || selector.startsWith("..")) return selector;
+  return null;
 }
 
 function parseInternalJson<T>(selector: string, kind: string): T | null {
@@ -325,18 +335,29 @@ function textElementsExpression(locator, rootExpression = "document") {
     rootExpression === "document"
       ? "document.querySelectorAll('body *')"
       : `${rootExpression}.querySelectorAll('*')`;
-  const match = textMatcherExpression(
-    "el.innerText || el.textContent",
-    locator,
-  );
-  const childMatch = textMatcherExpression(
-    "child.innerText || child.textContent",
-    locator,
-  );
-  return `Array.from(${query}).filter((el) => {
-    if (!(${match})) return false;
-    return !Array.from(el.children || []).some((child) => ${childMatch});
-  })`;
+  const match = textMatcherExpression("textOf(el)", locator);
+  const childMatch = textMatcherExpression("textOf(child)", locator);
+  return `(() => {
+    const textCache = new WeakMap();
+    const textOf = (element) => {
+      if (textCache.has(element)) return textCache.get(element);
+      let text = '';
+      if (element.childNodes) {
+        for (const node of element.childNodes) {
+          if (node.nodeType === 1) text += textOf(node);
+          else if (node.nodeType === 3 || node.nodeType === 4) text += node.nodeValue || '';
+        }
+      } else {
+        text = element.textContent || '';
+      }
+      textCache.set(element, text);
+      return text;
+    };
+    return Array.from(${query}).filter((el) => {
+      if (!(${match})) return false;
+      return !Array.from(el.children || []).some((child) => ${childMatch});
+    });
+  })()`;
 }
 
 function labelElementsExpression(locator, rootExpression = "document") {
@@ -411,6 +432,10 @@ function roleElementsExpression(
       if (labelledBy) return labelledBy;
       const aria = el.getAttribute('aria-label');
       if (aria) return aria.replace(/\\s+/g, ' ').trim();
+      if (el.tagName.toLowerCase() === 'fieldset') {
+        const legend = Array.from(el.children || []).find((child) => child.tagName.toLowerCase() === 'legend');
+        if (legend) return (legend.innerText || legend.textContent || '').replace(/\\s+/g, ' ').trim();
+      }
       if (el instanceof HTMLImageElement) return (el.getAttribute('alt') || '').replace(/\\s+/g, ' ').trim();
       if (el instanceof HTMLInputElement && (el.type === 'button' || el.type === 'submit' || el.type === 'reset')) {
         return (el.value || el.getAttribute('value') || '').replace(/\\s+/g, ' ').trim();
@@ -430,6 +455,7 @@ function roleElementsExpression(
         if (tag === 'textarea') return 'textbox';
         if (tag === 'select') return 'combobox';
         if (tag === 'option') return 'option';
+        if (tag === 'fieldset') return 'group';
         if (tag === 'img' && el.hasAttribute('alt')) return 'img';
         if (/^h[1-6]$/.test(tag)) return 'heading';
         if (tag === 'input') {
@@ -530,5 +556,5 @@ function isTextMatcher(value): value is TextMatcher {
 }
 
 function roleCandidateSelector() {
-  return "button, a[href], input, textarea, select, option, img[alt], h1, h2, h3, h4, h5, h6, [role]";
+  return "button, a[href], input, textarea, select, option, fieldset, img[alt], h1, h2, h3, h4, h5, h6, [role]";
 }

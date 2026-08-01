@@ -373,25 +373,6 @@ async function resolveLocatorObjectId(cdp, sessionId, locator) {
     }
     return { objectId, sessionId };
   }
-  const count = await locatorCount(cdp, sessionId, locator);
-  if (count === 0) {
-    throw new ElementResolutionError(
-      `Locator ${locator.raw} matched 0 elements`,
-      "transient",
-    );
-  }
-  if (typeof locator.nth === "number" && count <= locator.nth) {
-    throw new ElementResolutionError(
-      `Locator ${locator.raw} matched 0 elements`,
-      "transient",
-    );
-  }
-  if (locator.nth === undefined && count > 1) {
-    throw new ElementResolutionError(
-      `Locator ${locator.raw} matched ${count} elements`,
-      "permanent",
-    );
-  }
   const result = await send(
     cdp,
     "Runtime.evaluate",
@@ -403,6 +384,9 @@ async function resolveLocatorObjectId(cdp, sessionId, locator) {
     },
     sessionId,
   );
+  if (result.exceptionDetails) {
+    throw selectorResolutionError(locator.raw, result);
+  }
   const objectId = result.result?.objectId;
   if (!objectId) {
     throw new ElementResolutionError(
@@ -552,193 +536,35 @@ function buildFindElementJs(selector) {
 }
 
 function buildLocatorFindJs(locator) {
-  if (locator.kind === "query") {
-    return `(() => {
-      const elements = ${queryAllExpression(locator.selector)};
-      return elements[${locator.nth === "last" ? "elements.length - 1" : JSON.stringify(locator.nth ?? 0)}] || null;
-    })()`;
-  }
-  if (locator.kind === "css") {
-    const selector = `loc=css:${locator.selector}`;
-    if (locator.nth !== undefined) {
-      return `(() => {
-        const elements = ${queryAllExpression(selector)};
-        return elements[${locator.nth === "last" ? "elements.length - 1" : JSON.stringify(locator.nth)}] || null;
-      })()`;
+  const matchError = JSON.stringify(`Locator ${locator.raw} matched `);
+  return `(() => {
+    const elements = ${locatorElementsJs(locator)};
+    ${
+      locator.nth === undefined
+        ? `if (elements.length > 1) throw new Error(${matchError} + elements.length + ' elements');`
+        : ""
     }
-    return `(() => ${queryAllExpression(selector)}[0] || null)()`;
-  }
-  if (locator.kind === "xpath") {
-    return `(() => {
-      const snapshot = document.evaluate(${JSON.stringify(locator.xpath)}, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
-      return snapshot.snapshotItem(${locator.nth === "last" ? "snapshot.snapshotLength - 1" : JSON.stringify(locator.nth ?? 0)});
-    })()`;
-  }
-  if (
-    locator.kind === "text" ||
-    locator.kind === "label" ||
-    locator.kind === "placeholder" ||
-    locator.kind === "alt" ||
-    locator.kind === "title" ||
-    locator.kind === "testid"
-  ) {
-    return `(() => {
-      const elements = ${buildLocatorAllJs(locator)};
-      return elements[${locator.nth === "last" ? "elements.length - 1" : JSON.stringify(locator.nth ?? 0)}] || null;
-    })()`;
-  }
-  return locator.nth === "last"
-    ? `(() => ${hrefElementsJs(locator.href)}.at(-1) || null)()`
-    : `(() => ${hrefElementsJs(locator.href)}[${JSON.stringify(locator.nth ?? 0)}] || null)()`;
+    return elements[${locator.nth === "last" ? "elements.length - 1" : JSON.stringify(locator.nth ?? 0)}] || null;
+  })()`;
 }
 
 function buildLocatorCountJs(locator) {
-  if (locator.kind === "query") {
-    return `(() => ${queryAllExpression(locator.selector)}.length)()`;
-  }
-  if (locator.kind === "css") {
-    return `(() => ${queryAllExpression(`loc=css:${locator.selector}`)}.length)()`;
-  }
-  if (locator.kind === "xpath") {
-    return `(() => document.evaluate(${JSON.stringify(locator.xpath)}, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null).snapshotLength)()`;
-  }
-  if (
-    locator.kind === "text" ||
-    locator.kind === "label" ||
-    locator.kind === "placeholder" ||
-    locator.kind === "alt" ||
-    locator.kind === "title" ||
-    locator.kind === "testid"
-  ) {
-    return `(() => ${buildLocatorAllJs(locator)}.length)()`;
-  }
-  return `(() => ${hrefElementsJs(locator.href)}.length)()`;
+  return `(() => ${locatorElementsJs(locator)}.length)()`;
 }
 
 function buildLocatorCenterJs(locator) {
-  if (locator.nth !== undefined) {
-    return `(() => {
+  return `(() => {
             const el = ${buildLocatorFindJs(locator)};
             if (!el) return { error: ${JSON.stringify(`Locator ${locator.raw} matched 0 elements`)} };
             const rect = el.getBoundingClientRect();
             return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
         })()`;
-  }
-  return `(() => {
-            const count = ${buildLocatorCountJs(locator)};
-            if (count !== 1) return { error: ${JSON.stringify(`Locator ${locator.raw} matched`)} + ' ' + count + ' elements' };
-            const el = ${buildLocatorFindJs(locator)};
-            if (!el) return null;
-            const rect = el.getBoundingClientRect();
-            return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
-        })()`;
 }
 
-function hrefElementsJs(href) {
-  return `Array.from(document.querySelectorAll('a[href]')).filter((el) => {
-            try {
-              const u = new URL(el.href, location.href);
-              const path = u.pathname + u.search + u.hash;
-              return path === ${JSON.stringify(href)} || u.href === ${JSON.stringify(href)};
-            } catch {
-              return false;
-            }
-          })`;
-}
-
-function buildLocatorAllJs(locator) {
-  if (locator.kind === "text") {
-    return textElementsJs(locator);
-  }
-  if (locator.kind === "label") {
-    return labelElementsJs(locator);
-  }
-  if (locator.kind === "placeholder") {
-    return attributeElementsJs(
-      "input[placeholder], textarea[placeholder]",
-      "placeholder",
-      locator,
-    );
-  }
-  if (locator.kind === "alt") {
-    return attributeElementsJs("img[alt], input[alt]", "alt", locator);
-  }
-  if (locator.kind === "title") {
-    return attributeElementsJs("[title]", "title", locator);
-  }
-  if (locator.kind === "testid") {
-    return attributeElementsJs("[data-testid]", "data-testid", locator);
-  }
-  throw new Error(`unsupported locator kind: ${locator.kind}`);
-}
-
-function textElementsJs(locator) {
-  const match = textMatchJs(
-    "el.innerText || el.textContent",
-    locator.text,
-    locator.exact,
+function locatorElementsJs(locator) {
+  return queryAllExpression(
+    locator.kind === "query" ? locator.selector : locator.raw,
   );
-  const childMatch = textMatchJs(
-    "child.innerText || child.textContent",
-    locator.text,
-    locator.exact,
-  );
-  return `Array.from(document.querySelectorAll('body *')).filter((el) => {
-            if (!(${match})) return false;
-            return !Array.from(el.children || []).some((child) => ${childMatch});
-          })`;
-}
-
-function labelElementsJs(locator) {
-  const labelMatch = textMatchJs(
-    "label.innerText || label.textContent",
-    locator.text,
-    locator.exact,
-  );
-  const ariaMatch = textMatchJs(
-    "el.getAttribute('aria-label')",
-    locator.text,
-    locator.exact,
-  );
-  const labelledByMatch = textMatchJs(
-    "labelledBy",
-    locator.text,
-    locator.exact,
-  );
-  return `(() => {
-            const controls = [];
-            for (const label of document.querySelectorAll('label')) {
-              if (!(${labelMatch})) continue;
-              const control = label.control || (label.getAttribute('for') ? document.getElementById(label.getAttribute('for')) : null);
-              if (control) controls.push(control);
-            }
-            for (const el of document.querySelectorAll('input, textarea, select, button, [role]')) {
-              if (el.getAttribute('aria-label') && ${ariaMatch}) controls.push(el);
-              const ids = (el.getAttribute('aria-labelledby') || '').split(/\\s+/).filter(Boolean);
-              if (ids.length) {
-                const labelledBy = ids.map((id) => document.getElementById(id)?.textContent || '').join(' ');
-                if (${labelledByMatch}) controls.push(el);
-              }
-            }
-            return Array.from(new Set(controls));
-          })()`;
-}
-
-function attributeElementsJs(selector, attribute, locator) {
-  const match = textMatchJs(
-    `el.getAttribute(${JSON.stringify(attribute)})`,
-    locator.text,
-    locator.exact,
-  );
-  return `Array.from(document.querySelectorAll(${JSON.stringify(selector)})).filter((el) => ${match})`;
-}
-
-function textMatchJs(valueExpression, text, exact) {
-  const needle = JSON.stringify(String(text).replace(/\s+/g, " ").trim());
-  const normalized = `String(${valueExpression} || '').replace(/\\s+/g, ' ').trim()`;
-  return exact
-    ? `${normalized} === ${needle}`
-    : `${normalized}.includes(${needle})`;
 }
 
 function buildSelectorCenterJs(selector) {

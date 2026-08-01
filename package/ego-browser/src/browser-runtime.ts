@@ -61,7 +61,7 @@ function rawCdp(
         ? keepProcessAlive()
         : timeoutCancellation(timeoutMs, () => {
             pending.delete(id);
-            reject(new Error(`CDP request timed out: ${method}`));
+            reject(cdpTimeoutError(method, params, sessionId, timeoutMs, id));
           });
     pending.set(id, {
       resolve: (response) => {
@@ -81,6 +81,16 @@ function rawCdp(
       reject(error);
     }
   });
+}
+
+function cdpTimeoutError(method, params, sessionId, timeoutMs, requestId) {
+  const details = [
+    ...(typeof params?.type === "string" ? [`type=${params.type}`] : []),
+    ...(sessionId ? [`sessionId=${sessionId}`] : []),
+    `requestId=${requestId}`,
+    `timeout=${timeoutMs}ms`,
+  ];
+  return new Error(`CDP request timed out: ${method} (${details.join(", ")})`);
 }
 
 export async function browserCdp(

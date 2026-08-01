@@ -616,6 +616,13 @@ test("resolveFrameContext reattaches after a cached out-of-process session is lo
     sessionTargetId: "tab-1",
     sessionAt: Date.now(),
     cdpOverride(method, params, sessionId) {
+      if (
+        method === "Runtime.evaluate" &&
+        params.expression === "void 0" &&
+        sessionId === "stale-oopif-session"
+      ) {
+        throw new Error("Session with given id not found");
+      }
       if (method === "Runtime.evaluate") {
         return { result: { objectId: "frame-owner" } };
       }
@@ -658,9 +665,6 @@ test("resolveFrameContext reattaches after a cached out-of-process session is lo
         sessionId === "stale-oopif-session"
       ) {
         staleWorldCalls += 1;
-        if (staleWorldCalls > 1) {
-          throw new Error("Session with given id not found");
-        }
       }
       if (method === "Page.createIsolatedWorld") {
         return {

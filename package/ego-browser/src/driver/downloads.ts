@@ -711,7 +711,7 @@ async function waitForPageValue(
     async (event) => {
       const context = await contextPromise;
       throwIfPageEnded(event, context);
-      const value = createValue(event, context);
+      const value = await createValue(event, context);
       if (value === NO_EVENT || !(await predicate(value))) return false;
       matchedValue = value;
       return true;

@@ -18,6 +18,7 @@ test("installEgoSdk keeps page.locator chainable while wrapping locator methods"
     assert.deepEqual(Object.keys(target.egoBrowser).sort(), [
       "closeTaskSpace",
       "completeTaskSpace",
+      "listTaskSpaces",
       "newTaskSpace",
       "switchTaskSpace",
     ]);
@@ -103,6 +104,35 @@ test("installEgoSdk keeps page.locator chainable while wrapping locator methods"
   }
 });
 
+test("installEgoSdk preserves synchronous Page emitter and locator ownership contracts", () => {
+  const originalLog = console.log;
+  const sourcePage = {
+    isClosed: () => false,
+  };
+  const sourceLocator = { page: () => sourcePage };
+  sourcePage.locator = () => sourceLocator;
+  sourcePage.on = () => sourcePage;
+  sourcePage.once = () => sourcePage;
+  sourcePage.off = () => sourcePage;
+  sourcePage.removeAllListeners = () => sourcePage;
+  const target = {};
+  try {
+    installEgoSdk(target, {
+      cliLog() {},
+      context: { page: sourcePage },
+    });
+    const listener = () => {};
+    assert.equal(target.page.isClosed(), false);
+    assert.equal(target.page.on("console", listener), target.page);
+    assert.equal(target.page.once("console", listener), target.page);
+    assert.equal(target.page.off("console", listener), target.page);
+    assert.equal(target.page.removeAllListeners("console"), target.page);
+    assert.equal(target.page.locator("body").page(), target.page);
+  } finally {
+    console.log = originalLog;
+  }
+});
+
 test("installEgoSdk preserves Page identity for lifecycle events", async () => {
   const originalLog = console.log;
   const sourcePage = {};
@@ -119,7 +149,77 @@ test("installEgoSdk preserves Page identity for lifecycle events", async () => {
   }
 });
 
-test("installEgoSdk preserves the asynchronous page.url contract", async () => {
+test("installEgoSdk maps callback Page references to the public facade", async () => {
+  const originalLog = console.log;
+  let eventListener;
+  let bindingCallback;
+  const sourcePage = {
+    on(_eventName, listener) {
+      eventListener = listener;
+      return sourcePage;
+    },
+    off(_eventName, listener) {
+      assert.equal(listener, eventListener);
+      return sourcePage;
+    },
+    async exposeBinding(_name, callback) {
+      bindingCallback = callback;
+    },
+  };
+  const target = {};
+  try {
+    installEgoSdk(target, {
+      cliLog() {},
+      context: { page: sourcePage },
+    });
+    let eventPage;
+    const listener = (receivedPage) => {
+      eventPage = receivedPage;
+    };
+    target.page.on("load", listener);
+    eventListener(sourcePage);
+    assert.equal(eventPage, target.page);
+    target.page.off("load", listener);
+
+    let bindingPage;
+    await target.page.exposeBinding("bound", (source) => {
+      bindingPage = source.page;
+    });
+    await bindingCallback({ page: sourcePage, frame: null, context: null });
+    assert.equal(bindingPage, target.page);
+  } finally {
+    console.log = originalLog;
+  }
+});
+
+test("installEgoSdk maps synchronous Frame ownership to the public Page", () => {
+  const originalLog = console.log;
+  const sourcePage = {};
+  const sourceFrame = {
+    name: () => "main",
+    page: () => sourcePage,
+    parentFrame: () => null,
+    childFrames: () => [],
+  };
+  Object.defineProperty(sourceFrame, "_id", { value: "frame-main" });
+  sourcePage.mainFrame = () => sourceFrame;
+  sourcePage.frames = () => [sourceFrame];
+  const target = {};
+  try {
+    installEgoSdk(target, {
+      cliLog() {},
+      context: { page: sourcePage },
+    });
+    const main = target.page.mainFrame();
+    assert.equal(main.page(), target.page);
+    assert.equal(target.page.frames()[0], main);
+    assert.equal(main.name(), "main");
+  } finally {
+    console.log = originalLog;
+  }
+});
+
+test("installEgoSdk preserves the synchronous page.url contract", () => {
   const originalLog = console.log;
   const target = {};
   try {
@@ -127,13 +227,11 @@ test("installEgoSdk preserves the asynchronous page.url contract", async () => {
       cliLog() {},
       context: {
         page: {
-          url: async () => "https://example.com/current",
+          url: () => "https://example.com/current",
         },
       },
     });
-    const value = target.page.url();
-    assert.equal(typeof value.then, "function");
-    assert.equal(await value, "https://example.com/current");
+    assert.equal(target.page.url(), "https://example.com/current");
   } finally {
     console.log = originalLog;
   }
@@ -260,7 +358,7 @@ test("installEgoSdk keeps raw task-space bridge methods behind stale-skill guard
       () => target.listTaskSpaces(),
       (error) => {
         assert.equal(error.name, "EgoBrowserSkillStaleError");
-        assert.match(error.message, /taskSpaces\.list\(\)/);
+        assert.match(error.message, /egoBrowser\.listTaskSpaces\(\)/);
         return true;
       },
     );

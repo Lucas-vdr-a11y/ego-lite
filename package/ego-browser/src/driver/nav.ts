@@ -8,7 +8,7 @@ import {
   setPreferredTarget,
   subscribeBrowserEvent,
 } from "../browser-runtime.js";
-import { cdp, evaluate, evaluateInTarget } from "../cdp-eval.js";
+import { cdp, evaluate, evaluateInTarget, runtimeValue } from "../cdp-eval.js";
 import { assertNoEgoError, isEgoHardStopError } from "../ego-errors.js";
 import {
   createRequestInfo,
@@ -25,7 +25,7 @@ import {
 import { acquireNetworkEvents } from "../network-events.js";
 import { retainResponseLifecycle } from "../network-lifecycle.js";
 import { state } from "../state.js";
-import { currentTargetId } from "../target-context.js";
+import { currentTargetId, runWithTarget } from "../target-context.js";
 import { waitForDocumentLoad } from "./load.js";
 
 export const INTERNAL_URL_PREFIXES = [
@@ -63,6 +63,7 @@ type UrlMatchMode = "exact" | "origin" | "origin+path" | "includes";
 type OpenOrReuseTabOptions = {
   match?: UrlMatchMode;
   wait?: boolean;
+  waitUntil?: "load" | "domcontentloaded" | "commit";
   timeout?: number;
   settle?: number;
 };
@@ -504,7 +505,16 @@ export async function pageInfo() {
       ph: root?.scrollHeight ?? innerHeight,
     });
   })()`;
-  return JSON.parse(await evaluate(expression));
+  return JSON.parse(
+    runtimeValue(
+      await cdp("Runtime.evaluate", {
+        expression,
+        returnByValue: true,
+        awaitPromise: false,
+      }),
+      expression,
+    ),
+  );
 }
 
 /**
@@ -597,7 +607,7 @@ export async function newTab(url = "about:blank") {
 /**
  * Always open a new tab.
  * @param {string} [url="about:blank"] URL to open.
- * @param {{wait?:boolean,timeout?:number,settle?:number}} [options]
+ * @param {{wait?:boolean,waitUntil?:"load"|"domcontentloaded"|"commit",timeout?:number,settle?:number}} [options]
  * @returns {Promise<{targetId:string,url:string,title:string,type:"page"}>}
  */
 export async function openTab(
@@ -614,7 +624,9 @@ async function openNewTab(
 ) {
   const targetId = await newTab(url);
   await activateTarget(targetId);
-  await waitForActivatedTab(options, operation);
+  await runWithTarget(targetId, () =>
+    waitForActivatedTab(targetId, options, operation),
+  );
   const refreshed = (await listedTabs()).find(
     (tab) => tab.targetId === targetId,
   );
@@ -626,7 +638,7 @@ async function openNewTab(
 /**
  * Reuse an existing matching tab or open a new one.
  * @param {string} url URL to find or open.
- * @param {{match?: "exact"|"origin"|"origin+path"|"includes", wait?: boolean, timeout?: number, settle?: number}} [options]
+ * @param {{match?: "exact"|"origin"|"origin+path"|"includes", wait?: boolean, waitUntil?: "load"|"domcontentloaded"|"commit", timeout?: number, settle?: number}} [options]
  * @returns {Promise<{targetId:string,url:string,title:string,type:"page"}>}
  */
 export async function openOrReuseTab(
@@ -638,7 +650,9 @@ export async function openOrReuseTab(
   const existing = tabs.find((tab) => tabMatchesUrl(tab.url, url, match));
   if (existing) {
     await switchTab(existing.targetId);
-    await waitForActivatedTab(options, "tabs.openOrReuse");
+    await runWithTarget(existing.targetId, () =>
+      waitForActivatedTab(existing.targetId, options, "tabs.openOrReuse"),
+    );
     const refreshed = (await listedTabs({ includeChrome: false })).find(
       (tab) => tab.targetId === existing.targetId,
     );
@@ -648,20 +662,43 @@ export async function openOrReuseTab(
 }
 
 async function waitForActivatedTab(
+  targetId: string,
   options: OpenTabOptions,
   operation: "tabs.open" | "tabs.openOrReuse",
 ) {
-  if (options.wait !== false) {
+  const waitUntil = tabWaitUntil(operation, options);
+  if (waitUntil !== "commit") {
     const timeout = options.timeout ?? navigationTimeout(undefined);
-    const loaded = await waitForDocumentLoad({ timeout });
+    let lastState: { url: string; readyState: string } | undefined;
+    const loaded = await waitForDocumentLoad({
+      timeout,
+      until: waitUntil,
+      onState: (value) => {
+        lastState = value;
+      },
+    });
     if (!loaded) {
-      throw operationTimeout(operation, timeout);
+      const stateDetail = lastState
+        ? `targetId=${targetId}, url=${lastState.url || "unknown"}, readyState=${lastState.readyState}`
+        : `targetId=${targetId}`;
+      throw operationTimeout(operation, timeout, stateDetail);
     }
   }
   const settle = Number(options.settle ?? 0);
   if (settle > 0) {
     await state.sleep(settle);
   }
+}
+
+function tabWaitUntil(operation: string, options: OpenTabOptions) {
+  if (options.wait === false) return "commit" as const;
+  const waitUntil = options.waitUntil ?? "load";
+  if (!["load", "domcontentloaded", "commit"].includes(waitUntil)) {
+    throw new TypeError(
+      `${operation} waitUntil must be one of "load", "domcontentloaded", "commit"`,
+    );
+  }
+  return waitUntil;
 }
 
 /**

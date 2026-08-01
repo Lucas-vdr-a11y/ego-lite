@@ -85,6 +85,13 @@ export function keyboardCase() {
     await page.locator("#controlled-checkbox").uncheck();
     await waitForJsValue("window.__fixtureState.controlledChecked", false, "uncheck clears a controlled checkbox");
 
+    await page.locator("#covered-checkbox").check({ timeout: 3000 });
+    assertEqual(
+      await page.locator("#covered-checkbox").isChecked(),
+      true,
+      "check uses an associated label when an overlay covers the input"
+    );
+
     await page.locator("#controlled-radio-pro").setChecked(true);
     await waitForJsValue("window.__fixtureState.controlledPlan", "pro", "setChecked drives a controlled radio");
     assertEqual(await page.locator("#controlled-radio-basic").isChecked(), false, "controlled radio group keeps a single selection");

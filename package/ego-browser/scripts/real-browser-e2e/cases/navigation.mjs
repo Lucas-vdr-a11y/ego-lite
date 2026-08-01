@@ -151,12 +151,12 @@ export function navigationCase() {
     );
 
     const back = await page.goBack({ timeout: 10000 });
-    assertIncludes(await page.url(), "/nav-target", "page.goBack restores the history entry");
+    assertIncludes(page.url(), "/nav-target", "page.goBack restores the history entry");
     if (back) {
       assertIncludes(back.url(), "/nav-target", "page.goBack returns the navigation response");
     }
     const forward = await page.goForward({ timeout: 10000 });
-    assertIncludes(await page.url(), baseUrl + "/", "page.goForward restores the history entry");
+    assertIncludes(page.url(), baseUrl + "/", "page.goForward restores the history entry");
     if (forward) {
       assertIncludes(forward.url(), baseUrl + "/", "page.goForward returns the navigation response");
     }

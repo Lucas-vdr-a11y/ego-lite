@@ -7,6 +7,7 @@ import { parseAriaRef } from "./aria-ref-map.js";
 import { assertNoEgoError, isEgoUserControlError } from "./ego-errors.js";
 import { help as helpRuntime, formatHelp } from "./help-runtime.js";
 import { targetClosedError } from "./playwright-errors.js";
+import { isBrowserRuntime, subscribeBrowserEvent } from "./browser-runtime.js";
 import { cdp, decodeUnserializableJsValue, evaluate } from "./cdp-eval.js";
 import * as pointer from "./driver/pointer.js";
 import * as keyboard from "./driver/keyboard.js";
@@ -22,6 +23,12 @@ import { waitForActionableElement } from "./driver/actionability.js";
 import { locatorTarget } from "./frame-context.js";
 import { parseRef } from "./ref-map.js";
 import { browserFetch, serverFetch } from "./http.js";
+import { createPageNetworkController } from "./page-network.js";
+import { createPageScriptController } from "./page-scripts.js";
+import { createPageClock } from "./page-clock.js";
+import { createPageEnvironmentController } from "./page-environment.js";
+import { createPageHandleController } from "./page-handles.js";
+import { createPageFrameController } from "./page-frames.js";
 import {
   createTargetContext,
   runWithTarget,
@@ -34,6 +41,10 @@ import {
   siteSkillsForUrl as siteSkillsForUrlCore,
   wrapBrowserTool,
 } from "./learning/index.js";
+
+const pageByTargetContext = new WeakMap<TargetContext, any>();
+const initializePageState = Symbol("initializePageState");
+let globalPageFacade: any;
 
 export { NAME } from "./state.js";
 export { cdp, evaluate, evaluateInTarget } from "./cdp-eval.js";
@@ -668,8 +679,17 @@ function createLocator(
         frameChain,
         targetContext,
       ),
-    click: (options = {}) => pointer.click(target, options),
-    dblclick: (options = {}) => pointer.dblclick(target, options),
+    click: (options = {}) =>
+      pointer.click(target, {
+        ...options,
+        __apiName: "locator.click",
+        __waitForNavigation: true,
+      }),
+    dblclick: (options = {}) =>
+      pointer.dblclick(target, {
+        ...options,
+        __apiName: "locator.dblclick",
+      }),
     hover: (options = {}) => pointer.hover(target, options),
     dragTo: (destination, options = {}) =>
       pointer.dragTo(
@@ -686,8 +706,8 @@ function createLocator(
       keyboard.pressOnSelector(target, key, options),
     pressSequentially: (text, options = {}) =>
       keyboard.pressSequentially(target, text, options),
-    check: (options = {}) => keyboard.setChecked(target, true, options),
-    uncheck: (options = {}) => keyboard.setChecked(target, false, options),
+    check: (options = {}) => keyboard.check(target, options),
+    uncheck: (options = {}) => keyboard.uncheck(target, options),
     setChecked: (checked, options = {}) =>
       keyboard.setChecked(target, checked, options),
     selectOption: (values, options = {}) =>
@@ -753,6 +773,10 @@ function createLocator(
       locator.evaluateLocator(target, pageFunction, arg),
     evaluateAll: (pageFunction, arg = undefined) =>
       locator.evaluateAll(target, pageFunction, arg),
+    evaluateHandle: (pageFunction, arg = undefined) =>
+      locator.evaluateLocatorHandle(target, pageFunction, arg),
+    page: () =>
+      targetContext ? pageByTargetContext.get(targetContext) : globalPageFacade,
     waitFor: async (options = {}) => {
       await waits.waitForSelector(target, options);
     },
@@ -993,12 +1017,29 @@ function roleNameMatcher(value, exact = false) {
 
 function createPageFacade(target?: {
   targetId: string;
+  url?: string;
   beforeOperation?: () => Promise<void>;
+  openerId?: string;
 }) {
   const targetContext = target
-    ? createTargetContext(target.targetId, target.beforeOperation)
+    ? createTargetContext(
+        target.targetId,
+        target.beforeOperation,
+        target.openerId,
+      )
     : undefined;
   const targetId = targetContext?.targetId;
+  let currentUrl = target?.url || "";
+  let frameController: ReturnType<typeof createPageFrameController> | undefined;
+  let environmentController:
+    | ReturnType<typeof createPageEnvironmentController>
+    | undefined;
+  const updateBasicState = (info) => {
+    if (typeof info?.url === "string") currentUrl = info.url;
+    environmentController?.updateViewportSize(info);
+    return info;
+  };
+  const readPageInfo = async () => updateBasicState(await nav.pageInfo());
   const boundSnapshotRaw = targetContext
     ? (options = {}) =>
         captureTargetSnapshot(targetContext, () => observe.snapshotRaw(options))
@@ -1010,7 +1051,20 @@ function createPageFacade(target?: {
   if (targetContext) {
     targetContext.snapshotForRefRefresh = () => boundSnapshotRaw();
   }
-  const facade = {
+  let removeClosedListener: (() => void) | undefined;
+  if (targetContext) {
+    removeClosedListener = subscribeBrowserEvent(
+      "Target.targetDestroyed",
+      undefined,
+      (event) => {
+        if (event.params?.targetId !== targetContext.targetId) return;
+        targetContext.closed = true;
+        removeClosedListener?.();
+        removeClosedListener = undefined;
+      },
+    );
+  }
+  const facade: any = {
     ...(targetId ? { targetId } : {}),
     setDefaultTimeout: (timeout) => {
       const value = Number(timeout);
@@ -1036,9 +1090,9 @@ function createPageFacade(target?: {
     goForward: nav.goForward,
     content: nav.content,
     setContent: nav.setContent,
-    info: nav.pageInfo,
-    url: async () => (await nav.pageInfo()).url,
-    title: async () => (await nav.pageInfo()).title,
+    info: readPageInfo,
+    url: () => frameController?.url() || currentUrl,
+    title: async () => (await readPageInfo()).title,
     locator: (selector, options: any = {}) =>
       createLocator(
         locatorOptionsSelector(selector, options, []),
@@ -1074,11 +1128,16 @@ function createPageFacade(target?: {
     waitForResponse: waits.waitForResponse,
     waitForEvent: (eventName, optionsOrPredicate = {}) =>
       downloads.waitForEvent(eventName, optionsOrPredicate, {
-        createPopup: (targetInfo) =>
-          createPageFacade({
+        createPopup: async (targetInfo) => {
+          const popup = createPageFacade({
             targetId: targetInfo.targetId,
+            url: targetInfo.url,
             beforeOperation: target?.beforeOperation,
-          }),
+            openerId: targetInfo.openerId,
+          });
+          if (isBrowserRuntime()) await initializePageFacade(popup);
+          return popup;
+        },
         page: facade,
       }),
     evaluate,
@@ -1106,11 +1165,17 @@ function createPageFacade(target?: {
     mouse: {
       click: (x, y, options = {}) => {
         const [target, effectiveOptions] = mousePointArgs(x, y, options);
-        return pointer.click(target, effectiveOptions);
+        return pointer.click(target, {
+          ...effectiveOptions,
+          __apiName: "mouse.click",
+        });
       },
       dblclick: (x, y, options = {}) => {
         const [target, effectiveOptions] = mousePointArgs(x, y, options);
-        return pointer.dblclick(target, effectiveOptions);
+        return pointer.dblclick(target, {
+          ...effectiveOptions,
+          __apiName: "mouse.dblclick",
+        });
       },
       move: (x, y, options = {}) => pointer.move(x, y, options),
       down: pointer.down,
@@ -1118,15 +1183,220 @@ function createPageFacade(target?: {
       wheel: pointer.wheel,
       drag: pointer.drag,
     },
-    ...(targetId
-      ? {
-          bringToFront: async () => {
-            await activateTargetPage(targetContext);
-          },
-        }
-      : {}),
+    close: async (options: any = {}) => {
+      if (!options || typeof options !== "object" || Array.isArray(options)) {
+        throw new TypeError("page.close options must be an object");
+      }
+      if (options.runBeforeUnload) {
+        await cdp("Page.close");
+      } else {
+        await nav.closeTab(targetId ? { targetId } : undefined);
+      }
+      if (targetContext) targetContext.closed = true;
+      removeClosedListener?.();
+      removeClosedListener = undefined;
+    },
+    bringToFront: async () => {
+      if (targetContext) {
+        await activateTargetPage(targetContext);
+        return;
+      }
+      await nav.switchTab(await nav.currentTab());
+    },
+    isClosed: () => Boolean(targetContext?.closed),
+    opener: async () => {
+      const pageTargetId = targetId || (await nav.currentTab()).targetId;
+      const openerId =
+        targetContext?.openerId ||
+        (
+          await cdp("Target.getTargetInfo", {
+            targetId: pageTargetId,
+          })
+        ).targetInfo?.openerId;
+      if (!openerId) return null;
+      const opener = createPageFacade({
+        targetId: openerId,
+        beforeOperation: target?.beforeOperation,
+      });
+      if (isBrowserRuntime()) await initializePageFacade(opener);
+      return opener;
+    },
   };
+  const scripts = createPageScriptController(facade);
+  const network = createPageNetworkController(facade, scripts);
+  const frames = createPageFrameController(facade, {
+    initialUrl: currentUrl,
+    sessionId: () => targetContext?.sessionId || state.sessionId || undefined,
+    onMainFrameUrl: (url) => {
+      currentUrl = url;
+    },
+  });
+  const environment = createPageEnvironmentController();
+  frameController = frames;
+  environmentController = environment;
+  const handles = createPageHandleController();
+  if (targetContext) pageByTargetContext.set(targetContext, facade);
+  else globalPageFacade = facade;
+  Object.assign(facade, {
+    route: network.route,
+    unroute: network.unroute,
+    unrouteAll: network.unrouteAll,
+    routeFromHAR: network.routeFromHAR,
+    routeWebSocket: network.routeWebSocket,
+    setExtraHTTPHeaders: async (headers) => {
+      if (!headers || typeof headers !== "object" || Array.isArray(headers)) {
+        throw new TypeError(
+          "page.setExtraHTTPHeaders expects a headers object",
+        );
+      }
+      const normalized = Object.fromEntries(
+        Object.entries(headers).map(([name, value]) => [
+          String(name),
+          String(value),
+        ]),
+      );
+      await cdp("Network.enable");
+      await cdp("Network.setExtraHTTPHeaders", { headers: normalized });
+    },
+    addInitScript: scripts.addInitScript,
+    exposeFunction: scripts.exposeFunction,
+    exposeBinding: scripts.exposeBinding,
+    frames: frames.frames,
+    frame: frames.frame,
+    mainFrame: frames.mainFrame,
+    setViewportSize: environment.setViewportSize,
+    viewportSize: environment.viewportSize,
+    emulateMedia: environment.emulateMedia,
+    requestGC: () => cdp("HeapProfiler.collectGarbage"),
+    clock: createPageClock(),
+    evaluateHandle: handles.evaluateHandle,
+    addScriptTag: handles.addScriptTag,
+    addStyleTag: handles.addStyleTag,
+  });
+  Object.defineProperty(facade, initializePageState, {
+    value: () =>
+      targetContext
+        ? runWithTarget(targetContext, async () => {
+            await Promise.allSettled([frames.initialize(), readPageInfo()]);
+          })
+        : Promise.allSettled([frames.initialize(), readPageInfo()]).then(
+            () => undefined,
+          ),
+  });
+  installPageEventEmitter(facade, targetContext, target);
   return bindFacadeToTarget(facade, targetContext);
+}
+
+export async function initializePageFacade(page) {
+  await page?.[initializePageState]?.();
+  return page;
+}
+
+function installPageEventEmitter(
+  page,
+  targetContext?: TargetContext,
+  target?: { beforeOperation?: () => Promise<void> },
+) {
+  type ListenerRecord = {
+    eventName: string;
+    listener: (...args: any[]) => any;
+    once: boolean;
+    controller: AbortController;
+    active: boolean;
+    task?: Promise<void>;
+  };
+  const records = new Set<ListenerRecord>();
+
+  const remove = (record: ListenerRecord) => {
+    if (!record.active) return;
+    record.active = false;
+    records.delete(record);
+    record.controller.abort();
+  };
+
+  const arm = (record: ListenerRecord) => {
+    if (!record.active) return;
+    record.task = downloads
+      .waitForEvent(
+        record.eventName,
+        { timeout: 0, signal: record.controller.signal },
+        {
+          createPopup: async (targetInfo) => {
+            const popup = createPageFacade({
+              targetId: targetInfo.targetId,
+              url: targetInfo.url,
+              beforeOperation: target?.beforeOperation,
+              openerId: targetInfo.openerId,
+            });
+            if (isBrowserRuntime()) await initializePageFacade(popup);
+            return popup;
+          },
+          page,
+        },
+      )
+      .then((value) => {
+        if (!record.active) return;
+        if (record.once) remove(record);
+        else arm(record);
+        return record.listener(value);
+      })
+      .catch((error) => {
+        if (!record.controller.signal.aborted) {
+          queueMicrotask(() => {
+            throw error;
+          });
+        }
+      });
+  };
+
+  const add = (eventName, listener, once) => {
+    if (typeof listener !== "function") {
+      throw new TypeError("page event listener must be a function");
+    }
+    const record: ListenerRecord = {
+      eventName: String(eventName),
+      listener,
+      once,
+      controller: new AbortController(),
+      active: true,
+    };
+    records.add(record);
+    queueMicrotask(() => {
+      if (targetContext) {
+        runWithTarget(targetContext, () => arm(record));
+      } else {
+        arm(record);
+      }
+    });
+    return page;
+  };
+
+  page.on = (eventName, listener) => add(eventName, listener, false);
+  page.once = (eventName, listener) => add(eventName, listener, true);
+  page.off = (eventName, listener) => {
+    for (const record of records) {
+      if (
+        record.eventName === String(eventName) &&
+        record.listener === listener
+      ) {
+        remove(record);
+      }
+    }
+    return page;
+  };
+  page.removeAllListeners = (eventName = undefined, options = undefined) => {
+    const selected = [...records].filter(
+      (record) =>
+        eventName === undefined || record.eventName === String(eventName),
+    );
+    for (const record of selected) remove(record);
+    if (options?.behavior === "wait") {
+      return Promise.allSettled(
+        selected.map((record) => record.task).filter(Boolean),
+      ).then(() => undefined);
+    }
+    return page;
+  };
 }
 
 let targetSnapshotQueue = Promise.resolve();
@@ -1205,6 +1475,7 @@ function createEgoBrowserFacade() {
     tabs: createTaskSpaceTabsFacade(space),
   });
   return {
+    listTaskSpaces,
     newTaskSpace: async (name) => wrapTaskSpace(await newTaskSpace(name)),
     switchTaskSpace: async (nameOrId) =>
       wrapTaskSpace(await switchTaskSpace(nameOrId)),
@@ -1232,22 +1503,31 @@ function createTaskSpaceTabsFacade(space) {
     await ensureTaskSpaceSelected(space);
     return operation();
   };
-  const wrapTab = (tab) => {
-    const facade = {
-      ...tab,
-      page: createPageFacade({
-        targetId: tab.targetId,
-        beforeOperation: () => ensureTaskSpaceSelected(space),
-      }),
-      activate: async () =>
-        wrapTab(await inTaskSpace(() => nav.switchTab(tab.targetId))),
-      close: () => inTaskSpace(() => nav.closeTab(tab.targetId)),
-    };
+  const wrapTab = async (tab) => {
+    const page = createPageFacade({
+      targetId: tab.targetId,
+      url: tab.url,
+      beforeOperation: () => ensureTaskSpaceSelected(space),
+    });
+    if (isBrowserRuntime()) await initializePageFacade(page);
+    const facade = { ...tab };
+    Object.defineProperties(facade, {
+      page: { value: page },
+      activate: {
+        value: async () =>
+          wrapTab(await inTaskSpace(() => nav.switchTab(tab.targetId))),
+      },
+      close: {
+        value: () => inTaskSpace(() => nav.closeTab(tab.targetId)),
+      },
+    });
     return facade;
   };
   return {
     list: async (options = {}) =>
-      (await inTaskSpace(() => nav.listTabs(options))).map(wrapTab),
+      Promise.all(
+        (await inTaskSpace(() => nav.listTabs(options))).map(wrapTab),
+      ),
     current: async () => wrapTab(await inTaskSpace(() => nav.currentTab())),
     activate: async (target) =>
       wrapTab(await inTaskSpace(() => nav.switchTab(target))),
@@ -1286,12 +1566,12 @@ function createSiteFacade() {
 }
 
 const FACADE_HELP: Record<string, string> = {
-  page: "page: Playwright-style page facade. page.url() asynchronously returns the current URL; always call await page.url(). page.goto(), page.reload(), page.goBack(), and page.goForward() return a main-document Response or null. page.content() serializes the document and page.setContent() replaces it. Use page.setDefaultTimeout(ms), page.setDefaultNavigationTimeout(ms), locators, Playwright-style waits and supported page events, page.evaluate(fnOrExpression, arg), page.ariaSnapshot(options), page.screenshot(options) for a Buffer, page.saveScreenshot(options) for a path, page.screencast, page.keyboard, and page.mouse. A popup event returns a target-bound Page whose Page and Locator methods work without changing the active tab; bringToFront() changes it explicitly. waitForEvent supports close, load, domcontentloaded, request, response, requestfailed, requestfinished, console, dialog, download, filechooser, pageerror, and popup. Event and network predicates may be async; waitForEvent also accepts AbortSignal cancellation. waitForURL predicates receive URL objects and waitUntil defaults to load. Wait timeouts throw TimeoutError.",
+  page: "page: Playwright-style page facade. Navigation returns a main-document Response or null. Use locators, waits, on/once/off events, route/unroute, init scripts and bindings, evaluate/evaluateHandle, requestGC, screenshots, ARIA/snapshot, viewport/media emulation, page.clock, keyboard, and mouse. A popup returns a target-bound Page with close(), isClosed(), opener(), and bringToFront(). waitForEvent and event listeners support close, load, domcontentloaded, request, response, requestfailed, requestfinished, console, dialog, download, filechooser, pageerror, and popup. Predicates may be async; waitForEvent also accepts AbortSignal cancellation. Wait timeouts throw TimeoutError.",
   locator:
-    "page.locator(selector): returns a strict locator facade with locator(), all(), frameLocator(), contentFrame(), getByRole(), getByText(), filter(), and(), or(), first(), nth(index), last(), actionability-aware click(), hover(), dragTo(), fill(), focus(), selectText(), check(), setChecked(), selectOption(), file upload, state/collection reads, evaluation, Buffer screenshots, and waitFor({ state: 'visible'|'attached'|'hidden'|'detached' }). FrameLocator.owner() returns its iframe element. Narrow multiple matches; use first()/nth() only for confirmed legitimate duplicates.",
-  tabs: "tabs: ego-browser tab facade. list(), current(), open(), openOrReuse(), and activate() return { targetId, url, title, type: 'page' }. Use open(url, options) to always create a tab, or openOrReuse(url, options) to select a match when available. Use close(target) and evaluate(target, pageFunction, arg) for an explicit tab. Treat targetId as short-lived: obtain and validate it in the current script.",
+    "page.locator(selector): returns a strict locator facade with locator(), all(), frameLocator(), contentFrame(), getByRole(), getByText(), filter(), and(), or(), first(), nth(index), last(), actionability-aware actions, state/collection reads, evaluate/evaluateAll/evaluateHandle, page(), Buffer screenshots, and waitFor(). FrameLocator.owner() returns its iframe element. Narrow multiple matches; use first()/nth() only for confirmed legitimate duplicates.",
+  tabs: "tabs: ego-browser tab facade. list(), current(), open(), openOrReuse(), and activate() return { targetId, url, title, type: 'page' }. Use open(url, options) to always create a tab, or openOrReuse(url, options) to select a match when available. open/openOrReuse accept waitUntil: 'load' (default), 'domcontentloaded', or 'commit'; wait: false is the legacy spelling for commit. Use close(target) and evaluate(target, pageFunction, arg) for an explicit tab. Treat targetId as short-lived: obtain and validate it in the current script.",
   egoBrowser:
-    "egoBrowser: ego-specific TaskSpace controller, not a Playwright Browser. It exposes only newTaskSpace(name), switchTaskSpace(nameOrId), completeTaskSpace(nameOrId), and closeTaskSpace(nameOrId). new/switch return a TaskSpace whose space.tabs methods return Tab objects with target-bound tab.page facades. completeTaskSpace and closeTaskSpace return Promise<void> and throw on failure; complete preserves the final result while close destroys the space.",
+    "egoBrowser: ego-specific TaskSpace controller, not a Playwright Browser. listTaskSpaces() returns lightweight TaskSpace information without selecting a space. newTaskSpace(name) and switchTaskSpace(nameOrId) return a TaskSpace whose space.tabs methods return Tab objects with target-bound tab.page facades. completeTaskSpace(nameOrId) and closeTaskSpace(nameOrId) return Promise<void> and throw on failure; complete preserves the final result while close destroys the space.",
   taskSpaces:
     "taskSpaces: task-space facade. Use taskSpaces.useOrCreate(nameOrId), taskSpaces.claim(nameOrId), taskSpaces.switch(nameOrId), taskSpaces.complete(nameOrId, options), taskSpaces.handOff(nameOrId), taskSpaces.takeOver(nameOrId), and taskSpaces.waitForAgentControl(nameOrId, options). waitForAgentControl interval and timeout use milliseconds.",
   site: "site: learned site-skill facade. Use site.skills(url), site.skillsForUrl(url), site.runTool(siteId, toolName, args), site.runBrowserTool(siteId, toolName, args), and site.learnContext(url).",

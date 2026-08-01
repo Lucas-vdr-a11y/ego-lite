@@ -133,6 +133,9 @@ if (process.argv.includes("--report")) {
       ...(documentedPaths.some((value) => value.startsWith("page.mouse."))
         ? ["mouse"]
         : []),
+      ...(documentedPaths.some((value) => value.startsWith("page.clock."))
+        ? ["clock"]
+        : []),
     ]),
     interfaceCoverage("Locator", documentedPaths, interfaces),
     interfaceCoverage("FrameLocator", documentedPaths, interfaces),

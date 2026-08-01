@@ -16,6 +16,10 @@ import {
   waitForSelector,
   waitForURL,
 } from "../../dist/src/driver/waits.js";
+import {
+  createTargetContext,
+  runWithTarget,
+} from "../../dist/src/target-context.js";
 
 function installAutoEgo(resultFor = () => ({})) {
   const calls = [];
@@ -91,7 +95,7 @@ test("waitForFunction polls until a page function returns a truthy value", async
   }
   assert.deepEqual(sleeps, [50]);
   assert.match(expressions[0], /window\.status === expected/);
-  assert.match(expressions[0], /\("done"\)$/);
+  assert.match(expressions[0], /, "done"\)$/);
 });
 
 test("waitForURL supports Playwright-style glob strings", async () => {
@@ -504,6 +508,111 @@ test("Response body remains readable after the owned Network domain is released"
       "the wait releases its owned Network domain",
     );
     assert.equal(await response.text(), "delayed body");
+  } finally {
+    cleanupBrowserRuntime();
+  }
+});
+
+test("waitForResponse enables Network synchronously for a cached target session", async () => {
+  const calls = installAutoEgo((call) =>
+    call.method === "Network.getResponseBody"
+      ? { body: "popup body", base64Encoded: false }
+      : {},
+  );
+  const targetContext = createTargetContext("tab-1");
+  targetContext.sessionId = "popup-session";
+  try {
+    let promise;
+    runWithTarget(targetContext, () => {
+      promise = waitForResponse("https://example.com/api/popup", {
+        timeout: 1000,
+      });
+      assert.equal(
+        calls[0]?.method,
+        "Network.enable",
+        "the wait is armed before the caller can trigger the request",
+      );
+    });
+    fireEvent(
+      "Network.requestWillBeSent",
+      {
+        requestId: "req-popup",
+        type: "Fetch",
+        request: {
+          url: "https://example.com/api/popup",
+          method: "GET",
+          headers: {},
+        },
+      },
+      "popup-session",
+    );
+    fireEvent(
+      "Network.responseReceived",
+      {
+        requestId: "req-popup",
+        type: "Fetch",
+        response: {
+          url: "https://example.com/api/popup",
+          status: 200,
+          statusText: "OK",
+          headers: {},
+        },
+      },
+      "popup-session",
+    );
+    fireEvent(
+      "Network.loadingFinished",
+      { requestId: "req-popup" },
+      "popup-session",
+    );
+    assert.equal(await (await promise).text(), "popup body");
+  } finally {
+    cleanupBrowserRuntime();
+  }
+});
+
+test("Response body retries after an eager cache misses a just-finished resource", async () => {
+  let bodyAttempts = 0;
+  installAutoEgo((call) => {
+    if (call.method !== "Network.getResponseBody") return {};
+    bodyAttempts += 1;
+    return bodyAttempts <= 2
+      ? { error: { message: "No resource with given identifier found" } }
+      : { body: "available later", base64Encoded: false };
+  });
+  try {
+    const promise = waitForResponse("https://example.com/api/eager-cache", {
+      timeout: 1000,
+    });
+    setTimeout(() => {
+      fireEvent("Network.requestWillBeSent", {
+        requestId: "req-eager-cache",
+        type: "Fetch",
+        request: {
+          url: "https://example.com/api/eager-cache",
+          method: "GET",
+          headers: {},
+        },
+      });
+      fireEvent("Network.responseReceived", {
+        requestId: "req-eager-cache",
+        type: "Fetch",
+        response: {
+          url: "https://example.com/api/eager-cache",
+          status: 200,
+          statusText: "OK",
+          headers: {},
+        },
+      });
+      fireEvent("Network.loadingFinished", {
+        requestId: "req-eager-cache",
+      });
+    }, 20);
+
+    const response = await promise;
+    assert.equal(bodyAttempts, 3, "the eager cache retries transient misses");
+    assert.equal(await response.text(), "available later");
+    assert.equal(bodyAttempts, 3, "the later read uses the cached body");
   } finally {
     cleanupBrowserRuntime();
   }
@@ -1404,7 +1513,7 @@ test("waitForFunction does not infer options from the second argument", async ()
   } finally {
     restore();
   }
-  assert.match(expression, /\{"timeout":123\}/);
+  assert.match(expression, /"k":"timeout","v":123/);
 });
 
 test("waitForFunction throws TimeoutError on timeout", async () => {

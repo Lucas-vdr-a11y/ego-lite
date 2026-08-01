@@ -45,6 +45,22 @@ export const playwrightLocatorCases = [
         1,
         "frameLocator.locator applies same-frame filter options"
       );
+
+      assertEqual(
+        await page.getByRole("group", { name: "Gender", exact: true }).count(),
+        1,
+        "fieldset has the implicit group role and legend accessible name"
+      );
+      await page
+        .getByRole("group")
+        .filter({ hasText: "Gender" })
+        .getByText("Decline to self-identify", { exact: true })
+        .click();
+      assertEqual(
+        await page.locator('input[name="eeoc-gender"]:checked').getAttribute("value"),
+        "decline",
+        "fieldset-scoped exact text locator clicks the requested radio label"
+      );
     `),
   },
   {

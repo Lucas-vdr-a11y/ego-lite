@@ -27,6 +27,18 @@ export function keyboardRegressionCase() {
     const xpathValue = await page.evaluate(() => document.querySelector('#text-input').value);
     assertEqual(xpathValue, "via-xpath", "fill resolves xpath= selector (Issue 2)");
 
+    await page.locator('//input[@id="text-input"]').fill("via-implicit-xpath", { timeout: 3000 });
+    assertEqual(
+      await page.locator("#text-input").inputValue(),
+      "via-implicit-xpath",
+      "locator auto-detects Playwright-style implicit XPath"
+    );
+    assertEqual(
+      await page.locator("#text-input").locator("..").evaluate((element) => element.tagName),
+      "LABEL",
+      "scoped locator('..') resolves the parent like Playwright"
+    );
+
     /* Issue 2: dispatchEvent shares the same resolver path. */
     await page.evaluate("window.__fixtureState.keys = []; return true;");
     await page.locator('xpath=//input[@id="text-input"]').dispatchEvent("keydown", { key: "Enter" });

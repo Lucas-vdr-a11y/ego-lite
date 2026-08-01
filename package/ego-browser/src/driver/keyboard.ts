@@ -1,5 +1,6 @@
 import { cdp } from "../cdp-eval.js";
 import { browserCdp } from "../browser-runtime.js";
+import { isEgoHardStopError } from "../ego-errors.js";
 import { withHandle, resolveAndCall } from "./element-ops.js";
 import { state } from "../state.js";
 import {
@@ -19,6 +20,7 @@ type FillOptions = {
 };
 
 type ElementActionOptions = {
+  __apiName?: string;
   force?: boolean;
   trial?: boolean;
   timeout?: number;
@@ -40,6 +42,8 @@ type SelectOption =
   | string
   | number
   | { value?: string; label?: string; index?: number };
+
+const LABELED_CONTROL_CLICK_PROBE_MS = 1000;
 
 const KEYS = {
   Enter: { vk: 13, key: "Enter", code: "Enter", text: "\r" },
@@ -470,7 +474,10 @@ export async function pressOnSelector(
  * @returns {Promise<void>}
  */
 export async function check(selector, options: ElementActionOptions = {}) {
-  await setChecked(selector, true, options);
+  await setChecked(selector, true, {
+    ...options,
+    __apiName: "locator.check",
+  });
 }
 
 /**
@@ -479,7 +486,10 @@ export async function check(selector, options: ElementActionOptions = {}) {
  * @returns {Promise<void>}
  */
 export async function uncheck(selector, options: ElementActionOptions = {}) {
-  await setChecked(selector, false, options);
+  await setChecked(selector, false, {
+    ...options,
+    __apiName: "locator.uncheck",
+  });
 }
 
 /**
@@ -493,8 +503,9 @@ export async function setChecked(
   checked,
   options: ElementActionOptions = {},
 ) {
+  const apiName = options.__apiName || "locator.setChecked";
   const timeout = normalizeTimeout(
-    "locator.setChecked",
+    apiName,
     options.timeout ?? state.defaultTimeout,
   );
   const deadline = timeoutDeadline(timeout, state.now());
@@ -504,19 +515,90 @@ export async function setChecked(
   if (initial.type === "radio" && !desired) {
     throw new Error("locator.setChecked cannot uncheck a radio input");
   }
-  await click(selector, {
-    ...options,
-    timeout: operationRemaining(deadline, timeout, "locator.setChecked"),
-  });
-  if (options.trial) return;
+  const labelPoint =
+    options.position === undefined
+      ? await associatedLabelPoint(selector)
+      : null;
+  const remaining = operationRemaining(deadline, timeout, apiName);
+  let directClickError;
+  try {
+    await click(selector, {
+      ...options,
+      __apiName: apiName,
+      timeout: labelPoint
+        ? Math.min(LABELED_CONTROL_CLICK_PROBE_MS, remaining)
+        : remaining,
+    });
+  } catch (error) {
+    if (isEgoHardStopError(error) || !labelPoint) throw error;
+    directClickError = error;
+  }
+  if (options.trial) {
+    if (directClickError && labelPoint) {
+      await click(labelPoint, {
+        ...options,
+        __apiName: apiName,
+        timeout: operationRemaining(deadline, timeout, apiName),
+      });
+    }
+    return;
+  }
   if (
-    (await checkedStateWithinDeadline(selector, deadline, timeout)).checked !==
+    (await checkedStateWithinDeadline(selector, deadline, timeout)).checked ===
     desired
   ) {
-    throw new Error(
-      `locator.setChecked could not set checked state to ${desired}`,
-    );
+    return;
   }
+  if (labelPoint) {
+    await click(labelPoint, {
+      ...options,
+      __apiName: apiName,
+      timeout: operationRemaining(deadline, timeout, apiName),
+    });
+    if (
+      (await checkedStateWithinDeadline(selector, deadline, timeout)).checked ===
+      desired
+    ) {
+      return;
+    }
+  }
+  throw new Error(`locator.setChecked could not set checked state to ${desired}`);
+}
+
+async function associatedLabelPoint(selector) {
+  const resolved = await resolveAndCall(
+    selector,
+    `function(){
+      const label = Array.from(this.labels || []).find((candidate) => {
+        const rect = candidate.getBoundingClientRect();
+        const style = getComputedStyle(candidate);
+        return rect.width > 0 && rect.height > 0
+          && style.visibility !== "hidden"
+          && style.display !== "none";
+      });
+      if (!label) return null;
+      label.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
+      const rect = label.getBoundingClientRect();
+      return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+    }`,
+  );
+  const point = resolved.result.result?.value;
+  if (!Number.isFinite(point?.x) || !Number.isFinite(point?.y)) return null;
+  const offset = resolved.frameOffset || { x: 0, y: 0 };
+  const scale = resolved.frameScale || { x: 1, y: 1 };
+  return {
+    x: offset.x + point.x * scale.x,
+    y: offset.y + point.y * scale.y,
+    sessionId: resolved.inputSessionId || resolved.sessionId,
+    ...(resolved.frameOffset === undefined
+      ? {}
+      : {
+          probeSessionId: resolved.sessionId,
+          probeExecutionContextId: resolved.probeExecutionContextId,
+          probeX: point.x,
+          probeY: point.y,
+        }),
+  };
 }
 
 /**

@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
+import { invalidateSession } from "../../dist/src/browser-runtime.js";
+import { helperContext } from "../../dist/src/helpers.js";
 import { setOverrides } from "../../dist/src/state.js";
 import {
   click,
@@ -147,6 +149,165 @@ test("click scrolls a selector into view before resolving its click point", asyn
   );
   assert.ok(scrollIndex >= 0, "scrolls the target into the viewport");
   assert.ok(scrollIndex < dispatchIndex, "scrolls before mouse dispatch");
+});
+
+test("click focuses an unfocused page before trusted input dispatch", async () => {
+  const originalEgo = globalThis.ego;
+  globalThis.ego = {
+    async listTabs() {
+      return { tabs: [{ targetId: "tab-1", active: true }] };
+    },
+    sendCDPMessage() {},
+  };
+  const calls = [];
+  let probeCalls = 0;
+  const restore = setOverrides({
+    cdpOverride(method, params, sessionId) {
+      calls.push({ method, params, sessionId });
+      if (
+        method === "Runtime.evaluate" &&
+        params.expression ===
+          "document.visibilityState === 'visible' && document.hasFocus()"
+      ) {
+        return { result: { value: false } };
+      }
+      if (
+        method === "Runtime.evaluate" &&
+        params.expression?.includes("__egoBrowserInputProbes")
+      ) {
+        probeCalls += 1;
+        return { result: { value: true } };
+      }
+      return {};
+    },
+  });
+  try {
+    await click([10, 20]);
+  } finally {
+    restore();
+    if (originalEgo === undefined) delete globalThis.ego;
+    else globalThis.ego = originalEgo;
+  }
+
+  assert.equal(probeCalls, 2);
+  const focusIndex = calls.findIndex(
+    (call) => call.method === "Page.bringToFront",
+  );
+  const inputIndex = calls.findIndex(
+    (call) => call.method === "Input.dispatchMouseEvent",
+  );
+  assert.ok(focusIndex >= 0);
+  assert.ok(focusIndex < inputIndex);
+});
+
+test("locator click waits for a navigation triggered by the click", async () => {
+  const previousEgo = globalThis.ego;
+  const loadStates = [];
+  const loadSleeps = [];
+  let readyState = "loading";
+  let currentUrl = "https://example.com/start";
+  let probeCalls = 0;
+  const sessionId = "pointer-navigation-session";
+  const runtime = {
+    async listTabs() {
+      return {
+        tabs: [
+          {
+            targetId: "pointer-navigation-target",
+            active: true,
+            url: currentUrl,
+          },
+        ],
+      };
+    },
+    sendCDPMessage(payload) {
+      const request = JSON.parse(payload);
+      let result = {};
+      if (request.method === "Target.attachToTarget") {
+        result = { sessionId };
+      } else if (request.method === "Page.getFrameTree") {
+        result = {
+          frameTree: { frame: { id: "main-frame", url: currentUrl } },
+        };
+      } else if (request.method === "Runtime.evaluate") {
+        if (request.params.objectGroup === "ego-browser") {
+          result = { result: { objectId: "link-object" } };
+        } else if (
+          request.params.expression?.includes("__egoBrowserInputProbes")
+        ) {
+          probeCalls += 1;
+          result = { result: { value: true } };
+        } else if (request.params.expression === "document.readyState") {
+          loadStates.push(readyState);
+          result = { result: { value: readyState } };
+        }
+      } else if (request.method === "Runtime.callFunctionOn") {
+        result = {
+          result: {
+            value: {
+              attached: true,
+              visible: true,
+              enabled: true,
+              editable: true,
+              receivesEvents: true,
+              rect: { x: 50, y: 60, width: 100, height: 40 },
+            },
+          },
+        };
+      }
+      queueMicrotask(() =>
+        runtime.onCDPMessage(JSON.stringify({ id: request.id, result })),
+      );
+      if (
+        request.method === "Input.dispatchMouseEvent" &&
+        request.params.type === "mouseReleased"
+      ) {
+        queueMicrotask(() => {
+          currentUrl = "https://example.com/next";
+          runtime.onCDPMessage(
+            JSON.stringify({
+              sessionId,
+              method: "Page.frameNavigated",
+              params: {
+                frame: { id: "main-frame", url: currentUrl },
+              },
+            }),
+          );
+        });
+      }
+    },
+  };
+  globalThis.ego = runtime;
+  invalidateSession();
+  const restore = setOverrides({
+    cdpOverride: null,
+    sleep: async (ms) => {
+      if (ms === 300) {
+        loadSleeps.push(ms);
+        readyState = "complete";
+      }
+    },
+  });
+  try {
+    const locator = helperContext().page.locator("#target");
+    await locator.click({
+      timeout: 1000,
+    });
+    assert.deepEqual(loadStates, ["loading", "complete"]);
+    assert.deepEqual(loadSleeps, [300]);
+
+    loadStates.length = 0;
+    loadSleeps.length = 0;
+    readyState = "loading";
+    await locator.click({ noWaitAfter: true, timeout: 1000 });
+    assert.deepEqual(loadStates, []);
+    assert.deepEqual(loadSleeps, []);
+  } finally {
+    invalidateSession();
+    restore();
+    if (previousEgo === undefined) delete globalThis.ego;
+    else globalThis.ego = previousEgo;
+  }
 });
 
 test("drag moves to the source before pressing the mouse button", async () => {
@@ -569,7 +730,7 @@ test("wheel rejects non-numeric deltas before dispatching", async () => {
   await assert.rejects(() => wheel(0, "bad"), /invalid mouse offset/);
 });
 
-test("click triggers probe fallback when CDP click is not trusted", async () => {
+test("click trusts successful CDP dispatch without synthesizing a fallback", async () => {
   const originalEgo = globalThis.ego;
   globalThis.ego = { sendCDPMessage: () => {} };
   let probeEvaluateCount = 0;
@@ -586,7 +747,7 @@ test("click triggers probe fallback when CDP click is not trusted", async () => 
             return { result: { value: true } };
           }
           // finishClickProbe — simulate CDP click was NOT seen
-          return { result: { value: { seen: false, fallback: true } } };
+          return { result: { value: false } };
         }
         if (params.objectGroup === "ego-browser") {
           return { result: { objectId: "object-1" } };
@@ -631,19 +792,10 @@ test("click triggers probe fallback when CDP click is not trusted", async () => 
     /__egoBrowserInputProbes/,
     "install expression sets up click probe",
   );
-  assert.match(
-    evaluateExpressions[1],
-    /dispatchEvent/,
-    "finish expression contains fallback mouse events",
-  );
-  assert.match(
-    evaluateExpressions[1],
-    /MouseEvent/,
-    "finish expression dispatches MouseEvent in fallback",
-  );
+  assert.doesNotMatch(evaluateExpressions[1], /dispatchEvent/);
 });
 
-test("frame click fallback probes the child document with frame-local coordinates", async () => {
+test("frame click retries trusted input through an OOPIF session", async () => {
   const originalEgo = globalThis.ego;
   globalThis.ego = { sendCDPMessage: () => {} };
   const probeCalls = [];
@@ -655,6 +807,13 @@ test("frame click fallback probes the child document with frame-local coordinate
     cdpOverride(method, params, sessionId) {
       if (
         method === "Runtime.evaluate" &&
+        params.expression ===
+          "document.visibilityState === 'visible' && document.hasFocus()"
+      ) {
+        return { result: { value: true } };
+      }
+      if (
+        method === "Runtime.evaluate" &&
         params.expression?.includes("framePoint")
       ) {
         return { result: { value: true } };
@@ -664,9 +823,10 @@ test("frame click fallback probes the child document with frame-local coordinate
         params.expression?.includes("__egoBrowserInputProbes")
       ) {
         probeCalls.push({ params, sessionId });
-        return probeCalls.length === 1
-          ? { result: { value: true } }
-          : { result: { value: { seen: false, fallback: true } } };
+        if (probeCalls.length === 1 || probeCalls.length === 3) {
+          return { result: { value: true } };
+        }
+        return { result: { value: probeCalls.length === 4 } };
       }
       if (method === "Runtime.evaluate") {
         return {
@@ -734,7 +894,7 @@ test("frame click fallback probes the child document with frame-local coordinate
       }
       if (method === "Input.dispatchMouseEvent") {
         inputCalls.push({ params, sessionId });
-        throw new Error("CDP request timed out: Input.dispatchMouseEvent");
+        return {};
       }
       if (method === "Runtime.releaseObject") return {};
       throw new Error(`Unexpected CDP method: ${method}`);
@@ -751,22 +911,37 @@ test("frame click fallback probes the child document with frame-local coordinate
     else globalThis.ego = originalEgo;
   }
 
-  assert.ok(
-    inputCalls.every((call) => call.sessionId === "main-session"),
-    "trusted mouse input uses top-level viewport coordinates",
+  assert.deepEqual(
+    inputCalls.map((call) => call.sessionId),
+    [
+      undefined,
+      undefined,
+      undefined,
+      "frame-session",
+      "frame-session",
+      "frame-session",
+    ],
   );
-  assert.equal(probeCalls.length, 2);
+  assert.equal(probeCalls.length, 4);
   assert.ok(
     probeCalls.every((call) => call.sessionId === "frame-session"),
-    "fallback probes run in the child document",
+    "click probes run in the child document",
   );
   assert.ok(
     probeCalls.every((call) => call.params.contextId === 303),
-    "fallback probes use the child execution context",
+    "click probes use the child execution context",
   );
   assert.match(probeCalls[0].params.expression, /elementFromPoint\(70, 50\)/);
-  assert.match(probeCalls[1].params.expression, /clientX: 70/);
-  assert.match(probeCalls[1].params.expression, /clientY: 50/);
+  assert.match(probeCalls[3].params.expression, /return probe\.seen/);
+  assert.doesNotMatch(probeCalls[3].params.expression, /dispatchEvent/);
+  assert.deepEqual(
+    inputCalls.slice(3).map((call) => [call.params.x, call.params.y]),
+    [
+      [70, 50],
+      [70, 50],
+      [70, 50],
+    ],
+  );
 });
 
 test("cross-frame drag does not synthesize fallback events in one child context", async () => {
@@ -828,10 +1003,11 @@ test("cross-frame drag does not synthesize fallback events in one child context"
   );
 });
 
-test("right-click fallback preserves the button and modifier semantics", async () => {
+test("right-click preserves trusted button and modifier semantics", async () => {
   const originalEgo = globalThis.ego;
   globalThis.ego = { sendCDPMessage: () => {} };
   const probeExpressions = [];
+  const inputCalls = [];
   const restore = setOverrides({
     cdpOverride(method, params) {
       if (
@@ -841,8 +1017,9 @@ test("right-click fallback preserves the button and modifier semantics", async (
         probeExpressions.push(params.expression);
         return probeExpressions.length === 1
           ? { result: { value: true } }
-          : { result: { value: { seen: false, fallback: true } } };
+          : { result: { value: true } };
       }
+      if (method === "Input.dispatchMouseEvent") inputCalls.push(params);
       return {};
     },
   });
@@ -858,14 +1035,97 @@ test("right-click fallback preserves the button and modifier semantics", async (
   }
 
   assert.match(probeExpressions[0], /addEventListener\("contextmenu"/);
-  assert.match(probeExpressions[1], /new MouseEvent\("contextmenu"/);
-  assert.match(probeExpressions[1], /button: 2/);
-  assert.match(probeExpressions[1], /altKey":true/);
-  assert.match(probeExpressions[1], /shiftKey":true/);
-  assert.doesNotMatch(probeExpressions[1], /new MouseEvent\("click"/);
+  assert.match(probeExpressions[1], /removeEventListener\("contextmenu"/);
+  assert.doesNotMatch(probeExpressions[1], /dispatchEvent/);
+  const pressed = inputCalls.find((call) => call.type === "mousePressed");
+  assert.equal(pressed.button, "right");
+  assert.equal(pressed.modifiers, 9);
 });
 
-test("click absorbs CDP timeout when probe fallback succeeds", async () => {
+test("click gives input dispatches the remaining Playwright operation budget", async () => {
+  const dispatchTimeouts = [];
+  const restore = setOverrides({
+    cdpOverride(method, params, sessionId, timeoutMs) {
+      if (
+        method === "Runtime.evaluate" &&
+        params.expression ===
+          "document.visibilityState === 'visible' && document.hasFocus()"
+      ) {
+        return { result: { value: true } };
+      }
+      if (method === "Input.dispatchMouseEvent") {
+        dispatchTimeouts.push(timeoutMs);
+      }
+      return {};
+    },
+  });
+  try {
+    await click([10, 20], { timeout: 30_000 });
+  } finally {
+    restore();
+  }
+
+  assert.equal(dispatchTimeouts.length, 3);
+  assert.ok(dispatchTimeouts[0] <= 30_000);
+  assert.ok(dispatchTimeouts[1] <= dispatchTimeouts[0]);
+  assert.ok(dispatchTimeouts[2] <= dispatchTimeouts[1]);
+  assert.ok(dispatchTimeouts.every((timeout) => timeout > 29_000));
+});
+
+test("click preserves timeout zero for unlimited input dispatches", async () => {
+  const dispatchTimeouts = [];
+  const restore = setOverrides({
+    cdpOverride(method, params, sessionId, timeoutMs) {
+      if (
+        method === "Runtime.evaluate" &&
+        params.expression ===
+          "document.visibilityState === 'visible' && document.hasFocus()"
+      ) {
+        return { result: { value: true } };
+      }
+      if (method === "Input.dispatchMouseEvent") {
+        dispatchTimeouts.push(timeoutMs);
+      }
+      return {};
+    },
+  });
+  try {
+    await click([10, 20], { timeout: 0 });
+  } finally {
+    restore();
+  }
+
+  assert.deepEqual(dispatchTimeouts, [0, 0, 0]);
+});
+
+test("click input dispatch respects a shorter operation deadline", async () => {
+  const dispatchTimeouts = [];
+  const restore = setOverrides({
+    now: () => 1000,
+    cdpOverride(method, params, sessionId, timeoutMs) {
+      if (
+        method === "Runtime.evaluate" &&
+        params.expression ===
+          "document.visibilityState === 'visible' && document.hasFocus()"
+      ) {
+        return { result: { value: true } };
+      }
+      if (method === "Input.dispatchMouseEvent") {
+        dispatchTimeouts.push(timeoutMs);
+      }
+      return {};
+    },
+  });
+  try {
+    await click([10, 20], { timeout: 400 });
+  } finally {
+    restore();
+  }
+
+  assert.deepEqual(dispatchTimeouts, [400, 400, 400]);
+});
+
+test("click preserves a CDP timeout when no trusted event was observed", async () => {
   const originalEgo = globalThis.ego;
   globalThis.ego = { sendCDPMessage: () => {} };
   let probeEvaluateCount = 0;
@@ -878,8 +1138,7 @@ test("click absorbs CDP timeout when probe fallback succeeds", async () => {
           if (probeEvaluateCount === 1) {
             return { result: { value: true } };
           }
-          // Fallback succeeded
-          return { result: { value: { seen: false, fallback: true } } };
+          return { result: { value: false } };
         }
         if (params.objectGroup === "ego-browser") {
           return { result: { objectId: "object-1" } };
@@ -909,8 +1168,10 @@ test("click absorbs CDP timeout when probe fallback succeeds", async () => {
     },
   });
   try {
-    // Should NOT throw — timeout is absorbed because fallback succeeded
-    await click("#target");
+    await assert.rejects(
+      () => click("#target"),
+      /CDP request timed out: Input\.dispatchMouseEvent/,
+    );
   } finally {
     restore();
     if (originalEgo === undefined) delete globalThis.ego;

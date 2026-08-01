@@ -6,6 +6,8 @@ import { RefMap } from "./ref-map.js";
 export type TargetContext = {
   targetId: string;
   beforeOperation?: () => Promise<void>;
+  openerId?: string;
+  closed: boolean;
   ariaRefMap: AriaRefMap;
   refMap: RefMap;
   snapshotForRefRefresh?: () => Promise<unknown>;
@@ -30,10 +32,13 @@ export function currentTargetId() {
 export function createTargetContext(
   targetId: string,
   beforeOperation?: () => Promise<void>,
+  openerId?: string,
 ): TargetContext {
   return {
     targetId,
     beforeOperation,
+    openerId,
+    closed: false,
     ariaRefMap: new AriaRefMap(),
     refMap: new RefMap(),
   };

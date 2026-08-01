@@ -163,6 +163,33 @@ test("browserCdp times out when no response arrives", async () => {
   }
 });
 
+test("browserCdp timeout identifies the input stage and request context", async () => {
+  installManualEgo();
+  try {
+    await assert.rejects(
+      () =>
+        browserCdp(
+          "Input.dispatchMouseEvent",
+          { type: "mousePressed", x: 10, y: 20 },
+          "sess-1",
+          10,
+        ),
+      (error) => {
+        assert.match(
+          error.message,
+          /CDP request timed out: Input\.dispatchMouseEvent/,
+        );
+        assert.match(error.message, /type=mousePressed/);
+        assert.match(error.message, /sessionId=sess-1/);
+        assert.match(error.message, /timeout=10ms/);
+        return true;
+      },
+    );
+  } finally {
+    cleanup();
+  }
+});
+
 test("browserCdp rejects when sendCDPMessage throws synchronously", async () => {
   globalThis.ego = {
     sendCDPMessage() {

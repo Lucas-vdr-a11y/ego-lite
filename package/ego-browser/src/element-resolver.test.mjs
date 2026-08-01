@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { runInNewContext } from "node:vm";
 
 import {
   resolveElementCenter,
@@ -439,10 +440,99 @@ test("text locator resolves through browser-side text matching", async () => {
   assert.deepEqual(point, { x: 10, y: 20, sessionId: undefined });
 });
 
+test("text locator resolves once without repeated subtree text reads", async () => {
+  let textReads = 0;
+  const leaf = {
+    children: [],
+    get textContent() {
+      textReads += 1;
+      return "Single Family";
+    },
+  };
+  const parent = {
+    children: [leaf],
+    get textContent() {
+      textReads += 1;
+      return "Single Family";
+    },
+  };
+  const document = {
+    querySelectorAll(selector) {
+      assert.equal(selector, "body *");
+      return [parent, leaf];
+    },
+  };
+  let evaluateCalls = 0;
+  const cdp = new FakeCDP(async (method, params) => {
+    if (method !== "Runtime.evaluate") return {};
+    evaluateCalls += 1;
+    const value = runInNewContext(params.expression, { document });
+    if (params.returnByValue) return { result: { value } };
+    assert.equal(value, leaf);
+    return { result: { objectId: "single-family" } };
+  });
+
+  assert.deepEqual(
+    await resolveElementObjectId(
+      cdp,
+      undefined,
+      new RefMap(),
+      'loc=text:exact:"Single Family"',
+    ),
+    { objectId: "single-family", sessionId: undefined },
+  );
+  assert.equal(evaluateCalls, 1, "strict resolution should scan the DOM once");
+  assert.equal(textReads, 2, "each candidate text should be read at most once");
+});
+
+test("text locator builds nested candidate text in one cached tree walk", async () => {
+  const text = { nodeType: 3, nodeValue: "Single Family" };
+  const leaf = {
+    nodeType: 1,
+    children: [],
+    childNodes: [text],
+    get textContent() {
+      throw new Error("native subtree textContent should not be read");
+    },
+  };
+  const parent = {
+    nodeType: 1,
+    children: [leaf],
+    childNodes: [leaf],
+    get textContent() {
+      throw new Error("native subtree textContent should not be read");
+    },
+  };
+  const document = {
+    querySelectorAll() {
+      return [parent, leaf];
+    },
+  };
+  const cdp = new FakeCDP(async (method, params) => {
+    if (method !== "Runtime.evaluate") return {};
+    const value = runInNewContext(params.expression, { document });
+    assert.equal(value, leaf);
+    return { result: { objectId: "single-family" } };
+  });
+
+  assert.deepEqual(
+    await resolveElementObjectId(
+      cdp,
+      undefined,
+      new RefMap(),
+      'loc=text:exact:"Single Family"',
+    ),
+    { objectId: "single-family", sessionId: undefined },
+  );
+});
+
 test("label locator resolves form controls by label text", async () => {
   const cdp = new FakeCDP(async (method, params) => {
     if (method === "Runtime.evaluate") {
-      assert.match(params.expression, /document\.querySelectorAll\('label'\)/);
+      assert.match(
+        params.expression,
+        /document\.querySelectorAll\(["']label["']\)/,
+      );
       assert.match(params.expression, /Email/);
       return { result: { value: { x: 30, y: 40 } } };
     }

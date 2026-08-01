@@ -270,7 +270,7 @@ test("evaluate auto-wraps string expressions with top-level return", async () =>
   try {
     const result = await evaluate("return 42");
     assert.equal(result, 42);
-    assert.equal(capturedExpression, "(function(){return 42})()");
+    assert.match(capturedExpression, /"\(function\(\)\{return 42\}\)\(\)"/);
   } finally {
     restore();
   }
@@ -290,7 +290,7 @@ test("evaluate passes plain expressions without IIFE wrapping", async () => {
   try {
     const result = await evaluate("1 + 2");
     assert.equal(result, 3);
-    assert.equal(capturedExpression, "1 + 2");
+    assert.match(capturedExpression, /, false, true, "1 \+ 2",/);
   } finally {
     restore();
   }
@@ -309,7 +309,7 @@ test("evaluate does not wrap string expressions that already start with paren", 
   });
   try {
     await evaluate("(function(){ return 10 })()");
-    assert.equal(capturedExpression, "(function(){ return 10 })()");
+    assert.match(capturedExpression, /"\(function\(\)\{ return 10 \}\)\(\)"/);
   } finally {
     restore();
   }
@@ -331,8 +331,27 @@ test("evaluate passes function pageFunctions with an arg", async () => {
     assert.equal(result, "Hello!");
     assert.match(
       capturedExpression,
-      /^\(\(suffix\) => document\.title \+ suffix\)\("!"\)$/,
+      /, true, true, "\(suffix\) => document\.title \+ suffix", "!"\)$/,
     );
+  } finally {
+    restore();
+  }
+});
+
+test("evaluate runs a traditional anonymous function as an expression", async () => {
+  const restore = setOverrides({
+    cdpOverride: async (method, params) => {
+      if (method !== "Runtime.evaluate") return {};
+      const value = await (0, eval)(params.expression);
+      return { result: { type: typeof value, value } };
+    },
+  });
+  try {
+    const outer = 100;
+    const result = await evaluate(function () {
+      return typeof outer;
+    });
+    assert.equal(result, "undefined");
   } finally {
     restore();
   }
@@ -349,13 +368,13 @@ test("evaluate rejects non-string/non-function input", async () => {
   );
 });
 
-test("evaluate passes args to string page functions", async () => {
+test("evaluate treats string page functions as expressions when arg is present", async () => {
   let capturedExpression;
   const restore = setOverrides({
     cdpOverride: async (method, params) => {
       if (method === "Runtime.evaluate") {
         capturedExpression = params.expression;
-        return { result: { type: "string", value: "Hello!" } };
+        return { result: { type: "undefined" } };
       }
       return {};
     },
@@ -365,14 +384,14 @@ test("evaluate passes args to string page functions", async () => {
       await evaluate("(arg) => document.title + arg.suffix", {
         suffix: "!",
       }),
-      "Hello!",
+      undefined,
     );
   } finally {
     restore();
   }
-  assert.equal(
+  assert.match(
     capturedExpression,
-    '((arg) => document.title + arg.suffix)({"suffix":"!"})',
+    /, false, true, "\(arg\) => document\.title \+ arg\.suffix", \{"o":\[\{"k":"suffix","v":"!"\}\],"id":1\}\)$/,
   );
 });
 
@@ -404,23 +423,26 @@ test("evaluate propagates page exceptions", async () => {
   }
 });
 
-test("evaluate treats string second arguments as page-function args", async () => {
+test("evaluate serializes but does not apply args to string expressions", async () => {
   const calls = [];
   const restore = setOverrides({
     cdpOverride: async (method, params, sessionId) => {
       calls.push([method, params, sessionId]);
       if (method === "Runtime.evaluate") {
-        return { result: { type: "string", value: "page-result" } };
+        return { result: { type: "undefined" } };
       }
       return {};
     },
   });
   try {
     const result = await evaluate("(target) => target", "target-abc");
-    assert.equal(result, "page-result");
+    assert.equal(result, undefined);
     assert.equal(calls.length, 1);
     assert.equal(calls[0][0], "Runtime.evaluate");
-    assert.equal(calls[0][1].expression, '((target) => target)("target-abc")');
+    assert.match(
+      calls[0][1].expression,
+      /, false, true, "\(target\) => target", "target-abc"\)$/,
+    );
     assert.equal(calls[0][2], undefined);
   } finally {
     restore();

@@ -479,6 +479,135 @@ test("setChecked, check, and uncheck use real click transitions", async () => {
   assert.equal(releases.length, 2);
 });
 
+test("setChecked falls back to a visible associated label", async () => {
+  const calls = [];
+  let checked = false;
+  let releases = 0;
+  const restore = setOverrides({
+    cdpOverride(method, params, sessionId) {
+      calls.push({ method, params, sessionId });
+      if (method === "Runtime.evaluate") {
+        return { result: { objectId: "checkbox-1" } };
+      }
+      if (method === "Runtime.callFunctionOn") {
+        if (params.functionDeclaration.includes("checked: target.checked")) {
+          return {
+            result: { value: { checked, type: "checkbox" } },
+          };
+        }
+        if (
+          params.functionDeclaration.includes("Array.from(this.labels || [])")
+        ) {
+          return { result: { value: { x: 80, y: 40 } } };
+        }
+        if (params.functionDeclaration.includes("getBoundingClientRect")) {
+          return {
+            result: {
+              value: {
+                attached: true,
+                visible: true,
+                enabled: true,
+                editable: false,
+                receivesEvents: true,
+                rect: { x: 0, y: 0, width: 20, height: 20 },
+              },
+            },
+          };
+        }
+      }
+      if (
+        method === "Input.dispatchMouseEvent" &&
+        params.type === "mouseReleased"
+      ) {
+        releases += 1;
+        if (releases === 2) checked = true;
+      }
+      return {};
+    },
+  });
+  try {
+    await setChecked("#agree", true);
+  } finally {
+    restore();
+  }
+
+  const releaseCalls = calls.filter(
+    (entry) =>
+      entry.method === "Input.dispatchMouseEvent" &&
+      entry.params.type === "mouseReleased",
+  );
+  assert.equal(releaseCalls.length, 2);
+  assert.deepEqual(
+    { x: releaseCalls[1].params.x, y: releaseCalls[1].params.y },
+    { x: 80, y: 40 },
+  );
+});
+
+test("setChecked does not exhaust its deadline on a covered labeled input", async () => {
+  let checked = false;
+  let now = 0;
+  const releases = [];
+  const restore = setOverrides({
+    now: () => now,
+    sleep: async (ms) => {
+      now += ms;
+    },
+    cdpOverride(method, params) {
+      if (method === "Runtime.evaluate") {
+        if (
+          params.expression ===
+          "document.visibilityState === 'visible' && document.hasFocus()"
+        ) {
+          return { result: { value: true } };
+        }
+        return { result: { objectId: "checkbox-1" } };
+      }
+      if (method === "Runtime.callFunctionOn") {
+        if (params.functionDeclaration.includes("checked: target.checked")) {
+          return {
+            result: { value: { checked, type: "checkbox" } },
+          };
+        }
+        if (
+          params.functionDeclaration.includes("Array.from(this.labels || [])")
+        ) {
+          return { result: { value: { x: 80, y: 40 } } };
+        }
+        if (params.functionDeclaration.includes("getBoundingClientRect")) {
+          return {
+            result: {
+              value: {
+                attached: true,
+                visible: true,
+                enabled: true,
+                editable: false,
+                receivesEvents: false,
+                rect: { x: 0, y: 0, width: 20, height: 20 },
+              },
+            },
+          };
+        }
+      }
+      if (
+        method === "Input.dispatchMouseEvent" &&
+        params.type === "mouseReleased"
+      ) {
+        releases.push({ x: params.x, y: params.y });
+        checked = true;
+      }
+      return {};
+    },
+  });
+  try {
+    await setChecked("#agree", true, { timeout: 2000 });
+  } finally {
+    restore();
+  }
+
+  assert.deepEqual(releases, [{ x: 80, y: 40 }]);
+  assert.ok(now < 2000, `covered input consumed the full ${now}ms deadline`);
+});
+
 test("setChecked applies its timeout to the initial state lookup", async () => {
   let now = 0;
   const restore = setOverrides({
@@ -496,6 +625,53 @@ test("setChecked applies its timeout to the initial state lookup", async () => {
       setChecked("#missing-checkbox", true, { timeout: 100 }),
     );
     assert.ok(now <= 100, `state lookup consumed ${now}ms`);
+  } finally {
+    restore();
+  }
+});
+
+test("setChecked reports its own timeout for a zero-size checkbox", async () => {
+  let now = 0;
+  const restore = setOverrides({
+    now: () => now,
+    sleep: async (ms) => {
+      now += ms;
+    },
+    cdpOverride(method, params) {
+      if (method === "Runtime.evaluate") {
+        return { result: { objectId: "checkbox-1" } };
+      }
+      if (method === "Runtime.callFunctionOn") {
+        if (params.functionDeclaration.includes("checked: target.checked")) {
+          return {
+            result: {
+              value: { checked: false, type: "checkbox" },
+            },
+          };
+        }
+        if (params.functionDeclaration.includes("getBoundingClientRect")) {
+          return {
+            result: {
+              value: {
+                attached: true,
+                visible: false,
+                enabled: true,
+                editable: false,
+                receivesEvents: false,
+                rect: { x: 0, y: 0, width: 0, height: 0 },
+              },
+            },
+          };
+        }
+      }
+      return {};
+    },
+  });
+  try {
+    await assert.rejects(
+      () => setChecked("#hidden", true, { timeout: 100 }),
+      /locator\.setChecked timed out after 100ms: element is not visible/,
+    );
   } finally {
     restore();
   }

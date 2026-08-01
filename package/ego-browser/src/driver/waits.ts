@@ -1,5 +1,5 @@
 import { state } from "../state.js";
-import { cdp, runtimeValue } from "../cdp-eval.js";
+import { cdp, evaluateWithArguments, runtimeValue } from "../cdp-eval.js";
 import { resolveHandle, releaseHandle } from "./element-ops.js";
 import { ElementResolutionError } from "../element-resolver.js";
 import type { LocatorTarget } from "../frame-context.js";
@@ -26,6 +26,7 @@ import {
 } from "../network-facades.js";
 import { acquireNetworkEvents } from "../network-events.js";
 import { createNetworkLifecycleMonitor } from "../network-lifecycle.js";
+import { currentTargetContext } from "../target-context.js";
 
 type WaitForSelectorOptions = {
   timeout?: number;
@@ -88,24 +89,28 @@ export async function waitForFunction(
     );
   }
   const deadline = timeoutDeadline(timeout, state.now());
-  const expression = buildWaitForFunctionExpression(pageFunction, arg);
+  const isFunction = typeof pageFunction === "function";
+  if (!isFunction && typeof pageFunction !== "string") {
+    throw new TypeError(
+      `waitForFunction expects a string expression or function, got ${pageFunction === null ? "null" : typeof pageFunction}`,
+    );
+  }
+  const expression = String(pageFunction);
   const sessionId = isBrowserRuntime()
     ? await ensureSession()
     : state.sessionId || undefined;
   while (state.now() < deadline) {
-    const response = await cdp(
-      "Runtime.evaluate",
+    const remoteObject = await evaluateWithArguments(
+      expression,
+      isFunction,
+      arg,
       {
-        expression,
-        returnByValue: false,
-        awaitPromise: true,
+        apiName: "page.waitForFunction",
+        sessionId,
+        returnHandle: true,
+        objectGroup: "ego-browser-wait-for-function",
       },
-      sessionId,
     );
-    if (response.exceptionDetails || response.result?.subtype === "error") {
-      runtimeValue(response, expression);
-    }
-    const remoteObject = response.result || {};
     const value = remoteObject.objectId
       ? true
       : remotePrimitiveValue(remoteObject);
@@ -236,20 +241,6 @@ function normalizeLoadStateArgs(
     return ["load", loadState];
   }
   return [(loadState || "load") as LoadState, options];
-}
-
-function buildWaitForFunctionExpression(pageFunction, arg) {
-  if (typeof pageFunction === "function") {
-    return `(${pageFunction.toString()})(${JSON.stringify(arg)})`;
-  }
-  if (typeof pageFunction !== "string") {
-    throw new TypeError(
-      `waitForFunction expects a string expression or function, got ${pageFunction === null ? "null" : typeof pageFunction}`,
-    );
-  }
-  return arg === undefined
-    ? `(${pageFunction})`
-    : `(${pageFunction})(${JSON.stringify(arg)})`;
 }
 
 function urlMatches(current, matcher) {
@@ -555,5 +546,6 @@ async function waitForNetworkIdle(options: WaitForLoadStateOptions = {}) {
 }
 
 function networkSession() {
-  return isBrowserRuntime() ? ensureSession() : state.sessionId || undefined;
+  if (!isBrowserRuntime()) return state.sessionId || undefined;
+  return currentTargetContext()?.sessionId || ensureSession();
 }

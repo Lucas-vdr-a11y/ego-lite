@@ -40,7 +40,7 @@ test("popup event e2e closes the popup it creates", () => {
   assert.ok(popupCase);
   assert.match(
     popupCase.body(),
-    /finally \{[\s\S]*tabs\.close\(popup\.targetId\)[\s\S]*tabs\.activate\(originalTab\)/,
+    /finally \{[\s\S]*popup\.close\(\)[\s\S]*tabs\.activate\(originalTab\)/,
   );
 });
 
@@ -100,12 +100,17 @@ test("skill uses the TaskSpace object model without documenting the removed Brow
   );
   assert.match(
     quickStart,
-    /await task\.tabs\.openOrReuse\('https:\/\/example\.com', \{ wait: true, timeout: 20000 \}\)/,
+    /await task\.tabs\.openOrReuse\('https:\/\/example\.com', \{ waitUntil: 'load', timeout: 20000 \}\)/,
   );
   assert.match(quickStart, /console\.log\(await tab\.page\.snapshot\(\)\)/);
+  assert.match(quickStart, /await egoBrowser\.completeTaskSpace\(task\.id\)/);
   assert.doesNotMatch(quickStart, /getByRole|innerText|page\.url/);
   assert.doesNotMatch(skill, /Playwright `Browser`/);
   assert.doesNotMatch(skill, /`Browser\.(?:grantPermissions|setPermission)`/);
+  assert.match(
+    skill,
+    /`egoBrowser` exposes only `listTaskSpaces`, `newTaskSpace`, `switchTaskSpace`, `completeTaskSpace`, and `closeTaskSpace`/,
+  );
 });
 
 test("skill keeps outer Bash timeouts above in-script operation timeouts", () => {
@@ -119,6 +124,35 @@ test("skill keeps outer Bash timeouts above in-script operation timeouts", () =>
     /set it longer than the longest in-script locator, navigation, or event timeout/,
   );
   assert.match(skill, /shorter explicit timeout only for optional probes/);
+});
+
+test("skill avoids mutating controls that already match the requested state", () => {
+  const skill = readFileSync(
+    new URL("../../../skills/ego-browser/SKILL.md", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(
+    skill,
+    /If a control already matches the requested state, verify it and continue without changing it\./,
+  );
+});
+
+test("skill stays concise and reserves context for ego-specific guidance", () => {
+  const skill = readFileSync(
+    new URL("../../../skills/ego-browser/SKILL.md", import.meta.url),
+    "utf8",
+  );
+  const body = skill.replace(/^---[\s\S]*?---\s*/, "");
+
+  assert.ok(
+    body.trim().split(/\s+/).length <= 1700,
+    "SKILL body should stay at or below 1700 words",
+  );
+  assert.ok(
+    body.split(/\r?\n/).length <= 150,
+    "SKILL body should stay at or below 150 lines",
+  );
 });
 
 test("native task-space close regression remains a dedicated opt-in e2e", () => {

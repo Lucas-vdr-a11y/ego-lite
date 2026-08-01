@@ -29,6 +29,8 @@ type ResponseBodyPayload = {
   base64Encoded?: boolean;
 };
 
+const RESPONSE_BODY_RETRY_DELAYS_MS = [0, 25, 75];
+
 const responseLifecycle = new WeakMap<object, ResponseLifecycleInfo>();
 
 export function createRequestInfo(params, sessionId = undefined): RequestInfo {
@@ -193,20 +195,39 @@ async function readResponseBody(
     await waitForRequestFinished(requestId, timeout, sessionId).catch(
       () => null,
     );
-    try {
-      return await cdp("Network.getResponseBody", { requestId }, sessionId);
-    } catch (error) {
-      if (isEgoHardStopError(error)) throw error;
-      throw new Error(
-        `response body is unavailable for request ${requestId}: ${error?.message || firstError?.message || error}`,
-      );
+    let lastError = firstError;
+    for (const delayMs of RESPONSE_BODY_RETRY_DELAYS_MS) {
+      if (delayMs) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+      try {
+        return await cdp("Network.getResponseBody", { requestId }, sessionId);
+      } catch (error) {
+        if (isEgoHardStopError(error)) throw error;
+        lastError = error;
+        if (!isResponseBodyPendingError(error)) break;
+      }
     }
+    throw new Error(
+      `response body is unavailable for request ${requestId}: ${lastError?.message || firstError?.message || lastError}`,
+    );
   }
 }
 
 function responseBody(info: ResponseLifecycleInfo) {
   if (!info.bodyPromise) {
-    info.bodyPromise = readResponseBody(info.requestId, 0, info.sessionId);
+    const cached = readResponseBody(info.requestId, 0, info.sessionId).catch(
+      (error) => {
+        if (
+          info.bodyPromise === cached &&
+          isResponseBodyPendingError(error)
+        ) {
+          info.bodyPromise = undefined;
+        }
+        throw error;
+      },
+    );
+    info.bodyPromise = cached;
   }
   return info.bodyPromise;
 }

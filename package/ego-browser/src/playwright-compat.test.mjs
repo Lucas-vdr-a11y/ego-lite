@@ -169,14 +169,21 @@ test("compatibility report lists covered and missing members for the promised bo
     0,
     `compatibility report failed:\n${result.stdout}\n${result.stderr}`,
   );
-  assert.match(result.stdout, /Page: 31\/105 \(29\.5%\)/);
-  assert.match(result.stdout, /Locator: 55\/62 \(88\.7%\)/);
+  assert.match(result.stdout, /Page: 59\/105 \(56\.2%\)/);
+  assert.match(result.stdout, /Locator: 57\/62 \(91\.9%\)/);
   assert.match(result.stdout, /FrameLocator: 13\/13 \(100\.0%\)/);
   assert.match(result.stdout, /Keyboard: 5\/5 \(100\.0%\)/);
   assert.match(result.stdout, /Mouse: 6\/6 \(100\.0%\)/);
-  assert.match(result.stdout, /Total: 110\/191 \(57\.6%\)/);
+  assert.match(result.stdout, /Total: 140\/191 \(73\.3%\)/);
   assert.doesNotMatch(result.stdout, /Page missing:.*(?:goBack|goForward)/);
-  assert.doesNotMatch(result.stdout, /Locator missing:.*(?:all|contentFrame)/);
+  assert.doesNotMatch(
+    result.stdout,
+    /Page missing:.*(?:close|route|frames|clock|evaluateHandle)/,
+  );
+  assert.doesNotMatch(
+    result.stdout,
+    /Locator missing:.*(?:all|contentFrame|evaluateHandle|page)/,
+  );
   assert.match(result.stdout, /FrameLocator missing: none/);
 });
 

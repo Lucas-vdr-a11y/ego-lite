@@ -3,7 +3,7 @@ import { dirname, extname, join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { state } from "../state.js";
-import { cdp, evaluate } from "../cdp-eval.js";
+import { cdp, evaluate, runtimeValue } from "../cdp-eval.js";
 import { pageInfo } from "./nav.js";
 import {
   browserEgo,
@@ -39,6 +39,7 @@ type ScreenshotOptions = {
   path?: string;
   type?: "png" | "jpeg" | "webp";
   quality?: number;
+  scale?: "css" | "device";
   fullPage?: boolean;
   raw?: boolean;
   clip?: ScreenshotClip;
@@ -102,12 +103,13 @@ let screenshotSeq = 0;
 
 /**
  * Capture a Playwright-style screenshot Buffer and optionally write it to path.
- * @param {{path?: string, type?: "png"|"jpeg"|"webp", quality?: number, fullPage?: boolean, clip?: object, omitBackground?: boolean, animations?: "allow"|"disabled", caret?: "hide"|"initial", style?: string}} [options]
+ * @param {{path?: string, type?: "png"|"jpeg"|"webp", quality?: number, scale?: "css"|"device", fullPage?: boolean, clip?: object, omitBackground?: boolean, animations?: "allow"|"disabled", caret?: "hide"|"initial", style?: string}} [options]
  * @returns {Promise<Buffer>}
  */
 export async function screenshot(options: ScreenshotOptions = {}) {
   const full = options.fullPage ?? false;
   const raw = options.raw ?? false;
+  const scale = screenshotScale(options.scale);
   const format = screenshotFormat(options);
   const params: any = {
     format,
@@ -146,10 +148,12 @@ export async function screenshot(options: ScreenshotOptions = {}) {
       }
     } else {
       if (!pendingDialog(sessionId)) {
-        const dpr = Number(await evaluate("window.devicePixelRatio")) || 1;
-        const cssScale = 1 / dpr;
+        let captureScale = full ? 1 : await visualViewportScale(sessionId);
+        if (scale === "css") {
+          captureScale /= await devicePixelRatio(sessionId);
+        }
         if (options.clip) {
-          params.clip = { scale: cssScale, ...options.clip };
+          params.clip = { ...options.clip, scale: captureScale };
         } else {
           const info = await pageInfo();
           if ("dialog" in info) {
@@ -160,7 +164,7 @@ export async function screenshot(options: ScreenshotOptions = {}) {
             y: full ? 0 : info.sy,
             width: full ? info.pw : info.w,
             height: full ? info.ph : info.h,
-            scale: cssScale,
+            scale: captureScale,
           };
         }
       }
@@ -204,6 +208,32 @@ function screenshotFormat(options: ScreenshotOptions) {
   if (extension === ".jpg" || extension === ".jpeg") return "jpeg";
   if (extension === ".webp") return "webp";
   return "png";
+}
+
+function screenshotScale(value: ScreenshotOptions["scale"]) {
+  const scale = value ?? "device";
+  if (scale !== "css" && scale !== "device") {
+    throw new TypeError('screenshot scale must be "css" or "device"');
+  }
+  return scale;
+}
+
+async function visualViewportScale(sessionId?: string) {
+  const metrics = await cdp("Page.getLayoutMetrics", {}, sessionId);
+  return (
+    Number(metrics.cssVisualViewport?.scale ?? metrics.visualViewport?.scale) ||
+    1
+  );
+}
+
+async function devicePixelRatio(sessionId?: string) {
+  const expression = "window.devicePixelRatio";
+  const result = await cdp(
+    "Runtime.evaluate",
+    { expression, returnByValue: true, awaitPromise: false },
+    sessionId,
+  );
+  return Number(runtimeValue(result, expression)) || 1;
 }
 
 async function installScreenshotStyle(options: ScreenshotOptions) {

@@ -20,6 +20,7 @@ import {
 } from "../../dist/src/driver/nav.js";
 import { TimeoutError } from "../../dist/src/playwright-errors.js";
 import { setOverrides, state } from "../../dist/src/state.js";
+import { currentTargetId } from "../../dist/src/target-context.js";
 
 function withEgo(ego, fn) {
   const previous = globalThis.ego;
@@ -123,7 +124,13 @@ function withOpenOrReuseLoadScenario(options, fn) {
     async () => {
       const restore = setOverrides({
         cdpOverride(method, params, sessionId, timeoutMs) {
-          calls.push({ method, params, sessionId, timeoutMs });
+          calls.push({
+            method,
+            params,
+            sessionId,
+            timeoutMs,
+            targetId: currentTargetId(),
+          });
           if (method === "Target.activateTarget") {
             return { success: true };
           }
@@ -394,7 +401,10 @@ test("openOrReuseTab rejects when a newly opened tab misses an explicit load tim
         (error) => {
           assert.ok(error instanceof TimeoutError);
           assert.equal(error.name, "TimeoutError");
-          assert.equal(error.message, "tabs.openOrReuse timed out after 23ms");
+          assert.equal(
+            error.message,
+            "tabs.openOrReuse timed out after 23ms: targetId=target-new, url=https://example.com/target, readyState=loading",
+          );
           return true;
         },
       );
@@ -407,7 +417,62 @@ test("openOrReuseTab rejects when a newly opened tab misses an explicit load tim
   );
 });
 
-test("openOrReuseTab rejects when a reused tab misses the default navigation timeout", async () => {
+test("openOrReuseTab waits in the opened target context", async () => {
+  await withOpenOrReuseLoadScenario(
+    { readyStates: ["complete"] },
+    async ({ calls, tab }) => {
+      await openOrReuseTab("https://example.com/target", {
+        waitUntil: "load",
+      });
+      const loadCalls = calls.filter(
+        (call) =>
+          call.method === "Page.getFrameTree" ||
+          call.method === "Runtime.evaluate",
+      );
+      assert.ok(loadCalls.length > 0);
+      assert.deepEqual(
+        loadCalls.map((call) => call.targetId),
+        loadCalls.map(() => tab.targetId),
+      );
+    },
+  );
+});
+
+test("openOrReuseTab supports waitUntil domcontentloaded", async () => {
+  await withOpenOrReuseLoadScenario(
+    { readyStates: ["interactive"] },
+    async ({ sleeps }) => {
+      const opened = await openOrReuseTab("https://example.com/target", {
+        waitUntil: "domcontentloaded",
+      });
+      assert.equal(opened.type, "page");
+      assert.deepEqual(sleeps, []);
+    },
+  );
+});
+
+test("openOrReuseTab waitUntil load still requires complete", async () => {
+  await withOpenOrReuseLoadScenario(
+    { readyStates: ["interactive"] },
+    async () => {
+      await assert.rejects(
+        () =>
+          openOrReuseTab("https://example.com/target", {
+            waitUntil: "load",
+            timeout: 17,
+          }),
+        (error) => {
+          assert.ok(error instanceof TimeoutError);
+          assert.match(error.message, /targetId=target-new/);
+          assert.match(error.message, /readyState=interactive/);
+          return true;
+        },
+      );
+    },
+  );
+});
+
+test("openOrReuseTab rejects when a reused tab misses an explicit load timeout", async () => {
   await withOpenOrReuseLoadScenario(
     {
       existing: true,
@@ -420,10 +485,14 @@ test("openOrReuseTab rejects when a reused tab misses the default navigation tim
         () =>
           openOrReuseTab("https://example.com/target", {
             wait: true,
+            waitUntil: "load",
           }),
         (error) => {
           assert.ok(error instanceof TimeoutError);
-          assert.equal(error.message, "tabs.openOrReuse timed out after 17ms");
+          assert.equal(
+            error.message,
+            "tabs.openOrReuse timed out after 17ms: targetId=target-existing, url=https://example.com/target, readyState=interactive",
+          );
           return true;
         },
       );
@@ -443,7 +512,10 @@ test("openOrReuseTab falls back to the default action timeout when no navigation
         () => openOrReuseTab("https://example.com/target"),
         (error) => {
           assert.ok(error instanceof TimeoutError);
-          assert.equal(error.message, "tabs.openOrReuse timed out after 19ms");
+          assert.equal(
+            error.message,
+            "tabs.openOrReuse timed out after 19ms: targetId=target-new, url=https://example.com/target, readyState=loading",
+          );
           return true;
         },
       );

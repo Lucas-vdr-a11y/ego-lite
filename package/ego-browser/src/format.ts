@@ -168,10 +168,10 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
     example: "console.log(await page.info())",
   },
   "page.url": {
-    signature: "page.url() => Promise<string>",
-    description: "Asynchronously return the current page URL.",
-    returns: "Promise<string>",
-    example: "console.log(await page.url())",
+    signature: "page.url() => string",
+    description: "Return the current page URL.",
+    returns: "string",
+    example: "console.log(page.url())",
   },
   "page.title": {
     signature: "page.title() => Promise<string>",
@@ -512,6 +512,164 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
     example:
       "const popupPromise = page.waitForEvent('popup'); await page.getByText('Open').click(); const popup = await popupPromise; await popup.getByRole('heading').waitFor()",
   },
+  "page.close": conciseDoc(
+    "page.close(options?) => Promise<void>",
+    "Close this Page target. runBeforeUnload uses the page lifecycle; the default closes the tab directly.",
+    "Promise<void>",
+    "await popup.close()",
+  ),
+  "page.bringToFront": conciseDoc(
+    "page.bringToFront() => Promise<void>",
+    "Activate this target-bound Page, or the current tab for the global Page.",
+    "Promise<void>",
+  ),
+  "page.isClosed": conciseDoc(
+    "page.isClosed() => boolean",
+    "Synchronously report whether a target-bound Page has closed.",
+    "boolean",
+  ),
+  "page.opener": conciseDoc(
+    "page.opener() => Promise<Page|null>",
+    "Return a target-bound Page for the opener, or null when this is not a popup.",
+    "Promise<Page|null>",
+  ),
+  "page.on": conciseDoc(
+    "page.on(eventName, listener) => Page",
+    "Register a persistent listener for a supported Page event.",
+    "Page",
+    "page.on('response', response => console.log(response.url()))",
+  ),
+  "page.once": conciseDoc(
+    "page.once(eventName, listener) => Page",
+    "Register a one-shot listener for a supported Page event.",
+    "Page",
+  ),
+  "page.off": conciseDoc(
+    "page.off(eventName, listener) => Page",
+    "Remove a previously registered Page event listener.",
+    "Page",
+  ),
+  "page.removeAllListeners": conciseDoc(
+    "page.removeAllListeners(eventName?, options?) => Page|Promise<void>",
+    "Remove Page listeners; behavior: 'wait' waits for handlers already running.",
+    "Page | Promise<void>",
+  ),
+  "page.route": conciseDoc(
+    "page.route(url, handler, options?) => Promise<void>",
+    "Intercept matching HTTP requests with Route abort, continue, fallback, fulfill, and request methods.",
+    "Promise<void>",
+    "await page.route('**/api/**', route => route.fulfill({ json: { ok: true } }))",
+  ),
+  "page.unroute": conciseDoc(
+    "page.unroute(url, handler?) => Promise<void>",
+    "Remove matching HTTP route handlers from this Page.",
+    "Promise<void>",
+  ),
+  "page.unrouteAll": conciseDoc(
+    "page.unrouteAll(options?) => Promise<void>",
+    "Remove all Page and HAR routes; behavior: 'wait' waits for active handlers.",
+    "Promise<void>",
+  ),
+  "page.routeFromHAR": conciseDoc(
+    "page.routeFromHAR(path, options?) => Promise<void>",
+    "Serve matching requests from an embedded-content HAR. Replay supports abort/fallback; HAR update mode is unavailable without BrowserContext.close().",
+    "Promise<void>",
+  ),
+  "page.routeWebSocket": conciseDoc(
+    "page.routeWebSocket(url, handler) => Promise<void>",
+    "Route WebSockets created after registration through a Page-installed WebSocketRoute proxy.",
+    "Promise<void>",
+  ),
+  "page.setExtraHTTPHeaders": conciseDoc(
+    "page.setExtraHTTPHeaders(headers) => Promise<void>",
+    "Set additional HTTP headers for requests issued by this Page target.",
+    "Promise<void>",
+  ),
+  "page.addInitScript": conciseDoc(
+    "page.addInitScript(script, arg?) => Promise<void>",
+    "Install a function, string, path, or content script before future document scripts run.",
+    "Promise<void>",
+  ),
+  "page.exposeFunction": conciseDoc(
+    "page.exposeFunction(name, callback) => Promise<void>",
+    "Expose a Node callback as an async function in every Page frame; arguments and results must be serializable.",
+    "Promise<void>",
+  ),
+  "page.exposeBinding": conciseDoc(
+    "page.exposeBinding(name, callback, options?) => Promise<void>",
+    "Expose a Node callback receiving a binding source with its Page. Serializable arguments are supported; handle: true is not.",
+    "Promise<void>",
+  ),
+  "page.frames": conciseDoc(
+    "page.frames() => Frame[]",
+    "Return the current lightweight Frame facades.",
+    "Frame[]",
+  ),
+  "page.frame": conciseDoc(
+    "page.frame(selector) => Frame|null",
+    "Find a Frame by name or URL selector.",
+    "Frame|null",
+  ),
+  "page.mainFrame": conciseDoc(
+    "page.mainFrame() => Frame",
+    "Return the lightweight main Frame facade.",
+    "Frame",
+  ),
+  "page.setViewportSize": conciseDoc(
+    "page.setViewportSize({ width, height }) => Promise<void>",
+    "Set positive integer viewport dimensions for this Page target.",
+    "Promise<void>",
+  ),
+  "page.viewportSize": conciseDoc(
+    "page.viewportSize() => {width,height}|null",
+    "Return the configured viewport dimensions, or null when unavailable.",
+    "{width:number,height:number}|null",
+  ),
+  "page.emulateMedia": conciseDoc(
+    "page.emulateMedia(options?) => Promise<void>",
+    "Emulate screen/print media, color scheme, reduced motion, forced colors, and contrast.",
+    "Promise<void>",
+  ),
+  "page.requestGC": conciseDoc(
+    "page.requestGC() => Promise<void>",
+    "Ask Chromium to perform garbage collection for this Page target.",
+    "Promise<void>",
+  ),
+  "page.clock.install": conciseDoc(
+    "page.clock.install(options?) => Promise<void>",
+    "Install target-local fake Date and timer APIs, optionally initialized to a given time.",
+    "Promise<void>",
+  ),
+  "page.clock.fastForward": conciseDoc(
+    "page.clock.fastForward(ticks) => Promise<void>",
+    "Jump the installed clock forward and fire each due timer at most once.",
+    "Promise<void>",
+  ),
+  "page.clock.pauseAt": conciseDoc(
+    "page.clock.pauseAt(time) => Promise<void>",
+    "Advance to an absolute time and pause the installed clock.",
+    "Promise<void>",
+  ),
+  "page.clock.resume": conciseDoc(
+    "page.clock.resume() => Promise<void>",
+    "Resume real-time progression of the installed clock.",
+    "Promise<void>",
+  ),
+  "page.clock.runFor": conciseDoc(
+    "page.clock.runFor(ticks) => Promise<void>",
+    "Advance the installed clock while firing all due callbacks in order.",
+    "Promise<void>",
+  ),
+  "page.clock.setFixedTime": conciseDoc(
+    "page.clock.setFixedTime(time) => Promise<void>",
+    "Make Date return a fixed time for this Page target.",
+    "Promise<void>",
+  ),
+  "page.clock.setSystemTime": conciseDoc(
+    "page.clock.setSystemTime(time) => Promise<void>",
+    "Change the installed clock time without firing timers.",
+    "Promise<void>",
+  ),
   "page.evaluate": {
     signature: "page.evaluate(pageFunction, arg?) => Promise<any>",
     description:
@@ -526,12 +684,27 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
       {
         name: "arg",
         type: "any",
-        description: "Serializable argument for a page function.",
+        description: "Playwright-serializable value or same-context JSHandle.",
       },
     ],
     returns: "Promise<any>",
     example: "console.log(await page.evaluate('document.title'))",
   },
+  "page.evaluateHandle": conciseDoc(
+    "page.evaluateHandle(pageFunction, arg?) => Promise<JSHandle>",
+    "Evaluate browser JavaScript and retain its target-scoped remote result until dispose().",
+    "Promise<JSHandle>",
+  ),
+  "page.addScriptTag": conciseDoc(
+    "page.addScriptTag(options) => Promise<ElementHandle>",
+    "Append a script tag from exactly one of url, path, or content and retain its ElementHandle.",
+    "Promise<ElementHandle>",
+  ),
+  "page.addStyleTag": conciseDoc(
+    "page.addStyleTag(options) => Promise<ElementHandle>",
+    "Append a style or stylesheet tag from exactly one of url, path, or content and retain its ElementHandle.",
+    "Promise<ElementHandle>",
+  ),
   "page.screenshot": {
     signature: "page.screenshot(options?) => Promise<Buffer>",
     description:
@@ -539,7 +712,7 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
     params: [
       {
         name: "options",
-        type: "{ path?: string, type?: 'png'|'jpeg'|'webp', quality?: number, fullPage?: boolean, clip?: object, omitBackground?: boolean, animations?: 'allow'|'disabled', caret?: 'hide'|'initial', style?: string }",
+        type: "{ path?: string, type?: 'png'|'jpeg'|'webp', quality?: number, scale?: 'css'|'device', fullPage?: boolean, clip?: object, omitBackground?: boolean, animations?: 'allow'|'disabled', caret?: 'hide'|'initial', style?: string }",
         description: "Playwright-style screenshot options.",
       },
     ],
@@ -553,7 +726,7 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
     params: [
       {
         name: "options",
-        type: "{ path?: string, type?: 'png'|'jpeg'|'webp', quality?: number, fullPage?: boolean, clip?: object, omitBackground?: boolean, animations?: 'allow'|'disabled', caret?: 'hide'|'initial', style?: string }",
+        type: "{ path?: string, type?: 'png'|'jpeg'|'webp', quality?: number, scale?: 'css'|'device', fullPage?: boolean, clip?: object, omitBackground?: boolean, animations?: 'allow'|'disabled', caret?: 'hide'|'initial', style?: string }",
         description: "Screenshot options; path is generated when omitted.",
       },
     ],
@@ -947,11 +1120,20 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
     "Narrow a locator with text or descendant-locator filters.",
     "Locator",
   ),
-  "locator.click": conciseDoc(
-    "locator.click(options?) => Promise<void>",
-    "Wait for click actionability and click the matching element.",
-    "Promise<void>",
-  ),
+  "locator.click": {
+    signature: "locator.click(options?) => Promise<void>",
+    description:
+      "Wait for click actionability, dispatch a trusted click, and wait for navigation started by it.",
+    params: [
+      {
+        name: "options",
+        type: "{ button?: 'left'|'middle'|'right', clickCount?: number, delay?: number, modifiers?: string[], position?: { x: number, y: number }, force?: boolean, trial?: boolean, timeout?: number, noWaitAfter?: boolean }",
+        description:
+          "Playwright-style click options. noWaitAfter disables navigation waiting.",
+      },
+    ],
+    returns: "Promise<void>",
+  },
   "locator.dblclick": conciseDoc(
     "locator.dblclick(options?) => Promise<void>",
     "Wait for actionability and double-click the matching element.",
@@ -1143,6 +1325,16 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
     "Evaluate browser-side JavaScript with all matching elements as the first argument.",
     "Promise<any>",
   ),
+  "locator.evaluateHandle": conciseDoc(
+    "locator.evaluateHandle(pageFunction, arg?) => Promise<JSHandle>",
+    "Auto-wait for one matching element, evaluate a function, and retain its target-scoped remote result.",
+    "Promise<JSHandle>",
+  ),
+  "locator.page": conciseDoc(
+    "locator.page() => Page",
+    "Return the same global or target-bound Page that owns this Locator.",
+    "Page",
+  ),
   "locator.waitFor": conciseDoc(
     "locator.waitFor(options?) => Promise<void>",
     "Wait for attached, detached, visible, or hidden state.",
@@ -1197,9 +1389,9 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
       },
       {
         name: "options",
-        type: "{ wait?: boolean, timeout?: number, settle?: number }",
+        type: "{ wait?: boolean, waitUntil?: 'load'|'domcontentloaded'|'commit', timeout?: number, settle?: number }",
         description:
-          "Wait options. Document load waiting is enabled by default.",
+          "Wait options. waitUntil defaults to 'load'; wait: false is equivalent to 'commit'.",
       },
     ],
     returns: "Promise<TabInfo>",
@@ -1218,9 +1410,9 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
       },
       {
         name: "options",
-        type: "{ match?: 'exact'|'origin'|'origin+path'|'includes', wait?: boolean, timeout?: number, settle?: number }",
+        type: "{ match?: 'exact'|'origin'|'origin+path'|'includes', wait?: boolean, waitUntil?: 'load'|'domcontentloaded'|'commit', timeout?: number, settle?: number }",
         description:
-          "Match and wait options. Document load waiting is enabled by default.",
+          "Match and wait options. waitUntil defaults to 'load'; wait: false is equivalent to 'commit'.",
       },
     ],
     returns: "Promise<TabInfo>",
@@ -1246,6 +1438,13 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
     "Validate an explicit target id or tab object against the current task space, then evaluate browser-side JavaScript there without changing page.evaluate argument semantics.",
     "Promise<any>",
   ),
+  "egoBrowser.listTaskSpaces": {
+    signature: "egoBrowser.listTaskSpaces() => Promise<TaskSpaceInfo[]>",
+    description:
+      "List lightweight information for all browser TaskSpaces without selecting one. Use switchTaskSpace() to obtain an operational TaskSpace facade.",
+    returns: "Promise<TaskSpaceInfo[]>",
+    example: "console.log(await egoBrowser.listTaskSpaces())",
+  },
   "egoBrowser.newTaskSpace": {
     signature: "egoBrowser.newTaskSpace(name) => Promise<TaskSpace>",
     description:

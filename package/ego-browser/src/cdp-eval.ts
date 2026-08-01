@@ -1,4 +1,10 @@
 import { send, state } from "./state.js";
+import {
+  browserEvaluationSerializerSource,
+  deserializeEvaluationResult,
+  serializeEvaluationArgument,
+} from "./evaluation-serializer.js";
+import { currentTargetContext } from "./target-context.js";
 
 class TimeoutError extends Error {}
 
@@ -42,15 +48,149 @@ export async function cdp(
  * Evaluate JavaScript in the current page, Playwright-style.
  * @param {string | Function} pageFunction JavaScript expression string or function called with arg.
  *   String expressions with top-level return statements are auto-wrapped in an IIFE for compatibility.
- * @param {unknown} [arg] Optional serializable argument passed to pageFunctions.
+ * @param {unknown} [arg] Optional Playwright-serializable argument, including JSHandles from this context.
  * @returns {Promise<any>} Runtime.evaluate return-by-value result.
  */
 export async function evaluate(pageFunction, arg = undefined) {
-  const expression = evaluationExpression(pageFunction, arg);
-  if (hasReturnStatement(expression) && !expression.trim().startsWith("(")) {
-    return runtimeEvaluate(`(function(){${expression}})()`, undefined, true);
+  let expression = evaluationSource(pageFunction, "page.evaluate");
+  const isFunction = typeof pageFunction === "function";
+  if (
+    !isFunction &&
+    hasReturnStatement(expression) &&
+    !expression.trim().startsWith("(")
+  ) {
+    expression = `(function(){${expression}})()`;
   }
-  return runtimeEvaluate(expression, undefined, true);
+  return evaluateWithArguments(expression, isFunction, arg, {
+    apiName: "page.evaluate",
+  });
+}
+
+export async function evaluateWithArguments(
+  expression,
+  isFunction,
+  arg,
+  options: {
+    apiName?: string;
+    sessionId?: string;
+    executionContextId?: number;
+    receiverObjectId?: string;
+    receiverMode?: "page" | "element" | "elementArray" | "elements";
+    returnHandle?: boolean;
+    objectGroup?: string;
+  } = {},
+) {
+  const sessionId =
+    options.sessionId ??
+    currentTargetContext()?.sessionId ??
+    state.sessionId ??
+    undefined;
+  const serialized = serializeEvaluationArgument(
+    arg,
+    sessionId,
+    options.executionContextId,
+  );
+  const receiverMode = options.receiverMode || "page";
+  const functionDeclaration = evaluationFunctionDeclaration(receiverMode);
+  if (!options.receiverObjectId && serialized.handles.length === 0) {
+    const invocation = `(${functionDeclaration}).call(globalThis, ${[
+      Boolean(isFunction),
+      !options.returnHandle,
+      String(expression),
+      serialized.value,
+    ]
+      .map((value) => JSON.stringify(value))
+      .join(", ")})`;
+    const response = await cdp(
+      "Runtime.evaluate",
+      {
+        expression: invocation,
+        returnByValue: !options.returnHandle,
+        awaitPromise: true,
+        objectGroup: options.objectGroup || "ego-browser-evaluation",
+        ...(options.executionContextId === undefined
+          ? {}
+          : { contextId: options.executionContextId }),
+      },
+      sessionId,
+    );
+    if (response.exceptionDetails || response.result?.subtype === "error") {
+      runtimeValue(response, expression);
+    }
+    if (options.returnHandle) return response.result || {};
+    return deserializeEvaluationResult(runtimeValue(response, expression));
+  }
+  let receiverObjectId = options.receiverObjectId;
+  let releaseReceiver = false;
+  if (!receiverObjectId) {
+    const globalResult = await cdp(
+      "Runtime.evaluate",
+      {
+        expression: "globalThis",
+        returnByValue: false,
+        awaitPromise: false,
+        objectGroup: options.objectGroup || "ego-browser-evaluation",
+        ...(options.executionContextId === undefined
+          ? {}
+          : { contextId: options.executionContextId }),
+      },
+      sessionId,
+    );
+    if (globalResult.exceptionDetails) {
+      runtimeValue(globalResult, "globalThis");
+    }
+    receiverObjectId = globalResult.result?.objectId;
+    if (!receiverObjectId) {
+      throw new Error(
+        `${options.apiName || "evaluate"} could not resolve globalThis`,
+      );
+    }
+    releaseReceiver = true;
+  }
+  try {
+    const response = await cdp(
+      "Runtime.callFunctionOn",
+      {
+        functionDeclaration,
+        objectId: receiverObjectId,
+        arguments: [
+          { value: Boolean(isFunction) },
+          { value: !options.returnHandle },
+          { value: String(expression) },
+          { value: serialized.value },
+          ...serialized.handles,
+        ],
+        returnByValue: !options.returnHandle,
+        awaitPromise: true,
+        objectGroup: options.objectGroup || "ego-browser-evaluation",
+      },
+      sessionId,
+    );
+    if (response.exceptionDetails || response.result?.subtype === "error") {
+      runtimeValue(response, expression);
+    }
+    if (options.returnHandle) return response.result || {};
+    return deserializeEvaluationResult(runtimeValue(response, expression));
+  } catch (error) {
+    if (
+      /same JavaScript world|different JavaScript (?:context|world)|argument.*context/i.test(
+        error?.message || "",
+      )
+    ) {
+      throw new Error(
+        "JSHandles can be evaluated only in the context they were created!",
+      );
+    }
+    throw error;
+  } finally {
+    if (releaseReceiver && receiverObjectId) {
+      await cdp(
+        "Runtime.releaseObject",
+        { objectId: receiverObjectId },
+        sessionId,
+      ).catch(() => {});
+    }
+  }
 }
 
 /**
@@ -258,4 +398,35 @@ function evaluationExpression(pageFunction, arg) {
   throw new TypeError(
     `page.evaluate expects a string expression or function pageFunction, got ${pageFunction === null ? "null" : typeof pageFunction}`,
   );
+}
+
+function evaluationSource(pageFunction, apiName) {
+  if (typeof pageFunction === "function") return pageFunction.toString();
+  if (typeof pageFunction === "string") return pageFunction;
+  throw new TypeError(
+    `${apiName} expects a string expression or function pageFunction, got ${pageFunction === null ? "null" : typeof pageFunction}`,
+  );
+}
+
+function evaluationFunctionDeclaration(receiverMode) {
+  const invoke =
+    receiverMode === "page"
+      ? "result = result(argument);"
+      : receiverMode === "elementArray"
+        ? "result = result([this], argument);"
+        : "result = result(this, argument);";
+  return `function(isFunction, returnByValue, expression, encodedArgument, ...handles) {
+    const serializer = ${browserEvaluationSerializerSource()};
+    const argument = serializer.parse(encodedArgument, handles);
+    let result = (0, eval)(isFunction ? "(" + expression + ")" : expression);
+    if (isFunction) ${invoke}
+    if (!returnByValue) return result;
+    const serialize = value => {
+      try { return serializer.serialize(value); }
+      catch { return undefined; }
+    };
+    return result && typeof result.then === "function"
+      ? result.then(serialize)
+      : serialize(result);
+  }`;
 }

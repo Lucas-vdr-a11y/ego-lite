@@ -591,6 +591,17 @@ function pageHtml(kind) {
         <label><input type="checkbox" id="controlled-checkbox"> Nonstop only</label>
         <label><input type="radio" name="controlled-plan" id="controlled-radio-basic" value="basic"> Plan basic</label>
         <label><input type="radio" name="controlled-plan" id="controlled-radio-pro" value="pro"> Plan pro</label>
+        <span style="position:relative;display:inline-flex;align-items:center;min-height:24px">
+          <input type="checkbox" id="covered-checkbox" style="position:absolute;left:0;width:20px;height:20px;margin:0">
+          <span aria-hidden="true" style="position:absolute;left:0;width:20px;height:20px;background:#fff;border:1px solid #777"></span>
+          <label for="covered-checkbox" style="padding-left:28px">Covered checkbox</label>
+        </span>
+        <fieldset id="eeoc-gender">
+          <legend>Gender</legend>
+          <label><input type="radio" name="eeoc-gender" value="female"> Female</label>
+          <label><input type="radio" name="eeoc-gender" value="male"> Male</label>
+          <label><input type="radio" name="eeoc-gender" value="decline"> Decline to self-identify</label>
+        </fieldset>
       </div>
 
       ${kind === "frame" ? '<div id="iframe-marker" data-iframe="true" style="border:2px solid var(--accent);padding:4px 8px;margin-top:4px;border-radius:4px;font-size:0.8rem">iframe target</div>' : ""}

@@ -14,6 +14,7 @@ import {
   claimTaskSpace,
   completeTaskSpace,
   handOffTaskSpace,
+  initializePageFacade,
   newTaskSpace,
   helperContext,
   listTaskSpaces,
@@ -128,6 +129,7 @@ test("egoBrowser exposes only the TaskSpace lifecycle surface", () => {
   assert.deepEqual(Object.keys(context.egoBrowser).sort(), [
     "closeTaskSpace",
     "completeTaskSpace",
+    "listTaskSpaces",
     "newTaskSpace",
     "switchTaskSpace",
   ]);
@@ -135,6 +137,37 @@ test("egoBrowser exposes only the TaskSpace lifecycle surface", () => {
   assert.equal(context.egoBrowser.newContext, undefined);
   assert.equal(context.egoBrowser.contexts, undefined);
   assert.equal(context.egoBrowser.close, undefined);
+});
+
+test("egoBrowser lists lightweight TaskSpace information without switching", async () => {
+  const calls = [];
+  const task = {
+    taskId: "inspect-products",
+    id: 7,
+    name: "Inspect products",
+    ownership: "agent",
+    recentTabTitles: ["Products"],
+  };
+
+  await withEgo(
+    {
+      async listTaskSpaces() {
+        calls.push(["listTaskSpaces"]);
+        return { taskSpaces: [task] };
+      },
+      async useTaskSpace(id) {
+        calls.push(["useTaskSpace", id]);
+        return {};
+      },
+    },
+    async () => {
+      assert.deepEqual(await helperContext().egoBrowser.listTaskSpaces(), [
+        task,
+      ]);
+    },
+  );
+
+  assert.deepEqual(calls, [["listTaskSpaces"]]);
 });
 
 test("egoBrowser returns TaskSpace and target-bound Tab objects", async () => {
@@ -184,9 +217,20 @@ test("egoBrowser returns TaskSpace and target-bound Tab objects", async () => {
       const [tab] = await space.tabs.list();
       assert.equal(tab.targetId, "target-products");
       assert.equal(tab.page.targetId, "target-products");
+      assert.equal(
+        tab.page.url(),
+        "https://example.com/products",
+        "a target-bound Page exposes Playwright's synchronous url() read",
+      );
       assert.equal(typeof tab.page.locator, "function");
       assert.equal(typeof tab.activate, "function");
       assert.equal(typeof tab.close, "function");
+      assert.deepEqual(Object.keys(tab).sort(), [
+        "targetId",
+        "title",
+        "type",
+        "url",
+      ]);
     },
   );
 
@@ -752,6 +796,36 @@ test("helper surface exposes Playwright-style object facades", () => {
   assert.equal(typeof context.page.waitForURL, "function");
   assert.equal(typeof context.page.waitForRequest, "function");
   assert.equal(typeof context.page.waitForResponse, "function");
+  assert.equal(typeof context.page.close, "function");
+  assert.equal(typeof context.page.bringToFront, "function");
+  assert.equal(typeof context.page.isClosed, "function");
+  assert.equal(typeof context.page.opener, "function");
+  assert.equal(typeof context.page.on, "function");
+  assert.equal(typeof context.page.once, "function");
+  assert.equal(typeof context.page.off, "function");
+  assert.equal(typeof context.page.removeAllListeners, "function");
+  assert.equal(typeof context.page.route, "function");
+  assert.equal(typeof context.page.unroute, "function");
+  assert.equal(typeof context.page.unrouteAll, "function");
+  assert.equal(typeof context.page.routeFromHAR, "function");
+  assert.equal(typeof context.page.routeWebSocket, "function");
+  assert.equal(typeof context.page.setExtraHTTPHeaders, "function");
+  assert.equal(typeof context.page.addInitScript, "function");
+  assert.equal(typeof context.page.exposeFunction, "function");
+  assert.equal(typeof context.page.exposeBinding, "function");
+  assert.equal(typeof context.page.frames, "function");
+  assert.equal(typeof context.page.frame, "function");
+  assert.equal(typeof context.page.mainFrame, "function");
+  assert.equal(typeof context.page.setViewportSize, "function");
+  assert.equal(typeof context.page.viewportSize, "function");
+  assert.equal(typeof context.page.emulateMedia, "function");
+  assert.equal(typeof context.page.requestGC, "function");
+  assert.equal(typeof context.page.clock, "object");
+  assert.equal(typeof context.page.clock.install, "function");
+  assert.equal(typeof context.page.clock.fastForward, "function");
+  assert.equal(typeof context.page.evaluateHandle, "function");
+  assert.equal(typeof context.page.addScriptTag, "function");
+  assert.equal(typeof context.page.addStyleTag, "function");
   assert.equal(typeof context.page.screencast, "object");
   assert.equal(typeof context.page.screencast.start, "function");
   assert.equal(typeof context.page.screencast.stop, "function");
@@ -794,6 +868,9 @@ test("helper surface exposes Playwright-style object facades", () => {
   assert.equal(typeof locator.nth(1).click, "function");
   assert.equal(typeof locator.evaluate, "function");
   assert.equal(typeof locator.evaluateAll, "function");
+  assert.equal(typeof locator.evaluateHandle, "function");
+  assert.equal(typeof locator.page, "function");
+  assert.equal(locator.page(), context.page);
   assert.equal(typeof locator.extractAll, "undefined");
   assert.equal(typeof context.page.getByText("Allow").click, "function");
   assert.equal(typeof context.page.getByLabel("Email").fill, "function");
@@ -875,6 +952,11 @@ test("helper surface exposes Playwright-style object facades", () => {
   assert.equal(typeof context.page.setDefaultTimeout, "function");
   assert.equal(typeof context.page.setDefaultNavigationTimeout, "function");
   assert.equal(typeof context.page.waitForEvent, "function");
+  const listener = () => {};
+  assert.equal(context.page.on("console", listener), context.page);
+  assert.equal(context.page.off("console", listener), context.page);
+  assert.equal(context.page.once("console", listener), context.page);
+  assert.equal(context.page.removeAllListeners("console"), context.page);
   assert.deepEqual(Object.keys(context.tabs).sort(), [
     "activate",
     "close",
@@ -1049,6 +1131,448 @@ test("page.waitForEvent('popup') returns the complete Page facade", async () => 
   invalidateSession();
   clearPreferredTarget();
   drainBrowserEvents();
+});
+
+test("target-bound Page owns its close, activation, closed, and opener lifecycle", async () => {
+  const calls = [];
+  const task = {
+    taskId: "popup-lifecycle",
+    id: 17,
+    name: "Popup lifecycle",
+    ownership: "agent",
+  };
+  await withEgo(
+    {
+      async listTaskSpaces() {
+        return { taskSpaces: [task] };
+      },
+      async useTaskSpace() {
+        return {};
+      },
+      async listTabs() {
+        return {
+          tabs: [
+            {
+              targetId: "target-popup",
+              active: true,
+              title: "Popup",
+              url: "https://example.com/popup",
+            },
+          ],
+        };
+      },
+    },
+    async () => {
+      const restore = setOverrides({
+        cdpOverride(method, params) {
+          calls.push({ method, params });
+          if (method === "Target.getTargetInfo") {
+            return {
+              targetInfo: {
+                targetId: "target-popup",
+                openerId: "target-main",
+              },
+            };
+          }
+          return {};
+        },
+      });
+      try {
+        const space = await helperContext().egoBrowser.switchTaskSpace(17);
+        const tab = await space.tabs.current();
+        const page = tab.page;
+
+        assert.equal(page.isClosed(), false);
+        await page.bringToFront();
+        assert.ok(
+          calls.some(
+            ({ method, params }) =>
+              method === "Target.activateTarget" &&
+              params.targetId === "target-popup",
+          ),
+        );
+        const opener = await page.opener();
+        assert.equal(opener.targetId, "target-main");
+
+        await page.close();
+        assert.equal(page.isClosed(), true);
+        assert.ok(
+          calls.some(
+            ({ method, params }) =>
+              method === "Target.closeTarget" &&
+              params.targetId === "target-popup",
+          ),
+        );
+      } finally {
+        restore();
+      }
+    },
+  );
+});
+
+test("page on, once, off, and removeAllListeners manage persistent events", async () => {
+  const calls = [];
+  await withEgo(
+    {
+      async listTabs() {
+        return {
+          tabs: [
+            {
+              targetId: "target-main",
+              active: true,
+              title: "Main",
+              url: "https://example.com/",
+            },
+          ],
+        };
+      },
+      sendCDPMessage(payload) {
+        const call = JSON.parse(payload);
+        calls.push(call);
+        setTimeout(() => {
+          const result =
+            call.method === "Target.attachToTarget"
+              ? { sessionId: "session-main" }
+              : {};
+          globalThis.ego.onCDPMessage(JSON.stringify({ id: call.id, result }));
+        }, 0);
+      },
+    },
+    async () => {
+      invalidateSession();
+      drainBrowserEvents();
+      const page = helperContext().page;
+      const persistent = [];
+      const single = [];
+      const persistentListener = (message) => persistent.push(message.text());
+      const removedListener = () => persistent.push("removed");
+
+      page.on("console", persistentListener);
+      page.once("console", (message) => single.push(message.text()));
+      page.on("console", removedListener);
+      page.off("console", removedListener);
+      await waitForCdpCall(calls, "Runtime.enable");
+
+      globalThis.ego.onCDPMessage(
+        JSON.stringify({
+          method: "Runtime.consoleAPICalled",
+          sessionId: "session-main",
+          params: { type: "log", args: [{ type: "string", value: "one" }] },
+        }),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      globalThis.ego.onCDPMessage(
+        JSON.stringify({
+          method: "Runtime.consoleAPICalled",
+          sessionId: "session-main",
+          params: { type: "log", args: [{ type: "string", value: "two" }] },
+        }),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 5));
+
+      assert.deepEqual(persistent, ["one", "two"]);
+      assert.deepEqual(single, ["one"]);
+      assert.equal(page.removeAllListeners("console"), page);
+    },
+  );
+  invalidateSession();
+  drainBrowserEvents();
+});
+
+test("page network and preload APIs configure the target session", async () => {
+  const calls = [];
+  const restore = setOverrides({
+    sessionId: "session-page",
+    sessionTargetId: "target-page",
+    sessionAt: Date.now(),
+    cdpOverride(method, params, sessionId) {
+      calls.push({ method, params, sessionId });
+      return {};
+    },
+  });
+  try {
+    const page = helperContext().page;
+    await page.setExtraHTTPHeaders({ Authorization: "Bearer token" });
+    await page.addInitScript((seed) => {
+      globalThis.__seed = seed;
+    }, 7);
+    const routeHandler = async (route) => route.continue();
+    await page.route("**/api/**", routeHandler, { times: 1 });
+    await page.unroute("**/api/**", routeHandler);
+    await page.routeWebSocket("**/socket", () => {});
+    await page.exposeFunction("sum", (left, right) => left + right);
+    await page.exposeBinding("sourceUrl", (source) => source.page.url());
+
+    assert.deepEqual(
+      calls.find(({ method }) => method === "Network.setExtraHTTPHeaders")
+        ?.params,
+      { headers: { Authorization: "Bearer token" } },
+    );
+    assert.ok(
+      calls.findIndex(({ method }) => method === "Network.enable") <
+        calls.findIndex(
+          ({ method }) => method === "Network.setExtraHTTPHeaders",
+        ),
+      "Network must be enabled before extra headers are configured",
+    );
+    assert.match(
+      calls.find(
+        ({ method }) => method === "Page.addScriptToEvaluateOnNewDocument",
+      )?.params.source,
+      /__seed/,
+    );
+    assert.ok(calls.some(({ method }) => method === "Fetch.enable"));
+    assert.ok(calls.some(({ method }) => method === "Fetch.disable"));
+    assert.ok(
+      calls.filter(({ method }) => method === "Runtime.addBinding").length >= 3,
+    );
+  } finally {
+    restore();
+  }
+});
+
+test("page.route handles matching Fetch requests with Playwright route facades", async () => {
+  const calls = [];
+  await withEgo(
+    {
+      async listTabs() {
+        return {
+          tabs: [
+            {
+              targetId: "target-route",
+              active: true,
+              title: "Route",
+              url: "https://example.com/",
+            },
+          ],
+        };
+      },
+      sendCDPMessage(payload) {
+        const call = JSON.parse(payload);
+        calls.push(call);
+        setTimeout(() => {
+          const result =
+            call.method === "Target.attachToTarget"
+              ? { sessionId: "session-route" }
+              : {};
+          globalThis.ego.onCDPMessage(JSON.stringify({ id: call.id, result }));
+        }, 0);
+      },
+    },
+    async () => {
+      invalidateSession();
+      drainBrowserEvents();
+      const page = helperContext().page;
+      await page.route("**/api/**", async (route, request) => {
+        assert.equal(request.url(), "https://example.com/api/products");
+        assert.equal(route.request(), request);
+        await route.fulfill({ status: 201, json: { ok: true } });
+      });
+      await waitForCdpCall(calls, "Fetch.enable");
+      globalThis.ego.onCDPMessage(
+        JSON.stringify({
+          method: "Fetch.requestPaused",
+          sessionId: "session-route",
+          params: {
+            requestId: "fetch-1",
+            networkId: "network-1",
+            resourceType: "XHR",
+            request: {
+              url: "https://example.com/api/products",
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              postData: "{}",
+            },
+          },
+        }),
+      );
+      await waitForCdpCall(calls, "Fetch.fulfillRequest");
+      const fulfill = calls.find(
+        ({ method }) => method === "Fetch.fulfillRequest",
+      );
+      assert.equal(fulfill.params.responseCode, 201);
+      assert.deepEqual(
+        JSON.parse(Buffer.from(fulfill.params.body, "base64").toString()),
+        { ok: true },
+      );
+      await page.unrouteAll({ behavior: "wait" });
+    },
+  );
+  invalidateSession();
+  drainBrowserEvents();
+});
+
+test("page frame, viewport, media, GC, and clock APIs use target-scoped CDP", async () => {
+  const calls = [];
+  const restore = setOverrides({
+    sessionId: "session-environment",
+    sessionTargetId: "target-page",
+    sessionAt: Date.now(),
+    cdpOverride(method, params, sessionId) {
+      calls.push({ method, params, sessionId });
+      if (method === "Page.getFrameTree") {
+        return {
+          frameTree: {
+            frame: {
+              id: "frame-main",
+              url: "https://example.com/",
+              name: "",
+            },
+            childFrames: [
+              {
+                frame: {
+                  id: "frame-child",
+                  parentId: "frame-main",
+                  url: "https://example.com/checkout",
+                  name: "checkout",
+                },
+              },
+            ],
+          },
+        };
+      }
+      if (method === "Runtime.evaluate") {
+        return { result: { value: { width: 1024, height: 768 } } };
+      }
+      return {};
+    },
+  });
+  try {
+    const page = helperContext().page;
+    await initializePageFacade(page);
+    const main = page.mainFrame();
+    const checkout = page.frame({ name: "checkout" });
+    const frames = page.frames();
+    assert.equal(main.url(), "https://example.com/");
+    assert.equal(checkout.name(), "checkout");
+    assert.equal(
+      checkout.parentFrame(),
+      main,
+      "Frame identity is stable across Page frame queries",
+    );
+    assert.deepEqual(
+      frames.map((frame) => frame.url()),
+      ["https://example.com/", "https://example.com/checkout"],
+    );
+
+    await page.setViewportSize({ width: 1024, height: 768 });
+    assert.deepEqual(page.viewportSize(), {
+      width: 1024,
+      height: 768,
+    });
+    await page.emulateMedia({
+      media: "print",
+      colorScheme: "dark",
+      reducedMotion: "reduce",
+    });
+    await page.requestGC();
+
+    await page.clock.install({ time: 1_700_000_000_000 });
+    await page.clock.fastForward(1000);
+    await page.clock.pauseAt(1_700_000_002_000);
+    await page.clock.resume();
+
+    assert.ok(
+      calls.some(
+        ({ method }) => method === "Emulation.setDeviceMetricsOverride",
+      ),
+    );
+    assert.ok(
+      calls.some(({ method }) => method === "HeapProfiler.collectGarbage"),
+    );
+    assert.ok(
+      calls.some(
+        ({ method, params }) =>
+          method === "Emulation.setEmulatedMedia" && params.media === "print",
+      ),
+    );
+    assert.ok(
+      calls.some(
+        ({ method, params }) =>
+          method === "Runtime.evaluate" &&
+          String(params.expression).includes("__egoClock"),
+      ),
+    );
+  } finally {
+    restore();
+  }
+});
+
+test("page and locator handle APIs retain target-scoped remote objects", async () => {
+  const calls = [];
+  let nextObject = 0;
+  const restore = setOverrides({
+    sessionId: "session-handles",
+    sessionTargetId: "target-handles",
+    sessionAt: Date.now(),
+    cdpOverride(method, params, sessionId) {
+      calls.push({ method, params, sessionId });
+      if (method === "Runtime.evaluate" && params.returnByValue === false) {
+        nextObject += 1;
+        return {
+          result: {
+            type: "object",
+            subtype: params.expression.includes("createElement")
+              ? "node"
+              : undefined,
+            objectId: `object-${nextObject}`,
+          },
+        };
+      }
+      if (
+        method === "Runtime.callFunctionOn" &&
+        params.returnByValue === false
+      ) {
+        nextObject += 1;
+        return {
+          result: { type: "object", objectId: `object-${nextObject}` },
+        };
+      }
+      if (method === "Runtime.callFunctionOn") {
+        return { result: { value: { retained: true } } };
+      }
+      if (method === "Runtime.releaseObject") return {};
+      return {};
+    },
+  });
+  try {
+    const page = helperContext().page;
+    const pageHandle = await page.evaluateHandle(() => ({ answer: 42 }));
+    assert.deepEqual(await pageHandle.jsonValue(), { retained: true });
+
+    const locatorHandle = await page
+      .locator("#target")
+      .evaluateHandle((element) => ({ text: element.textContent }));
+    assert.deepEqual(await locatorHandle.jsonValue(), { retained: true });
+
+    const script = await page.addScriptTag({ content: "window.ready = true" });
+    const style = await page.addStyleTag({ content: "body { color: red }" });
+    assert.equal(script.asElement(), script);
+    assert.equal(style.asElement(), style);
+    assert.ok(
+      calls.some(
+        ({ method, params }) =>
+          method === "Runtime.evaluate" &&
+          String(params.expression).includes('createElement("script")'),
+      ),
+    );
+    assert.ok(
+      calls.some(
+        ({ method, params }) =>
+          method === "Runtime.evaluate" &&
+          String(params.expression).includes('createElement("style")'),
+      ),
+    );
+
+    await Promise.all([
+      pageHandle.dispose(),
+      locatorHandle.dispose(),
+      script.dispose(),
+      style.dispose(),
+    ]);
+  } finally {
+    restore();
+  }
 });
 
 test("popup Page stays bound to its target when another tab is active", async () => {
@@ -1631,6 +2155,10 @@ test("help supports facade namespaces and disambiguates nested methods", () => {
     /egoBrowser\.switchTaskSpace\(nameOrId\)/,
   );
   assert.match(
+    context.help("egoBrowser.listTaskSpaces"),
+    /egoBrowser\.listTaskSpaces\(\) => Promise<TaskSpaceInfo\[\]>/,
+  );
+  assert.match(
     context.help("egoBrowser.completeTaskSpace"),
     /egoBrowser\.completeTaskSpace\(nameOrId\) => Promise<void>/,
   );
@@ -1640,7 +2168,7 @@ test("help supports facade namespaces and disambiguates nested methods", () => {
   );
 });
 
-test("page.url reads the current URL asynchronously", async () => {
+test("page.url reads the current URL synchronously", async () => {
   const restore = setOverrides({
     cdpOverride: async (method) => {
       assert.equal(method, "Runtime.evaluate");
@@ -1661,9 +2189,9 @@ test("page.url reads the current URL asynchronously", async () => {
     },
   });
   try {
-    const value = helperContext().page.url();
-    assert.equal(typeof value.then, "function");
-    assert.equal(await value, "https://example.com/current");
+    const page = helperContext().page;
+    await page.info();
+    assert.equal(page.url(), "https://example.com/current");
   } finally {
     restore();
   }

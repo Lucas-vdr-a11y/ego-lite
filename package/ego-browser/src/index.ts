@@ -38,7 +38,21 @@ export * from "./helpers.js";
 export { runMain } from "./run.js";
 
 const SYNC_HELPERS = new Set(["help"]);
-const SYNC_START_HELPERS = new Set(["page.waitForEvent"]);
+const SYNC_START_HELPERS = new Set([
+  "page.waitForEvent",
+  "page.isClosed",
+  "page.on",
+  "page.once",
+  "page.off",
+  "page.removeAllListeners",
+]);
+const SYNC_PAGE_READ_HELPERS = new Set([
+  "page.url",
+  "page.frame",
+  "page.frames",
+  "page.mainFrame",
+  "page.viewportSize",
+]);
 const SYNC_FACTORY_HELPERS = new Set([
   "page.locator",
   "page.frameLocator",
@@ -96,6 +110,7 @@ export function installEgoSdk(
   const readyImmediately = options.ready === undefined;
   const readySignal = Promise.resolve(options.ready);
   const wrappedObjects = new WeakMap<object, unknown>();
+  const wrappedCallbacks = new WeakMap<Function, Map<string, Function>>();
   let readyError = null;
   readySignal.catch((error) => {
     readyError = error;
@@ -111,6 +126,7 @@ export function installEgoSdk(
           [name],
           readyImmediately,
           wrappedObjects,
+          wrappedCallbacks,
         );
     Object.defineProperty(target, name, {
       value: exposed,
@@ -171,22 +187,48 @@ function wrapReady(
   path: string[] = [],
   readyImmediately = false,
   wrappedObjects: WeakMap<object, unknown> = new WeakMap(),
+  wrappedCallbacks: WeakMap<Function, Map<string, Function>> = new WeakMap(),
 ): unknown {
   if (typeof value === "function") {
     if (isSyncFactoryHelper(path)) {
       return (...args: unknown[]) =>
         wrapReady(
-          value(...args),
+          value(
+            ...mapCallbackArguments(
+              args,
+              path,
+              wrappedObjects,
+              wrappedCallbacks,
+            ),
+          ),
           readySignal,
           readyError,
           path,
           readyImmediately,
           wrappedObjects,
+          wrappedCallbacks,
         );
     }
-    if (readyImmediately && SYNC_START_HELPERS.has(path.join("."))) {
+    if (SYNC_PAGE_READ_HELPERS.has(path.join("."))) {
+      return (...args: unknown[]) =>
+        mapReturnedValue(
+          value(
+            ...mapCallbackArguments(
+              args,
+              path,
+              wrappedObjects,
+              wrappedCallbacks,
+            ),
+          ),
+          path,
+          wrappedObjects,
+        );
+    }
+    if (readyImmediately && isSyncStartHelper(path)) {
       return (...args: unknown[]) => {
-        const result = value(...args);
+        const result = value(
+          ...mapCallbackArguments(args, path, wrappedObjects, wrappedCallbacks),
+        );
         const mapKnownObject = (resolved) =>
           resolved &&
           typeof resolved === "object" &&
@@ -204,10 +246,10 @@ function wrapReady(
       if (error) {
         throw error;
       }
-      const result = await value(...args);
-      return result && typeof result === "object" && wrappedObjects.has(result)
-        ? wrappedObjects.get(result)
-        : result;
+      const result = await value(
+        ...mapCallbackArguments(args, path, wrappedObjects, wrappedCallbacks),
+      );
+      return mapReturnedValue(result, path, wrappedObjects);
     };
   }
   if (!value || typeof value !== "object") {
@@ -222,6 +264,7 @@ function wrapReady(
         [...path, String(index)],
         readyImmediately,
         wrappedObjects,
+        wrappedCallbacks,
       ),
     );
   }
@@ -235,6 +278,7 @@ function wrapReady(
       [...path, key],
       readyImmediately,
       wrappedObjects,
+      wrappedCallbacks,
     );
   }
   for (const key of Reflect.ownKeys(value)) {
@@ -245,11 +289,132 @@ function wrapReady(
   return wrapped;
 }
 
+function mapReturnedValue(
+  value: unknown,
+  path: string[],
+  wrappedObjects: WeakMap<object, unknown>,
+): unknown {
+  if (value && typeof value === "object" && wrappedObjects.has(value)) {
+    return wrappedObjects.get(value);
+  }
+  const joined = path.join(".");
+  if (
+    joined !== "page.frame" &&
+    joined !== "page.frames" &&
+    joined !== "page.mainFrame"
+  ) {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map((frame) => wrapFrame(frame, wrappedObjects));
+  }
+  return wrapFrame(value, wrappedObjects);
+}
+
+function wrapFrame(
+  frame: unknown,
+  wrappedObjects: WeakMap<object, unknown>,
+): unknown {
+  if (!frame || typeof frame !== "object") return frame;
+  if (wrappedObjects.has(frame)) return wrappedObjects.get(frame);
+  const source = frame as Record<string | symbol, unknown>;
+  const wrapped: Record<string | symbol, unknown> = { ...source };
+  wrappedObjects.set(frame, wrapped);
+  const ownerPage = source.page;
+  if (typeof ownerPage === "function") {
+    wrapped.page = () => {
+      const owner = ownerPage();
+      return owner && typeof owner === "object" && wrappedObjects.has(owner)
+        ? wrappedObjects.get(owner)
+        : owner;
+    };
+  }
+  const parentFrame = source.parentFrame;
+  if (typeof parentFrame === "function") {
+    wrapped.parentFrame = () => wrapFrame(parentFrame(), wrappedObjects);
+  }
+  const childFrames = source.childFrames;
+  if (typeof childFrames === "function") {
+    wrapped.childFrames = () =>
+      (childFrames() as unknown[]).map((child) =>
+        wrapFrame(child, wrappedObjects),
+      );
+  }
+  for (const key of Reflect.ownKeys(source)) {
+    const descriptor = Object.getOwnPropertyDescriptor(source, key);
+    if (!descriptor || descriptor.enumerable) continue;
+    Object.defineProperty(wrapped, key, descriptor);
+  }
+  return wrapped;
+}
+
+function mapCallbackArguments(
+  args: unknown[],
+  path: string[],
+  wrappedObjects: WeakMap<object, unknown>,
+  wrappedCallbacks: WeakMap<Function, Map<string, Function>>,
+) {
+  const joined = path.join(".");
+  const callbackIndex =
+    joined === "page.exposeBinding" ||
+    joined === "page.on" ||
+    joined === "page.once" ||
+    joined === "page.off"
+      ? 1
+      : -1;
+  if (callbackIndex < 0 || typeof args[callbackIndex] !== "function") {
+    return args;
+  }
+  const callback = args[callbackIndex] as Function;
+  const family = joined === "page.exposeBinding" ? joined : "page.events";
+  let byFamily = wrappedCallbacks.get(callback);
+  if (!byFamily) {
+    byFamily = new Map();
+    wrappedCallbacks.set(callback, byFamily);
+  }
+  let wrapped = byFamily.get(family);
+  if (!wrapped) {
+    wrapped = (...callbackArgs: unknown[]) =>
+      callback(
+        ...callbackArgs.map((argument) =>
+          mapKnownCallbackValue(argument, wrappedObjects),
+        ),
+      );
+    byFamily.set(family, wrapped);
+  }
+  const mapped = [...args];
+  mapped[callbackIndex] = wrapped;
+  return mapped;
+}
+
+function mapKnownCallbackValue(
+  value: unknown,
+  wrappedObjects: WeakMap<object, unknown>,
+) {
+  if (!value || typeof value !== "object") return value;
+  if (wrappedObjects.has(value)) return wrappedObjects.get(value);
+  if (Array.isArray(value)) return value;
+  let mapped: Record<string, unknown> | undefined;
+  for (const [key, child] of Object.entries(value)) {
+    if (!child || typeof child !== "object" || !wrappedObjects.has(child)) {
+      continue;
+    }
+    mapped ||= { ...(value as Record<string, unknown>) };
+    mapped[key] = wrappedObjects.get(child);
+  }
+  return mapped || value;
+}
+
 function isSyncFactoryHelper(path: string[]) {
   if (SYNC_FACTORY_HELPERS.has(path.join("."))) {
     return true;
   }
   return path[0] === "page" && SYNC_FACTORY_METHODS.has(path.at(-1) || "");
+}
+
+function isSyncStartHelper(path: string[]) {
+  if (SYNC_START_HELPERS.has(path.join("."))) return true;
+  return path[0] === "page" && path.length >= 3 && path.at(-1) === "page";
 }
 
 if (isDirectCli()) {
@@ -260,7 +425,8 @@ if (isDirectCli()) {
     process.exitCode = 1;
   }
 } else {
-  installEgoSdk();
+  const context = helpers.helperContext();
+  installEgoSdk(globalThis, { context });
 }
 
 function createBufferedLog() {

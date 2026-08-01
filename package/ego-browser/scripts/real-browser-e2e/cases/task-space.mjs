@@ -37,7 +37,7 @@ export function taskSpaceCase() {
       assertEqual(scratchTab.page.targetId, scratchTab.targetId, "TaskSpace tabs expose target-bound Pages");
 
       await egoBrowser.switchTaskSpace(task.id);
-      assertIncludes(await scratchTab.page.url(), "/secondary", "a bound Tab Page reselects its TaskSpace");
+      assertIncludes(scratchTab.page.url(), "/secondary", "a bound Tab Page reselects its TaskSpace");
       await egoBrowser.switchTaskSpace(task.id);
       assertIncludes(
         await scratchTab.page.snapshot(),

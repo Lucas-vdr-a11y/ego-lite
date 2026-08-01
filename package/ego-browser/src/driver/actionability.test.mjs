@@ -481,8 +481,9 @@ test("frame-scoped actionability retries the parent target-point probe after nav
   }
 });
 
-test("frame-scoped actionability does not reject an unblocked target when the frame center is covered", async () => {
+test("frame-scoped actionability refreshes owner geometry after child scrolling", async () => {
   let now = 0;
+  let ownerMeasurements = 0;
   const restore = setOverrides({
     sessionId: "main-session",
     sessionTargetId: "tab-1",
@@ -511,11 +512,12 @@ test("frame-scoped actionability does not reject an unblocked target when the fr
         method === "Runtime.callFunctionOn" &&
         params.objectId === "frame-owner"
       ) {
+        ownerMeasurements += 1;
         return {
           result: {
             value: {
               x: 100,
-              y: 50,
+              y: ownerMeasurements === 1 ? 50 : 120,
               width: 400,
               height: 300,
               visible: true,
@@ -558,7 +560,8 @@ test("frame-scoped actionability does not reject an unblocked target when the fr
       { selector: "#button", frameChain: ["#frame"] },
       { receivesEvents: true, timeout: 200 },
     );
-    assert.deepEqual({ x: point.x, y: point.y }, { x: 170, y: 100 });
+    assert.ok(ownerMeasurements >= 2);
+    assert.deepEqual({ x: point.x, y: point.y }, { x: 170, y: 170 });
   } finally {
     restore();
   }

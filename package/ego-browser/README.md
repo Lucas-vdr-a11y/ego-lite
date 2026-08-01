@@ -19,7 +19,7 @@ The build emits a single ESM file `dist/out/index.js`. The ego-browser browser d
 ```bash
 ego-browser nodejs <<'EOF'
 const task = await egoBrowser.newTaskSpace('demo')
-const tab = await task.tabs.openOrReuse('https://example.com', { wait: true })
+const tab = await task.tabs.openOrReuse('https://example.com', { waitUntil: 'load' })
 console.log(await tab.page.snapshot())
 await egoBrowser.completeTaskSpace(task.id)
 EOF
@@ -65,6 +65,12 @@ src/
   helpers.ts             public Playwright-style facades plus internal helper glue
   browser-runtime.ts     bridge to globalThis.ego (CDP, sessions, events)
   element-resolver.ts    resolves @eN / CSS / XPath / ARIA targets
+  page-network.ts        Page HTTP/HAR/WebSocket routing
+  page-scripts.ts        init scripts and exposed Node bindings
+  page-frames.ts         lightweight Frame facades
+  page-environment.ts    viewport and media emulation
+  page-clock.ts          target-local Playwright Clock subset
+  page-handles.ts        retained Page JSHandle and injected tags
   driver/
     pointer.ts           click, hover, drag, wheel, scrollIntoViewIfNeeded
     observe.ts           snapshot, screenshot, elementCenter

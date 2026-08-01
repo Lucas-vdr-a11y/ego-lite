@@ -1,8 +1,18 @@
 import { cdp, evaluate } from "../cdp-eval.js";
-import { browserCdp } from "../browser-runtime.js";
+import { browserCdp, subscribeBrowserEvent } from "../browser-runtime.js";
+import { isEgoHardStopError } from "../ego-errors.js";
 import { isLocatorTarget, type LocatorTarget } from "../frame-context.js";
+import {
+  normalizeTimeout,
+  operationTimeout,
+  remainingTimeout,
+  timeoutDeadline,
+} from "../playwright-errors.js";
+import { state } from "../state.js";
+import { currentTargetId } from "../target-context.js";
 import { resolveAndCall } from "./element-ops.js";
 import { waitForActionableElement } from "./actionability.js";
+import { waitForDocumentLoad } from "./load.js";
 
 type MouseButton = "left" | "middle" | "right";
 type Point = {
@@ -21,6 +31,8 @@ export type MouseTarget =
   | { x: number; y: number; sessionId?: string }
   | { selector: string; x?: number; y?: number };
 type ClickOptions = {
+  __apiName?: string;
+  __waitForNavigation?: boolean;
   button?: MouseButton;
   clickCount?: number;
   delay?: number;
@@ -30,6 +42,7 @@ type ClickOptions = {
   force?: boolean;
   trial?: boolean;
   timeout?: number;
+  noWaitAfter?: boolean;
 };
 type DragOptions = {
   button?: MouseButton;
@@ -81,11 +94,18 @@ const pressedMouseButtons = new Set<MouseButton>();
 /**
  * Click a mouse target.
  * @param {MouseTarget} target CSS selector, @ref, viewport point, or selector-relative point.
- * @param {{button?: "left"|"middle"|"right", clickCount?: number, delay?: number, modifiers?: string[], position?: {x:number,y:number}, force?: boolean, trial?: boolean, timeout?: number, label?: string}} [options]
+ * @param {{button?: "left"|"middle"|"right", clickCount?: number, delay?: number, modifiers?: string[], position?: {x:number,y:number}, force?: boolean, trial?: boolean, timeout?: number, noWaitAfter?: boolean, label?: string}} [options]
  * @returns {Promise<void>}
  */
 export async function click(target: MouseTarget, options: ClickOptions = {}) {
-  const point = await resolveMouseTarget(target, options.timeout, {
+  const apiName = options.__apiName || "locator.click";
+  const timeout = normalizeTimeout(
+    apiName,
+    options.timeout ?? state.defaultTimeout,
+  );
+  const deadline = timeoutDeadline(timeout, state.now());
+  let point = await resolveMouseTarget(target, options.timeout, {
+    apiName,
     visible: true,
     stable: !options.force,
     receivesEvents: !options.force,
@@ -98,41 +118,206 @@ export async function click(target: MouseTarget, options: ClickOptions = {}) {
   const buttons = pressedButtons(button);
   const clickCount = options.clickCount ?? 1;
   const modifiers = modifierMask(options.modifiers);
-  maybeHighlight(point, options.label);
-  const probeId = await installClickProbe(point, button);
-  let dispatchError: unknown = null;
+  let navigation: Awaited<ReturnType<typeof observeClickNavigation>> | null =
+    null;
+  let restoreInputFocus = async () => {};
   try {
-    await dispatchMouse(point, "mouseMoved", {
-      button: "none",
-      buttons: 0,
-      modifiers,
-    });
+    const inputFocus = await focusPageForInput(point.sessionId);
+    restoreInputFocus = inputFocus.restore;
+    if (inputFocus.changed) {
+      point = await resolveMouseTarget(target, options.timeout, {
+        apiName,
+        visible: true,
+        stable: !options.force,
+        receivesEvents: !options.force,
+        enabled: !options.force,
+        position: options.position,
+      });
+      rememberMousePoint(point);
+    }
+    maybeHighlight(point, options.label);
+    navigation =
+      options.__waitForNavigation && !options.noWaitAfter
+        ? await observeClickNavigation(
+            point.sessionId,
+            deadline,
+            apiName,
+            timeout,
+          )
+        : null;
+    const probeId = await installClickProbe(point, button);
+    let dispatchError = await dispatchClickInput(
+      topLevelInputPoint(point),
+      {
+        button,
+        buttons,
+        clickCount,
+        modifiers,
+        delay: options.delay,
+      },
+      deadline,
+    );
+    let completed = await finishClickProbe(point, probeId, button);
+    if (
+      !completed &&
+      !navigation?.observed() &&
+      hasAlternateInputContext(point)
+    ) {
+      const retryPoint = probePoint(point);
+      const retryProbeId = await installClickProbe(retryPoint, button);
+      dispatchError = await dispatchClickInput(
+        retryPoint,
+        {
+          button,
+          buttons,
+          clickCount,
+          modifiers,
+          delay: options.delay,
+        },
+        deadline,
+      );
+      completed = await finishClickProbe(retryPoint, retryProbeId, button);
+      if (!completed && !navigation?.observed() && retryProbeId) {
+        if (dispatchError) throw dispatchError;
+        throw new Error(`${apiName} trusted click event was not observed`);
+      }
+    }
+    if (dispatchError && !completed && !navigation?.observed()) {
+      throw dispatchError;
+    }
+    if (navigation?.observed()) {
+      await navigation.wait();
+    }
+  } finally {
+    try {
+      await restoreInputFocus();
+    } finally {
+      navigation?.dispose();
+    }
+  }
+}
+
+async function focusPageForInput(sessionId?: string) {
+  let focused = false;
+  try {
+    const result = await cdp(
+      "Runtime.evaluate",
+      {
+        expression:
+          "document.visibilityState === 'visible' && document.hasFocus()",
+        returnByValue: true,
+        awaitPromise: false,
+      },
+      sessionId,
+    );
+    focused = Boolean(result.result?.value);
+  } catch (error) {
+    if (isEgoHardStopError(error)) throw error;
+  }
+  if (focused) {
+    return { changed: false, restore: async () => {} };
+  }
+
+  const previousTargetId = await activeTargetId();
+  const inputTargetId = currentTargetId() || state.sessionTargetId || undefined;
+  await cdp("Page.bringToFront", {}, sessionId);
+  return {
+    changed: true,
+    restore: async () => {
+      if (
+        !previousTargetId ||
+        !inputTargetId ||
+        previousTargetId === inputTargetId
+      ) {
+        return;
+      }
+      try {
+        await cdp("Target.activateTarget", { targetId: previousTargetId });
+      } catch (error) {
+        if (isEgoHardStopError(error)) throw error;
+      }
+    },
+  };
+}
+
+async function activeTargetId() {
+  try {
+    const result = await (globalThis as any).ego?.listTabs?.();
+    const tabs = result?.tabs || result?.targetInfos || [];
+    return tabs.find((tab) => tab.active)?.targetId;
+  } catch (error) {
+    if (isEgoHardStopError(error)) throw error;
+    return undefined;
+  }
+}
+
+async function dispatchClickInput(
+  point: Point,
+  options: {
+    button: MouseButton;
+    buttons: number;
+    clickCount: number;
+    modifiers: number;
+    delay?: number;
+  },
+  deadline: number,
+) {
+  try {
+    await dispatchMouse(
+      point,
+      "mouseMoved",
+      {
+        button: "none",
+        buttons: 0,
+        modifiers: options.modifiers,
+      },
+      clickInputDispatchTimeout(deadline),
+    );
     await inputEventDelay();
-    await dispatchMouse(point, "mousePressed", {
-      button,
-      buttons,
-      clickCount,
-      modifiers,
-    });
+    await dispatchMouse(
+      point,
+      "mousePressed",
+      {
+        button: options.button,
+        buttons: options.buttons,
+        clickCount: options.clickCount,
+        modifiers: options.modifiers,
+      },
+      clickInputDispatchTimeout(deadline),
+    );
     await inputEventDelay(options.delay);
-    await dispatchMouse(point, "mouseReleased", {
-      button,
-      buttons: 0,
-      clickCount,
-      modifiers,
-    });
+    await dispatchMouse(
+      point,
+      "mouseReleased",
+      {
+        button: options.button,
+        buttons: 0,
+        clickCount: options.clickCount,
+        modifiers: options.modifiers,
+      },
+      clickInputDispatchTimeout(deadline),
+    );
+    return null;
   } catch (error) {
     if (!isInputDispatchTimeout(error)) throw error;
-    dispatchError = error;
+    return error;
   }
-  const completed = await finishClickProbe(
-    point,
-    probeId,
-    clickCount,
-    button,
-    modifiers,
+}
+
+function clickInputDispatchTimeout(deadline: number) {
+  return remainingTimeout(deadline, state.now());
+}
+
+function hasAlternateInputContext(point: Point) {
+  return Boolean(
+    point.probeSessionId && point.probeSessionId !== point.sessionId,
   );
-  if (dispatchError && !completed) throw dispatchError;
+}
+
+function topLevelInputPoint(point: Point): Point {
+  return point.probeX === undefined && point.probeY === undefined
+    ? point
+    : { ...point, sessionId: undefined };
 }
 
 /**
@@ -443,21 +628,11 @@ async function installClickProbe(point: Point, button: MouseButton) {
 async function finishClickProbe(
   point: Point,
   id: string | null,
-  clickCount: number,
   button: MouseButton,
-  modifiers: number,
 ) {
   if (!id) return false;
   const localPoint = probePoint(point);
   const completionEvent = mouseCompletionEvent(button);
-  const buttonIndex = mouseButtonIndex(button);
-  const buttons = pressedButtons(button);
-  const modifierInit = {
-    altKey: Boolean(modifiers & 1),
-    ctrlKey: Boolean(modifiers & 2),
-    metaKey: Boolean(modifiers & 4),
-    shiftKey: Boolean(modifiers & 8),
-  };
   await inputEventDelay(50);
   try {
     const result = await cdp(
@@ -466,28 +641,10 @@ async function finishClickProbe(
         expression: `(() => {
         const probes = window.__egoBrowserInputProbes || {};
         const probe = probes[${JSON.stringify(id)}];
-        if (!probe) return { seen: false, fallback: false };
+        if (!probe) return false;
         document.removeEventListener(${JSON.stringify(completionEvent)}, probe.handler, true);
         delete probes[${JSON.stringify(id)}];
-        if (probe.seen || !probe.target) return { seen: probe.seen, fallback: false };
-        const target = probe.target;
-        const init = {
-          bubbles: true,
-          cancelable: true,
-          view: window,
-          clientX: ${JSON.stringify(localPoint.x)},
-          clientY: ${JSON.stringify(localPoint.y)},
-          button: ${JSON.stringify(buttonIndex)},
-          ...${JSON.stringify(modifierInit)},
-        };
-        target.dispatchEvent(new MouseEvent("mousemove", { ...init, button: 0, buttons: 0, detail: 0 }));
-        target.dispatchEvent(new MouseEvent("mousedown", { ...init, buttons: ${JSON.stringify(buttons)}, detail: ${JSON.stringify(clickCount)} }));
-        target.dispatchEvent(new MouseEvent("mouseup", { ...init, buttons: 0, detail: ${JSON.stringify(clickCount)} }));
-        target.dispatchEvent(new MouseEvent(${JSON.stringify(completionEvent)}, { ...init, buttons: 0, detail: ${JSON.stringify(clickCount)} }));
-        if (${JSON.stringify(button === "left")} && ${JSON.stringify(clickCount)} > 1) {
-          target.dispatchEvent(new MouseEvent("dblclick", { ...init, buttons: 0, detail: 2 }));
-        }
-        return { seen: false, fallback: true };
+        return probe.seen;
       })()`,
         ...probeContext(localPoint),
         returnByValue: true,
@@ -495,11 +652,93 @@ async function finishClickProbe(
       },
       localPoint.sessionId,
     );
-    const value = result.result?.value;
-    return Boolean(value?.seen || value?.fallback);
+    return Boolean(result.result?.value);
   } catch {
     return false;
   }
+}
+
+async function observeClickNavigation(
+  sessionId: string | undefined,
+  deadline: number,
+  apiName: string,
+  timeout: number,
+) {
+  let mainFrameId: string | undefined;
+  try {
+    const tree = await cdp(
+      "Page.getFrameTree",
+      {},
+      sessionId,
+      remainingTimeout(deadline, state.now()),
+    );
+    mainFrameId = tree.frameTree?.frame?.id;
+  } catch {
+    // A click can still be dispatched when frame-tree inspection is unavailable.
+  }
+
+  let scheduled = false;
+  let committed = false;
+  let sameDocument = false;
+  const isMainFrame = (frameId?: string) =>
+    Boolean(mainFrameId && frameId === mainFrameId);
+  const onScheduled = (event) => {
+    if (isMainFrame(event?.params?.frameId)) scheduled = true;
+  };
+  const onNavigated = (event) => {
+    const frame = event?.params?.frame;
+    const frameId = frame?.id || event?.params?.frameId;
+    if (
+      (mainFrameId && frameId !== mainFrameId) ||
+      (!mainFrameId && frame?.parentId)
+    ) {
+      return;
+    }
+    committed = true;
+  };
+  const onSameDocument = (event) => {
+    if (mainFrameId && event?.params?.frameId !== mainFrameId) return;
+    sameDocument = true;
+  };
+  const unsubscribe = [
+    subscribeBrowserEvent(
+      "Page.frameScheduledNavigation",
+      sessionId,
+      onScheduled,
+    ),
+    subscribeBrowserEvent(
+      "Page.frameRequestedNavigation",
+      sessionId,
+      onScheduled,
+    ),
+    subscribeBrowserEvent("Page.frameNavigated", sessionId, onNavigated),
+    subscribeBrowserEvent(
+      "Page.navigatedWithinDocument",
+      sessionId,
+      onSameDocument,
+    ),
+  ];
+
+  return {
+    observed: () => scheduled || committed || sameDocument,
+    async wait() {
+      if (sameDocument) return;
+      while (scheduled && !committed && state.now() < deadline) {
+        await state.sleep(20);
+      }
+      if (!committed) {
+        throw operationTimeout(apiName, timeout);
+      }
+      const loaded = await waitForDocumentLoad({
+        timeout: remainingTimeout(deadline, state.now()),
+        until: "load",
+      });
+      if (!loaded) throw operationTimeout(apiName, timeout);
+    },
+    dispose() {
+      for (const remove of unsubscribe) remove();
+    },
+  };
 }
 
 async function installDragProbe(first: Point, last: Point) {
@@ -913,6 +1152,7 @@ async function dispatchMouse(
   point: Point,
   type: string,
   options: MouseEventOptions = {},
+  timeoutMs = INPUT_DISPATCH_TIMEOUT_MS,
 ) {
   await browserCdp(
     "Input.dispatchMouseEvent",
@@ -923,7 +1163,7 @@ async function dispatchMouse(
       ...options,
     },
     point.sessionId,
-    INPUT_DISPATCH_TIMEOUT_MS,
+    timeoutMs,
   );
 }
 
@@ -936,6 +1176,7 @@ async function resolveMouseTarget(
   target: MouseTarget,
   timeout = undefined,
   actionability: {
+    apiName?: string;
     visible?: boolean;
     stable?: boolean;
     receivesEvents?: boolean;
@@ -1061,13 +1302,6 @@ function pressedButtons(button: MouseButton) {
   if (button === "middle") {
     return 4;
   }
-  throw new Error(`unsupported mouse button: ${button}`);
-}
-
-function mouseButtonIndex(button: MouseButton) {
-  if (button === "left") return 0;
-  if (button === "middle") return 1;
-  if (button === "right") return 2;
   throw new Error(`unsupported mouse button: ${button}`);
 }
 

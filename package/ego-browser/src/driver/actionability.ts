@@ -1,7 +1,11 @@
 import { cdp, runtimeValue } from "../cdp-eval.js";
 import { ElementResolutionError } from "../element-resolver.js";
-import type { LocatorTarget } from "../frame-context.js";
-import { frameOwnersReceiveEvents } from "../frame-context.js";
+import {
+  frameOwnersReceiveEvents,
+  isLocatorTarget,
+  resolveFrameContext,
+  type LocatorTarget,
+} from "../frame-context.js";
 import {
   normalizeTimeout,
   operationTimeout,
@@ -13,6 +17,7 @@ import { releaseHandle, resolveHandle } from "./element-ops.js";
 type Position = { x: number; y: number };
 
 export type ActionabilityOptions = {
+  apiName?: string;
   timeout?: number;
   visible?: boolean;
   stable?: boolean;
@@ -84,8 +89,9 @@ export async function waitForActionableElement(
   selector: string | LocatorTarget,
   options: ActionabilityOptions = {},
 ) {
+  const apiName = options.apiName || "locator action";
   const timeout = normalizeTimeout(
-    "locator action",
+    apiName,
     options.timeout ?? state.defaultTimeout,
   );
   const deadline = timeoutDeadline(timeout, state.now());
@@ -173,6 +179,34 @@ export async function waitForActionableElement(
       const position = normalizedPosition(options.position);
       const localX = probe.rect.x + (position?.x ?? probe.rect.width / 2);
       const localY = probe.rect.y + (position?.y ?? probe.rect.height / 2);
+      let frameOffset = handle.frameOffset || { x: 0, y: 0 };
+      let frameScale = handle.frameScale || { x: 1, y: 1 };
+      let frameOwners = handle.frameOwners;
+      if (
+        options.receivesEvents &&
+        handle.frameOffset !== undefined &&
+        isLocatorTarget(selector)
+      ) {
+        try {
+          const refreshed = await resolveFrameContext(selector.frameChain, {
+            trackFrameOwners: true,
+          });
+          frameOffset = refreshed.offset;
+          frameScale = refreshed.scale || { x: 1, y: 1 };
+          frameOwners = refreshed.frameOwners;
+        } catch (error) {
+          if (
+            error instanceof ElementResolutionError &&
+            error.kind === "transient"
+          ) {
+            previousRect = null;
+            lastIssue = error.message;
+            await state.sleep(50);
+            continue;
+          }
+          throw error;
+        }
+      }
       if (options.receivesEvents && !probe.receivesEvents) {
         previousRect = null;
         lastIssue = "element does not receive pointer events";
@@ -182,13 +216,10 @@ export async function waitForActionableElement(
       if (options.receivesEvents) {
         let frameReceivesEvents;
         try {
-          frameReceivesEvents = await frameOwnersReceiveEvents(
-            handle.frameOwners,
-            {
-              x: localX,
-              y: localY,
-            },
-          );
+          frameReceivesEvents = await frameOwnersReceiveEvents(frameOwners, {
+            x: localX,
+            y: localY,
+          });
         } catch (error) {
           if (
             error instanceof ElementResolutionError &&
@@ -209,8 +240,6 @@ export async function waitForActionableElement(
           continue;
         }
       }
-      const frameOffset = handle.frameOffset || { x: 0, y: 0 };
-      const frameScale = handle.frameScale || { x: 1, y: 1 };
       const globalRect = {
         x: frameOffset.x + probe.rect.x * frameScale.x,
         y: frameOffset.y + probe.rect.y * frameScale.y,
@@ -241,7 +270,7 @@ export async function waitForActionableElement(
     }
   }
 
-  throw operationTimeout("locator action", timeout, lastIssue);
+  throw operationTimeout(apiName, timeout, lastIssue);
 }
 
 function requiresLayoutProbe(options: ActionabilityOptions) {

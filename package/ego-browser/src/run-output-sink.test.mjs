@@ -199,6 +199,16 @@ test("an ordinary uncaught error still flushes the output logged before it", asy
   assert.equal(result.stdout, "partial result\n");
 });
 
+test("an uncaught browser-global ReferenceError points to page.evaluate", async () => {
+  const result = await runScript(`CSS.escape("price");`);
+
+  assert.ok(result.error, "expected runMain to reject");
+  assert.match(result.error.message, /CSS is not defined/);
+  assert.match(result.error.message, /page\.evaluate\(\)/);
+  assert.match(result.error.stack, /page\.evaluate\(\)/);
+  assert.equal(result.stdout, "");
+});
+
 test("an uncaught legacy task-space helper reports a stale skill instead of a ReferenceError", async () => {
   const result = await runScript(`
     await useOrCreateTaskSpace("checkout-flow");

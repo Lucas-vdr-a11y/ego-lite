@@ -14,6 +14,23 @@ export function helperSurfaceCase() {
     assertEqual(typeof page.setDefaultTimeout, "function", "page.setDefaultTimeout is installed");
     assertEqual(typeof page.waitForEvent, "function", "page.waitForEvent is installed");
     assertEqual(typeof page.waitForURL, "function", "page.waitForURL is installed");
+    for (const method of [
+      "close", "bringToFront", "isClosed", "opener",
+      "on", "once", "off", "removeAllListeners",
+      "route", "unroute", "unrouteAll", "routeFromHAR", "routeWebSocket",
+      "setExtraHTTPHeaders", "addInitScript", "exposeFunction", "exposeBinding",
+      "frames", "frame", "mainFrame", "setViewportSize", "viewportSize",
+      "emulateMedia", "requestGC", "evaluateHandle", "addScriptTag", "addStyleTag",
+    ]) {
+      assertEqual(typeof page[method], "function", "page." + method + " is installed");
+    }
+    assertEqual(typeof page.clock, "object", "page.clock is installed");
+    for (const method of [
+      "install", "fastForward", "pauseAt", "resume", "runFor",
+      "setFixedTime", "setSystemTime",
+    ]) {
+      assertEqual(typeof page.clock[method], "function", "page.clock." + method + " is installed");
+    }
     assertEqual(typeof page.screencast, "object", "page.screencast is installed");
     assertEqual(typeof page.screencast.start, "function", "page.screencast.start is installed");
     assertEqual(typeof page.screencast.stop, "function", "page.screencast.stop is installed");
@@ -28,6 +45,8 @@ export function helperSurfaceCase() {
     assertEqual(typeof loc.fill, "function", "locator.fill is installed");
     assertEqual(typeof loc.evaluate, "function", "locator.evaluate is installed");
     assertEqual(typeof loc.evaluateAll, "function", "locator.evaluateAll is installed");
+    assertEqual(typeof loc.evaluateHandle, "function", "locator.evaluateHandle is installed");
+    assertEqual(typeof loc.page, "function", "locator.page is installed");
     assertEqual(typeof loc.extractAll, "undefined", "non-Playwright locator.extractAll is not exposed");
     assertEqual(typeof page.getByText("Click counter").click, "function", "getByText returns a locator");
     assertEqual(typeof page.getByLabel("Text input").fill, "function", "getByLabel returns a locator");
@@ -42,7 +61,7 @@ export function helperSurfaceCase() {
     assertEqual(typeof tabs.iframeTarget, "undefined", "internal iframeTarget is not exposed");
     assertEqual(typeof globalThis.browser, "undefined", "Playwright Browser is not emulated");
     assertEqual(typeof globalThis.egoBrowser, "object", "egoBrowser facade is installed");
-    assertEqual(Object.keys(egoBrowser).sort().join(","), "closeTaskSpace,completeTaskSpace,newTaskSpace,switchTaskSpace", "egoBrowser exposes only TaskSpace lifecycle methods");
+    assertEqual(Object.keys(egoBrowser).sort().join(","), "closeTaskSpace,completeTaskSpace,listTaskSpaces,newTaskSpace,switchTaskSpace", "egoBrowser exposes only TaskSpace lifecycle methods");
     assertEqual(typeof egoBrowser.newPage, "undefined", "egoBrowser.newPage is not exposed");
     assertEqual(typeof egoBrowser.newContext, "undefined", "egoBrowser.newContext is not exposed");
     assertEqual(typeof egoBrowser.contexts, "undefined", "egoBrowser.contexts is not exposed");

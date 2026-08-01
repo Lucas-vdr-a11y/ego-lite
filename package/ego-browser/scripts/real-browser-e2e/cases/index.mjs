@@ -30,6 +30,7 @@ import { playwrightPageUrlCases } from "./playwright-page-url.mjs";
 import { playwrightPageInfoCases } from "./playwright-page-info.mjs";
 import { playwrightLocatorCases } from "./playwright-locators.mjs";
 import { playwrightTargetCases } from "./playwright-targets.mjs";
+import { playwrightAdvancedPageCases } from "./playwright-advanced-page.mjs";
 import { playwrightPermissionCases } from "./playwright-permissions.mjs";
 import { damaiRushCase } from "./damai-rush.mjs";
 import { videoRecordingCase } from "./video-recording.mjs";
@@ -73,6 +74,7 @@ export const e2eCases = [
   ...playwrightPageInfoCases,
   ...playwrightLocatorCases,
   ...playwrightTargetCases,
+  ...playwrightAdvancedPageCases,
   ...playwrightPermissionCases,
   ...ariaSnapshotCases,
   nativeTaskSpaceCloseRegressionCase,

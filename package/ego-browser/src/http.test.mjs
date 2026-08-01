@@ -54,7 +54,7 @@ test("browserFetch interprets timeout as milliseconds", async () => {
     restore();
   }
 
-  assert.match(expression, /"timeout":1234/);
+  assert.match(expression, /\\"timeout\\":1234/);
   assert.match(
     expression,
     /setTimeout\(\(\) => controller\.abort\(\), timeout\)/,

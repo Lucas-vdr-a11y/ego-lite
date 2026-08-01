@@ -6,6 +6,7 @@ import {
 
 import { formatCliLogValue } from "./format.js";
 import * as helpers from "./helpers.js";
+import { isBrowserRuntime } from "./browser-runtime.js";
 import { installLegacySkillGuards } from "./legacy-skill-guard.js";
 import { bufferOutput, flushSink, resetSink } from "./output-sink.js";
 
@@ -126,10 +127,31 @@ async function execute(code: string, stdout: WritableLike) {
   } catch (error) {
     thrown ??= error;
   }
+  thrown = addExecutionHint(thrown);
   // A thrown Error surfaces a hard-stop message on its own, so flush as a thrown
   // completion (drop the buffer, stay silent) and let it propagate.
   flushSink(stdout, Boolean(thrown));
   if (thrown) throw thrown;
+}
+
+function addExecutionHint(error: unknown) {
+  if (!(error instanceof Error) || error.name !== "ReferenceError") {
+    return error;
+  }
+  const browserGlobal = error.message.match(
+    /^(CSS|document|window) is not defined$/,
+  )?.[1];
+  if (!browserGlobal) return error;
+
+  const previousStack = error.stack;
+  error.message += `\nHint: ${browserGlobal} is a browser global; use it inside page.evaluate().`;
+  if (previousStack) {
+    error.stack = [
+      `${error.name}: ${error.message}`,
+      ...previousStack.split("\n").slice(1),
+    ].join("\n");
+  }
+  return error;
 }
 
 export async function executionContext() {
@@ -138,6 +160,9 @@ export async function executionContext() {
   // that installEgoSdk() exposes in the browser runtime, so the CLI and SDK paths
   // cannot drift apart (and `help` exists in both).
   const context: Record<string, any> = helpers.helperContext(agentHelpers);
+  if (isBrowserRuntime()) {
+    await helpers.initializePageFacade(context.page);
+  }
   // Route the agent's primary output channel (console.log) through the output sink:
   // execute() flushes (or discards on hard stop) once the script settles, keeping the
   // CLI path identical to the SDK path. console.error/warn are left untouched. Each
