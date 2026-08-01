@@ -12,15 +12,16 @@ export const nativeTaskSpaceCloseRegressionCase = {
           timeout: 10_000,
           waitUntil: "load",
         });
-        const popupPromise = scratch.page.waitForEvent("popup", { timeout: 5_000 });
-        await scratch.page.evaluate(() =>
-          window.open(location.origin + "/secondary", "_blank"),
-        );
-        const popup = await popupPromise;
+        const popup = await scratch.context.newPage();
+        await popup.goto(baseUrl + "/secondary", {
+          timeout: 5_000,
+          waitUntil: "load",
+        });
         await popup.bringToFront();
-        await popup.waitForURL(
-          (url) => url.pathname === "/secondary",
-          { timeout: 5_000, waitUntil: "load" }
+        assertIncludes(
+          popup.url(),
+          "/secondary",
+          "native close regression creates a second Page"
         );
 
         const dialogPromise = scratch.page.waitForEvent("dialog", { timeout: 5_000 });

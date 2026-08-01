@@ -4,10 +4,15 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "esbuild src/server.jsx --bundle --platform=node --format=esm --jsx=automatic --jsx-import-source=hono/jsx --loader:.css=text --outfile=dist/server.mjs"
+    "build": "vite build --mode client && vite build",
+    "dev": "vite"
   },
   "dependencies": {
     "@hono/node-server": "2.0.12",
     "hono": "4.12.33"
+  },
+  "devDependencies": {
+    "@hono/vite-dev-server": "^0.26.1",
+    "vite": "^8.2.0"
   }
 }

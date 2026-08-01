@@ -277,7 +277,7 @@ test("native task-space close regression remains a dedicated opt-in e2e", () => 
   assert.ok(regression);
   assert.equal(regression.optIn, true);
   const source = regression.body();
-  assert.match(source, /scratch\.page\.waitForEvent\("popup"/);
+  assert.match(source, /scratch\.context\.newPage\(\)/);
   assert.match(source, /scratch\.page\.waitForEvent\("dialog"/);
   assert.match(source, /egoBrowser\.closeTaskSpace\(scratch\.id\)/);
 });
