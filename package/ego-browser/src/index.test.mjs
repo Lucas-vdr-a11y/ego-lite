@@ -7,7 +7,7 @@ import {
   connectPlaywrightTaskSpace,
   disconnectPlaywrightTaskSpace,
   setPlaywrightTaskSpaceConnector,
-} from "../dist/src/playwright-taskspace.js";
+} from "../dist/src/playwright/taskspace.js";
 
 const { installEgoSdk } = sdk;
 

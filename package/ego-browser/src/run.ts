@@ -8,7 +8,7 @@ import { formatCliLogValue } from "./format.js";
 import * as helpers from "./helpers.js";
 import { installLegacySkillGuards } from "./legacy-skill-guard.js";
 import { bufferOutput, flushSink, resetSink } from "./output-sink.js";
-import { disconnectPlaywrightTaskSpace } from "./playwright-taskspace.js";
+import { disconnectPlaywrightTaskSpace } from "./playwright/taskspace.js";
 
 type WritableLike = {
   write(chunk: string): unknown;

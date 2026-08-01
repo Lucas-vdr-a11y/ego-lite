@@ -41,6 +41,10 @@ type EgoCdpCallbackRuntime = {
 };
 const transportSubscribers = new Set<EgoCdpTransportSubscriber>();
 
+export function allocateCdpMessageId() {
+  return nextMessageId++;
+}
+
 function bindRuntimeCallbacks(runtime: EgoCdpCallbackRuntime) {
   runtime.onCDPMessage = dispatchCdpMessage;
   runtime.onSendCDPMessageError = dispatchCdpSendError;
@@ -98,7 +102,7 @@ function rawCdp(
 ) {
   const runtime = browserEgo();
   bindRuntimeCallbacks(runtime);
-  const id = nextMessageId++;
+  const id = allocateCdpMessageId();
   const payload = JSON.stringify({
     id,
     method,

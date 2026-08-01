@@ -65,7 +65,7 @@ npm run validate:site-skills    # alias: validate:learnings
 src/
   run.ts                 CLI entry; reads stdin, injects helpers, executes
   helpers.ts             TaskSpace, site, fetch, CDP, and help surfaces
-  playwright-taskspace.ts native Playwright connection and TaskSpace binding
+  playwright/            native Playwright TaskSpace, transport, and routing
   browser-runtime.ts     bridge to globalThis.ego (CDP, sessions, events)
   http.ts                serverFetch, browserFetch
   cdp-eval.ts            direct CDP access and site-tool evaluation

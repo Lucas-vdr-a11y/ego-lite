@@ -10,8 +10,9 @@ import { browserFetch, serverFetch } from "./http.js";
 import {
   connectPlaywrightTaskSpace,
   disconnectPlaywrightTaskSpace,
+  disconnectPlaywrightTaskSpaceForSelection,
   setPlaywrightTaskSpaceConnector,
-} from "./playwright-taskspace.js";
+} from "./playwright/taskspace.js";
 import {
   loadBrowserToolSource,
   loadLearnedContext,
@@ -175,6 +176,7 @@ async function selectTaskSpace(ego, space, op: string) {
     throw new Error(`${op} requires ego.useTaskSpace`);
   }
   const id = taskSpaceNumericId(space, op);
+  await disconnectPlaywrightTaskSpaceForSelection(space);
   assertNoEgoError(await ego.useTaskSpace(id), op);
   return space;
 }

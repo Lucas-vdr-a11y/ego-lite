@@ -41,7 +41,7 @@ test("real-browser e2e runs opt-in cases only when explicitly selected", () => {
   );
 });
 
-test("real-browser e2e accepts the local CDP bridge when the host has no endpoint", () => {
+test("real-browser e2e accepts direct CDP transport when the host has no endpoint", () => {
   assert.equal(typeof runner.nodeBridgeSupportsPlaywright, "function");
   assert.equal(
     runner.nodeBridgeSupportsPlaywright({
@@ -251,6 +251,38 @@ test("skill avoids mutating controls that already match the requested state", ()
     skill,
     /If a control already matches the requested state, verify it and continue without changing it\./,
   );
+});
+
+test("video recording guidance matches the current native TaskSpace runtime", () => {
+  const skill = readFileSync(
+    new URL("../../../skills/ego-browser/SKILL.md", import.meta.url),
+    "utf8",
+  );
+  const video = readFileSync(
+    new URL("../../../skills/ego-browser/references/video.md", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(skill, /`page\.video\(\)` \| Returns `null`/);
+  assert.match(skill, /\[Video recording support and current limitations\]/);
+  assert.match(video, /`task\.page\.video\(\)` returns `null`/);
+  assert.match(video, /There is currently no supported API/);
+  assert.doesNotMatch(video, /await page\.screencast\.(?:start|stop)\(/);
+  assert.match(video, /Do not call `task\.context\.browser\(\)\.newContext/);
+});
+
+test("real-browser e2e covers the current TaskSpace video capability", () => {
+  const videoCase = e2eCases.find(
+    (testCase) => testCase.name === "TaskSpace video capability",
+  );
+
+  assert.ok(videoCase);
+  assert.notEqual(videoCase.optIn, true);
+  const source = videoCase.body();
+  assert.match(source, /task\.page\.video\(\)/);
+  assert.match(source, /assertEqual\([\s\S]*null/);
+  assert.match(source, /task\.page\.screencast/);
+  assert.match(source, /task\.page\.goto/);
 });
 
 test("skill stays concise and reserves context for ego-specific guidance", () => {

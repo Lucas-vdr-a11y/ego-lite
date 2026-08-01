@@ -13,7 +13,7 @@ import {
   createNativePlaywrightTaskSpaceConnector,
   disconnectPlaywrightTaskSpace,
   setPlaywrightTaskSpaceConnector,
-} from "./playwright-taskspace.js";
+} from "./playwright/taskspace.js";
 import {
   bufferOutput,
   installLifecycleFlush,

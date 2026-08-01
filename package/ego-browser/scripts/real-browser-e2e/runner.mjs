@@ -173,14 +173,13 @@ export async function runRealBrowserE2e() {
     // The output channel is the overridden console.log. typeof console.log is always
     // "function" (it is a Node built-in), so it cannot prove the SDK wired its sink.
     // The marker round-trip proves console.log output reaches stdout, helperCount > 0
-    // proves installEgoSdk ran, and the endpoint probe verifies the host can support
-    // native Playwright before any task space is created.
+    // proves installEgoSdk ran, and the CDP binding probe verifies the host can
+    // support native Playwright before any task space is created.
     const source = `
       console.log(${JSON.stringify(marker)});
       console.log(JSON.stringify({
         egoType: typeof globalThis.ego,
         hasSendCDPMessage: typeof globalThis.ego?.sendCDPMessage,
-        hasGetCDPEndpoint: typeof globalThis.ego?.getCDPEndpoint,
         processVersion: process.version,
         helperCount: Object.keys(globalThis.ego?.helpers || {}).length
       }));

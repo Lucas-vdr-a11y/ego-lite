@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 import { runMain } from "../dist/src/run.js";
 import { __testing } from "../dist/src/helpers.js";
-import { disconnectPlaywrightTaskSpace } from "../dist/src/playwright-taskspace.js";
+import { disconnectPlaywrightTaskSpace } from "../dist/src/playwright/taskspace.js";
 
 const restoreDefaultPlaywrightConnector =
   __testing.setPlaywrightTaskSpaceConnector(async () => ({
