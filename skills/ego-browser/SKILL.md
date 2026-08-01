@@ -41,7 +41,7 @@ Run automation scripts only through `ego-browser nodejs` and write them directly
 
 ### Execution model
 
-`ego-browser nodejs` deliberately uses a heredoc as a programmable interface instead of splitting every browser action into a separate CLI command. One JavaScript block can retain intermediate results, compose multiple steps, branch on page state that the script can read directly, and verify the result before returning. This lets one execution carry a complete unit of browser work.
+`ego-browser nodejs` deliberately uses a heredoc as a programmable interface instead of splitting every browser action into a separate CLI command. One JavaScript block can retain intermediate results and compose multiple steps. To improve fault tolerance, it can read a few likely page states,handle them with branches instead of failing immediately, and verify the result before returning.
 
 - **User goal** maps to one TaskSpace, from `egoBrowser.newTaskSpace()` through `egoBrowser.completeTaskSpace()` or `egoBrowser.closeTaskSpace()`.
 - **Execution round** is one Bash invocation in which the entire JavaScript block runs in one process.

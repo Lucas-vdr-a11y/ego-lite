@@ -53,6 +53,29 @@ export function createTestSiteApp(taskName) {
       ),
     ),
   );
+  app.get("/tests/navigation/slow-image", async (context) => {
+    await new Promise((resolve) => setTimeout(resolve, 10_000));
+    context.header("content-type", "image/svg+xml");
+    return context.body(
+      '<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1" />',
+    );
+  });
+  app.get("/tests/navigation/slow-load", (context) =>
+    context.html(
+      documentHtml(
+        <html lang="en">
+          <head>
+            <meta charset="utf-8" />
+            <title>Committed before load</title>
+          </head>
+          <body>
+            <h1>Committed document</h1>
+            <img src="/tests/navigation/slow-image" alt="Delayed resource" />
+          </body>
+        </html>,
+      ),
+    ),
+  );
   app.get("/frames/content", (context) =>
     context.html(
       documentHtml(

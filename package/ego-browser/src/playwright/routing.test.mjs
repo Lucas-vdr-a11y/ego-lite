@@ -811,6 +811,500 @@ test("the Ego Playwright transport keeps the Playwright Page identity while repl
   transport.close();
 });
 
+test("the Ego Playwright transport completes Page.navigate when the replacement document commits", async () => {
+  let nextNativeId = 1_000_000_325;
+  const runtime = {
+    async createTab() {
+      return { targetId: "replacement-target" };
+    },
+    sendCDPMessage(payload) {
+      const request = JSON.parse(payload);
+      let result = {};
+      if (request.method === "Target.getTargetInfo") {
+        result = {
+          targetInfo: {
+            targetId: request.params.targetId,
+            type: "page",
+            url:
+              request.params.targetId === "replacement-target"
+                ? "https://example.test/slow"
+                : "about:blank",
+          },
+        };
+      } else if (request.method === "Target.attachToTarget") {
+        result = {
+          sessionId:
+            request.params.targetId === "replacement-target"
+              ? "replacement-session"
+              : "client-session",
+        };
+      } else if (request.method === "Page.getFrameTree") {
+        result = {
+          frameTree: {
+            frame: {
+              id:
+                request.sessionId === "replacement-session"
+                  ? "replacement-frame"
+                  : "client-frame",
+              loaderId:
+                request.sessionId === "replacement-session"
+                  ? "replacement-loader"
+                  : "client-loader",
+              url:
+                request.sessionId === "replacement-session"
+                  ? "https://example.test/slow"
+                  : "about:blank",
+            },
+          },
+        };
+      } else if (request.method === "Runtime.evaluate") {
+        result = { result: { type: "string", value: "loading" } };
+      }
+      queueMicrotask(() => {
+        runtime.onCDPMessage(
+          JSON.stringify({
+            id: request.id,
+            result,
+            ...(request.sessionId ? { sessionId: request.sessionId } : {}),
+          }),
+        );
+      });
+    },
+  };
+  const transport = egoTransport.createEgoCdpTransport(runtime, {
+    targetIds: ["client-target"],
+    allocateMessageId: () => nextNativeId++,
+  });
+  const received = [];
+  transport.onmessage = (message) => received.push(message);
+
+  transport.send({
+    id: 35,
+    method: "Target.setAutoAttach",
+    params: { autoAttach: true, flatten: true },
+  });
+  for (let index = 0; index < 6; index += 1) await waitForImmediate();
+  received.length = 0;
+
+  transport.send({
+    id: 36,
+    method: "Page.navigate",
+    params: {
+      frameId: "client-frame",
+      url: "https://example.test/slow",
+    },
+    sessionId: "client-session",
+  });
+  const deadline = Date.now() + 150;
+  while (
+    !received.some((message) => message.id === 36) &&
+    Date.now() < deadline
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  transport.close();
+
+  assert.deepEqual(
+    received.find((message) => message.id === 36),
+    {
+      id: 36,
+      result: {
+        frameId: "client-frame",
+        loaderId: "replacement-loader",
+      },
+      sessionId: "client-session",
+    },
+  );
+});
+
+test("the Ego Playwright transport completes passive same-target navigations for Playwright", async () => {
+  let nextNativeId = 1_000_000_350;
+  const sent = [];
+  const runtime = {
+    sendCDPMessage(payload) {
+      const request = JSON.parse(payload);
+      sent.push(request);
+      let result = {};
+      if (request.method === "Target.getTargetInfo") {
+        result = {
+          targetInfo: {
+            targetId: "selected-target",
+            type: "page",
+            title: "Before",
+            url: "https://example.test/before",
+          },
+        };
+      } else if (request.method === "Target.attachToTarget") {
+        result = { sessionId: "selected-session" };
+      } else if (request.method === "Runtime.evaluate") {
+        result = { result: { type: "string", value: "complete" } };
+      }
+      queueMicrotask(() => {
+        runtime.onCDPMessage(
+          JSON.stringify({
+            id: request.id,
+            result,
+            ...(request.sessionId ? { sessionId: request.sessionId } : {}),
+          }),
+        );
+      });
+    },
+  };
+  const transport = egoTransport.createEgoCdpTransport(runtime, {
+    targetIds: ["selected-target"],
+    allocateMessageId: () => nextNativeId++,
+  });
+  const received = [];
+  transport.onmessage = (message) => received.push(message);
+
+  transport.send({
+    id: 40,
+    method: "Target.setAutoAttach",
+    params: {
+      autoAttach: true,
+      waitForDebuggerOnStart: true,
+      flatten: true,
+    },
+  });
+  for (let index = 0; index < 6; index += 1) await waitForImmediate();
+  received.length = 0;
+  sent.length = 0;
+
+  runtime.onCDPMessage(
+    JSON.stringify({
+      method: "Page.frameNavigated",
+      sessionId: "selected-session",
+      params: {
+        frame: {
+          id: "selected-frame",
+          loaderId: "passive-loader",
+          name: "",
+          url: "https://example.test/after",
+        },
+      },
+    }),
+  );
+  const lifecycleDeadline = Date.now() + 500;
+  while (
+    !received.some(
+      (message) =>
+        message.method === "Page.lifecycleEvent" &&
+        message.params?.name === "load",
+    ) &&
+    Date.now() < lifecycleDeadline
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+
+  assert.ok(
+    sent.some(
+      (request) =>
+        request.method === "Runtime.evaluate" &&
+        request.sessionId === "selected-session" &&
+        request.params.expression === "document.readyState",
+    ),
+  );
+  assert.deepEqual(
+    received
+      .filter((message) => message.method === "Page.lifecycleEvent")
+      .map((message) => message.params.name),
+    ["DOMContentLoaded", "load"],
+  );
+  assert.ok(
+    received.some((message) => message.method === "Page.frameStoppedLoading"),
+  );
+  transport.close();
+});
+
+test("the Ego Playwright transport reports DOMContentLoaded before a passive navigation completes", async () => {
+  let nextNativeId = 1_000_000_360;
+  const runtime = {
+    sendCDPMessage(payload) {
+      const request = JSON.parse(payload);
+      let result = {};
+      if (request.method === "Target.getTargetInfo") {
+        result = {
+          targetInfo: {
+            targetId: "selected-target",
+            type: "page",
+            url: "https://example.test/before",
+          },
+        };
+      } else if (request.method === "Target.attachToTarget") {
+        result = { sessionId: "selected-session" };
+      } else if (request.method === "Runtime.evaluate") {
+        result = { result: { type: "string", value: "interactive" } };
+      }
+      queueMicrotask(() => {
+        runtime.onCDPMessage(
+          JSON.stringify({
+            id: request.id,
+            result,
+            ...(request.sessionId ? { sessionId: request.sessionId } : {}),
+          }),
+        );
+      });
+    },
+  };
+  const transport = egoTransport.createEgoCdpTransport(runtime, {
+    targetIds: ["selected-target"],
+    allocateMessageId: () => nextNativeId++,
+  });
+  const received = [];
+  transport.onmessage = (message) => received.push(message);
+
+  transport.send({
+    id: 42,
+    method: "Target.setAutoAttach",
+    params: { autoAttach: true, flatten: true },
+  });
+  for (let index = 0; index < 6; index += 1) await waitForImmediate();
+  received.length = 0;
+
+  runtime.onCDPMessage(
+    JSON.stringify({
+      method: "Page.frameNavigated",
+      sessionId: "selected-session",
+      params: {
+        frame: {
+          id: "selected-frame",
+          loaderId: "interactive-loader",
+          url: "https://example.test/interactive",
+        },
+      },
+    }),
+  );
+  const deadline = Date.now() + 150;
+  while (
+    !received.some(
+      (message) =>
+        message.method === "Page.lifecycleEvent" &&
+        message.params?.name === "DOMContentLoaded",
+    ) &&
+    Date.now() < deadline
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  transport.close();
+
+  assert.deepEqual(
+    received
+      .filter((message) => message.method === "Page.lifecycleEvent")
+      .map((message) => message.params.name),
+    ["DOMContentLoaded"],
+  );
+  assert.equal(
+    received.some((message) => message.method === "Page.frameStoppedLoading"),
+    false,
+  );
+});
+
+test("the Ego Playwright transport suppresses a delayed duplicate native attachment", async () => {
+  let nextNativeId = 1_000_000_370;
+  const runtime = {
+    sendCDPMessage(payload) {
+      const request = JSON.parse(payload);
+      let result = {};
+      if (request.method === "Target.getTargetInfo") {
+        result = {
+          targetInfo: {
+            targetId: "selected-target",
+            type: "page",
+            title: "Selected",
+            url: "https://example.test/",
+          },
+        };
+      } else if (request.method === "Target.attachToTarget") {
+        result = { sessionId: "selected-session" };
+      }
+      queueMicrotask(() => {
+        runtime.onCDPMessage(JSON.stringify({ id: request.id, result }));
+      });
+    },
+  };
+  const transport = egoTransport.createEgoCdpTransport(runtime, {
+    targetIds: ["selected-target"],
+    allocateMessageId: () => nextNativeId++,
+  });
+  const received = [];
+  transport.onmessage = (message) => received.push(message);
+
+  transport.send({
+    id: 41,
+    method: "Target.setAutoAttach",
+    params: {
+      autoAttach: true,
+      waitForDebuggerOnStart: true,
+      flatten: true,
+    },
+  });
+  for (let index = 0; index < 6; index += 1) await waitForImmediate();
+
+  runtime.onCDPMessage(
+    JSON.stringify({
+      method: "Target.attachedToTarget",
+      params: {
+        sessionId: "late-native-session",
+        targetInfo: {
+          targetId: "selected-target",
+          type: "page",
+          title: "Selected",
+          url: "https://example.test/",
+        },
+        waitingForDebugger: false,
+      },
+    }),
+  );
+  await waitForImmediate();
+
+  assert.deepEqual(
+    received
+      .filter((message) => message.method === "Target.attachedToTarget")
+      .map((message) => message.params.sessionId),
+    ["selected-session"],
+  );
+  transport.close();
+});
+
+test("the Ego Playwright transport rebinds a live target after its native session detaches", async () => {
+  let nextNativeId = 1_000_000_390;
+  let attachCount = 0;
+  const sent = [];
+  const runtime = {
+    async listTabs() {
+      return { tabs: [{ targetId: "selected-target" }] };
+    },
+    sendCDPMessage(payload) {
+      const request = JSON.parse(payload);
+      sent.push(request);
+      let result = {};
+      if (request.method === "Target.getTargetInfo") {
+        result = {
+          targetInfo: {
+            targetId: "selected-target",
+            type: "page",
+            title: "Selected",
+            url: "https://example.test/after",
+          },
+        };
+      } else if (request.method === "Target.attachToTarget") {
+        attachCount += 1;
+        result = {
+          sessionId: attachCount === 1 ? "initial-session" : "rebound-session",
+        };
+      } else if (request.method === "Runtime.evaluate") {
+        result = { result: { type: "string", value: "rebound-result" } };
+      }
+      if (
+        request.method === "Runtime.evaluate" &&
+        request.sessionId === "initial-session" &&
+        request.params.expression === "stalledCall()"
+      ) {
+        return;
+      }
+      queueMicrotask(() => {
+        runtime.onCDPMessage(
+          JSON.stringify({
+            id: request.id,
+            result,
+            ...(request.sessionId ? { sessionId: request.sessionId } : {}),
+          }),
+        );
+      });
+    },
+  };
+  const transport = egoTransport.createEgoCdpTransport(runtime, {
+    targetIds: ["selected-target"],
+    allocateMessageId: () => nextNativeId++,
+  });
+  const received = [];
+  transport.onmessage = (message) => received.push(message);
+
+  transport.send({
+    id: 42,
+    method: "Target.setAutoAttach",
+    params: {
+      autoAttach: true,
+      waitForDebuggerOnStart: true,
+      flatten: true,
+    },
+  });
+  for (let index = 0; index < 6; index += 1) await waitForImmediate();
+  transport.send({
+    id: 43,
+    method: "Page.enable",
+    params: {},
+    sessionId: "initial-session",
+  });
+  await waitForImmediate();
+  received.length = 0;
+  sent.length = 0;
+
+  transport.send({
+    id: 45,
+    method: "Runtime.evaluate",
+    params: { expression: "stalledCall()", returnByValue: true },
+    sessionId: "initial-session",
+  });
+
+  runtime.onCDPMessage(
+    JSON.stringify({
+      method: "Target.detachedFromTarget",
+      params: {
+        sessionId: "initial-session",
+        targetId: "selected-target",
+      },
+    }),
+  );
+  const rebindDeadline = Date.now() + 500;
+  while (attachCount < 2 && Date.now() < rebindDeadline) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+
+  assert.equal(attachCount, 2);
+  assert.equal(
+    received.some((message) => message.method === "Target.detachedFromTarget"),
+    false,
+  );
+  assert.ok(
+    sent.some(
+      (request) =>
+        request.method === "Page.enable" &&
+        request.sessionId === "rebound-session",
+    ),
+  );
+  assert.match(
+    received.find((message) => message.id === 45)?.error?.message || "",
+    /session detached/i,
+  );
+
+  transport.send({
+    id: 44,
+    method: "Runtime.evaluate",
+    params: { expression: "location.href", returnByValue: true },
+    sessionId: "initial-session",
+  });
+  for (let index = 0; index < 3; index += 1) await waitForImmediate();
+  assert.ok(
+    sent.some(
+      (request) =>
+        request.method === "Runtime.evaluate" &&
+        request.sessionId === "rebound-session",
+    ),
+  );
+  assert.deepEqual(
+    received.find((message) => message.id === 44),
+    {
+      id: 44,
+      result: {
+        result: { type: "string", value: "rebound-result" },
+      },
+      sessionId: "initial-session",
+    },
+  );
+  transport.close();
+});
+
 test("the Ego Playwright transport does not close a target reused by createTab navigation", async () => {
   let nextNativeId = 1_000_000_280;
   let attachCount = 0;
@@ -1161,6 +1655,66 @@ test("the direct Playwright transport disables auto-attach and detaches sessions
       },
     ],
   );
+  assert.equal(transport.closed, true);
+});
+
+test("the direct Playwright transport does not rebind its intentional close detach", async () => {
+  let nextNativeId = 1_000_000_410;
+  let attachCount = 0;
+  const runtime = {
+    async listTabs() {
+      return { tabs: [{ targetId: "selected-target" }] };
+    },
+    sendCDPMessage(payload) {
+      const request = JSON.parse(payload);
+      let result = {};
+      if (request.method === "Target.getTargetInfo") {
+        result = {
+          targetInfo: {
+            targetId: "selected-target",
+            type: "page",
+            url: "https://example.test/",
+          },
+        };
+      } else if (request.method === "Target.attachToTarget") {
+        attachCount += 1;
+        result = { sessionId: `selected-session-${attachCount}` };
+      } else if (request.method === "Target.detachFromTarget") {
+        queueMicrotask(() => {
+          runtime.onCDPMessage(
+            JSON.stringify({
+              method: "Target.detachedFromTarget",
+              params: {
+                targetId: "selected-target",
+                sessionId: request.params.sessionId,
+              },
+            }),
+          );
+        });
+      }
+      queueMicrotask(() => {
+        runtime.onCDPMessage(JSON.stringify({ id: request.id, result }));
+      });
+    },
+  };
+  const transport = egoTransport.createEgoCdpTransport(runtime, {
+    targetIds: ["selected-target"],
+    allocateMessageId: () => nextNativeId++,
+  });
+
+  transport.send({
+    id: 46,
+    method: "Target.setAutoAttach",
+    params: {
+      autoAttach: true,
+      waitForDebuggerOnStart: true,
+      flatten: true,
+    },
+  });
+  for (let index = 0; index < 6; index += 1) await waitForImmediate();
+  await transport.closeAndWait();
+
+  assert.equal(attachCount, 1);
   assert.equal(transport.closed, true);
 });
 

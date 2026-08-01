@@ -179,9 +179,36 @@ export const webTestSiteCases = [
       assertIncludes(independentPage.url(), "/tests/navigation/destination", "BrowserContext opens the independent destination route");
       assertEqual(await independentPage.getByRole("heading", { name: "Launch in two measured phases." }).count(), 1, "independent Page renders the decision record");
       await independentPage.close();
-      const currentPageHref = await page.locator("#same-page-link").getAttribute("href");
-      await page.goto(baseUrl + currentPageHref, { waitUntil: "load", timeout: 10_000 });
-      assertIncludes(page.url(), "/tests/navigation/destination", "Page.goto follows the current-page reference");
+
+      const slowPage = await task.context.newPage();
+      await slowPage.goto(baseUrl + "/tests/navigation/slow-load", {
+        waitUntil: "domcontentloaded",
+        timeout: 5_000,
+      });
+      assertEqual(await slowPage.title(), "Committed before load", "Page.goto resolves at DOMContentLoaded while a resource still blocks load");
+      assertEqual(await slowPage.evaluate(() => document.readyState), "interactive", "slow fixture has not reached the load lifecycle");
+      await slowPage.waitForLoadState("load", { timeout: 15_000 });
+      assertEqual(await slowPage.evaluate(() => document.readyState), "complete", "native lifecycle still reports a load that completes after the synthesis window");
+      await slowPage.close();
+
+      await Promise.all([
+        page.waitForURL("**/tests/navigation/destination?source=select", {
+          waitUntil: "load",
+          timeout: 5_000,
+        }),
+        page.getByLabel("Decision route").selectOption("select"),
+      ]);
+      assertIncludes(page.url(), "source=select", "waitForURL observes selectOption navigation through load");
+      assertIncludes(await page.locator("#destination-status").textContent(), "complete decision record", "selectOption reaches the destination document");
+
+      await page.goto(baseUrl + "/tests/navigation", { waitUntil: "load", timeout: 10_000 });
+      await page.locator("#same-page-link").click();
+      assertIncludes(page.url(), "source=click", "Locator.click waits for its same-page navigation");
+      assertIncludes(await page.locator("#destination-status").textContent(), "complete decision record", "click reaches the destination document");
+
+      await page.goto(baseUrl + "/tests/navigation", { waitUntil: "load", timeout: 10_000 });
+      await page.getByLabel("Open decision record").press("Enter");
+      assertIncludes(page.url(), "source=enter", "Locator.press waits for its form navigation");
       assertIncludes(await page.locator("#destination-status").textContent(), "complete decision record", "destination provides an authoritative navigation signal");
     `,
   ),

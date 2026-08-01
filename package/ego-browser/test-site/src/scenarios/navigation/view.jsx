@@ -26,13 +26,31 @@ export default function NavigationSurface() {
             <span>PINNED REFERENCES</span>
             <strong>Continue from the current context</strong>
           </div>
-          <button class="quiet-action">+ New reference</button>
+          <label>
+            Decision route
+            <select
+              defaultValue=""
+              onchange="if(this.value) location.href='/tests/navigation/destination?source='+encodeURIComponent(this.value)"
+            >
+              <option value="" disabled>
+                Choose route
+              </option>
+              <option value="select">Decision record</option>
+            </select>
+          </label>
         </div>
+        <form action="/tests/navigation/destination" method="get">
+          <input type="hidden" name="source" value="enter" />
+          <label>
+            Open decision record
+            <input name="reference" value="DR-024" />
+          </label>
+        </form>
         <div class="reference-list">
           <a
             id="same-page-link"
             class="reference-row"
-            href="/tests/navigation/destination"
+            href="/tests/navigation/destination?source=click"
           >
             <span>01</span>
             <div>

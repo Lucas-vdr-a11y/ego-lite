@@ -35,6 +35,14 @@ type PageRoute = {
   generation: number;
   state: "attached" | "navigating" | "rebinding" | "closed";
   replayCommands: Map<string, ReplayCommand>;
+  passiveNavigation?: {
+    key: string;
+    generation: number;
+    nativeFrameId: string;
+    loaderId?: string;
+    lifecycleNames: Set<string>;
+    frameStopped: boolean;
+  };
 };
 
 export class EgoCdpTransport {
@@ -51,6 +59,7 @@ export class EgoCdpTransport {
       clientId: unknown;
       method: unknown;
       clientSessionId?: string;
+      nativeSessionId?: string;
     }
   >();
   readonly #internalRequests = new Map<
@@ -184,6 +193,7 @@ export class EgoCdpTransport {
       clientId: message.id,
       method: message.method,
       clientSessionId,
+      nativeSessionId: route?.nativeSessionId,
     });
     this.#updatePendingWork();
     try {
@@ -260,6 +270,7 @@ export class EgoCdpTransport {
         500,
       ).catch(() => undefined);
       for (const sessionId of sessionIds) {
+        this.#internallyDetachedSessions.add(sessionId);
         await this.#sendNativeCommand(
           "Target.detachFromTarget",
           { sessionId },
@@ -306,6 +317,7 @@ export class EgoCdpTransport {
       return;
     }
     if (this.#isRetiredSessionEvent(message)) return;
+    if (this.#rebindDetachedRoute(message)) return;
     if (!this.#acceptEvent(message)) {
       if (
         this.#activeOperations > 0 &&
@@ -322,10 +334,230 @@ export class EgoCdpTransport {
         ? this.#routesByNativeSession.get(message.sessionId)
         : undefined;
     if (route) {
+      this.#observeRouteEvent(message, route);
       message.sessionId = route.clientSessionId;
       rewriteIncomingProtocolMessage(message, route);
     }
     this.#deliverEvent(message);
+  }
+
+  #rebindDetachedRoute(message: any) {
+    if (
+      message.method !== "Target.detachedFromTarget" ||
+      typeof this.#runtime.listTabs !== "function"
+    ) {
+      return false;
+    }
+    const nativeSessionId = message.params?.sessionId;
+    if (
+      typeof nativeSessionId !== "string" ||
+      this.#internallyDetachedSessions.has(nativeSessionId)
+    ) {
+      return false;
+    }
+    const route = this.#routesByNativeSession.get(nativeSessionId);
+    if (!route || route.state !== "attached") return false;
+
+    this.#rejectPendingSessionCommands(nativeSessionId, route.clientSessionId);
+    route.state = "rebinding";
+    this.#retiredNativeSessions.add(nativeSessionId);
+    this.#activeOperations += 1;
+    this.#updatePendingWork();
+    void (async () => {
+      try {
+        const listed = await this.#runtime.listTabs!();
+        const tabs = listed?.tabs || listed?.targetInfos || [];
+        if (!tabs.some((tab) => tab.targetId === route.nativeTargetId)) {
+          this.#deliverDetachedRoute(route);
+          return;
+        }
+
+        const nativeTargetId = route.nativeTargetId;
+        const nativeMainFrameId = route.nativeMainFrameId;
+        const { sessionId: replacementSessionId } =
+          await this.#attachNativeTarget(nativeTargetId);
+        this.#replaceNativeRoute(
+          route,
+          nativeTargetId,
+          replacementSessionId,
+          nativeMainFrameId,
+        );
+        for (const command of route.replayCommands.values()) {
+          if (command.method === "Runtime.runIfWaitingForDebugger") continue;
+          this.#sendNativeFireAndForget(
+            command.method,
+            rewriteOutgoingProtocolParams(command.params, route),
+            replacementSessionId,
+          );
+        }
+        this.#sendNativeFireAndForget(
+          "Runtime.runIfWaitingForDebugger",
+          {},
+          replacementSessionId,
+        );
+        route.state = "attached";
+        this.#emit({
+          method: "Runtime.executionContextsCleared",
+          params: {},
+          sessionId: route.clientSessionId,
+        });
+        this.#flushDeferredEvents();
+      } catch {
+        this.#deliverDetachedRoute(route);
+      }
+    })().finally(() => {
+      this.#activeOperations -= 1;
+      this.#updatePendingWork();
+    });
+    return true;
+  }
+
+  #rejectPendingSessionCommands(
+    nativeSessionId: string,
+    clientSessionId: string,
+  ) {
+    let changed = false;
+    for (const [nativeId, pending] of this.#pendingIds) {
+      if (pending.nativeSessionId !== nativeSessionId) continue;
+      this.#pendingIds.delete(nativeId);
+      changed = true;
+      this.#emit({
+        id: pending.clientId,
+        error: {
+          code: -32_000,
+          message: "native CDP session detached during the command",
+        },
+        sessionId: pending.clientSessionId || clientSessionId,
+      });
+    }
+    if (changed) this.#updatePendingWork();
+  }
+
+  #deliverDetachedRoute(route: PageRoute) {
+    const clientSessionId = route.clientSessionId;
+    const clientTargetId = route.clientTargetId;
+    this.#removeRoute(route);
+    this.#targetIds?.delete(clientTargetId);
+    this.#deliverEvent({
+      method: "Target.detachedFromTarget",
+      params: {
+        sessionId: clientSessionId,
+        targetId: clientTargetId,
+      },
+    });
+  }
+
+  #observeRouteEvent(message: any, route: PageRoute) {
+    if (message.method === "Page.frameNavigated") {
+      const frame = message.params?.frame;
+      if (
+        frame?.parentId === undefined &&
+        typeof frame?.id === "string" &&
+        route.state === "attached"
+      ) {
+        route.nativeMainFrameId = frame.id;
+        route.clientMainFrameId ||= frame.id;
+        const key = `${frame.id}\0${frame.loaderId || ""}\0${frame.url || ""}`;
+        if (route.passiveNavigation?.key === key) return;
+        route.passiveNavigation = {
+          key,
+          generation: route.generation,
+          nativeFrameId: frame.id,
+          loaderId:
+            typeof frame.loaderId === "string" ? frame.loaderId : undefined,
+          lifecycleNames: new Set(),
+          frameStopped: false,
+        };
+        this.#completePassiveNavigation(route, frame, key);
+      }
+      return;
+    }
+
+    const navigation = route.passiveNavigation;
+    if (!navigation) return;
+    if (message.method === "Page.lifecycleEvent") {
+      const frameId = message.params?.frameId;
+      const loaderId = message.params?.loaderId;
+      if (
+        frameId === navigation.nativeFrameId &&
+        (typeof loaderId !== "string" || loaderId === navigation.loaderId) &&
+        typeof message.params?.name === "string"
+      ) {
+        navigation.lifecycleNames.add(message.params.name);
+      }
+    } else if (
+      message.method === "Page.frameStoppedLoading" &&
+      message.params?.frameId === navigation.nativeFrameId
+    ) {
+      navigation.frameStopped = true;
+    }
+  }
+
+  #completePassiveNavigation(route: PageRoute, frame: any, key: string) {
+    this.#activeOperations += 1;
+    this.#updatePendingWork();
+    void (async () => {
+      const deadline = Date.now() + 8_000;
+      do {
+        if (
+          this.closed ||
+          route.state !== "attached" ||
+          route.generation !== route.passiveNavigation?.generation ||
+          route.passiveNavigation.key !== key
+        ) {
+          return;
+        }
+        const readyState = await this.#sendNativeCommand(
+          "Runtime.evaluate",
+          {
+            expression: "document.readyState",
+            returnByValue: true,
+          },
+          route.nativeSessionId,
+          1_000,
+        ).catch(() => undefined);
+        const readyStateValue = readyState?.result?.value;
+        const navigation = route.passiveNavigation;
+        if (!navigation || navigation.key !== key) return;
+        const frameId = route.clientMainFrameId || frame.id;
+        const lifecycle = (name: string) => {
+          if (navigation.lifecycleNames.has(name)) return;
+          navigation.lifecycleNames.add(name);
+          this.#emit({
+            method: "Page.lifecycleEvent",
+            params: {
+              frameId,
+              loaderId: frame.loaderId || "",
+              name,
+              timestamp: Date.now() / 1_000,
+            },
+            sessionId: route.clientSessionId,
+          });
+        };
+        if (
+          readyStateValue === "interactive" ||
+          readyStateValue === "complete"
+        ) {
+          lifecycle("DOMContentLoaded");
+        }
+        if (readyStateValue === "complete") {
+          lifecycle("load");
+          if (!navigation.frameStopped) {
+            navigation.frameStopped = true;
+            this.#emit({
+              method: "Page.frameStoppedLoading",
+              params: { frameId },
+              sessionId: route.clientSessionId,
+            });
+          }
+          return;
+        }
+        await new Promise<void>((resolve) => setTimeout(resolve, 10));
+      } while (Date.now() < deadline);
+    })().finally(() => {
+      this.#activeOperations -= 1;
+      this.#updatePendingWork();
+    });
   }
 
   #deliverEvent(message: any) {
@@ -377,6 +609,7 @@ export class EgoCdpTransport {
       if (this.#manuallyAttachingTargets.has(targetInfo?.targetId)) {
         return false;
       }
+      if (this.#routesByNativeTarget.has(targetInfo?.targetId)) return false;
       if (
         this.#sessionsByTarget.get(targetInfo?.targetId) ===
         message.params?.sessionId
@@ -667,7 +900,7 @@ export class EgoCdpTransport {
         {},
         replacementSessionId,
       );
-      const { frame, readyStateValue } = await this.#waitForNavigationReady(
+      const frame = await this.#waitForNavigationCommit(
         replacementSessionId,
         url,
         previousFrame,
@@ -720,22 +953,18 @@ export class EgoCdpTransport {
         );
       }
 
-      const lifecycle = (name: string) =>
-        this.#emit({
-          method: "Page.lifecycleEvent",
-          params: {
-            frameId: clientFrameId,
-            loaderId: frame.loaderId || "",
-            name,
-            timestamp: Date.now() / 1_000,
-          },
-          sessionId: route.clientSessionId,
-        });
-      if (readyStateValue === "interactive" || readyStateValue === "complete") {
-        lifecycle("DOMContentLoaded");
-      }
-      if (readyStateValue === "complete") lifecycle("load");
       route.state = "attached";
+      const navigationKey = `${frame.id}\0${frame.loaderId || ""}\0${frame.url || ""}`;
+      route.passiveNavigation = {
+        key: navigationKey,
+        generation: route.generation,
+        nativeFrameId: frame.id,
+        loaderId:
+          typeof frame.loaderId === "string" ? frame.loaderId : undefined,
+        lifecycleNames: new Set(),
+        frameStopped: false,
+      };
+      this.#completePassiveNavigation(route, frame, navigationKey);
     })()
       .catch((error) => {
         if (route.nativeSessionId === previousNativeSessionId) {
@@ -754,7 +983,7 @@ export class EgoCdpTransport {
       });
   }
 
-  async #waitForNavigationReady(
+  async #waitForNavigationCommit(
     sessionId: string,
     requestedUrl: string,
     previousFrame?: { loaderId?: string; url?: string },
@@ -763,8 +992,8 @@ export class EgoCdpTransport {
     const deadline = Date.now() + timeoutMs;
     const stableForMs = 50;
     let lastFrame: any;
-    let readyCandidateKey: string | undefined;
-    let readyCandidateSince = 0;
+    let commitCandidateKey: string | undefined;
+    let commitCandidateSince = 0;
     do {
       if (this.closed) throw new Error("Ego CDP transport is closed");
       const frameTree = await this.#sendNativeCommand(
@@ -783,34 +1012,20 @@ export class EgoCdpTransport {
           (frameUrl !== previousFrame?.url ||
             frame?.loaderId !== previousFrame?.loaderId));
       if (committed) {
-        const readyState = await this.#sendNativeCommand(
-          "Runtime.evaluate",
-          {
-            expression: "document.readyState",
-            returnByValue: true,
-          },
-          sessionId,
-          1_000,
-        ).catch(() => undefined);
-        const readyStateValue = readyState?.result?.value;
-        if (readyStateValue === "complete") {
-          const candidateKey = `${frame.loaderId || ""}\0${frameUrl}`;
-          if (candidateKey !== readyCandidateKey) {
-            readyCandidateKey = candidateKey;
-            readyCandidateSince = Date.now();
-          } else if (Date.now() - readyCandidateSince >= stableForMs) {
-            return { frame, readyStateValue };
-          }
-        } else {
-          readyCandidateKey = undefined;
+        const candidateKey = `${frame.loaderId || ""}\0${frameUrl}`;
+        if (candidateKey !== commitCandidateKey) {
+          commitCandidateKey = candidateKey;
+          commitCandidateSince = Date.now();
+        } else if (Date.now() - commitCandidateSince >= stableForMs) {
+          return frame;
         }
       } else {
-        readyCandidateKey = undefined;
+        commitCandidateKey = undefined;
       }
       await new Promise<void>((resolve) => setTimeout(resolve, 10));
     } while (Date.now() < deadline);
     throw new Error(
-      `navigation did not reach a loaded document: ${lastFrame?.url || requestedUrl}`,
+      `navigation did not commit: ${lastFrame?.url || requestedUrl}`,
     );
   }
 
