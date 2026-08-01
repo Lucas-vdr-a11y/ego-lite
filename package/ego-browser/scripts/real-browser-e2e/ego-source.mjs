@@ -19,6 +19,7 @@ export function egoSource(body, context) {
     ffprobePath,
     metadataPath,
     keepTaskSpace,
+    caseResultPath,
   } = context;
   return `
     ${preamble}
@@ -39,16 +40,17 @@ export function egoSource(body, context) {
     const ffprobePath = ${JSON.stringify(ffprobePath)};
     const metadataPath = ${JSON.stringify(metadataPath)};
     const keepTaskSpace = ${JSON.stringify(keepTaskSpace)};
+    const caseResultPath = ${JSON.stringify(caseResultPath)};
     if (ffmpegPath) process.env.EGO_BROWSER_FFMPEG_PATH = ffmpegPath;
     if (ffprobePath) process.env.EGO_BROWSER_FFPROBE_PATH = ffprobePath;
 
     try {
       ${body}
       console.log(JSON.stringify({ ok: true, assertions: __assertionCount }));
-      await writeFile(join(tempDir, "case-result.json"), JSON.stringify({ ok: true, assertions: __assertionCount }));
+      await writeFile(caseResultPath, JSON.stringify({ ok: true, assertions: __assertionCount }));
     } catch (error) {
       console.log(JSON.stringify({ ok: false, assertions: __assertionCount, error: error.message }));
-      await writeFile(join(tempDir, "case-result.json"), JSON.stringify({ ok: false, assertions: __assertionCount, error: error.message })).catch(() => {});
+      await writeFile(caseResultPath, JSON.stringify({ ok: false, assertions: __assertionCount, error: error.message })).catch(() => {});
       error.message = ${JSON.stringify("real browser e2e")} + ": " + error.message;
       throw error;
     }

@@ -6,9 +6,12 @@
   "bin": {
     "ego-browser": "./dist/out/index.js"
   },
+  "workspaces": [
+    "test-site"
+  ],
   "scripts": {
     "clean": "rm -rf dist artifacts",
-    "build": "node scripts/build.mjs",
+    "build": "node scripts/build.mjs && npm --workspace ego-browser-test-site run build",
     "e2e": "node scripts/run-real-browser-e2e.mjs",
     "e2e:native-close": "EGO_BROWSER_REAL_E2E_ONLY='native task space close regression' node scripts/run-real-browser-e2e.mjs",
     "prepare": "if [ \"$CI\" = \"true\" ]; then exit 0; fi; cd ../.. && lefthook install",

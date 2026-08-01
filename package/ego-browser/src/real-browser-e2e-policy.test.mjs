@@ -3,8 +3,25 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 import * as runner from "../scripts/real-browser-e2e/runner.mjs";
+import { egoSource } from "../scripts/real-browser-e2e/ego-source.mjs";
 import { taskSpaceCase } from "../scripts/real-browser-e2e/cases/task-space.mjs";
 import { e2eCases } from "../scripts/real-browser-e2e/cases/index.mjs";
+
+const expectedWebTestRoutes = [
+  "/tests/clicks",
+  "/tests/hover",
+  "/tests/drag-drop",
+  "/tests/canvas",
+  "/tests/forms",
+  "/tests/keyboard",
+  "/tests/uploads",
+  "/tests/scroll",
+  "/tests/navigation",
+  "/tests/dialogs",
+  "/tests/downloads",
+  "/tests/frames",
+  "/tests/network",
+];
 
 test("real-browser e2e preserves an explicitly requested task space", () => {
   assert.equal(typeof runner.createCaseContext, "function");
@@ -38,8 +55,76 @@ test("real-browser e2e accepts the local CDP bridge when the host has no endpoin
   );
 });
 
+test("real-browser e2e lets each embedded Node round settle before starting the next case", async () => {
+  assert.equal(typeof runner.waitForNodeRoundToSettle, "function");
+  const startedAt = Date.now();
+  await runner.waitForNodeRoundToSettle(10);
+  assert.ok(Date.now() - startedAt >= 5);
+});
+
+test("real-browser e2e partitions website cases across two independent TaskSpaces", () => {
+  const cases = ["a", "b", "c", "d", "e"];
+  assert.deepEqual(runner.partitionE2eCases(cases, 2), [
+    ["a", "c", "e"],
+    ["b", "d"],
+  ]);
+  assert.deepEqual(
+    runner.partitionE2eCases(
+      [
+        { name: "left", parallelLane: 0 },
+        { name: "right", parallelLane: 1 },
+        { name: "left-again", parallelLane: 0 },
+      ],
+      2,
+    ),
+    [
+      [
+        { name: "left", parallelLane: 0 },
+        { name: "left-again", parallelLane: 0 },
+      ],
+      [{ name: "right", parallelLane: 1 }],
+    ],
+  );
+  assert.deepEqual(runner.parallelTaskSpaceNames("suite", 2), [
+    "suite web lane 1",
+    "suite web lane 2",
+  ]);
+});
+
+test("parallel real-browser cases write isolated result files", () => {
+  const source = egoSource("console.log('case')", {
+    caseResultPath: "/tmp/e2e-results/case-7.json",
+  });
+  assert.match(source, /caseResultPath = "\/tmp\/e2e-results\/case-7\.json"/);
+  assert.doesNotMatch(source, /join\(tempDir, "case-result\.json"\)/);
+
+  const laneSource = runner.webLaneBody(
+    [{ name: "web test: one", body: () => "assert(true, 'one')" }],
+    "/tmp/e2e-results/lane-1.json",
+  );
+  assert.match(laneSource, /runWebLaneCase\("web test: one"/);
+  assert.match(laneSource, /lane-1\.json/);
+});
+
 test("TaskSpace context lifecycle runs before existing real-browser cases", () => {
   assert.equal(e2eCases[0]?.name, "TaskSpace context lifecycle");
+});
+
+test("real-browser e2e maps every dedicated test-site route to one native Playwright case", () => {
+  const webCases = e2eCases.filter((testCase) =>
+    testCase.name.startsWith("web test: "),
+  );
+
+  assert.deepEqual(
+    webCases.map((testCase) => testCase.route),
+    expectedWebTestRoutes,
+  );
+  for (const testCase of webCases) {
+    const source = testCase.body();
+    assert.match(source, /task\.page/);
+    assert.match(source, new RegExp(JSON.stringify(testCase.route)));
+    assert.doesNotMatch(source, /task\.tabs|openOrReuse/);
+  }
 });
 
 test("TaskSpace context lifecycle covers isolation and stale Playwright handles", () => {

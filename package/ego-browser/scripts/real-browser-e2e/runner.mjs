@@ -63,6 +63,71 @@ export function nodeBridgeSupportsPlaywright(probe) {
   );
 }
 
+export async function waitForNodeRoundToSettle(delayMs = 300) {
+  if (delayMs <= 0) return;
+  await new Promise((resolve) => setTimeout(resolve, delayMs));
+}
+
+export function partitionE2eCases(testCases, laneCount) {
+  if (!Number.isInteger(laneCount) || laneCount < 1) {
+    throw new TypeError("laneCount must be a positive integer");
+  }
+  const lanes = Array.from({ length: laneCount }, () => []);
+  testCases.forEach((testCase, index) => {
+    const explicitLane = Number.isInteger(testCase?.parallelLane)
+      ? testCase.parallelLane
+      : undefined;
+    lanes[(explicitLane ?? index) % laneCount].push(testCase);
+  });
+  return lanes;
+}
+
+export function parallelTaskSpaceNames(taskName, laneCount) {
+  return Array.from(
+    { length: laneCount },
+    (_, index) => `${taskName} web lane ${index + 1}`,
+  );
+}
+
+export function webLaneBody(testCases, reportPath) {
+  const executions = testCases
+    .map(
+      (testCase) => `
+        await runWebLaneCase(${JSON.stringify(testCase.name)}, async () => {
+          ${testCase.body()}
+        });
+      `,
+    )
+    .join("\n");
+  return `
+    const webLaneResults = [];
+    async function runWebLaneCase(name, run) {
+      const startedAt = Date.now();
+      const assertionsBefore = __assertionCount;
+      try {
+        await run();
+        webLaneResults.push({
+          name,
+          status: "pass",
+          durationMs: Date.now() - startedAt,
+          assertions: __assertionCount - assertionsBefore,
+        });
+      } catch (error) {
+        webLaneResults.push({
+          name,
+          status: "fail",
+          durationMs: Date.now() - startedAt,
+          assertions: __assertionCount - assertionsBefore,
+          message: error?.message || String(error),
+        });
+      }
+      await writeFile(${JSON.stringify(reportPath)}, JSON.stringify(webLaneResults));
+    }
+    ${executions}
+    await writeFile(${JSON.stringify(reportPath)}, JSON.stringify(webLaneResults));
+  `;
+}
+
 export async function runRealBrowserE2e() {
   const keepTaskSpace =
     process.env.EGO_BROWSER_REAL_E2E_KEEP === "1" ||
@@ -94,6 +159,7 @@ export async function runRealBrowserE2e() {
   let summaryPrinted = false;
   const context = {};
   const caseResults = [];
+  let nextCaseResultId = 0;
 
   function recordResult(name, status, durationMs, assertionCount, message) {
     caseResults.push({ name, status, durationMs, assertionCount, message });
@@ -159,12 +225,23 @@ export async function runRealBrowserE2e() {
   async function runEgoCase(name, body, timeoutMs = 45000, options = {}) {
     const visible = options.visible !== false;
     if (visible) console.log(`-- ${name}`);
-    const source = egoSource(body, createCaseContext(context, keepTaskSpace));
+    const resultPath = join(tempDir, `case-result-${nextCaseResultId++}.json`);
+    const source = egoSource(
+      body,
+      createCaseContext(
+        {
+          ...context,
+          ...options.context,
+          caseResultPath: resultPath,
+        },
+        keepTaskSpace,
+      ),
+    );
     const startedAt = Date.now();
     const processBefore = await egoLiteProcessIds();
     let commandStdout = "";
     let processAfter = null;
-    await rm(caseResultPath(tempDir), { force: true });
+    await rm(resultPath, { force: true });
     try {
       const { stdout } = await runCommand("ego-browser", egoBrowserArgs, {
         cwd: packageDir,
@@ -175,7 +252,7 @@ export async function runRealBrowserE2e() {
       });
       commandStdout = stdout;
       const durationMs = Date.now() - startedAt;
-      const caseResult = await readCaseResult(tempDir, stdout);
+      const caseResult = await readCaseResult(resultPath, stdout);
       if (!caseResult.ok) {
         const error = new Error(caseResult.error);
         error.stdout = stdout;
@@ -196,12 +273,21 @@ export async function runRealBrowserE2e() {
         throw error;
       }
       const assertions = caseResult.assertions;
-      recordResult(name, "pass", durationMs, assertions);
+      const result = {
+        name,
+        status: "pass",
+        durationMs,
+        assertionCount: assertions,
+      };
+      if (options.record !== false) {
+        recordResult(name, "pass", durationMs, assertions);
+      }
       if (visible) {
         console.log(
           `-- ${name} passed (${formatDuration(durationMs)}, ${assertions} assertions)`,
         );
       }
+      return result;
     } catch (error) {
       const durationMs = Date.now() - startedAt;
       processAfter ??= await egoLiteProcessIds();
@@ -209,7 +295,7 @@ export async function runRealBrowserE2e() {
         error?.browserDisconnected ||
         browserProcessChanged(processBefore, processAfter);
       const caseResult = await readCaseResult(
-        tempDir,
+        resultPath,
         error?.stdout || commandStdout,
       );
       const message = disconnected
@@ -218,7 +304,16 @@ export async function runRealBrowserE2e() {
           ? caseResult.error
           : error?.message || String(error);
       const assertions = caseResult.assertions;
-      recordResult(name, "fail", durationMs, assertions, message);
+      const result = {
+        name,
+        status: "fail",
+        durationMs,
+        assertionCount: assertions,
+        message,
+      };
+      if (options.record !== false) {
+        recordResult(name, "fail", durationMs, assertions, message);
+      }
       if (visible) {
         console.error(
           `[FAIL] ${name} (${formatDuration(durationMs)}): ${message}`,
@@ -226,36 +321,155 @@ export async function runRealBrowserE2e() {
       } else {
         console.error(`[${name}] ${message}`);
       }
+      return result;
     }
   }
 
-  async function maybeRunEgoCase(testCase, timeoutMs = 45000) {
+  async function maybeRunEgoCase(testCase, timeoutMs = 45000, options = {}) {
     if (!shouldRunE2eCase(testCase, onlyCases)) {
       console.log(`-- ${testCase.name} (skipped)`);
       recordResult(testCase.name, "skip", 0, 0);
       return;
     }
-    await runEgoCase(testCase.name, testCase.body(), timeoutMs, {
-      crashGraceMs: testCase.crashGraceMs,
-    });
+    try {
+      await runEgoCase(testCase.name, testCase.body(), timeoutMs, {
+        crashGraceMs: testCase.crashGraceMs,
+        context: options.context,
+      });
+    } finally {
+      await waitForNodeRoundToSettle();
+    }
   }
 
-  async function cleanupTaskSpace() {
+  async function runWebCasesInParallel(testCases, taskSpaceNames) {
+    const runnableCases = [];
+    for (const testCase of testCases) {
+      if (shouldRunE2eCase(testCase, onlyCases)) {
+        runnableCases.push(testCase);
+      } else {
+        console.log(`-- ${testCase.name} (skipped)`);
+        recordResult(testCase.name, "skip", 0, 0);
+      }
+    }
+    const lanes = partitionE2eCases(runnableCases, taskSpaceNames.length);
+    await Promise.all(
+      lanes.map(async (lane, index) => {
+        if (lane.length === 0) return;
+        const laneName = `web lane ${index + 1}`;
+        const laneReportPath = join(
+          tempDir,
+          `${laneName.replaceAll(" ", "-")}.json`,
+        );
+        await rm(laneReportPath, { force: true });
+        console.log(
+          `-- ${laneName}: ${lane.map((testCase) => testCase.name).join(", ")}`,
+        );
+        const laneResult = await runEgoCase(
+          laneName,
+          webLaneBody(lane, laneReportPath),
+          90000,
+          {
+            visible: false,
+            record: false,
+            context: { taskName: taskSpaceNames[index] },
+          },
+        );
+        if (laneResult.status === "fail") {
+          let completedResults = [];
+          try {
+            completedResults = JSON.parse(
+              await readFile(laneReportPath, "utf8"),
+            );
+          } catch {
+            // The lane exited before its first page completed.
+          }
+          const completedByName = new Map(
+            completedResults.map((result) => [result.name, result]),
+          );
+          for (const testCase of lane) {
+            const completed = completedByName.get(testCase.name);
+            if (completed) {
+              recordResult(
+                completed.name,
+                completed.status,
+                completed.durationMs,
+                completed.assertions,
+                completed.message,
+              );
+              const output = `-- ${completed.name} ${completed.status === "pass" ? "passed" : "failed"} (${formatDuration(completed.durationMs)}, ${completed.assertions} assertions)`;
+              if (completed.status === "pass") console.log(output);
+              else console.error(`[FAIL] ${output}: ${completed.message}`);
+            } else {
+              recordResult(
+                testCase.name,
+                "fail",
+                laneResult.durationMs,
+                0,
+                laneResult.message,
+              );
+              console.error(`[FAIL] ${testCase.name}: ${laneResult.message}`);
+            }
+          }
+          await waitForNodeRoundToSettle();
+          return;
+        }
+        let laneCaseResults;
+        try {
+          laneCaseResults = JSON.parse(await readFile(laneReportPath, "utf8"));
+        } catch (error) {
+          laneCaseResults = lane.map((testCase) => ({
+            name: testCase.name,
+            status: "fail",
+            durationMs: laneResult.durationMs,
+            assertions: 0,
+            message: `web lane result was not written: ${error?.message || error}`,
+          }));
+        }
+        for (const result of laneCaseResults) {
+          recordResult(
+            result.name,
+            result.status,
+            result.durationMs,
+            result.assertions,
+            result.message,
+          );
+          const output = `-- ${result.name} ${result.status === "pass" ? "passed" : "failed"} (${formatDuration(result.durationMs)}, ${result.assertions} assertions)`;
+          if (result.status === "pass") console.log(output);
+          else console.error(`[FAIL] ${output}: ${result.message}`);
+        }
+        await waitForNodeRoundToSettle();
+      }),
+    );
+  }
+
+  async function cleanupTaskSpaces() {
+    const cleanupNames = context.cleanupTaskSpaceNames || [context.taskName];
     await runEgoCase(
       "task-space cleanup",
       `
-        try {
-          if (keepTaskSpace) {
-            await egoBrowser.completeTaskSpace(taskName);
-          } else {
-            await egoBrowser.closeTaskSpace(taskName);
-          }
-          console.log(JSON.stringify({ cleanup: true }));
-        } catch (error) {
-          if (!String(error?.message || error).includes("task space not found")) {
-            throw error;
+        const cleanupNames = ${JSON.stringify(cleanupNames)};
+        for (const cleanupName of cleanupNames) {
+          try {
+            const result = keepTaskSpace
+              ? await egoBrowser.completeTaskSpace(cleanupName)
+              : await egoBrowser.closeTaskSpace(cleanupName);
+            if (result?.done !== true) {
+              throw new Error("task space cleanup did not complete: " + cleanupName);
+            }
+          } catch (error) {
+            if (!String(error?.message || error).includes("task space not found")) {
+              throw error;
+            }
           }
         }
+        if (!keepTaskSpace) {
+          const remaining = await egoBrowser.listTaskSpaces();
+          const leaked = remaining.filter((space) => cleanupNames.includes(space.name));
+          if (leaked.length > 0) {
+            throw new Error("task space cleanup leaked: " + leaked.map((space) => space.name).join(", "));
+          }
+        }
+        console.log(JSON.stringify({ cleanup: true, taskSpaces: cleanupNames }));
       `,
       20000,
       { visible: false, crashGraceMs: 300 },
@@ -285,6 +499,7 @@ export async function runRealBrowserE2e() {
     const taskName = `ego-lite real browser e2e ${Date.now()}-${Math.random()
       .toString(16)
       .slice(2)}`;
+    const webTaskSpaceNames = parallelTaskSpaceNames(taskName, 2);
 
     Object.assign(context, {
       artifactDir,
@@ -297,6 +512,8 @@ export async function runRealBrowserE2e() {
       tempDir,
       uploadPath,
       uploadPathTwo,
+      webTaskSpaceNames,
+      cleanupTaskSpaceNames: [taskName, ...webTaskSpaceNames],
     });
 
     await mkdir(artifactDir, { recursive: true });
@@ -326,7 +543,20 @@ export async function runRealBrowserE2e() {
       return;
     }
 
-    for (const testCase of e2eCases) {
+    const firstWebCaseIndex = e2eCases.findIndex((testCase) =>
+      testCase.name.startsWith("web test: "),
+    );
+    const lastWebCaseIndex = e2eCases.findLastIndex((testCase) =>
+      testCase.name.startsWith("web test: "),
+    );
+    for (const testCase of e2eCases.slice(0, firstWebCaseIndex)) {
+      await maybeRunEgoCase(testCase);
+    }
+    await runWebCasesInParallel(
+      e2eCases.slice(firstWebCaseIndex, lastWebCaseIndex + 1),
+      webTaskSpaceNames,
+    );
+    for (const testCase of e2eCases.slice(lastWebCaseIndex + 1)) {
       await maybeRunEgoCase(testCase);
     }
   } catch (error) {
@@ -334,7 +564,7 @@ export async function runRealBrowserE2e() {
     process.exitCode = error?.code === "ENOENT" ? 127 : 1;
   } finally {
     if (context.taskName && !context.skipCleanup) {
-      await cleanupTaskSpace().catch((error) => {
+      await cleanupTaskSpaces().catch((error) => {
         const message = error?.message || String(error);
         recordResult("task-space cleanup", "fail", 0, 0, message);
         console.error(`[task-space cleanup] ${message}`);
@@ -467,16 +697,11 @@ function parseNodeBridgeSmoke(stdout, marker) {
   }
 }
 
-function caseResultPath(tempDir) {
-  return join(tempDir, "case-result.json");
+async function readCaseAssertionCount(resultPath, stdout) {
+  return (await readCaseResult(resultPath, stdout)).assertions;
 }
 
-async function readCaseAssertionCount(tempDir, stdout) {
-  return (await readCaseResult(tempDir, stdout)).assertions;
-}
-
-async function readCaseResult(tempDir, stdout) {
-  const resultPath = caseResultPath(tempDir);
+async function readCaseResult(resultPath, stdout) {
   try {
     const raw = await readFile(resultPath, "utf8");
     const parsed = JSON.parse(raw);
@@ -518,6 +743,18 @@ function formatDuration(ms) {
 }
 
 function printSummary(results, totalMs) {
+  const resultOrder = new Map(
+    [
+      "nodejs bridge smoke",
+      ...e2eCases.map((testCase) => testCase.name),
+      "task-space cleanup",
+    ].map((name, index) => [name, index]),
+  );
+  results = [...results].sort(
+    (left, right) =>
+      (resultOrder.get(left.name) ?? Number.MAX_SAFE_INTEGER) -
+      (resultOrder.get(right.name) ?? Number.MAX_SAFE_INTEGER),
+  );
   const total = results.length;
   const passed = results.filter((r) => r.status === "pass").length;
   const failed = results.filter((r) => r.status === "fail").length;

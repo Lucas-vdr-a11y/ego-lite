@@ -31,7 +31,7 @@ export function taskSpaceCase() {
       assertEqual(typeof scratch.page.goto, "function", "TaskSpace exposes a native Playwright Page");
       assertEqual(typeof scratch.context.newPage, "function", "TaskSpace exposes a native Playwright BrowserContext");
       await scratch.page
-        .goto(baseUrl + "/secondary?task-space=scratch", {
+        .goto(baseUrl + "/tests/forms?task-space=scratch", {
           waitUntil: "load",
           timeout: 10_000,
         })
@@ -39,11 +39,11 @@ export function taskSpaceCase() {
           error.message += "; current URL: " + scratch.page.url();
           throw error;
         });
-      assertIncludes(scratch.page.url(), "/secondary", "TaskSpace Page navigates with Playwright");
+      assertIncludes(scratch.page.url(), "/tests/forms", "TaskSpace Page navigates with Playwright");
 
       const scratchByName = await egoBrowser.switchTaskSpace(scratch.name);
       assertEqual(scratchByName.id, scratch.id, "egoBrowser switches by TaskSpace name");
-      assertIncludes(scratchByName.page.url(), "/secondary", "TaskSpace preserves its Playwright Page");
+      assertIncludes(scratchByName.page.url(), "/tests/forms", "TaskSpace preserves its Playwright Page");
 
       const closed = await egoBrowser.closeTaskSpace(scratch.id);
       assertEqual(closed.done, true, "egoBrowser.closeTaskSpace reports successful scratch task destruction");

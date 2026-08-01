@@ -33,9 +33,9 @@ export function taskSpaceContextLifecycleCase() {
         const marker = "lifecycle-space=" + index;
         const primaryUrl = baseUrl + "/?" + marker + "&tab=primary";
         const persistentUrl =
-          baseUrl + "/secondary?" + marker + "&tab=persistent";
+          baseUrl + "/tests/forms?" + marker + "&tab=persistent";
         const transientUrl =
-          baseUrl + "/nav-target?" + marker + "&tab=transient";
+          baseUrl + "/tests/clicks?" + marker + "&tab=transient";
 
         assertEqual(
           task.context.pages().length,
@@ -139,7 +139,7 @@ export function taskSpaceContextLifecycleCase() {
         await primaryPage.bringToFront();
         assertEqual(
           await primaryPage.title(),
-          "ego-lite helper e2e",
+          "Ego Browser Lab",
           "the primary tab remains operable after a TaskSpace switch",
         );
         assertEqual(
@@ -149,7 +149,7 @@ export function taskSpaceContextLifecycleCase() {
         );
         assertEqual(
           await primaryPage
-            .getByRole("heading", { name: "Helper e2e fixture" })
+            .getByRole("heading", { name: "One browser behavior. One clear signal." })
             .count(),
           1,
           "native Playwright locators operate in the restored primary tab",
@@ -158,7 +158,7 @@ export function taskSpaceContextLifecycleCase() {
         await persistentPage.bringToFront();
         assertEqual(
           await persistentPage.title(),
-          "ego-lite secondary",
+          "Project request · Ego Browser Lab",
           "the second tab remains operable after a TaskSpace switch",
         );
         assertEqual(
@@ -180,7 +180,7 @@ export function taskSpaceContextLifecycleCase() {
 
         const replacementPage = await task.context.newPage();
         await replacementPage.goto(
-          baseUrl + "/nav-target?" + record.marker + "&tab=replacement",
+          baseUrl + "/tests/hover?" + record.marker + "&tab=replacement",
           { waitUntil: "load", timeout: 20_000 },
         );
         assertEqual(

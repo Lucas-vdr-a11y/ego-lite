@@ -10,22 +10,22 @@ export function playwrightTaskSpaceCase() {
       error.message += "; current URL: " + task.page.url();
       throw error;
     });
-    assertEqual(await task.page.title(), "ego-lite helper e2e", "native Playwright Page navigates the TaskSpace");
+    assertEqual(await task.page.title(), "Ego Browser Lab", "native Playwright Page navigates the TaskSpace");
     assertEqual(
-      await task.page.getByRole("heading", { name: "Helper e2e fixture" }).count(),
+      await task.page.getByRole("heading", { name: "One browser behavior. One clear signal." }).count(),
       1,
       "native Playwright Locator resolves page content",
     );
 
     const secondary = await task.context.newPage();
     try {
-      await secondary.goto(baseUrl + "/secondary", {
+      await secondary.goto(baseUrl + "/tests/forms", {
         waitUntil: "load",
         timeout: 20_000,
       });
       assertIncludes(
         secondary.url(),
-        "/secondary",
+        "/tests/forms",
         "native Playwright BrowserContext creates an independent Page",
       );
     } finally {

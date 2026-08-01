@@ -1,0 +1,13 @@
+{
+  "name": "ego-browser-test-site",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "esbuild src/server.jsx --bundle --platform=node --format=esm --jsx=automatic --jsx-import-source=hono/jsx --loader:.css=text --outfile=dist/server.mjs"
+  },
+  "dependencies": {
+    "@hono/node-server": "2.0.12",
+    "hono": "4.12.33"
+  }
+}
