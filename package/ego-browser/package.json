@@ -42,5 +42,10 @@
   "dependencies": {
     "acorn": "^8.16.0",
     "playwright-core": "1.52.0"
+  },
+  "overrides": {
+    "@hono/vite-dev-server": {
+      "@hono/node-server": "2.0.12"
+    }
   }
 }
