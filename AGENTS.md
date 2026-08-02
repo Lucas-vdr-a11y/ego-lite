@@ -36,16 +36,16 @@ Task spaces are isolated browsing contexts with an ownership model (`agent` / `u
 - Control handoff: `handOffTaskSpace` / `takeOverTaskSpace` / `waitForAgentControl`.
 
 ## Key Directories
-- `package/ego-browser/src/` — runtime, helpers, resolver, drivers, learning subsystem.
-- `package/ego-browser/src/**/*.test.mjs` — tests are colocated with the code (there is no separate `test/` directory).
-- `package/ego-browser/scripts/` — `build.mjs` (esbuild per-file → `dist/src`, rollup bundle → `dist/out/index.js`, copies `skills/ego-browser` → `dist/out/ego-browser`), `validate-site-skills.ts`, `run-e2e.sh`.
+- `package/ego-browser/src/` — runtime, helpers, resolver, drivers, learning subsystem, and colocated unit tests (`src/**/*.test.mjs`).
+- `package/ego-browser/test/` — cross-module and policy tests plus real-browser E2E cases, fixtures, runner, and test site (`test/**/*.test.js`, `test/real-browser-e2e/`).
+- `package/ego-browser/scripts/` — build and validation scripts plus the thin real-browser E2E command entrypoint.
 - `skills/ego-browser/` — agent skill package: `SKILL.md` (canonical agent-facing usage guide), `references/install.md`, `scripts/install.sh`.
 - `skills/ego-browser/learnings/` — reusable per-site experience packs (`manifest.json` + `notes/` + `tools/` + `browser-tools/`).
 
 ## Development Commands
 Run from `package/ego-browser/`:
-- `npm test` — build, typecheck, then `node --test` over `src/**/*.test.mjs`.
-- `npm run e2e` — task-space e2e suite (`src/taskspace-e2e.test.mjs`).
+- `npm test` — build, typecheck, then `node --test` over `src/**/*.test.mjs` and `test/**/*.test.js`.
+- `npm run e2e` — real-browser TaskSpace and Playwright suite (`test/real-browser-e2e/`).
 - `npm run validate:site-skills` (alias `validate:learnings`) — validate learned site skills.
 - `node dist/out/index.js <<'JS' ... JS` — run the built CLI from this checkout (requires an `ego` runtime for real browser work; `--doctor`, `--reload`, `-h` also supported).
 

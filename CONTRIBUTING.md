@@ -242,8 +242,9 @@ learnings/<site>/
 ## 8. Testing & Quality
 
 - Test framework: `node --test` with `node:assert/strict`
-- Test files: `package/ego-browser/test/*.test.js`, split by responsibility (runtime / helpers / resolver / nav-driver / site-skills / build / state ...)
-- Style: behavior-driven, using **temp workspaces + `setOverrides()`** for stub injection — no real browser launches
+- Unit tests: `package/ego-browser/src/**/*.test.mjs`, colocated with their source modules.
+- Cross-module, policy, and E2E tests: `package/ego-browser/test/**/*.test.js`; real-browser infrastructure lives in `test/real-browser-e2e/`.
+- Style: behavior-driven, using **temp workspaces + `setOverrides()`** for stub injection; run real-browser coverage separately with `npm run e2e`.
 
 **Minimum pre-submit bar**:
 
