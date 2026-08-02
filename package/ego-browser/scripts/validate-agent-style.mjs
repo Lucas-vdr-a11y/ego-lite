@@ -9,7 +9,7 @@ const paths = [
   join(packageRoot, "README.md"),
   join(repoRoot, "skills/ego-browser/SKILL.md"),
   ...listFiles(join(repoRoot, "skills/ego-browser/learnings"), ".md"),
-  ...listFiles(join(packageRoot, "scripts/real-browser-e2e/cases"), ".mjs"),
+  ...listFiles(join(packageRoot, "test/real-browser-e2e/cases"), ".mjs"),
 ];
 
 const failures = [];

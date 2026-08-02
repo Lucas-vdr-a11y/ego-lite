@@ -2,13 +2,10 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-import {
-  closeFixtureServer,
-  startFixtureServer,
-} from "../scripts/real-browser-e2e/fixture.mjs";
-import { TEST_CASES } from "../test-site/test-cases.mjs";
+import { closeFixtureServer, startFixtureServer } from "./fixture.mjs";
+import { TEST_CASES } from "./site/test-cases.mjs";
 
-const { createTestSiteApp } = await import("../test-site/dist/server.mjs");
+const { createTestSiteApp } = await import("./site/dist/server.mjs");
 
 const interactiveRoutes = [
   "clicks",
@@ -25,7 +22,7 @@ const interactiveRoutes = [
 
 test("Hono test site exposes a Vite development command", async () => {
   const packageJson = JSON.parse(
-    await readFile(new URL("../test-site/package.json", import.meta.url)),
+    await readFile(new URL("./site/package.json", import.meta.url)),
   );
 
   assert.equal(packageJson.scripts.dev, "vite");

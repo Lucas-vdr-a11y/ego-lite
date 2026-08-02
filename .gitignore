@@ -79,7 +79,7 @@ task/
 test-e2e/
 test/
 !package/ego-browser/test/
-!package/ego-browser/test/*.test.js
+!package/ego-browser/test/**
 # Local skill drafts and reference material
 skills/ego-browser/workbench/
 skills/ego-browser/SKILL.base.md

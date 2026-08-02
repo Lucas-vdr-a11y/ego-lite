@@ -1,4 +1,4 @@
-import { TEST_CASES } from "../../../test-site/test-cases.mjs";
+import { TEST_CASES } from "../site/test-cases.mjs";
 
 const secondLaneCases = new Set([
   "hover",

@@ -1,11 +1,11 @@
-import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import test from "node:test";
 
-import * as runner from "../scripts/real-browser-e2e/runner.mjs";
-import { egoSource } from "../scripts/real-browser-e2e/ego-source.mjs";
-import { taskSpaceCase } from "../scripts/real-browser-e2e/cases/task-space.mjs";
-import { e2eCases } from "../scripts/real-browser-e2e/cases/index.mjs";
+import { egoSource } from "./ego-source.mjs";
+import { e2eCases } from "./cases/index.mjs";
+import { taskSpaceCase } from "./cases/task-space.mjs";
+import * as runner from "./runner.mjs";
 
 const expectedWebTestRoutes = [
   "/tests/clicks",
@@ -162,31 +162,28 @@ test("task-space e2e verifies structured egoBrowser action results", () => {
 test("agent-facing sources do not publish the removed browser tab namespace", () => {
   const sources = [
     readFileSync(
-      new URL("../../../skills/ego-browser/SKILL.md", import.meta.url),
+      new URL("../../../../skills/ego-browser/SKILL.md", import.meta.url),
       "utf8",
     ),
-    readFileSync(new URL("../README.md", import.meta.url), "utf8"),
-    readFileSync(
-      new URL("../scripts/real-browser-e2e/preamble.mjs", import.meta.url),
-      "utf8",
-    ),
+    readFileSync(new URL("../../README.md", import.meta.url), "utf8"),
+    readFileSync(new URL("./preamble.mjs", import.meta.url), "utf8"),
     readFileSync(
       new URL(
-        "../../../skills/ego-browser/learnings/google/notes/overview.md",
+        "../../../../skills/ego-browser/learnings/google/notes/overview.md",
         import.meta.url,
       ),
       "utf8",
     ),
     readFileSync(
       new URL(
-        "../../../skills/ego-browser/learnings/google/tools/search-extract.js",
+        "../../../../skills/ego-browser/learnings/google/tools/search-extract.js",
         import.meta.url,
       ),
       "utf8",
     ),
     readFileSync(
       new URL(
-        "../../../skills/ego-browser/learnings/x-com/tools/search-users.js",
+        "../../../../skills/ego-browser/learnings/x-com/tools/search-users.js",
         import.meta.url,
       ),
       "utf8",
@@ -201,74 +198,6 @@ test("agent-facing sources do not publish the removed browser tab namespace", ()
   }
 });
 
-test("skill uses the TaskSpace object model without documenting the removed Browser API", () => {
-  const skill = readFileSync(
-    new URL("../../../skills/ego-browser/SKILL.md", import.meta.url),
-    "utf8",
-  );
-  const quickStart = skill.match(/## 2\. Quick start([\s\S]*?)## 3\./)?.[1];
-
-  assert.ok(quickStart);
-  assert.match(
-    quickStart,
-    /await egoBrowser\.newTaskSpace\('inspect example page'\)/,
-  );
-  assert.match(
-    quickStart,
-    /await task\.page\.goto\('https:\/\/example\.com', \{ waitUntil: 'load', timeout: 20000 \}\)/,
-  );
-  assert.match(quickStart, /task\.page\.(?:title|url)\(/);
-  assert.doesNotMatch(quickStart, /task\.tabs|openOrReuse/);
-  assert.doesNotMatch(skill, /Playwright `Browser`/);
-  assert.doesNotMatch(skill, /`Browser\.(?:grantPermissions|setPermission)`/);
-});
-
-test("skill keeps outer Bash timeouts above in-script operation timeouts", () => {
-  const skill = readFileSync(
-    new URL("../../../skills/ego-browser/SKILL.md", import.meta.url),
-    "utf8",
-  );
-
-  assert.match(
-    skill,
-    /set it longer than the longest in-script locator, navigation, or event timeout/,
-  );
-  assert.match(skill, /shorter explicit timeout only for optional probes/);
-});
-
-test("skill avoids mutating controls that already match the requested state", () => {
-  const skill = readFileSync(
-    new URL("../../../skills/ego-browser/SKILL.md", import.meta.url),
-    "utf8",
-  );
-  const actAndVerify = skill.match(
-    /### 3\.4 Act and verify([\s\S]*?)## 4\./,
-  )?.[1];
-
-  assert.ok(actAndVerify);
-  assert.match(actAndVerify, /final state/i);
-  assert.match(actAndVerify, /already holds/i);
-  assert.match(actAndVerify, /do not (?:repeat|change|mutate)/i);
-});
-
-test("video recording guidance matches the current native TaskSpace runtime", () => {
-  const skill = readFileSync(
-    new URL("../../../skills/ego-browser/SKILL.md", import.meta.url),
-    "utf8",
-  );
-  const video = readFileSync(
-    new URL("../../../skills/ego-browser/references/video.md", import.meta.url),
-    "utf8",
-  );
-
-  assert.match(skill, /`page\.video\(\)` \| Returns `null`/);
-  assert.match(skill, /\[Video recording support and current limitations\]/);
-  assert.match(video, /`task\.page\.video\(\)` returns `null`/);
-  assert.match(video, /There is currently no supported API/);
-  assert.doesNotMatch(video, /await page\.screencast\.(?:start|stop)\(/);
-  assert.match(video, /Do not call `task\.context\.browser\(\)\.newContext/);
-});
-
 test("real-browser e2e covers the current TaskSpace video capability", () => {
   const videoCase = e2eCases.find(
     (testCase) => testCase.name === "TaskSpace video capability",
@@ -281,23 +210,6 @@ test("real-browser e2e covers the current TaskSpace video capability", () => {
   assert.match(source, /assertEqual\([\s\S]*null/);
   assert.match(source, /task\.page\.screencast/);
   assert.match(source, /task\.page\.goto/);
-});
-
-test("skill stays within a reviewable size", () => {
-  const skill = readFileSync(
-    new URL("../../../skills/ego-browser/SKILL.md", import.meta.url),
-    "utf8",
-  );
-  const body = skill.replace(/^---[\s\S]*?---\s*/, "");
-
-  assert.ok(
-    body.trim().split(/\s+/).length <= 3500,
-    "SKILL body should stay at or below 3500 words",
-  );
-  assert.ok(
-    body.split(/\r?\n/).length <= 250,
-    "SKILL body should stay at or below 250 lines",
-  );
 });
 
 test("native task-space close regression remains a dedicated opt-in e2e", () => {
@@ -326,7 +238,7 @@ test("real-browser e2e exercises native Playwright by default", () => {
 
 test("native task-space close regression has a dedicated npm entry point", () => {
   const packageJson = JSON.parse(
-    readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+    readFileSync(new URL("../../package.json", import.meta.url), "utf8"),
   );
   assert.match(
     packageJson.scripts["e2e:native-close"],

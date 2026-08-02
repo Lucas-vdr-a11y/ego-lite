@@ -1,7 +1,7 @@
 let testSiteModule;
 
 async function loadTestSite() {
-  testSiteModule ??= import("../../test-site/dist/server.mjs");
+  testSiteModule ??= import("./site/dist/server.mjs");
   return testSiteModule;
 }
 
