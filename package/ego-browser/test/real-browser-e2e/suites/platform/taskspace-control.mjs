@@ -13,12 +13,12 @@ export function taskSpaceControlCase() {
     assertEqual(reusedTask.page.url(), task.page.url(), "same-space reuse returns the current Page URL");
     assertEqual(await task.page.title(), "Ego Browser Lab", "the existing Page remains operable after same-space reuse");
 
-    const spaces = await egoBrowser.listTaskSpaces();
-    assert(spaces.some((space) => space.name === taskName), "egoBrowser.listTaskSpaces includes e2e task");
+    const spaces = await egoBrowser.listTaskSpace();
+    assert(spaces.some((space) => space.name === taskName), "egoBrowser.listTaskSpace includes e2e task");
     const listed = spaces.find((space) => space.name === taskName);
-    assertEqual(typeof listed.id, "number", "egoBrowser.listTaskSpaces returns numeric ids");
-    assertEqual(listed.taskId !== undefined, true, "egoBrowser.listTaskSpaces returns taskId");
-    assertEqual(typeof listed.ownership, "string", "egoBrowser.listTaskSpaces returns ownership");
+    assertEqual(typeof listed.id, "number", "egoBrowser.listTaskSpace returns numeric ids");
+    assertEqual(listed.taskId !== undefined, true, "egoBrowser.listTaskSpace returns taskId");
+    assertEqual(typeof listed.ownership, "string", "egoBrowser.listTaskSpace returns ownership");
 
     const switched = await egoBrowser.switchTaskSpace(task.id);
     assertEqual(switched.id, task.id, "egoBrowser.switchTaskSpace selects by numeric id");
@@ -111,7 +111,7 @@ export function taskSpaceControlCase() {
     // handOffTaskSpace -> takeOverTaskSpace cycle: verify ownership transitions.
     const handOffResult = await egoBrowser.handOffTaskSpace();
     assertEqual(handOffResult.done, true, "egoBrowser.handOffTaskSpace reports successful handoff");
-    const afterHandoff = await egoBrowser.listTaskSpaces();
+    const afterHandoff = await egoBrowser.listTaskSpace();
     const handedOff = afterHandoff.find((s) => s.name === taskName);
     assertEqual(handedOff.ownership, "agentDelegatedToUser", "egoBrowser.handOffTaskSpace records delegated ownership");
 
@@ -130,18 +130,18 @@ export function taskSpaceControlCase() {
     waitFinished = true;
     const takeOverResult = await delayedTakeover;
     assertEqual(takeOverResult.done, true, "egoBrowser.takeOverTaskSpace reports restored control");
-    const afterTakeover = await egoBrowser.listTaskSpaces();
+    const afterTakeover = await egoBrowser.listTaskSpace();
     const taken = afterTakeover.find((s) => s.name === taskName);
     assertEqual(taken.ownership, "agent", "egoBrowser.takeOverTaskSpace restores agent ownership");
     assertEqual(waitResult.done, true, "egoBrowser.waitForAgentControlTaskSpace reports agent control");
 
     // Repeat with explicit name parameter
     await egoBrowser.handOffTaskSpace(taskName);
-    const afterHandoff2 = await egoBrowser.listTaskSpaces();
+    const afterHandoff2 = await egoBrowser.listTaskSpace();
     assertEqual(afterHandoff2.find((s) => s.name === taskName).ownership, "agentDelegatedToUser", "egoBrowser.handOffTaskSpace(name) records delegated ownership");
 
     await egoBrowser.takeOverTaskSpace(taskName);
-    const afterTakeover2 = await egoBrowser.listTaskSpaces();
+    const afterTakeover2 = await egoBrowser.listTaskSpace();
     assertEqual(afterTakeover2.find((s) => s.name === taskName).ownership, "agent", "egoBrowser.takeOverTaskSpace(name) restores agent ownership");
 
     await egoBrowser.waitForAgentControlTaskSpace(taskName, { interval: 100, timeout: 5_000 });

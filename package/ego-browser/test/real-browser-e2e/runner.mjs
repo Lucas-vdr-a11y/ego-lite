@@ -99,7 +99,7 @@ export function e2eCaseRounds(testCase) {
 export function taskSpaceCleanupBody(taskName) {
   return `
     const cleanupTaskSpacePrefix = ${JSON.stringify(taskName)};
-    const listedTaskSpaces = await egoBrowser.listTaskSpaces();
+    const listedTaskSpaces = await egoBrowser.listTaskSpace();
     const cleanupNames = listedTaskSpaces
       .filter(
         (space) =>
@@ -127,7 +127,7 @@ export function taskSpaceCleanupBody(taskName) {
       const cleanupDeadline = Date.now() + 5_000;
       let leaked = [];
       do {
-        const remaining = await egoBrowser.listTaskSpaces();
+        const remaining = await egoBrowser.listTaskSpace();
         leaked = remaining.filter(
           (space) =>
             space.name === cleanupTaskSpacePrefix ||
@@ -264,8 +264,9 @@ export async function runRealBrowserE2e() {
     // The output channel is the overridden console.log. typeof console.log is always
     // "function" (it is a Node built-in), so it cannot prove the SDK wired its sink.
     // The marker round-trip proves console.log output reaches stdout. The read-only
-    // listTaskSpaces call verifies asynchronous SDK readiness and host IPC without
-    // creating browser state; native Playwright is exercised by the platform suite.
+    // The Profile and TaskSpace list calls verify asynchronous SDK readiness and
+    // host IPC without creating browser state; native Playwright is exercised by
+    // the platform suite.
     const source = createNodeBridgeSmokeSource(marker);
     try {
       const { stdout, stderr } = await runCommand(

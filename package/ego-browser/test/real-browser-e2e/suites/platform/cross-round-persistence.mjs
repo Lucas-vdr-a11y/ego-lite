@@ -56,7 +56,7 @@ export const crossRoundPersistenceCase = {
       );
       let closed = false;
       try {
-        const spaces = await egoBrowser.listTaskSpaces();
+        const spaces = await egoBrowser.listTaskSpace();
         const listed = spaces.find((space) => space.id === saved.id);
         assert(listed, "the TaskSpace remains listed in a new Node round");
         assertEqual(

@@ -114,7 +114,7 @@ test("real-browser cleanup discovers every TaskSpace created under the run prefi
     source,
     /space\.name\.startsWith\(cleanupTaskSpacePrefix \+ " "\)/,
   );
-  assert.match(source, /egoBrowser\.listTaskSpaces\(\)/);
+  assert.match(source, /egoBrowser\.listTaskSpace\(\)/);
   assert.match(source, /task space cleanup leaked/);
 });
 
@@ -195,6 +195,22 @@ test("TaskSpace context lifecycle covers isolation and stale Playwright handles"
   assert.match(source, /assertDisconnected/);
   assert.match(source, /every\(\(url\) => url\.includes/);
   assert.match(source, /closeTaskSpace/);
+});
+
+test("Profile e2e covers implicit default, explicit selection, and invalid ids", () => {
+  const profileCase = e2eCases.find(
+    (testCase) => testCase.name === "TaskSpace profile selection",
+  );
+
+  assert.ok(profileCase);
+  assert.equal(profileCase.kind, "platform");
+  const source = profileCase.body();
+  assert.match(source, /await egoBrowser\.listProfile\(\)/);
+  assert.match(source, /newTaskSpace\(defaultName\)/);
+  assert.match(source, /newTaskSpace\(explicitName, selectedProfile\.id\)/);
+  assert.match(source, /EGO_PROFILE_NOT_FOUND/);
+  assert.match(source, /egoBrowser\.closeTaskSpace\(defaultTask\.id\)/);
+  assert.match(source, /egoBrowser\.closeTaskSpace\(explicitTask\.id\)/);
 });
 
 test("platform e2e covers ownership preservation, ARIA refs, and network routing", () => {

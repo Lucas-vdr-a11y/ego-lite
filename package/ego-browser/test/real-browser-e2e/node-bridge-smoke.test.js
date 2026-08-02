@@ -8,19 +8,23 @@ const validProbe = {
   hasSendCDPMessage: "function",
   processVersion: "v24.18.0",
   egoBrowserType: "object",
-  hasListTaskSpaces: "function",
+  hasListProfile: "function",
+  hasListTaskSpace: "function",
   hasUseOrCreateTaskSpace: "function",
   siteType: "object",
   fetchType: "object",
   cdpType: "function",
-  helpType: "function",
+  helperType: "function",
+  profilesIsArray: true,
   taskSpacesIsArray: true,
 };
 
-test("node bridge smoke performs one read-only asynchronous host call", () => {
+test("node bridge smoke performs read-only asynchronous host calls", () => {
   const source = smoke.createNodeBridgeSmokeSource("SMOKE_MARKER");
 
-  assert.match(source, /await egoBrowser\.listTaskSpaces\(\)/);
+  assert.match(source, /await egoBrowser\.listProfile\(\)/);
+  assert.match(source, /await egoBrowser\.listTaskSpace\(\)/);
+  assert.match(source, /profilesIsArray: Array\.isArray\(profiles\)/);
   assert.match(source, /taskSpacesIsArray: Array\.isArray\(taskSpaces\)/);
   assert.doesNotMatch(
     source,
@@ -33,12 +37,13 @@ test("node bridge smoke probes the required public facade", () => {
 
   for (const property of [
     "egoBrowserType",
-    "hasListTaskSpaces",
+    "hasListProfile",
+    "hasListTaskSpace",
     "hasUseOrCreateTaskSpace",
     "siteType",
     "fetchType",
     "cdpType",
-    "helpType",
+    "helperType",
   ]) {
     assert.match(source, new RegExp(`${property}:`));
   }
@@ -88,12 +93,14 @@ test("node bridge smoke rejects every missing runtime capability", () => {
     ["hasSendCDPMessage", "undefined"],
     ["processVersion", "v21.9.0"],
     ["egoBrowserType", "undefined"],
-    ["hasListTaskSpaces", "undefined"],
+    ["hasListProfile", "undefined"],
+    ["hasListTaskSpace", "undefined"],
     ["hasUseOrCreateTaskSpace", "undefined"],
     ["siteType", "undefined"],
     ["fetchType", "undefined"],
     ["cdpType", "undefined"],
-    ["helpType", "undefined"],
+    ["helperType", "undefined"],
+    ["profilesIsArray", false],
     ["taskSpacesIsArray", false],
   ];
 
@@ -109,5 +116,5 @@ test("node bridge smoke rejects every missing runtime capability", () => {
 
 test("node bridge smoke derives its assertion count from declared checks", () => {
   assert.equal(typeof smoke.nodeBridgeSmokeAssertionCount, "function");
-  assert.equal(smoke.nodeBridgeSmokeAssertionCount(), 13);
+  assert.equal(smoke.nodeBridgeSmokeAssertionCount(), 15);
 });

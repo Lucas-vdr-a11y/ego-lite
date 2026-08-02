@@ -42,7 +42,7 @@ export const nativeCloseRegressionCase = {
         const closeResult = await egoBrowser.closeTaskSpace(scratch.id);
         assertEqual(closeResult.done, true, "native close reports successful destruction");
         scratchClosed = true;
-        const spaces = await egoBrowser.listTaskSpaces();
+        const spaces = await egoBrowser.listTaskSpace();
         assert(
           !spaces.some((space) => space.id === scratch.id),
           "native close removes the task space"

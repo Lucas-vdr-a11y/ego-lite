@@ -9,7 +9,7 @@ export const ownershipLifecycleCase = {
       async function waitForOwnership(expected) {
         const deadline = Date.now() + 5_000;
         while (true) {
-          const spaces = await egoBrowser.listTaskSpaces();
+          const spaces = await egoBrowser.listTaskSpace();
           const current = spaces.find((space) => space.id === scratch.id);
           if (current?.ownership === expected) return current;
           if (Date.now() >= deadline) {
@@ -68,7 +68,7 @@ export const ownershipLifecycleCase = {
         const result = await egoBrowser.closeTaskSpace(scratch.id);
         assertEqual(result.done, true, "the claimed TaskSpace closes cleanly");
         closed = true;
-        const remaining = await egoBrowser.listTaskSpaces();
+        const remaining = await egoBrowser.listTaskSpace();
         assert(
           !remaining.some((space) => space.id === scratch.id),
           "the ownership lifecycle leaves no TaskSpace behind",

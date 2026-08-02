@@ -1,18 +1,21 @@
 export function createNodeBridgeSmokeSource(marker) {
   return `
-    const taskSpaces = await egoBrowser.listTaskSpaces();
+    const profiles = await egoBrowser.listProfile();
+    const taskSpaces = await egoBrowser.listTaskSpace();
     console.log(${JSON.stringify(marker)});
     console.log(JSON.stringify({
       egoType: typeof globalThis.ego,
       hasSendCDPMessage: typeof globalThis.ego?.sendCDPMessage,
       processVersion: process.version,
       egoBrowserType: typeof egoBrowser,
-      hasListTaskSpaces: typeof egoBrowser?.listTaskSpaces,
+      hasListProfile: typeof egoBrowser?.listProfile,
+      hasListTaskSpace: typeof egoBrowser?.listTaskSpace,
       hasUseOrCreateTaskSpace: typeof egoBrowser?.useOrCreateTaskSpace,
       siteType: typeof site,
       fetchType: typeof fetch,
       cdpType: typeof cdp,
-      helpType: typeof help,
+      helperType: typeof egoBrowser?.helper,
+      profilesIsArray: Array.isArray(profiles),
       taskSpacesIsArray: Array.isArray(taskSpaces)
     }));
   `;
@@ -30,7 +33,8 @@ const probeChecks = [
     },
   ],
   ["egoBrowserType", (probe) => probe?.egoBrowserType === "object"],
-  ["hasListTaskSpaces", (probe) => probe?.hasListTaskSpaces === "function"],
+  ["hasListProfile", (probe) => probe?.hasListProfile === "function"],
+  ["hasListTaskSpace", (probe) => probe?.hasListTaskSpace === "function"],
   [
     "hasUseOrCreateTaskSpace",
     (probe) => probe?.hasUseOrCreateTaskSpace === "function",
@@ -38,7 +42,8 @@ const probeChecks = [
   ["siteType", (probe) => probe?.siteType === "object"],
   ["fetchType", (probe) => probe?.fetchType === "object"],
   ["cdpType", (probe) => probe?.cdpType === "function"],
-  ["helpType", (probe) => probe?.helpType === "function"],
+  ["helperType", (probe) => probe?.helperType === "function"],
+  ["profilesIsArray", (probe) => probe?.profilesIsArray === true],
   ["taskSpacesIsArray", (probe) => probe?.taskSpacesIsArray === true],
 ];
 
