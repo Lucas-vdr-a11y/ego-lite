@@ -408,7 +408,7 @@ test("the direct Playwright transport disables global auto-attach and manually a
   await lease.close();
 });
 
-test("the Ego Playwright transport supplies the stateless Browser commands required during connection", async () => {
+test("the Ego Playwright transport supplies Browser metadata and accepts unsupported download behavior", async () => {
   assert.equal(typeof egoTransport.createEgoCdpTransport, "function");
 
   const sent = [];
@@ -417,7 +417,9 @@ test("the Ego Playwright transport supplies the stateless Browser commands requi
       sent.push(JSON.parse(payload));
     },
   };
-  const transport = egoTransport.createEgoCdpTransport(runtime);
+  const transport = egoTransport.createEgoCdpTransport(runtime, {
+    allocateMessageId: () => 1_000_000_012,
+  });
   const received = [];
   transport.onmessage = (message) => received.push(message);
 
@@ -595,6 +597,82 @@ test("the Ego Playwright transport manually attaches a created tab when root aut
     },
     { id: 18, result: { targetId: "created-target" } },
   ]);
+  transport.close();
+});
+
+test("the Ego Playwright transport discovers and attaches a page opened by the selected tab", async () => {
+  let nextNativeId = 1_000_000_220;
+  let tabs = [{ targetId: "selected-target" }];
+  const sent = [];
+  const runtime = {
+    async listTabs() {
+      return { tabs };
+    },
+    sendCDPMessage(payload) {
+      const request = JSON.parse(payload);
+      sent.push(request);
+      const targetId = request.params?.targetId;
+      const result =
+        request.method === "Target.getTargetInfo"
+          ? {
+              targetInfo: {
+                targetId,
+                type: "page",
+                title: targetId === "popup-target" ? "Popup" : "Selected",
+                url: "about:blank",
+              },
+            }
+          : request.method === "Target.attachToTarget"
+            ? { sessionId: `${targetId}-session` }
+            : {};
+      queueMicrotask(() => {
+        runtime.onCDPMessage(JSON.stringify({ id: request.id, result }));
+      });
+    },
+  };
+  const transport = egoTransport.createEgoCdpTransport(runtime, {
+    targetIds: ["selected-target"],
+    allocateMessageId: () => nextNativeId++,
+  });
+  const received = [];
+  transport.onmessage = (message) => received.push(message);
+
+  runtime.onCDPMessage(
+    JSON.stringify({
+      method: "Target.attachedToTarget",
+      params: {
+        sessionId: "selected-target-session",
+        targetInfo: { targetId: "selected-target", type: "page" },
+      },
+    }),
+  );
+  await waitForImmediate();
+  tabs = [
+    { targetId: "selected-target" },
+    { targetId: "popup-target", url: "https://example.test/popup" },
+  ];
+  runtime.onCDPMessage(
+    JSON.stringify({
+      method: "Page.windowOpen",
+      sessionId: "selected-target-session",
+      params: { url: "https://example.test/popup", windowName: "" },
+    }),
+  );
+  for (let index = 0; index < 8; index += 1) await waitForImmediate();
+
+  assert.deepEqual(
+    sent.map(({ method }) => method),
+    ["Target.getTargetInfo", "Target.attachToTarget"],
+  );
+  assert.equal(
+    received.some(
+      (message) =>
+        message.method === "Target.attachedToTarget" &&
+        message.params.targetInfo.targetId === "popup-target" &&
+        message.params.targetInfo.openerId === "selected-target",
+    ),
+    true,
+  );
   transport.close();
 });
 

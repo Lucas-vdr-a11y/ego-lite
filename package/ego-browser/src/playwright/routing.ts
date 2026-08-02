@@ -83,6 +83,7 @@ export class EgoCdpTransport {
   readonly #retiredNativeSessions = new Set<string>();
   readonly #unsubscribe: () => void;
   #connecting = true;
+  #discoveringOpenedTargets = false;
   #activeOperations = 0;
   #lastPendingWork = 0;
 
@@ -329,16 +330,26 @@ export class EgoCdpTransport {
       }
       return;
     }
+    const nativeSessionId =
+      typeof message.sessionId === "string" ? message.sessionId : undefined;
     const route =
       typeof message.sessionId === "string"
         ? this.#routesByNativeSession.get(message.sessionId)
         : undefined;
+    const openerTargetId =
+      route?.clientTargetId ||
+      (nativeSessionId
+        ? this.#targetsBySession.get(nativeSessionId)
+        : undefined);
     if (route) {
       this.#observeRouteEvent(message, route);
       message.sessionId = route.clientSessionId;
       rewriteIncomingProtocolMessage(message, route);
     }
     this.#deliverEvent(message);
+    if (message.method === "Page.windowOpen") {
+      this.#discoverOpenedTargets(openerTargetId, message.params?.url);
+    }
   }
 
   #rebindDetachedRoute(message: any) {
@@ -733,7 +744,50 @@ export class EgoCdpTransport {
       });
   }
 
-  async #attachTaskSpaceTarget(targetId: string) {
+  #discoverOpenedTargets(openerTargetId?: string, expectedUrl?: string) {
+    if (
+      !this.#targetIds ||
+      typeof this.#runtime.listTabs !== "function" ||
+      this.#discoveringOpenedTargets
+    ) {
+      return;
+    }
+    this.#discoveringOpenedTargets = true;
+    this.#activeOperations += 1;
+    this.#updatePendingWork();
+    void (async () => {
+      const deadline = Date.now() + 2_000;
+      do {
+        const listed = await this.#runtime.listTabs!();
+        const tabs = listed?.tabs || listed?.targetInfos || [];
+        const openedTargetIds = tabs
+          .filter(
+            (tab) => typeof expectedUrl !== "string" || tab.url === expectedUrl,
+          )
+          .map((tab) => tab.targetId)
+          .filter(
+            (targetId): targetId is string =>
+              typeof targetId === "string" && !this.#targetIds!.has(targetId),
+          );
+        if (openedTargetIds.length > 0) {
+          for (const targetId of openedTargetIds) {
+            this.#targetIds.add(targetId);
+            await this.#attachTaskSpaceTarget(targetId, openerTargetId);
+          }
+          return;
+        }
+        await new Promise<void>((resolve) => setTimeout(resolve, 20));
+      } while (!this.closed && Date.now() < deadline);
+    })()
+      .catch(() => undefined)
+      .finally(() => {
+        this.#discoveringOpenedTargets = false;
+        this.#activeOperations -= 1;
+        this.#updatePendingWork();
+      });
+  }
+
+  async #attachTaskSpaceTarget(targetId: string, openerId?: string) {
     const { sessionId, targetInfo } = await this.#attachNativeTarget(targetId);
     const route: PageRoute = {
       clientTargetId: targetId,
@@ -756,7 +810,8 @@ export class EgoCdpTransport {
           title: targetInfo.title || "",
           url: targetInfo.url || "",
           attached: true,
-          canAccessOpener: targetInfo.canAccessOpener ?? false,
+          ...(openerId ? { openerId } : {}),
+          canAccessOpener: targetInfo.canAccessOpener ?? openerId !== undefined,
         },
         waitingForDebugger: false,
       },
@@ -1260,6 +1315,7 @@ function isReplayableSessionCommand(method: unknown): method is string {
 }
 
 export function playwrightCompatibilityResult(method: unknown) {
+  if (method === "Browser.setDownloadBehavior") return {};
   if (method === "Browser.getVersion") {
     const platform =
       process.platform === "darwin"
@@ -1275,6 +1331,5 @@ export function playwrightCompatibilityResult(method: unknown) {
       jsVersion: process.versions.v8,
     };
   }
-  if (method === "Browser.setDownloadBehavior") return {};
   return undefined;
 }
