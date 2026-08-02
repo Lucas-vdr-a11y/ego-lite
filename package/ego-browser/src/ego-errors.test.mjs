@@ -36,6 +36,7 @@ test("egoErrorCode extracts the code from every error shape", () => {
 });
 
 test("isEgoErrorCode narrows to known codes only", () => {
+  assert.equal(isEgoErrorCode("EGO_PROFILE_NOT_FOUND"), true);
   assert.equal(isEgoErrorCode("EGO_TASK_SPACE_NOT_FOUND"), true);
   assert.equal(isEgoErrorCode("EGO_FUTURE_CODE"), false);
   assert.equal(isEgoErrorCode(undefined), false);

@@ -39,6 +39,22 @@ export async function listTaskSpaces() {
   );
 }
 
+/**
+ * List browser profiles available for new task spaces.
+ * @returns {Promise<Array<{id:string,name:string,isDefault:boolean}>>}
+ */
+export async function listProfiles() {
+  const ego = globalThis.ego;
+  if (!ego || typeof ego.listProfiles !== "function") {
+    throw new Error("listProfiles requires ego.listProfiles");
+  }
+  const result = assertNoEgoError(await ego.listProfiles(), "listProfiles");
+  if (!Array.isArray(result?.profiles)) {
+    throw new Error("listProfiles expected { profiles: [...] }");
+  }
+  return result.profiles;
+}
+
 /*
  * Task space ownership policy (`ownership`: "agent" | "agentDelegatedToUser" | "user").
  * "agent" and "agentDelegatedToUser" are both agent-owned (see isAgentOwned) — the
@@ -95,16 +111,19 @@ export async function switchTaskSpace(nameOrId) {
 /**
  * Create an agent-owned task space and select it for the current Node invocation.
  * @param {string} name Task space name.
+ * @param {string} [profileId] Profile id returned by listProfiles().
  * @returns {Promise<{taskId:string,id:number,name:string,createdBy?:string,ownership?:string,recentTabTitles?:string[]}>}
  */
-export async function newTaskSpace(name) {
+export async function newTaskSpace(name, profileId?: string) {
   const ego = globalThis.ego;
   if (!ego || typeof ego.createTaskSpace !== "function") {
     throw new Error("newTaskSpace requires ego.createTaskSpace");
   }
-  const created = normalizeTaskSpace(
-    assertNoEgoError(await ego.createTaskSpace(name), "newTaskSpace"),
-  );
+  const result =
+    profileId === undefined
+      ? await ego.createTaskSpace(name)
+      : await ego.createTaskSpace(name, profileId);
+  const created = normalizeTaskSpace(assertNoEgoError(result, "newTaskSpace"));
   if (!created) {
     throw new Error("newTaskSpace returned an invalid task space");
   }
@@ -474,8 +493,11 @@ function createEgoBrowserFacade() {
     return task;
   };
   return {
-    listTaskSpaces,
-    newTaskSpace: async (name) => wrapTaskSpace(await newTaskSpace(name)),
+    helper: egoBrowserHelper,
+    listProfile: listProfiles,
+    listTaskSpace: listTaskSpaces,
+    newTaskSpace: async (name, profileId) =>
+      wrapTaskSpace(await newTaskSpace(name, profileId)),
     switchTaskSpace: async (nameOrId) =>
       wrapTaskSpace(await switchTaskSpace(nameOrId)),
     useOrCreateTaskSpace: async (nameOrId) =>
@@ -515,15 +537,16 @@ function createSiteFacade() {
   };
 }
 
-const FACADE_HELP: Record<string, string> = {
-  egoBrowser:
-    "egoBrowser: ego-specific TaskSpace controller, not a Playwright Browser. listTaskSpaces() returns lightweight TaskSpace information without selecting a space. newTaskSpace(name), switchTaskSpace(nameOrId), useOrCreateTaskSpace(nameOrId), and claimTaskSpace(nameOrId) return a TaskSpace with native Playwright page and context objects. handOffTaskSpace(), takeOverTaskSpace(), waitForAgentControlTaskSpace(), completeTaskSpace(), and closeTaskSpace() return structured action results; runtime failures throw with their reason. waitForAgentControlTaskSpace interval and timeout use milliseconds. complete preserves the final result while close destroys the space.",
-  site: "site: learned site-skill facade. Use site.skills(url), site.skillsForUrl(url), site.runTool(siteId, toolName, args), site.runBrowserTool(siteId, toolName, args), and site.learnContext(url).",
-  fetch:
-    "fetch: network facade. Use fetch.server(url, options) for Node-side fetch and fetch.browser(url, options) for browser-origin fetch. timeout uses milliseconds.",
-  cdp: "cdp: direct Chrome DevTools Protocol access for capabilities not covered by the public facade.",
-  help: "help(name?): runtime documentation for public facade namespaces and exact public paths.",
-};
+function egoBrowserHelper(name = "egoBrowser") {
+  const result = helpRuntime({}, name);
+  if (typeof result === "string") return result;
+  if (Array.isArray(result)) {
+    return result
+      .map((item) => (typeof item === "string" ? item : formatHelp(item)))
+      .join("\n\n");
+  }
+  return formatHelp(result);
+}
 
 export function helperContext(extra: any = {}) {
   const all = {
@@ -536,36 +559,7 @@ export function helperContext(extra: any = {}) {
     cdp,
     ...extra,
   };
-  return {
-    ...all,
-    help: (...names: string[]) => {
-      if (names.length === 1 && FACADE_HELP[names[0]]) {
-        const details = helpRuntime(all, names[0]);
-        const rendered =
-          typeof details === "string"
-            ? details
-            : Array.isArray(details)
-              ? details
-                  .map((item) =>
-                    typeof item === "string" ? item : formatHelp(item),
-                  )
-                  .join("\n\n")
-              : formatHelp(details);
-        return `${FACADE_HELP[names[0]]}\n\n${rendered}`;
-      }
-      if (names.length === 0) {
-        return Object.values(FACADE_HELP).join("\n\n");
-      }
-      const result = helpRuntime(all, ...names);
-      if (typeof result === "string") return result;
-      if (Array.isArray(result)) {
-        return result
-          .map((item) => (typeof item === "string" ? item : formatHelp(item)))
-          .join("\n\n");
-      }
-      return formatHelp(result);
-    },
-  };
+  return all;
 }
 
 export async function loadAgentHelpers() {

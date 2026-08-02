@@ -14,17 +14,25 @@ export type FunctionDoc = {
 };
 
 export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
-  "egoBrowser.listTaskSpaces": {
-    signature: "egoBrowser.listTaskSpaces() => Promise<TaskSpaceInfo[]>",
+  "egoBrowser.listProfile": {
+    signature: "egoBrowser.listProfile() => Promise<ProfileInfo[]>",
+    description:
+      "List browser profiles available when creating a TaskSpace. Pass profile.id, not its potentially duplicated display name, to newTaskSpace().",
+    returns: "Promise<ProfileInfo[]>",
+    example: "console.log(await egoBrowser.listProfile())",
+  },
+  "egoBrowser.listTaskSpace": {
+    signature: "egoBrowser.listTaskSpace() => Promise<TaskSpaceInfo[]>",
     description:
       "List lightweight information for all browser TaskSpaces without selecting one. Use switchTaskSpace() to obtain an operational TaskSpace.",
     returns: "Promise<TaskSpaceInfo[]>",
-    example: "console.log(await egoBrowser.listTaskSpaces())",
+    example: "console.log(await egoBrowser.listTaskSpace())",
   },
   "egoBrowser.newTaskSpace": {
-    signature: "egoBrowser.newTaskSpace(name) => Promise<TaskSpace>",
+    signature:
+      "egoBrowser.newTaskSpace(name, profileId?) => Promise<TaskSpace>",
     description:
-      "Create and select an agent-owned TaskSpace with native Playwright Page and BrowserContext objects exposed as task.page and task.context.",
+      "Create and select an agent-owned TaskSpace, optionally using a profile id returned by listProfile(). The selected profile determines the TaskSpace browser identity, cookies, storage, and login state.",
     params: [
       {
         name: "name",
@@ -32,9 +40,16 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
         required: true,
         description: "TaskSpace name.",
       },
+      {
+        name: "profileId",
+        type: "string",
+        description:
+          "Optional profile.id returned by listProfile(). Omit it to use the current default regular profile.",
+      },
     ],
     returns: "Promise<TaskSpace>",
-    example: "const space = await egoBrowser.newTaskSpace('inspect products')",
+    example:
+      "const space = await egoBrowser.newTaskSpace('inspect products', profile.id)",
   },
   "egoBrowser.switchTaskSpace": {
     signature: "egoBrowser.switchTaskSpace(nameOrId) => Promise<TaskSpace>",
@@ -343,24 +358,30 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
     example:
       "console.log(await cdp('Runtime.evaluate', { expression: 'document.title' }))",
   },
-  help: {
-    signature: "help(name?) => string",
+  "egoBrowser.helper": {
+    signature: "egoBrowser.helper(name?) => string",
     description:
-      "Query current runtime documentation by ego-browser namespace or exact public path. Native Playwright APIs use Playwright's own documentation.",
+      "List egoBrowser methods when called without a name, or return runtime documentation for an exact ego-browser-specific public path. Native Playwright APIs use Playwright's own documentation.",
     params: [
       {
         name: "name",
         type: "string",
         description:
-          "Namespace or public path, such as egoBrowser or site.runTool.",
+          "Exact public path, such as egoBrowser.listTaskSpace or site.runTool. Defaults to the egoBrowser namespace.",
       },
     ],
     returns: "string",
-    example: "console.log(help('egoBrowser.newTaskSpace'))",
+    example: "console.log(egoBrowser.helper('egoBrowser.newTaskSpace'))",
   },
 };
 
-export function formatCliLogValue(value: unknown) {
+export function formatCliLogValue(
+  value: unknown,
+  options: { nativeInspect?: boolean } = {},
+) {
+  if (options.nativeInspect) {
+    return inspect(value, { colors: false });
+  }
   if (typeof value === "string") {
     return value;
   }
@@ -370,16 +391,12 @@ export function formatCliLogValue(value: unknown) {
   if (value === undefined) {
     return "undefined";
   }
-  return JSON.stringify(toLoggable(value, [], new WeakSet<object>()), null, 2);
+  return JSON.stringify(toLoggable(value, new WeakSet<object>()), null, 2);
 }
 
-function toLoggable(
-  value: unknown,
-  path: string[],
-  stack: WeakSet<object>,
-): unknown {
+function toLoggable(value: unknown, stack: WeakSet<object>): unknown {
   if (typeof value === "function") {
-    return functionLogValue(value, path);
+    return undefined;
   }
   if (typeof value === "bigint") {
     return `${value}n`;
@@ -410,67 +427,16 @@ function toLoggable(
   stack.add(value);
   try {
     if (Array.isArray(value)) {
-      return value.map((item, index) =>
-        toLoggable(item, [...path, String(index)], stack),
-      );
+      return value.map((item) => toLoggable(item, stack));
     }
 
     const out: Record<string, unknown> = {};
     for (const [key, child] of Object.entries(value)) {
-      out[key] = toLoggable(child, [...path, key], stack);
+      out[key] = toLoggable(child, stack);
     }
     return out;
   } finally {
     stack.delete(value);
   }
 }
-
-function functionLogValue(fn: Function, path: string[]) {
-  const key = docKeyForPath(path);
-  const doc = key ? PUBLIC_API_DOCS[key] : undefined;
-  const displayName = path.at(-1) || fn.name || "anonymous";
-  if (!doc) {
-    const callPath = path.length ? path.join(".") : displayName;
-    return {
-      kind: "function",
-      name: fn.name || displayName,
-      signature: `${callPath}(...)`,
-      description:
-        "Callable function. Inspect the surrounding facade or use help(name) when available.",
-    };
-  }
-
-  return {
-    kind: "function",
-    name: displayName,
-    signature: signatureForPath(doc.signature, path),
-    description: doc.description,
-    ...(doc.params ? { params: doc.params } : {}),
-    ...(doc.returns ? { returns: doc.returns } : {}),
-    ...(doc.example ? { example: exampleForPath(doc.example, path) } : {}),
-  };
-}
-
-function docKeyForPath(path: string[]) {
-  if (path[0] === "helpers") {
-    return path.slice(1).join(".");
-  }
-  if (path[0] === "learnings") {
-    return ["site", ...path.slice(1)].join(".");
-  }
-  return path.join(".");
-}
-
-function signatureForPath(signature: string, path: string[]) {
-  if (path[0] === "learnings") {
-    return signature.replace(/^site\./, "learnings.");
-  }
-  return signature;
-}
-
-function exampleForPath(example: string, path: string[]) {
-  if (path[0] === "learnings") {
-    return example.replace(/\bsite\./g, "learnings.");
-  }
-  return example;
-}
+import { inspect } from "node:util";

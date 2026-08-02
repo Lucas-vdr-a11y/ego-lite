@@ -78,7 +78,7 @@ const LEGACY_GLOBAL_HELPERS = [
  * absent rather than becoming a second supported API.
  */
 export const LEGACY_TASK_SPACE_REPLACEMENTS = {
-  listTaskSpaces: "egoBrowser.listTaskSpaces()",
+  listTaskSpaces: "egoBrowser.listTaskSpace()",
   switchTaskSpace: "egoBrowser.switchTaskSpace(nameOrId)",
   newTaskSpace: "egoBrowser.newTaskSpace(name)",
   useOrCreateTaskSpace: "egoBrowser.useOrCreateTaskSpace(nameOrId)",

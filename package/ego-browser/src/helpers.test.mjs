@@ -133,6 +133,44 @@ test("listTaskSpaces throws on binding error objects", async () => {
   );
 });
 
+test("listProfiles returns the profiles exposed by the native binding", async () => {
+  await withEgo(
+    {
+      async listProfiles() {
+        return {
+          profiles: [
+            { id: "Default", name: "Personal", isDefault: true },
+            { id: "Profile 2", name: "Work", isDefault: false },
+          ],
+        };
+      },
+    },
+    async () => {
+      assert.equal(typeof helperExports.listProfiles, "function");
+      assert.deepEqual(await helperExports.listProfiles(), [
+        { id: "Default", name: "Personal", isDefault: true },
+        { id: "Profile 2", name: "Work", isDefault: false },
+      ]);
+    },
+  );
+});
+
+test("listProfiles rejects an invalid native result shape", async () => {
+  await withEgo(
+    {
+      async listProfiles() {
+        return { profileIds: ["Default"] };
+      },
+    },
+    async () => {
+      await assert.rejects(
+        () => helperExports.listProfiles(),
+        /listProfiles expected \{ profiles: \[\.\.\.\] \}/,
+      );
+    },
+  );
+});
+
 test("egoBrowser owns the canonical TaskSpace surface", () => {
   const context = helperContext();
 
@@ -141,7 +179,9 @@ test("egoBrowser owns the canonical TaskSpace surface", () => {
     "closeTaskSpace",
     "completeTaskSpace",
     "handOffTaskSpace",
-    "listTaskSpaces",
+    "helper",
+    "listProfile",
+    "listTaskSpace",
     "newTaskSpace",
     "switchTaskSpace",
     "takeOverTaskSpace",
@@ -153,6 +193,58 @@ test("egoBrowser owns the canonical TaskSpace surface", () => {
   assert.equal(context.egoBrowser.newContext, undefined);
   assert.equal(context.egoBrowser.contexts, undefined);
   assert.equal(context.egoBrowser.close, undefined);
+  assert.equal(context.egoBrowser.listProfiles, undefined);
+  assert.equal(context.egoBrowser.listTaskSpaces, undefined);
+  assert.equal(context.help, undefined);
+});
+
+test("egoBrowser.helper lists the egoBrowser facade by default", () => {
+  const output = helperContext().egoBrowser.helper();
+
+  assert.equal(typeof output, "string");
+  assert.match(output, /^egoBrowser:/);
+  assert.match(output, /egoBrowser\.helper\(name\?\)/);
+  assert.match(output, /egoBrowser\.listProfile\(\)/);
+  assert.match(output, /egoBrowser\.listTaskSpace\(\)/);
+  assert.doesNotMatch(output, /egoBrowser\.listTaskSpaces\(\)/);
+});
+
+test("egoBrowser.helper documents Profile discovery", () => {
+  const output = helperContext().egoBrowser.helper("egoBrowser.listProfile");
+
+  assert.match(
+    output,
+    /egoBrowser\.listProfile\(\) => Promise<ProfileInfo\[\]>/,
+  );
+  assert.match(output, /profile\.id/);
+});
+
+test("egoBrowser.helper returns documentation for an exact facade path", () => {
+  const output = helperContext().egoBrowser.helper("egoBrowser.listTaskSpace");
+
+  assert.match(output, /List lightweight information/);
+  assert.match(
+    output,
+    /egoBrowser\.listTaskSpace\(\) => Promise<TaskSpaceInfo\[\]>/,
+  );
+});
+
+test("egoBrowser.helper preserves detailed facade documentation", () => {
+  const context = helperContext();
+  const actionDoc = context.egoBrowser.helper("egoBrowser.completeTaskSpace");
+  const waitDoc = context.egoBrowser.helper(
+    "egoBrowser.waitForAgentControlTaskSpace",
+  );
+  const fetchDoc = context.egoBrowser.helper("fetch.server");
+  const cdpDoc = context.egoBrowser.helper("cdp");
+
+  assert.match(actionDoc, /Promise<TaskSpaceActionResult>/);
+  assert.match(actionDoc, /egoBrowser\.completeTaskSpace/);
+  assert.match(waitDoc, /milliseconds/);
+  assert.match(fetchDoc, /milliseconds/);
+  assert.match(cdpDoc, /Browser\.grantPermissions/);
+  assert.match(cdpDoc, /Browser\.setPermission/);
+  assert.match(cdpDoc, /not exposed/);
 });
 
 test("egoBrowser useOrCreateTaskSpace returns a bound TaskSpace", async () => {
@@ -390,7 +482,7 @@ test("egoBrowser lists lightweight TaskSpace information without switching", asy
       },
     },
     async () => {
-      assert.deepEqual(await helperContext().egoBrowser.listTaskSpaces(), [
+      assert.deepEqual(await helperContext().egoBrowser.listTaskSpace(), [
         task,
       ]);
     },
@@ -527,7 +619,8 @@ test("helper surface exposes TaskSpace control without legacy page or tabs facad
   assert.equal(typeof context.site.runTool, "function");
   assert.equal(typeof context.fetch.server, "function");
   assert.equal(typeof context.cdp, "function");
-  assert.equal(typeof context.help, "function");
+  assert.equal(typeof context.egoBrowser.helper, "function");
+  assert.equal(context.help, undefined);
 });
 test("switchTaskSpace selects a matching task space", async () => {
   const calls = [];
@@ -644,6 +737,49 @@ test("newTaskSpace creates and selects an agent task space", async () => {
   ]);
 });
 
+test("newTaskSpace creates a task space with the selected profile id", async () => {
+  const calls = [];
+  await withEgo(
+    {
+      async createTaskSpace(name, profileId) {
+        calls.push(["createTaskSpace", name, profileId]);
+        return { taskId: name, id: 7, name, ownership: "agent" };
+      },
+      useTaskSpace(id) {
+        calls.push(["useTaskSpace", id]);
+        return id;
+      },
+    },
+    async () => {
+      await newTaskSpace("checkout-flow", "Profile 2");
+    },
+  );
+  assert.deepEqual(calls, [
+    ["createTaskSpace", "checkout-flow", "Profile 2"],
+    ["useTaskSpace", 7],
+  ]);
+});
+
+test("egoBrowser.newTaskSpace forwards the selected profile id", async () => {
+  const calls = [];
+  await withEgo(
+    {
+      async createTaskSpace(name, profileId) {
+        calls.push(["createTaskSpace", name, profileId]);
+        return { taskId: name, id: 7, name, ownership: "agent" };
+      },
+      useTaskSpace() {},
+    },
+    async () => {
+      await helperContext().egoBrowser.newTaskSpace(
+        "checkout-flow",
+        "Profile 2",
+      );
+    },
+  );
+  assert.deepEqual(calls, [["createTaskSpace", "checkout-flow", "Profile 2"]]);
+});
+
 test("newTaskSpace rejects results without a numeric id", async () => {
   const calls = [];
   await withEgo(
@@ -691,6 +827,30 @@ test("newTaskSpace throws on binding error objects", async () => {
       await assert.rejects(
         () => newTaskSpace("checkout-flow"),
         /newTaskSpace: Task space already exists: checkout-flow/,
+      );
+    },
+  );
+});
+
+test("newTaskSpace preserves profile-not-found errors from the native binding", async () => {
+  await withEgo(
+    {
+      async createTaskSpace() {
+        return {
+          error: "Profile not found",
+          error_code: "EGO_PROFILE_NOT_FOUND",
+        };
+      },
+      useTaskSpace() {},
+    },
+    async () => {
+      await assert.rejects(
+        () => newTaskSpace("checkout-flow", "missing-profile"),
+        (error) => {
+          assert.match(error.message, /newTaskSpace: Profile not found/);
+          assert.equal(error.error_code, "EGO_PROFILE_NOT_FOUND");
+          return true;
+        },
       );
     },
   );

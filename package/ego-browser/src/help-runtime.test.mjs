@@ -35,13 +35,13 @@ test("formatHelp renders a current public signature", () => {
   assert.match(text, /cdp\(method, params\?, sessionId\?, timeoutMs\?\)/);
 });
 
-test("help works when the shipped bundle runs as an eval module", () => {
+test("egoBrowser.helper works when the shipped bundle runs as an eval module", () => {
   const root = dirname(dirname(fileURLToPath(import.meta.url)));
   const bundle = readFileSync(join(root, "dist", "out", "index.js"), "utf-8");
   const probe = [
-    'console.log(globalThis.help("cdp"))',
-    'console.log(globalThis.help("site"))',
-    'console.log(globalThis.help("egoBrowser.switchTaskSpace"))',
+    'console.log(globalThis.egoBrowser.helper("cdp"))',
+    'console.log(globalThis.egoBrowser.helper("site"))',
+    'console.log(globalThis.egoBrowser.helper("egoBrowser.switchTaskSpace"))',
   ].join(";\n");
   const result = spawnSync(process.execPath, ["--input-type=module"], {
     input: `${bundle}\n${probe}\n`,

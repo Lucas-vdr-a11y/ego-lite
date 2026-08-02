@@ -69,6 +69,35 @@ test("a clean run flushes buffered console.log output in order", async () => {
   assert.equal(result.stdout, "one\ntwo\n");
 });
 
+test("console.log prints the native ego object without facade formatting", async () => {
+  const ego = {
+    createTab() {},
+    listTabs() {},
+    listTaskSpaces() {},
+    sendCDPMessage() {},
+    onCDPMessage: undefined,
+  };
+  const result = await runScript(`console.log(ego);`, ego);
+
+  assert.equal(result.exitCode, 0);
+  assert.match(result.stdout, /createTab: \[Function: createTab\]/);
+  assert.match(result.stdout, /listTabs: \[Function: listTabs\]/);
+  assert.match(result.stdout, /listTaskSpaces: \[Function: listTaskSpaces\]/);
+  assert.match(result.stdout, /sendCDPMessage: \[Function: sendCDPMessage\]/);
+  assert.match(result.stdout, /onCDPMessage: undefined/);
+  assert.doesNotMatch(result.stdout, /signature|description|"undefined"/);
+});
+
+test("console.log prints the egoBrowser facade with its public methods", async () => {
+  const result = await runScript(`console.log(egoBrowser);`);
+
+  assert.equal(result.exitCode, 0);
+  assert.match(result.stdout, /helper: \[Function: egoBrowserHelper\]/);
+  assert.match(result.stdout, /listProfile: \[AsyncFunction/);
+  assert.match(result.stdout, /newTaskSpace: \[AsyncFunction/);
+  assert.notEqual(result.stdout.trim(), "{}");
+});
+
 test("a swallowed user-control hard stop discards all output and prints the guidance once", async () => {
   const ego = hardStopEgo("EGO_TASK_SPACE_USER_IN_CONTROL");
   const result = await runScript(
@@ -76,7 +105,7 @@ test("a swallowed user-control hard stop discards all output and prints the guid
       for (const site of ["a", "b", "c"]) {
         console.log("visiting " + site);
         try {
-          await egoBrowser.listTaskSpaces();
+          await egoBrowser.listTaskSpace();
           console.log("ok " + site);
         } catch (e) {
           console.log("failed " + site + ": " + e.message);
@@ -105,7 +134,7 @@ test("an inactive / unassigned task space is also a hard stop", async () => {
   const result = await runScript(
     `
       try {
-        await egoBrowser.listTaskSpaces();
+        await egoBrowser.listTaskSpace();
       } catch (e) {
         console.log("swallowed: " + e.message);
       }
@@ -125,7 +154,7 @@ test("an uncaught hard stop discards output without double-printing the message"
   const result = await runScript(
     `
       console.log("before");
-      await egoBrowser.listTaskSpaces();
+      await egoBrowser.listTaskSpace();
       console.log("after");
     `,
     ego,

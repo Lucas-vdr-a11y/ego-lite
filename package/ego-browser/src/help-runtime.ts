@@ -21,8 +21,8 @@ type HelperDoc = {
 
 // Implementation docs are extracted from the bundle at build time and injected
 // here as a compatibility fallback for exposed top-level extension helpers.
-// Built-in facade paths use PUBLIC_API_DOCS above, which avoids collisions such
-// as keyboard.down vs mouse.down and documents the names agents actually call.
+// Built-in facade paths use PUBLIC_API_DOCS above and document the names agents
+// query through egoBrowser.helper().
 // The runtime must never introspect its own source: the shipped browser loads
 // the SDK from a compiled .pak resource with an unreadable import.meta.url. See
 // GitHub issue #84.
@@ -119,7 +119,7 @@ function resolveHelpName(
 
   const parentNamespace = nearestPublicNamespace(requestedName);
   if (parentNamespace) {
-    return `Unknown helper: ${requestedName}. Use help('${parentNamespace}') to list its available methods.`;
+    return `Unknown helper: ${requestedName}. Use egoBrowser.helper('${parentNamespace}') to list its available methods.`;
   }
   return `Unknown helper: ${requestedName}`;
 }

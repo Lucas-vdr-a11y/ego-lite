@@ -24,10 +24,7 @@ import { runMain } from "./run.js";
 import { emitUpdateNotice, type VersionSource } from "./update-notice.js";
 
 type HelperFunction = (...args: unknown[]) => unknown;
-type EgoRuntime = Record<string, unknown> & {
-  helpers?: Record<string, unknown>;
-  learnings?: Record<string, unknown>;
-};
+type EgoRuntime = Record<string, unknown>;
 type InstallTarget = Record<string, unknown> & {
   ego?: EgoRuntime;
 };
@@ -52,7 +49,7 @@ export function enablePlaywrightTaskSpaces() {
   );
 }
 
-const SYNC_HELPERS = new Set(["help"]);
+const SYNC_HELPER_PATHS = new Set(["egoBrowser.helper"]);
 // Marks an ego runtime whose mutating methods have already been wrapped, so a
 // second installEgoSdk call cannot double-wrap createTab / task-space methods.
 const EGO_WRAPPED = Symbol.for("egoBrowser.sdkWrapped");
@@ -71,18 +68,14 @@ export function installEgoSdk(
   readySignal.catch((error) => {
     readyError = error;
   });
-  const installed: Record<string, unknown> = {};
   for (const [name, value] of Object.entries(context)) {
-    const exposed = SYNC_HELPERS.has(name)
-      ? value
-      : wrapReady(value, readySignal, () => readyError);
+    const exposed = wrapReady(value, readySignal, () => readyError, [name]);
     Object.defineProperty(target, name, {
       value: exposed,
       writable: true,
       configurable: true,
       enumerable: false,
     });
-    installed[name] = exposed;
   }
   installLegacySkillGuards(target);
   const usingDefaultLog = !options.cliLog;
@@ -90,7 +83,8 @@ export function installEgoSdk(
   // sink (options.cliLog) when provided, otherwise the buffered default. There is no
   // dedicated cliLog global anymore; console.error/warn are left untouched. Each
   // heredoc runs in its own short-lived process, so overriding the global is per-run.
-  console.log = options.cliLog || createBufferedLog();
+  console.log =
+    options.cliLog || createBufferedLog(target.ego, target.egoBrowser);
   if (usingDefaultLog) {
     // SDK path: the host runs each heredoc in a fresh short-lived process and never
     // calls execute(), so reset the per-run sink and flush it on process teardown.
@@ -98,6 +92,8 @@ export function installEgoSdk(
     installLifecycleFlush(process.stdout);
   }
   if (target.ego && typeof target.ego === "object") {
+    Reflect.deleteProperty(target.ego, "helpers");
+    Reflect.deleteProperty(target.ego, "learnings");
     // Fire-and-forget update hint. Route the resolved line to the same channel the
     // command's own output uses: the buffered-sink path registers it as a trailer the
     // sink appends after that output (so it reads as a footer, not a prefix), while a
@@ -106,11 +102,6 @@ export function installEgoSdk(
       target.ego as { getBrowserVersion?: VersionSource },
       usingDefaultLog ? setNoticeTrailer : (line) => options.cliLog?.(line),
     );
-    target.ego.helpers = installed;
-    target.ego.learnings =
-      installed.site && typeof installed.site === "object"
-        ? (installed.site as Record<string, unknown>)
-        : {};
     if (!(target.ego as Record<symbol, unknown>)[EGO_WRAPPED]) {
       wrapCreateTab(target.ego);
       wrapInvalidating(target.ego, [
@@ -132,8 +123,10 @@ function wrapReady(
   value: unknown,
   readySignal: Promise<unknown>,
   readyError: () => unknown,
+  path: string[],
 ): unknown {
   if (typeof value === "function") {
+    if (SYNC_HELPER_PATHS.has(path.join("."))) return value;
     return async (...args: unknown[]) => {
       await readySignal;
       const error = readyError();
@@ -143,11 +136,13 @@ function wrapReady(
   }
   if (!value || typeof value !== "object") return value;
   if (Array.isArray(value)) {
-    return value.map((child) => wrapReady(child, readySignal, readyError));
+    return value.map((child, index) =>
+      wrapReady(child, readySignal, readyError, [...path, String(index)]),
+    );
   }
   const wrapped: Record<string, unknown> = {};
   for (const [key, child] of Object.entries(value)) {
-    wrapped[key] = wrapReady(child, readySignal, readyError);
+    wrapped[key] = wrapReady(child, readySignal, readyError, [...path, key]);
   }
   for (const key of Reflect.ownKeys(value)) {
     const descriptor = Object.getOwnPropertyDescriptor(value, key);
@@ -173,11 +168,19 @@ if (isDirectCli()) {
   installEgoSdk(globalThis, { context });
 }
 
-function createBufferedLog() {
+function createBufferedLog(nativeEgo: unknown, egoBrowser: unknown) {
   return (...args: unknown[]) => {
     // Buffer instead of writing through: a hard stop later in the run must be able to
     // discard everything logged so far. The buffer is flushed on process teardown.
-    bufferOutput(`${args.map(formatCliLogValue).join(" ")}\n`);
+    bufferOutput(
+      `${args
+        .map((value) =>
+          formatCliLogValue(value, {
+            nativeInspect: value === nativeEgo || value === egoBrowser,
+          }),
+        )
+        .join(" ")}\n`,
+    );
   };
 }
 

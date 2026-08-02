@@ -9,7 +9,7 @@ import {
 import { resetSink } from "../dist/src/output-sink.js";
 
 const EXPECTED_TASK_SPACE_REPLACEMENTS = {
-  listTaskSpaces: "egoBrowser.listTaskSpaces()",
+  listTaskSpaces: "egoBrowser.listTaskSpace()",
   switchTaskSpace: "egoBrowser.switchTaskSpace(nameOrId)",
   newTaskSpace: "egoBrowser.newTaskSpace(name)",
   useOrCreateTaskSpace: "egoBrowser.useOrCreateTaskSpace(nameOrId)",

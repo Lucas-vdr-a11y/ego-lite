@@ -310,14 +310,17 @@ test("taskspace e2e exposes only the egoBrowser TaskSpace facade", async () => {
   });
 });
 
-test("cli e2e exposes the unified helperContext surface (help present, internals hidden)", async () => {
+test("cli e2e exposes egoBrowser.helper while hiding the former global help", async () => {
   const ego = new FakeEgo();
   const result = await runTaskspaceScript(
     ego,
     `
     console.log(JSON.stringify({
       helpType: typeof help,
-      helpResultType: typeof help("page"),
+      helperType: typeof egoBrowser.helper,
+      helperResultType: typeof egoBrowser.helper("egoBrowser.listTaskSpace"),
+      listType: typeof egoBrowser.listTaskSpace,
+      legacyListType: typeof egoBrowser.listTaskSpaces,
       newTabType: typeof newTab,
       pageType: typeof page,
       oldClickType: typeof click,
@@ -329,8 +332,11 @@ test("cli e2e exposes the unified helperContext surface (help present, internals
 
   assert.equal(result.exitCode, 0);
   assert.deepEqual(firstJsonLine(result.stdout), {
-    helpType: "function",
-    helpResultType: "string",
+    helpType: "undefined",
+    helperType: "function",
+    helperResultType: "string",
+    listType: "function",
+    legacyListType: "undefined",
     newTabType: "undefined",
     pageType: "undefined",
     oldClickType: "undefined",

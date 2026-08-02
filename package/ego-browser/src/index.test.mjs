@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 
 import * as sdk from "../dist/src/index.js";
 import { resetSink } from "../dist/src/output-sink.js";
@@ -10,6 +11,25 @@ import {
 } from "../dist/src/playwright/taskspace.js";
 
 const { installEgoSdk } = sdk;
+
+test("the embedded SDK prints the egoBrowser facade with its public methods", () => {
+  const moduleUrl = new URL("../dist/src/index.js", import.meta.url).href;
+  const result = spawnSync(
+    process.execPath,
+    [
+      "--input-type=module",
+      "--eval",
+      `await import(${JSON.stringify(moduleUrl)}); console.log(egoBrowser);`,
+    ],
+    { encoding: "utf8" },
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /helper: \[Function: egoBrowserHelper\]/);
+  assert.match(result.stdout, /listProfile: \[AsyncFunction/);
+  assert.match(result.stdout, /newTaskSpace: \[AsyncFunction/);
+  assert.notEqual(result.stdout.trim(), "{}");
+});
 
 test("disposeEgoSdk closes the active Playwright connection for SDK hosts", async () => {
   assert.equal(typeof sdk.disposeEgoSdk, "function");
@@ -39,6 +59,7 @@ test("installEgoSdk exposes TaskSpace control without legacy page or tabs global
   try {
     installEgoSdk(target, { cliLog() {} });
     assert.equal(typeof target.egoBrowser, "object");
+    assert.equal(typeof target.egoBrowser.listProfile, "function");
     assert.equal(typeof target.egoBrowser.newTaskSpace, "function");
     assert.equal(target.page, undefined);
     assert.equal(target.tabs, undefined);
@@ -77,18 +98,28 @@ test("installEgoSdk keeps asynchronous helpers behind an explicit readiness gate
     console.log = originalLog;
   }
 });
-test("installEgoSdk exposes the site facade under ego.learnings", () => {
+test("installEgoSdk keeps custom facades off the native ego object", () => {
   const originalLog = console.log;
   const target = { ego: {} };
   try {
     installEgoSdk(target, { cliLog() {} });
-    assert.equal(target.ego.learnings, target.ego.helpers.site);
-    assert.equal(typeof target.ego.learnings.skills, "function");
-    assert.equal(typeof target.ego.learnings.skillsForUrl, "function");
-    assert.equal(typeof target.ego.learnings.runTool, "function");
-    assert.equal(typeof target.ego.learnings.runBrowserTool, "function");
-    assert.equal(typeof target.ego.learnings.learnContext, "function");
-    assert.equal(target.ego.helpers.useOrCreateTaskSpace, undefined);
+    assert.equal(target.ego.helpers, undefined);
+    assert.equal(target.ego.learnings, undefined);
+    assert.equal(typeof target.site.runTool, "function");
+  } finally {
+    console.log = originalLog;
+  }
+});
+
+test("installEgoSdk keeps egoBrowser.helper synchronous", () => {
+  const originalLog = console.log;
+  const target = {};
+  try {
+    installEgoSdk(target, { cliLog() {} });
+    const output = target.egoBrowser.helper("egoBrowser.listTaskSpace");
+
+    assert.equal(typeof output, "string");
+    assert.match(output, /egoBrowser\.listTaskSpace\(\)/);
   } finally {
     console.log = originalLog;
   }
@@ -136,7 +167,7 @@ test("installEgoSdk keeps raw task-space bridge methods behind stale-skill guard
       () => target.listTaskSpaces(),
       (error) => {
         assert.equal(error.name, "EgoBrowserSkillStaleError");
-        assert.match(error.message, /egoBrowser\.listTaskSpaces\(\)/);
+        assert.match(error.message, /egoBrowser\.listTaskSpace\(\)/);
         return true;
       },
     );
