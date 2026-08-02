@@ -16,7 +16,7 @@ This repo contains the open-source harness and the agent skill package — **not
 - `package/ego-browser/src/index.ts` is the entrypoint with two startup paths:
   - Executed directly as a CLI → `runMain()` (reads JavaScript from stdin, executes it).
   - Imported as a module (how the app embeds it) → `installEgoSdk(globalThis)`.
-- Both paths expose the same helper surface, built by `helperContext()` in `src/helpers.ts` — the single source of truth for what agents can call (including `help()` and `agent_helpers.js` extensions).
+- Both paths expose the same helper surface, built by `helperContext()` in `src/helpers.ts` — the single source of truth for what agents can call (including `egoBrowser.helper()` and `agent_helpers.js` extensions).
 - `src/run.ts` executes stdin JavaScript inside an async function with the helpers injected as parameters.
 - `src/browser-runtime.ts` owns CDP transport over `ego.sendCDPMessage`, session attach/caching (2s TTL, auto re-attach on session loss), the buffered event queue (10k cap), and JS dialog tracking.
 - `src/cdp-eval.ts` provides `cdp()` and `js()` (string-expression evaluation; top-level `return` is auto-wrapped in an IIFE).
@@ -25,12 +25,13 @@ This repo contains the open-source harness and the agent skill package — **not
 - `src/driver/` — `nav` (tabs, navigation), `pointer` (click/scroll/drag), `keyboard`, `observe` (snapshot/screenshot), `waits`, `files` (upload), `element-ops` (objectId handles), `load`.
 - `src/learning/` — discovery, validation, and execution of site skills from `skills/ego-browser/learnings/<site>/manifest.json` (`runSiteTool`, `runSiteBrowserTool`, `learnContext`).
 - `src/state.ts` is the shared mutable runtime state singleton; `src/env.ts` resolves the agent workspace (`EGO_BROWSER_AGENT_WORKSPACE`, falling back to the skill dir bundled next to the build output, then the repo's `skills/ego-browser`).
-- `src/format.ts` owns `PUBLIC_API_DOCS`, the public facade-path documentation shared by `help()` and structured CLI output. `src/help-runtime.ts` resolves exact paths and namespaces; build-time JSDoc extraction remains a compatibility fallback for genuinely exposed top-level extension helpers.
+- `src/format.ts` owns `PUBLIC_API_DOCS`, the public facade-path documentation read through `egoBrowser.helper()`. `src/help-runtime.ts` resolves exact paths and namespaces; build-time JSDoc extraction remains a compatibility fallback for genuinely exposed top-level extension helpers.
 
 Data flow: `stdin JS` → `runMain()` → `helperContext()` helpers → browser runtime/CDP → snapshot or DOM/AX resolution → optional site tools → `console.log(...)`.
 
 ## Task Spaces
 Task spaces are isolated browsing contexts with an ownership model (`agent` / `user`):
+- `listProfile()` returns the profiles available to new task spaces. Pass a returned profile `id` to `newTaskSpace(name, profileId)`; a task space's profile cannot be changed after creation.
 - `useOrCreateTaskSpace(nameOrId)` reuses an agent-owned space or creates a new one; it no longer auto-claims user-owned spaces. Use `claimTaskSpace(nameOrId)` to take ownership of a user-owned space. Ids are numeric; prefer `task.id` over names across rounds.
 - `switchTaskSpace` requires agent ownership; `newTaskSpace` creates; `completeTaskSpace(nameOrId, { keep })` finishes (`keep` is mandatory).
 - Control handoff: `handOffTaskSpace` / `takeOverTaskSpace` / `waitForAgentControl`.

@@ -25,13 +25,15 @@ await egoBrowser.completeTaskSpace(task.id)
 EOF
 ```
 
+To choose a browser profile for a new TaskSpace, call `egoBrowser.listProfile()` and pass the selected unique `profile.id` to `egoBrowser.newTaskSpace(name, profileId)`. Profile display names may be duplicated, and an existing TaskSpace cannot change profiles.
+
 When the host exposes `ego.getCDPEndpoint(taskSpaceId)`, the runtime connects to that browser-level endpoint directly. The endpoint must support the complete browser CDP session lifecycle used by `chromium.connectOverCDP` and expose only the selected TaskSpace's targets. Give different TaskSpaces distinct endpoint values so the SDK can reconnect without crossing their isolation boundary. Older hosts that expose only `ego.sendCDPMessage` use an SDK-owned local WebSocket bridge automatically (a Unix domain socket on macOS/Linux and loopback TCP on Windows); Playwright requests are assigned isolated native message ids and native responses and events are routed back to the Playwright connection.
 
 Local invocation without the browser (for debugging the helper bundle itself) reads stdin:
 
 ```bash
 node dist/out/index.js <<'JS'
-console.log(help())
+console.log(egoBrowser.helper())
 JS
 ```
 
@@ -64,7 +66,7 @@ npm run validate:site-skills    # alias: validate:learnings
 ```
 src/
   run.ts                 CLI entry; reads stdin, injects helpers, executes
-  helpers.ts             TaskSpace, site, fetch, CDP, and help surfaces
+  helpers.ts             TaskSpace, site, fetch, CDP, and API-help surfaces
   playwright/            native Playwright TaskSpace, transport, and routing
   browser-runtime.ts     bridge to globalThis.ego (CDP, sessions, events)
   http.ts                serverFetch, browserFetch
@@ -80,7 +82,7 @@ The top-level repo README has the full helper inventory and the task-space / con
 
 - The browser runtime owns task spaces and CDP transport. Playwright owns Page, BrowserContext, Locator, input, navigation, events, and downloads.
 - A TaskSpace exposes its active native Playwright `Page` and `BrowserContext`; additional pages use `task.context.pages()` and `task.context.newPage()`.
-- `egoBrowser`, `site`, `fetch`, `cdp`, and `help` remain ego-browser-specific control surfaces.
+- `egoBrowser`, `site`, `fetch`, and `cdp` remain ego-browser-specific control surfaces; use `egoBrowser.helper()` to inspect their documented APIs.
 - Site-specific reusable experience belongs under `skills/ego-browser/learnings/`, not in this package.
 
 ## License

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
 
 const MAX_SKILL_BODY_LINES = 250;
@@ -62,6 +62,22 @@ test("skill routes video requests to current native TaskSpace guidance", () => {
   assert.match(video, /There is currently no supported API/);
   assert.doesNotMatch(video, /await page\.screencast\.(?:start|stop)\(/);
   assert.match(video, /Do not call `task\.context\.browser\(\)\.newContext/);
+});
+
+test("profile reference limits Profile selection to explicit user requirements", () => {
+  const profilerUrl = new URL(
+    "../../../skills/ego-browser/references/profiler.md",
+    import.meta.url,
+  );
+  assert.equal(existsSync(profilerUrl), true);
+  const profiler = readFileSync(profilerUrl, "utf8");
+
+  assert.match(profiler, /direct, declarative requirement/);
+  assert.match(profiler, /explicitly requires a specific browser Profile/);
+  assert.match(profiler, /newTaskSpace\(shortGoalName\)/);
+  assert.match(profiler, /await egoBrowser\.listProfile\(\)/);
+  assert.match(profiler, /newTaskSpace\(shortGoalName, profile\.id\)/);
+  assert.match(profiler, /Do not infer/);
 });
 
 test("skill body stays within line and word budgets", () => {

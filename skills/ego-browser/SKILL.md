@@ -15,14 +15,15 @@ ego-browser is a Chromium-based browser. It provides an `ego-browser nodejs` ent
 Scripts receive two categories of preloaded APIs:
 
 - **Native Playwright APIs**: TaskSpace methods expose Playwright 1.52 `Page` and `BrowserContext` objects as `task.page` and `task.context`.
-- **ego-browser-specific APIs**: `egoBrowser`, `site`, `fetch`, `cdp`, and `help`. See §4.
+- **ego-browser-specific APIs**: `egoBrowser`, `site`, `fetch`, and `cdp`. See §4.
 
-The native Playwright surface is meant to be used directly. For ordinary page and locator work, rely on familiar Playwright methods and the needs of the task. Use `help(...)` when an exact ego-browser-specific signature, option, or return value matters:
+The native Playwright surface is meant to be used directly. For ordinary page and locator work, rely on familiar Playwright methods and the needs of the task. Use `egoBrowser.helper(...)` when an exact ego-browser-specific signature, option, or return value matters. Calling it without a name lists the `egoBrowser` methods:
 
 ```js
-console.log(help('egoBrowser'))
-console.log(help('egoBrowser.newTaskSpace'))
-console.log(help('egoBrowser.completeTaskSpace'))
+console.log(egoBrowser.helper())
+console.log(egoBrowser.helper('egoBrowser.listProfile()'))
+console.log(egoBrowser.helper('egoBrowser.newTaskSpace'))
+console.log(egoBrowser.helper('egoBrowser.completeTaskSpace'))
 ```
 
 All public time parameters and options use milliseconds, including `timeout`, `interval`, `delay`, and `polling`.
@@ -74,7 +75,7 @@ Use one task space for one user goal. In the first round, call `const task = awa
 
 When the user refers to the current page, use `task.page`. Use `task.context.pages()` to inspect all open pages and `task.context.newPage()` to create another page. Use `page.bringToFront()` to foreground a page and `page.close()` to close it.
 
-If `task.id` is lost, use `egoBrowser.listTaskSpaces()` to identify the original space unambiguously, then call `egoBrowser.switchTaskSpace(id)`. If the result is ambiguous or the space no longer exists, stop and ask the user; do not create a replacement space.
+If `task.id` is lost, use `egoBrowser.listTaskSpace()` to identify the original space unambiguously, then call `egoBrowser.switchTaskSpace(id)`. If the result is ambiguous or the space no longer exists, stop and ask the user; do not create a replacement space.
 
 ### 3.2 Generate snapshots proactively
 
@@ -115,8 +116,7 @@ For “today”, “current”, or “latest” tasks, establish the current tim
 - **`site`**: discovers and runs reusable site skills and reads site learning context.
 - **`fetch`**: `fetch.server` requests from Node.js; `fetch.browser` requests from the current page origin.
 - **`cdp`**: directly calls Chrome DevTools Protocol capabilities that the facade does not cover.
-- **`help`**: reads signatures for ego-browser-specific namespaces and public facade paths. Namespace queries such as `help('egoBrowser')` list the available methods; exact queries such as `help('egoBrowser.newTaskSpace')` return one signature.
-
+- **`egoBrowser.helper`**: called without arguments, lists all `egoBrowser` methods; with an exact public path such as `egoBrowser.helper('egoBrowser.newTaskSpace')`, returns that API's signature and documentation.
 
 ## 5. Ownership and control
 
@@ -124,7 +124,7 @@ A task space can have ownership `agent`, `agentDelegatedToUser`, or `user`. `ego
 
 A “user is controlling”, “inactive”, or “not assigned” error is a hard stop for the entire browser task. Do not retry, work around it, or call `egoBrowser.takeOverTaskSpace(...)` automatically. Ask the user first, then follow the claim / takeOver flow below only after explicit confirmation.
 
-After the user explicitly permits work in a user-owned space, list the spaces again with `egoBrowser.listTaskSpaces()` and call `const task = await egoBrowser.claimTaskSpace(id)`. Continue with `task.page`; use `task.context.pages()` when the task requires another existing page.
+After the user explicitly permits work in a user-owned space, list the spaces again with `egoBrowser.listTaskSpace()` and call `const task = await egoBrowser.claimTaskSpace(id)`. Continue with `task.page`; use `task.context.pages()` when the task requires another existing page.
 
 For login, captcha, or another manual step:
 
@@ -158,6 +158,7 @@ When anything remains unmet or unproven, return to the original task space and c
 ## 8. References
 
 - [Installation and connection](references/install.md)
+- [profiler](references/profiler.md) — Read when the user explicitly asks to create a TaskSpace with a specific browser Profile.
 - [Playwright 1.52.0 API reference](https://github.com/microsoft/playwright/blob/v1.52.0/packages/playwright-core/types/types.d.ts)
 - [Human verification and captcha handling](references/captcha.md) — read when a webpage requires the user to complete human verification or a CAPTCHA.
 - [Video recording support and current limitations](references/video.md) — read when the user asks to record or export a browser session as video.
