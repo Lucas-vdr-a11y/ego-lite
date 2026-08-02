@@ -14,8 +14,8 @@ ego-browser is a Chromium-based browser. It provides an `ego-browser nodejs` ent
 
 Scripts receive two categories of preloaded APIs:
 
-- **Native Playwright APIs**: TaskSpace methods expose a native Playwright `Page` as `task.page` and a native `BrowserContext` as `task.context`, including Locator, FrameLocator, navigation, waits, screenshots, evaluation, keyboard, mouse, events, and network APIs. It targets `playwright@1.52.0`; see §4.
-- **ego-browser-specific APIs**: `egoBrowser`, `site`, `fetch`, `cdp`, and `help`. See §5.
+- **Native Playwright APIs**: TaskSpace methods expose Playwright 1.52 `Page` and `BrowserContext` objects as `task.page` and `task.context`.
+- **ego-browser-specific APIs**: `egoBrowser`, `site`, `fetch`, `cdp`, and `help`. See §4.
 
 The native Playwright surface is meant to be used directly. For ordinary page and locator work, rely on familiar Playwright methods and the needs of the task. Use `help(...)` when an exact ego-browser-specific signature, option, or return value matters:
 
@@ -27,7 +27,7 @@ console.log(help('egoBrowser.completeTaskSpace'))
 
 All public time parameters and options use milliseconds, including `timeout`, `interval`, `delay`, and `polling`.
 
-When the Bash tool applies an outer timeout, set it longer than the longest in-script locator, navigation, or event timeout after converting units, leaving time for process startup and output. Use a shorter explicit timeout only for optional probes whose absence is an expected result.
+When the Bash tool applies an outer timeout, set it longer than the sum of all sequential in-script locator, navigation, and event timeouts after converting units, including Playwright's 30-second default for operations without an explicit timeout, and leave time for process startup and output. Use a shorter in-script timeout only for optional probes whose absence is an expected result; do not shorten the outer Bash timeout.
 
 Run it with the `Bash` tool:
 
@@ -41,7 +41,7 @@ Run automation scripts only through `ego-browser nodejs` and write them directly
 
 ### Execution model
 
-`ego-browser nodejs` deliberately uses a heredoc as a programmable interface instead of splitting every browser action into a separate CLI command. One JavaScript block can retain intermediate results and compose multiple steps. To improve fault tolerance, it can read a few likely page states,handle them with branches instead of failing immediately, and verify the result before returning.
+`ego-browser nodejs` deliberately uses a heredoc as a programmable interface instead of splitting every browser action into a separate CLI command. One JavaScript block can retain intermediate results and compose multiple steps. To improve fault tolerance, it can read a few likely page states, handle them with branches instead of failing immediately, and verify the result before returning.
 
 - **User goal** maps to one TaskSpace, from `egoBrowser.newTaskSpace()` through `egoBrowser.completeTaskSpace()` or `egoBrowser.closeTaskSpace()`.
 - **Execution round** is one Bash invocation in which the entire JavaScript block runs in one process.
@@ -78,9 +78,9 @@ If `task.id` is lost, use `egoBrowser.listTaskSpaces()` to identify the original
 
 ### 3.2 Generate snapshots proactively
 
-For normal DOM pages, use `page.locator('body').ariaSnapshot({ ref: true })` when the model needs a semantic representation of the page.
+Take an ARIA snapshot only when the next decision requires fresh semantic page structure. When needed, use the smallest sufficient scope: prefer a relevant local locator that is known to resolve uniquely in the current Page/frame state; use `body` only when the relevant region is unknown or a local snapshot lacks necessary context.
 
-Call `page.locator('body').ariaSnapshot({ ref: true })` again only when the next step depends on fresh semantic page structure:
+Common cases that warrant a fresh ARIA snapshot are:
 
 1. In every later working Bash round, first call `const task = await egoBrowser.switchTaskSpace(taskId)` before any Page operation. Starting a new round alone does not require a snapshot. Take one before the model chooses an element from the current page structure or before using an `aria-ref=sNeN` locator.
 2. After navigation, reload, switching pages, or switching TaskSpaces, take a snapshot only when the next step requires structural interpretation or fresh ARIA refs. Direct reads through `page.url()`, `page.title()`, a previously established stable locator, or `page.evaluate(...)` do not require a snapshot.
@@ -90,10 +90,11 @@ Call `page.locator('body').ariaSnapshot({ ref: true })` again only when the next
 
 With `ref: true`, `locator.ariaSnapshot()` emits Page- and frame-scoped `aria-ref=sNeN` locators. A later successful ARIA snapshot in the same scope invalidates the earlier reference generation. Do not reuse these refs across snapshots, pages, frames, or execution rounds. Use a semantic locator for longer-lived identification.
 
-Within one heredoc, base subsequent decisions on locators, URLs, or other state the script can evaluate directly. When the next step requires the model to reinterpret the page structure, output a fresh snapshot with `console.log(await page.locator('body').ariaSnapshot({ ref: true }))`.
+Within one heredoc, base subsequent decisions on locators, URLs, or other state the script can evaluate directly. When the next step requires the model to reinterpret page structure, output a fresh snapshot at the smallest sufficient scope, falling back to `body` when necessary.
+
 ### 3.3 Choose an interaction path
 
-1. **Semantic: snapshot + locator.** Use this by default for normal DOM pages. Prefer semantic locators or `aria-ref=sNeN` values from the latest `locator.ariaSnapshot({ ref: true })`. Use `locator.ariaSnapshot()` when only a local accessible subtree needs to be inspected.
+1. **Semantic: snapshot + locator.** Use this by default for normal DOM pages. Prefer semantic locators or `aria-ref=sNeN` values from the latest `locator.ariaSnapshot({ ref: true })`.
 2. **Visual: screenshot + mouse/keyboard.** Use this for canvas, virtualized editors, spreadsheets, maps, or other interfaces whose semantic or accessibility surface is incomplete or unreliable. Before substantial editing, make one small reversible test change when safe, then verify it with a screenshot, export, or authoritative readback.
 3. **Direct: locator evaluate, page evaluate, CDP.** Use `locator.evaluate(fn, arg)` for one matched element, `locator.evaluateAll(fn, arg)` for collection reads, and `page.evaluate(fn, arg)` for page-level state. Prefer evaluation for direct state reads rather than replacing normal UI actions with DOM mutation. Use raw CDP only for capabilities the public facade does not cover.
 
@@ -108,23 +109,7 @@ Within one heredoc, base subsequent decisions on locators, URLs, or other state 
 
 For “today”, “current”, or “latest” tasks, establish the current time, relevant timezone, and task time range before collecting data, then keep that range fixed throughout the task. Treat newly encountered dates on the page as record data.
 
-## 4. Native Playwright surface
-
-The Playwright surface is exposed through the native `task.page` and `task.context` objects. Page, BrowserContext, Locator, FrameLocator, keyboard, mouse, navigation, waits, screenshots, evaluation, events, network, downloads, dialogs, and file uploads follow Playwright 1.52. Use these APIs directly when they fit the task.
-
-The table records important call-shape details and remaining differences in same-named APIs:
-
-| API | ego-browser behavior |
-|---|---|
-| `page.url()` | Matches Playwright's synchronous call shape and returns a string. Call `page.url()` without `await`. |
-| `page.waitForURL(...)` matcher | Accepts an exact string, a glob string containing `*`, a `RegExp`, or a synchronous predicate receiving a `URL`. It supports `waitUntil: "load"`, `"domcontentloaded"`, `"networkidle"`, or `"commit"` and defaults to `"load"`. It does not accept `URLPattern` or an asynchronous predicate. |
-| `page.evaluate(fnOrExpression, arg)` argument | Accepts a function or string expression. The optional `arg` is passed to the function form; string expressions are evaluated directly and do not receive it. Arguments support Playwright-serializable values and nested `JSHandle` / `ElementHandle` values created in the same JavaScript context. Disposed handles and handles from another Page or execution context are rejected. |
-| `page.screenshot(options)` options | Follows native Playwright 1.52 and returns a `Buffer`; when `path` is supplied, it also writes the image to that path. |
-| `page.video()` | Returns `null` for current TaskSpace pages because their existing BrowserContext was not created with `recordVideo`. The removed `page.screencast` extension is unavailable; see [Video recording support](references/video.md). |
-
-Locators and actionability follow native Playwright 1.52. Option availability such as `force` and `trial` depends on the specific Playwright action.
-
-## 5. ego-browser-specific APIs
+## 4. ego-browser-specific APIs
 
 - **TaskSpace Playwright objects**: TaskSpace selection methods expose the active native Playwright Page as `task.page` and its BrowserContext as `task.context`. Use `task.context.pages()` and `task.context.newPage()` for additional pages.
 - **`site`**: discovers and runs reusable site skills and reads site learning context.
@@ -133,7 +118,7 @@ Locators and actionability follow native Playwright 1.52. Option availability su
 - **`help`**: reads signatures for ego-browser-specific namespaces and public facade paths. Namespace queries such as `help('egoBrowser')` list the available methods; exact queries such as `help('egoBrowser.newTaskSpace')` return one signature.
 
 
-## 6. Ownership and control
+## 5. Ownership and control
 
 A task space can have ownership `agent`, `agentDelegatedToUser`, or `user`. `egoBrowser.useOrCreateTaskSpace(...)` does not automatically claim a user-owned space.
 
@@ -152,7 +137,7 @@ For login, captcha, or another manual step:
 
 The `done` result from `handOffTaskSpace`, `completeTaskSpace`, and `closeTaskSpace` determines whether handoff, completion, or closure succeeded.
 
-## 7. Complete the task
+## 6. Complete the task
 
 `egoBrowser.completeTaskSpace(...)` or `egoBrowser.closeTaskSpace(...)` owns the final round; perform no browser work in that round:
 
@@ -164,14 +149,15 @@ When anything remains unmet or unproven, return to the original task space and c
 
 `keep` is no longer an option. Use `egoBrowser.closeTaskSpace(task.id)` by default. Use `egoBrowser.completeTaskSpace(task.id)` when the user asks to retain the page, needs to continue manually, or the result cannot be delivered as a URL, file, artifact, or summary. `egoBrowser.completeTaskSpace(task.id)` preserves the final page for the user. Temporary tabs may be closed during the task.
 
-## 8. Runtime notices
+## 7. Runtime notices
 
 - `[ego-browser:skill-stale]` means the skill in the current conversation does not match the installed runtime. Stop the failed script, reread the current skill, and retry with the replacement name shown in the error. This is not an app-update notice; do not run `ego-browser upgrade` for this reason alone.
 - A trailing `[ego-browser:notice]` means an ego lite update is available or required. It is not an error or task result; first complete or stop the current browser task.
 - After the task ends, tell the user about the notice and the current version it reports, and proactively offer to upgrade. If the user agrees, run `ego-browser upgrade`; after upgrading, reread the ego-browser skill.
 
-## 9. References
+## 8. References
 
 - [Installation and connection](references/install.md)
-- [Video recording support and current limitations](references/video.md) — read when the user asks to record or export a browser session as video.
 - [Playwright 1.52.0 API reference](https://github.com/microsoft/playwright/blob/v1.52.0/packages/playwright-core/types/types.d.ts)
+- [Human verification and captcha handling](references/captcha.md) — read when a webpage requires the user to complete human verification or a CAPTCHA.
+- [Video recording support and current limitations](references/video.md) — read when the user asks to record or export a browser session as video.
