@@ -1,6 +1,9 @@
 import { surfaces } from "../scenarios/index.jsx";
+import { TEST_CASES } from "../../test-cases.mjs";
 
+import AppHeader from "./app-header.jsx";
 import Layout, { scenarioModulePath } from "./layout.jsx";
+import { TestProgressControls } from "./test-progress.jsx";
 
 export default function TestPage({ testCase }) {
   const Surface = surfaces[testCase.slug];
@@ -9,30 +12,33 @@ export default function TestPage({ testCase }) {
       title={testCase.title}
       scriptSrc={scenarioModulePath(testCase.slug)}
     >
-      <main class="test-shell" data-test-route={testCase.route}>
-        <header class="test-header">
-          <a class="brand-mark" href="/">
-            EGO / BROWSER LAB
-          </a>
-          <span class="ready-mark">
-            <i /> READY FOR INPUT
-          </span>
-        </header>
+      <AppHeader />
 
-        <section class="test-heading">
-          <div>
-            <p class="kicker">{testCase.eyebrow}</p>
-            <h1>{testCase.title}</h1>
+      <main class="test-shell container-fluid" data-test-route={testCase.route}>
+        <header class="test-header">
+          <div class="test-heading">
+            <div>
+              <nav class="scenario-navigation" aria-label="Scenario navigation">
+                <a href="/">← All fixtures</a>
+              </nav>
+              <p class="eyebrow">{testCase.eyebrow}</p>
+              <h1>{testCase.title}</h1>
+              <p>{testCase.description}</p>
+            </div>
+            <div class="test-meta">
+              <code>{testCase.route}</code>
+              <TestProgressControls slug={testCase.slug} />
+            </div>
           </div>
-          <p>{testCase.description}</p>
-          <span class="test-number">{testCase.number}</span>
-        </section>
+        </header>
 
         <Surface />
 
         <footer class="test-footer">
-          <a href="/">← All test routes</a>
-          <code>{testCase.route}</code>
+          <span>
+            Fixture {testCase.number} of {TEST_CASES.length}
+          </span>
+          <a href="/">Return to all fixtures</a>
         </footer>
       </main>
     </Layout>

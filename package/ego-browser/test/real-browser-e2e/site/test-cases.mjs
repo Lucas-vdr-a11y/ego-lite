@@ -116,6 +116,42 @@ export const TEST_CASES = [
     description:
       "Request the latest shipment state and render the response as a compact delivery timeline.",
   },
+  {
+    slug: "review-workflow",
+    route: "/tests/review-workflow",
+    number: "14",
+    title: "Evidence review",
+    eyebrow: "Workflow / controlled review",
+    description:
+      "Assign an expert, record a blocking finding, complete the author revision, and approve the evidence trail.",
+  },
+  {
+    slug: "collaborative-docs",
+    route: "/tests/collaborative-docs",
+    number: "15",
+    title: "Decision document",
+    eyebrow: "Docs / live collaboration",
+    description:
+      "Edit one shared decision record across browser tabs and preserve a deterministic version history.",
+  },
+  {
+    slug: "spreadsheet",
+    route: "/tests/spreadsheet",
+    number: "16",
+    title: "Pilot workbook",
+    eyebrow: "Spreadsheet / budget planning",
+    description:
+      "Edit budget cells, recalculate the planned spend, add rows, and save the workbook through a real data grid.",
+  },
+  {
+    slug: "rich-text",
+    route: "/tests/rich-text",
+    number: "17",
+    title: "Release editor",
+    eyebrow: "Rich text / editorial formatting",
+    description:
+      "Write and format a release article, inspect its semantic HTML, and persist the editorial draft.",
+  },
 ];
 
 export function findTestCase(slug) {

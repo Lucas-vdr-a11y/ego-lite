@@ -1,6 +1,6 @@
 export default function UploadsSurface() {
   return (
-    <section class="surface asset-layout">
+    <section class="surface card asset-layout">
       <div class="asset-delivery">
         <div class="scenario-toolbar">
           <div>
@@ -17,7 +17,7 @@ export default function UploadsSurface() {
           </small>
           <i>Choose files →</i>
         </label>
-        <input id="file-input" type="file" multiple />
+        <input id="file-input" type="file" accept=".txt,.md,.csv" multiple />
         <div class="delivery-notes">
           <p>
             <strong>Naming</strong>
@@ -41,9 +41,43 @@ export default function UploadsSurface() {
           </div>
           <output data-testid="file-count">0</output>
         </div>
+        <div class="d-flex gap-3 small text-secondary mb-2">
+          <span>
+            Bytes: <output data-testid="file-bytes">0</output>
+          </span>
+          <span>
+            Rejected: <output data-testid="rejected-file-count">0</output>
+          </span>
+          <span>
+            Delivered: <output data-testid="delivered-file-count">0</output>
+          </span>
+        </div>
         <div class="file-list" data-testid="file-list">
           <p>No files selected</p>
         </div>
+        <button
+          id="clear-files"
+          type="button"
+          class="btn btn-sm btn-outline-secondary"
+          disabled
+        >
+          Clear files
+        </button>
+        <button
+          id="deliver-files"
+          type="button"
+          class="btn btn-sm btn-primary ms-2"
+          disabled
+        >
+          Deliver files
+        </button>
+        <output
+          class="d-block mt-3 small fw-semibold"
+          data-testid="delivery-status"
+          role="status"
+        >
+          Awaiting files
+        </output>
         <p class="activity-note">
           File metadata shown here comes directly from the browser FileList.
         </p>

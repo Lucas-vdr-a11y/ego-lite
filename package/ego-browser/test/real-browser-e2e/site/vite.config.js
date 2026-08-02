@@ -13,8 +13,15 @@ const clientEntries = [
   "keyboard",
   "uploads",
   "scroll",
+  "navigation",
   "dialogs",
+  "downloads",
+  "frames",
   "network",
+  "review-workflow",
+  "collaborative-docs",
+  "spreadsheet",
+  "rich-text",
 ];
 
 export default defineConfig(({ command, mode }) => {
@@ -25,14 +32,19 @@ export default defineConfig(({ command, mode }) => {
         emptyOutDir: true,
         outDir: "dist",
         rollupOptions: {
-          input: Object.fromEntries(
-            clientEntries.map((slug) => [
-              slug,
-              fileURLToPath(
-                new URL(`./src/scenarios/${slug}/client.js`, import.meta.url),
-              ),
-            ]),
-          ),
+          input: {
+            progress: fileURLToPath(
+              new URL("./src/progress/client.js", import.meta.url),
+            ),
+            ...Object.fromEntries(
+              clientEntries.map((slug) => [
+                slug,
+                fileURLToPath(
+                  new URL(`./src/scenarios/${slug}/client.js`, import.meta.url),
+                ),
+              ]),
+            ),
+          },
           output: {
             entryFileNames: "assets/[name].js",
           },

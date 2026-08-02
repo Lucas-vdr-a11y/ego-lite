@@ -17,6 +17,9 @@ const interactiveRoutes = [
   "uploads",
   "scroll",
   "dialogs",
+  "downloads",
+  "frames",
+  "navigation",
   "network",
 ];
 
@@ -26,6 +29,212 @@ test("Hono test site exposes a Vite development command", async () => {
   );
 
   assert.equal(packageJson.scripts.dev, "vite");
+});
+
+test("Hono test site uses local Bootstrap CSS without Bootstrap JavaScript", async () => {
+  const packageJson = JSON.parse(
+    await readFile(new URL("./site/package.json", import.meta.url)),
+  );
+  const layoutSource = await readFile(
+    new URL("./site/src/components/layout.jsx", import.meta.url),
+    "utf8",
+  );
+  const response =
+    await createTestSiteApp("bootstrap-test").request("/tests/forms");
+  const html = await response.text();
+
+  assert.equal(packageJson.dependencies.bootstrap, "5.3.8");
+  assert.match(layoutSource, /bootstrap\/dist\/css\/bootstrap\.min\.css\?raw/);
+  assert.doesNotMatch(layoutSource, /bootstrap\/dist\/js|bootstrap\.bundle/);
+  assert.match(html, /data-bs-theme=["']light["']/);
+  assert.match(html, /data-ui-foundation=["']bootstrap["']/);
+});
+
+test("interactive fixtures use focused libraries for drag and whiteboard input", async () => {
+  const packageJson = JSON.parse(
+    await readFile(new URL("./site/package.json", import.meta.url)),
+  );
+  const app = createTestSiteApp("component-test");
+  const dragHtml = await (await app.request("/tests/drag-drop")).text();
+  const canvasHtml = await (await app.request("/tests/canvas")).text();
+
+  assert.match(packageJson.dependencies.sortablejs, /^\^1\./);
+  assert.match(packageJson.dependencies.konva, /^\^10\./);
+  assert.match(dragHtml, /data-drag-handle/);
+  assert.match(dragHtml, /aria-label=["']Drag checkout reassurance["']/);
+  assert.match(canvasHtml, /data-background=["']dot-grid["']/);
+  assert.match(canvasHtml, />Pencil</);
+  assert.match(canvasHtml, />Brush</);
+  assert.match(canvasHtml, />Marker</);
+  assert.match(canvasHtml, />Eraser</);
+  assert.match(canvasHtml, /aria-label=["']Redo stroke["']/);
+  assert.match(canvasHtml, /aria-label=["']Export PNG["']/);
+  assert.match(canvasHtml, /aria-label=["']Export SVG["']/);
+});
+
+test("download fixture records real archive requests", async () => {
+  const app = createTestSiteApp("download-test");
+  const before = await (await app.request("/api/download-status")).json();
+  const download = await app.request("/api/download");
+  const after = await (await app.request("/api/download-status")).json();
+
+  assert.equal(before.requests, 0);
+  assert.equal(download.status, 200);
+  assert.match(
+    download.headers.get("content-disposition") || "",
+    /ego-browser-sample\.txt/,
+  );
+  assert.equal(await download.text(), "ego-browser download fixture\n");
+  assert.equal(after.requests, 1);
+});
+
+test("Hono test site promotes its route list to the page heading", async () => {
+  const response = await createTestSiteApp("heading-test").request("/");
+  const html = await response.text();
+
+  assert.match(html, /<h1>Test routes<\/h1>/);
+  assert.doesNotMatch(html, /<h2>Test routes<\/h2>/);
+});
+
+test("every scenario exposes a visible navigation link back to home", async () => {
+  const response = await createTestSiteApp("scenario-navigation-test").request(
+    "/tests/clicks",
+  );
+  const html = await response.text();
+
+  assert.match(html, /<nav[^>]*aria-label="Scenario navigation"/);
+  assert.match(html, /<a[^>]*href="\/"[^>]*>← All fixtures<\/a>/);
+  assert.match(
+    html,
+    /<nav[^>]*aria-label="Scenario navigation"[^>]*>.*?<\/nav><p class="eyebrow">/,
+  );
+});
+
+test("Hono test site keeps the route panel close to the app bar", async () => {
+  const styles = await readFile(
+    new URL("./site/src/styles.css", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(
+    styles,
+    /\.index-shell\s*\{[^}]*padding-block:\s*1rem 1\.25rem;/s,
+  );
+});
+
+test("Hono test site fits all route rows into a compact desktop index", async () => {
+  const styles = await readFile(
+    new URL("./site/src/styles.css", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(
+    styles,
+    /\.route-panel-heading\s*\{[^}]*padding:\s*0\.75rem 1rem;/s,
+  );
+  assert.match(
+    styles,
+    /\.route-row\s*\{[^}]*min-height:\s*4\.25rem;[^}]*padding:\s*0\.625rem 1rem;/s,
+  );
+});
+
+test("Hono test site uses compact square progress markers", async () => {
+  const styles = await readFile(
+    new URL("./site/src/styles.css", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(styles, /\.progress-dots\s*\{[^}]*gap:\s*0\.1875rem;/s);
+  assert.match(
+    styles,
+    /\.progress-dot\s*\{[^}]*width:\s*0\.5rem;[^}]*height:\s*0\.5rem;[^}]*border-radius:\s*0\.125rem;/s,
+  );
+});
+
+test("Hono test site separates aggregate progress from scenario controls", async () => {
+  const app = createTestSiteApp("progress-test");
+  const homeHtml = await (await app.request("/")).text();
+
+  assert.match(homeHtml, /data-testid=["']test-progress-summary["']/);
+  assert.match(homeHtml, /role=["']progressbar["']/);
+  assert.equal(
+    homeHtml.match(/\sdata-progress-dot=["']true["']/g)?.length,
+    TEST_CASES.length,
+  );
+  assert.match(
+    homeHtml,
+    new RegExp(
+      `data-progress-completed[^>]*>0<\\/output>\\s*\\/\\s*<span[^>]*data-progress-total[^>]*>${TEST_CASES.length}<\\/span>`,
+    ),
+  );
+  assert.match(homeHtml, /src=["']\/assets\/progress\.js["']/);
+
+  for (const testCase of TEST_CASES) {
+    const html = await (await app.request(testCase.route)).text();
+    const appHeader = html.match(
+      /<header[^>]*data-testid=["']app-header["'][^>]*>[\s\S]*?<\/header>/,
+    )?.[0];
+    const scenarioHeader = html.match(
+      /<header[^>]*class=["'][^"']*test-header[^"']*["'][^>]*>[\s\S]*?<\/header>/,
+    )?.[0];
+
+    assert.ok(appHeader, `${testCase.slug} renders the shared app header`);
+    assert.match(appHeader, /class=["'][^"']*sticky-top/);
+    assert.match(appHeader, /data-testid=["']test-progress-summary["']/);
+    assert.equal(
+      appHeader.match(/data-progress-dot/g)?.length,
+      TEST_CASES.length,
+    );
+    assert.doesNotMatch(appHeader, /data-test-progress-controls/);
+    assert.doesNotMatch(appHeader, />All fixtures</);
+
+    assert.ok(scenarioHeader, `${testCase.slug} renders its scenario header`);
+    assert.match(scenarioHeader, /data-testid=["']scenario-test-controls["']/);
+    assert.match(scenarioHeader, /data-testid=["']start-test["']/);
+    assert.match(scenarioHeader, /data-testid=["']finish-test["']/);
+    assert.match(scenarioHeader, /data-testid=["']fail-test["']/);
+    assert.match(
+      scenarioHeader,
+      new RegExp(`data-test-slug=["']${testCase.slug}["']`),
+    );
+    assert.match(html, /src=["']\/assets\/progress\.js["']/);
+  }
+});
+
+test("Hono test site shares scenario progress between browser processes", async () => {
+  const app = createTestSiteApp("shared-progress-test");
+  const initial = await (await app.request("/api/test-progress")).json();
+  assert.deepEqual(initial, { progress: {} });
+
+  const update = await app.request("/api/test-progress/clicks", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ status: "in-progress" }),
+  });
+  assert.equal(update.status, 200);
+  assert.deepEqual(await update.json(), {
+    progress: { clicks: "in-progress" },
+  });
+
+  const shared = await (await app.request("/api/test-progress")).json();
+  assert.deepEqual(shared, { progress: { clicks: "in-progress" } });
+
+  const invalid = await app.request("/api/test-progress/clicks", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ status: "unknown" }),
+  });
+  assert.equal(invalid.status, 400);
+
+  const client = await readFile(
+    new URL("./site/src/progress/client.js", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    client,
+    /new EventSource\(["']\/api\/test-progress\/events["']\)/,
+  );
+  assert.doesNotMatch(client, /localStorage/);
 });
 
 test("Hono test site exposes the health endpoint used by native Playwright e2e", async () => {

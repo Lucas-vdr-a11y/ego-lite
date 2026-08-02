@@ -1,6 +1,6 @@
 export default function FramesSurface() {
   return (
-    <section class="surface checkout-layout">
+    <section class="surface card checkout-layout">
       <div class="order-summary">
         <span>ORDER / EG-1842</span>
         <h2>Arc desk set</h2>
@@ -22,6 +22,13 @@ export default function FramesSurface() {
           </div>
         </dl>
         <p>Secure partner checkout appears alongside the host order context.</p>
+        <output
+          class="d-block mt-3 alert alert-light border small"
+          data-testid="host-frame-status"
+          role="status"
+        >
+          Waiting for partner confirmation
+        </output>
       </div>
       <div class="partner-checkout">
         <div class="partner-heading">
@@ -29,11 +36,15 @@ export default function FramesSurface() {
           <strong>Complete checkout</strong>
           <i>Protected frame</i>
         </div>
-        <iframe
-          id="test-frame"
-          title="Browser test frame"
-          src="/frames/content"
-        />
+        <div id="frame-slot" class="frame-slot">
+          <p class="text-secondary small mb-3">
+            Load the partner surface when you are ready to enter payment
+            details.
+          </p>
+          <button id="load-frame" type="button" class="btn btn-primary">
+            Load secure checkout
+          </button>
+        </div>
       </div>
     </section>
   );

@@ -1,23 +1,46 @@
 export default function NavigationSurface() {
   return (
-    <section class="surface knowledge-layout">
+    <section class="surface card knowledge-layout">
       <div class="knowledge-sidebar">
         <span>WORKSPACE / RETAIL LAUNCH</span>
         <strong>Research index</strong>
-        <nav>
-          <a class="active-doc" href="#">
+        <nav aria-label="Research sections">
+          <button
+            type="button"
+            class="research-section active-doc"
+            data-section="Overview"
+            aria-selected="true"
+          >
             Overview <small>12</small>
-          </a>
-          <a href="#">
+          </button>
+          <button
+            type="button"
+            class="research-section"
+            data-section="Customer signals"
+            aria-selected="false"
+          >
             Customer signals <small>08</small>
-          </a>
-          <a href="#">
+          </button>
+          <button
+            type="button"
+            class="research-section"
+            data-section="Market notes"
+            aria-selected="false"
+          >
             Market notes <small>17</small>
-          </a>
-          <a href="#">
+          </button>
+          <button
+            type="button"
+            class="research-section"
+            data-section="Decisions"
+            aria-selected="false"
+          >
             Decisions <small>05</small>
-          </a>
+          </button>
         </nav>
+        <p class="mb-0">
+          Active: <output data-testid="navigation-section">Overview</output>
+        </p>
         <p>Last indexed 4 minutes ago</p>
       </div>
       <div class="knowledge-content">
@@ -29,6 +52,7 @@ export default function NavigationSurface() {
           <label>
             Decision route
             <select
+              class="form-select form-select-sm"
               defaultValue=""
               onchange="if(this.value) location.href='/tests/navigation/destination?source='+encodeURIComponent(this.value)"
             >
@@ -39,11 +63,34 @@ export default function NavigationSurface() {
             </select>
           </label>
         </div>
+        <section class="section-browser" aria-label="Current knowledge section">
+          <div class="section-browser-heading">
+            <div>
+              <span>CURRENT SECTION</span>
+              <strong data-testid="section-heading">Overview</strong>
+            </div>
+            <div class="input-group input-group-sm knowledge-search">
+              <input
+                id="knowledge-search"
+                class="form-control"
+                aria-label="Search current section"
+                placeholder="Filter records"
+              />
+              <button id="clear-knowledge-search" type="button" class="btn btn-outline-secondary">
+                Clear knowledge search
+              </button>
+            </div>
+          </div>
+          <div data-testid="section-records" class="section-records" />
+          <small>
+            <output data-testid="section-result-count">3</output> records shown
+          </small>
+        </section>
         <form action="/tests/navigation/destination" method="get">
           <input type="hidden" name="source" value="enter" />
           <label>
             Open decision record
-            <input name="reference" value="DR-024" />
+            <input class="form-control" name="reference" value="DR-024" />
           </label>
         </form>
         <div class="reference-list">

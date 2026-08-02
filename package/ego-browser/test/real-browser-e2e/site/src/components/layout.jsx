@@ -1,5 +1,6 @@
 import { raw } from "hono/html";
 
+import bootstrapStyles from "bootstrap/dist/css/bootstrap.min.css?raw";
 import styles from "../styles.css?raw";
 
 const interactiveScenarios = new Set([
@@ -11,8 +12,15 @@ const interactiveScenarios = new Set([
   "keyboard",
   "uploads",
   "scroll",
+  "navigation",
   "dialogs",
+  "downloads",
+  "frames",
   "network",
+  "review-workflow",
+  "collaborative-docs",
+  "spreadsheet",
+  "rich-text",
 ]);
 
 export function scenarioModulePath(slug) {
@@ -22,12 +30,21 @@ export function scenarioModulePath(slug) {
     : `/assets/${slug}.js`;
 }
 
+function progressModulePath() {
+  return import.meta.env.DEV
+    ? "/src/progress/client.js"
+    : "/assets/progress.js";
+}
+
 export default function Layout({ title, children, scriptSrc }) {
   return (
-    <html lang="en">
+    <html lang="en" data-bs-theme="light">
       <head>
         <meta charset="utf-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <meta
+          name="viewport"
+          content="width=device-width, initial-scale=1, viewport-fit=cover"
+        />
         <meta
           name="description"
           content="Deterministic browser interaction fixtures for ego-browser."
@@ -35,10 +52,12 @@ export default function Layout({ title, children, scriptSrc }) {
         <title>
           {title ? `${title} · Ego Browser Lab` : "Ego Browser Lab"}
         </title>
-        <style>{raw(styles)}</style>
+        <style data-ui-foundation="bootstrap">{raw(bootstrapStyles)}</style>
+        <style data-ui-theme="ego-browser">{raw(styles)}</style>
       </head>
       <body>
         {children}
+        <script type="module" src={progressModulePath()}></script>
         {scriptSrc ? <script type="module" src={scriptSrc}></script> : null}
       </body>
     </html>

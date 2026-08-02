@@ -9,7 +9,17 @@
   },
   "dependencies": {
     "@hono/node-server": "2.0.12",
-    "hono": "4.12.33"
+    "@tiptap/core": "^3.29.2",
+    "@tiptap/extension-collaboration": "^3.29.2",
+    "@tiptap/pm": "^3.29.2",
+    "@tiptap/starter-kit": "^3.29.2",
+    "@tiptap/y-tiptap": "^3.0.8",
+    "bootstrap": "5.3.8",
+    "hono": "4.12.33",
+    "konva": "^10.3.0",
+    "sortablejs": "^1.15.7",
+    "tabulator-tables": "^6.5.2",
+    "yjs": "^13.6.31"
   },
   "devDependencies": {
     "@hono/vite-dev-server": "^0.26.1",
