@@ -14,14 +14,21 @@ import { delimiter, dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-import { e2eCases } from "./cases/index.mjs";
 import { egoSource } from "./ego-source.mjs";
 import { closeFixtureServer, startFixtureServer } from "./fixture.mjs";
 import { runCommand } from "./run-command.mjs";
+import { e2eCases } from "./suites/index.mjs";
+import {
+  createNodeBridgeSmokeSource,
+  nodeBridgeSmokeAssertionCount,
+  parseNodeBridgeSmoke,
+  validateNodeBridgeProbe,
+} from "./suites/runtime/node-bridge-smoke.mjs";
 
 const runnerDir = dirname(fileURLToPath(import.meta.url));
 const packageDir = join(runnerDir, "..", "..");
 const egoBrowserSdkPath = join(packageDir, "dist", "out", "index.js");
+const xmlParserUrl = import.meta.resolve("fast-xml-parser");
 const egoBrowserArgs = ["nodejs", "--sdk-path", egoBrowserSdkPath];
 const execFileAsync = promisify(execFile);
 const verboseCaseOutput =
@@ -54,13 +61,90 @@ export function suitePassed(results) {
   return results.every((result) => result.status !== "fail");
 }
 
-export function nodeBridgeSupportsPlaywright(probe) {
-  return (
-    probe.egoType === "object" &&
-    probe.hasSendCDPMessage === "function" &&
-    typeof probe.processVersion === "string" &&
-    probe.helperCount > 0
-  );
+export function groupE2eCasesByKind(testCases) {
+  const groups = { platform: [], runtime: [], scenario: [] };
+  for (const testCase of testCases) {
+    if (
+      testCase?.kind !== "platform" &&
+      testCase?.kind !== "runtime" &&
+      testCase?.kind !== "scenario"
+    ) {
+      throw new TypeError(
+        `real-browser e2e case ${JSON.stringify(testCase?.name)} requires an explicit kind`,
+      );
+    }
+    groups[testCase.kind].push(testCase);
+  }
+  return groups;
+}
+
+export function e2eCaseRounds(testCase) {
+  if (Array.isArray(testCase?.rounds)) {
+    if (
+      testCase.rounds.length === 0 ||
+      testCase.rounds.some((round) => typeof round !== "function")
+    ) {
+      throw new TypeError(
+        "real-browser e2e rounds must be non-empty functions",
+      );
+    }
+    return testCase.rounds;
+  }
+  if (typeof testCase?.body !== "function") {
+    throw new TypeError("real-browser e2e case requires body() or rounds[]");
+  }
+  return [testCase.body];
+}
+
+export function taskSpaceCleanupBody(taskName) {
+  return `
+    const cleanupTaskSpacePrefix = ${JSON.stringify(taskName)};
+    const listedTaskSpaces = await egoBrowser.listTaskSpaces();
+    const cleanupNames = listedTaskSpaces
+      .filter(
+        (space) =>
+          space.name === cleanupTaskSpacePrefix ||
+          space.name.startsWith(cleanupTaskSpacePrefix + " "),
+      )
+      .map((space) => space.name);
+    for (const cleanupName of cleanupNames) {
+      try {
+        const result = keepTaskSpace
+          ? await egoBrowser.completeTaskSpace(cleanupName)
+          : await egoBrowser.closeTaskSpace(cleanupName);
+        const userOwnedSkip =
+          keepTaskSpace && result?.done === false && result?.skipped === "user-owned";
+        if (result?.done !== true && !userOwnedSkip) {
+          throw new Error("task space cleanup did not complete: " + cleanupName);
+        }
+      } catch (error) {
+        if (!String(error?.message || error).includes("task space not found")) {
+          throw error;
+        }
+      }
+    }
+    if (!keepTaskSpace) {
+      const cleanupDeadline = Date.now() + 5_000;
+      let leaked = [];
+      do {
+        const remaining = await egoBrowser.listTaskSpaces();
+        leaked = remaining.filter(
+          (space) =>
+            space.name === cleanupTaskSpacePrefix ||
+            space.name.startsWith(cleanupTaskSpacePrefix + " "),
+        );
+        if (leaked.length === 0) break;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      } while (Date.now() < cleanupDeadline);
+      if (leaked.length > 0) {
+        throw new Error(
+          "task space cleanup leaked: " +
+            leaked.map((space) => space.name).join(", "),
+        );
+      }
+    }
+    console.log(JSON.stringify({ cleanup: true, taskSpaces: cleanupNames }));
+  `;
 }
 
 export async function waitForNodeRoundToSettle(delayMs = 300) {
@@ -86,6 +170,13 @@ export function parallelTaskSpaceNames(taskName, laneCount) {
   return Array.from(
     { length: laneCount },
     (_, index) => `${taskName} web lane ${index + 1}`,
+  );
+}
+
+export function webLaneTimeoutMs(testCases) {
+  return testCases.reduce(
+    (total, testCase) => total + (testCase.timeoutMs ?? 60_000),
+    30_000,
   );
 }
 
@@ -172,18 +263,10 @@ export async function runRealBrowserE2e() {
     const marker = `EGO_NODEJS_BRIDGE_SMOKE_${Date.now()}`;
     // The output channel is the overridden console.log. typeof console.log is always
     // "function" (it is a Node built-in), so it cannot prove the SDK wired its sink.
-    // The marker round-trip proves console.log output reaches stdout, helperCount > 0
-    // proves installEgoSdk ran, and the CDP binding probe verifies the host can
-    // support native Playwright before any task space is created.
-    const source = `
-      console.log(${JSON.stringify(marker)});
-      console.log(JSON.stringify({
-        egoType: typeof globalThis.ego,
-        hasSendCDPMessage: typeof globalThis.ego?.sendCDPMessage,
-        processVersion: process.version,
-        helperCount: Object.keys(globalThis.ego?.helpers || {}).length
-      }));
-    `;
+    // The marker round-trip proves console.log output reaches stdout. The read-only
+    // listTaskSpaces call verifies asynchronous SDK readiness and host IPC without
+    // creating browser state; native Playwright is exercised by the platform suite.
+    const source = createNodeBridgeSmokeSource(marker);
     try {
       const { stdout, stderr } = await runCommand(
         "ego-browser",
@@ -197,15 +280,17 @@ export async function runRealBrowserE2e() {
         },
       );
       const probe = parseNodeBridgeSmoke(`${stdout}\n${stderr}`, marker);
-      if (!nodeBridgeSupportsPlaywright(probe)) {
+      const validation = validateNodeBridgeProbe(probe);
+      if (!validation.ok) {
         throw new Error(
-          `nodejs bridge smoke returned invalid runtime data: ${JSON.stringify(probe)}`,
+          `nodejs bridge smoke failed checks (${validation.failures.join(", ")}): ${JSON.stringify(probe)}`,
         );
       }
       const durationMs = Date.now() - startedAt;
-      recordResult(name, "pass", durationMs, 5);
+      const assertionCount = nodeBridgeSmokeAssertionCount();
+      recordResult(name, "pass", durationMs, assertionCount);
       console.log(
-        `-- ${name} passed (${formatDuration(durationMs)}, 5 assertions)`,
+        `-- ${name} passed (${formatDuration(durationMs)}, ${assertionCount} assertions)`,
       );
     } catch (error) {
       const durationMs = Date.now() - startedAt;
@@ -330,13 +415,55 @@ export async function runRealBrowserE2e() {
       recordResult(testCase.name, "skip", 0, 0);
       return;
     }
-    try {
-      await runEgoCase(testCase.name, testCase.body(), timeoutMs, {
-        crashGraceMs: testCase.crashGraceMs,
-        context: options.context,
-      });
-    } finally {
+    const rounds = e2eCaseRounds(testCase);
+    const caseTimeoutMs = testCase.timeoutMs ?? timeoutMs;
+    if (rounds.length === 1) {
+      try {
+        await runEgoCase(testCase.name, rounds[0](), caseTimeoutMs, {
+          crashGraceMs: testCase.crashGraceMs,
+          context: options.context,
+        });
+      } finally {
+        await waitForNodeRoundToSettle();
+      }
+      return;
+    }
+
+    console.log(`-- ${testCase.name}`);
+    const startedAt = Date.now();
+    let assertionCount = 0;
+    let failedRound;
+    for (let index = 0; index < rounds.length; index += 1) {
+      const result = await runEgoCase(
+        `${testCase.name} round ${index + 1}/${rounds.length}`,
+        rounds[index](),
+        caseTimeoutMs,
+        {
+          visible: false,
+          record: false,
+          crashGraceMs: testCase.crashGraceMs,
+          context: options.context,
+        },
+      );
+      assertionCount += result.assertionCount;
       await waitForNodeRoundToSettle();
+      if (result.status === "fail") {
+        failedRound = { index, result };
+        break;
+      }
+    }
+    const durationMs = Date.now() - startedAt;
+    if (failedRound) {
+      const message = `round ${failedRound.index + 1}/${rounds.length}: ${failedRound.result.message}`;
+      recordResult(testCase.name, "fail", durationMs, assertionCount, message);
+      console.error(
+        `[FAIL] ${testCase.name} (${formatDuration(durationMs)}): ${message}`,
+      );
+    } else {
+      recordResult(testCase.name, "pass", durationMs, assertionCount);
+      console.log(
+        `-- ${testCase.name} passed (${formatDuration(durationMs)}, ${assertionCount} assertions)`,
+      );
     }
   }
 
@@ -366,7 +493,7 @@ export async function runRealBrowserE2e() {
         const laneResult = await runEgoCase(
           laneName,
           webLaneBody(lane, laneReportPath),
-          90000,
+          webLaneTimeoutMs(lane),
           {
             visible: false,
             record: false,
@@ -442,34 +569,9 @@ export async function runRealBrowserE2e() {
   }
 
   async function cleanupTaskSpaces() {
-    const cleanupNames = context.cleanupTaskSpaceNames || [context.taskName];
     await runEgoCase(
       "task-space cleanup",
-      `
-        const cleanupNames = ${JSON.stringify(cleanupNames)};
-        for (const cleanupName of cleanupNames) {
-          try {
-            const result = keepTaskSpace
-              ? await egoBrowser.completeTaskSpace(cleanupName)
-              : await egoBrowser.closeTaskSpace(cleanupName);
-            if (result?.done !== true) {
-              throw new Error("task space cleanup did not complete: " + cleanupName);
-            }
-          } catch (error) {
-            if (!String(error?.message || error).includes("task space not found")) {
-              throw error;
-            }
-          }
-        }
-        if (!keepTaskSpace) {
-          const remaining = await egoBrowser.listTaskSpaces();
-          const leaked = remaining.filter((space) => cleanupNames.includes(space.name));
-          if (leaked.length > 0) {
-            throw new Error("task space cleanup leaked: " + leaked.map((space) => space.name).join(", "));
-          }
-        }
-        console.log(JSON.stringify({ cleanup: true, taskSpaces: cleanupNames }));
-      `,
+      taskSpaceCleanupBody(context.taskName),
       20000,
       { visible: false, crashGraceMs: 300 },
     );
@@ -507,12 +609,12 @@ export async function runRealBrowserE2e() {
       ffmpegPath,
       ffprobePath,
       metadataPath,
+      xmlParserUrl,
       taskName,
       tempDir,
       uploadPath,
       uploadPathTwo,
       webTaskSpaceNames,
-      cleanupTaskSpaceNames: [taskName, ...webTaskSpaceNames],
     });
 
     await mkdir(artifactDir, { recursive: true });
@@ -542,20 +644,23 @@ export async function runRealBrowserE2e() {
       return;
     }
 
-    const firstWebCaseIndex = e2eCases.findIndex((testCase) =>
-      testCase.name.startsWith("web test: "),
+    const groupedCases = groupE2eCasesByKind(e2eCases);
+    const firstScenarioIndex = e2eCases.findIndex(
+      (testCase) => testCase.kind === "scenario",
     );
-    const lastWebCaseIndex = e2eCases.findLastIndex((testCase) =>
-      testCase.name.startsWith("web test: "),
+    const serialBeforeScenarios = e2eCases.filter(
+      (testCase, index) =>
+        testCase.kind !== "scenario" && index < firstScenarioIndex,
     );
-    for (const testCase of e2eCases.slice(0, firstWebCaseIndex)) {
+    const serialAfterScenarios = e2eCases.filter(
+      (testCase, index) =>
+        testCase.kind !== "scenario" && index > firstScenarioIndex,
+    );
+    for (const testCase of serialBeforeScenarios) {
       await maybeRunEgoCase(testCase);
     }
-    await runWebCasesInParallel(
-      e2eCases.slice(firstWebCaseIndex, lastWebCaseIndex + 1),
-      webTaskSpaceNames,
-    );
-    for (const testCase of e2eCases.slice(lastWebCaseIndex + 1)) {
+    await runWebCasesInParallel(groupedCases.scenario, webTaskSpaceNames);
+    for (const testCase of serialAfterScenarios) {
       await maybeRunEgoCase(testCase);
     }
   } catch (error) {
@@ -670,30 +775,6 @@ async function initializeE2eEnvironment(context, tempDir) {
     ),
     "utf8",
   );
-}
-
-function parseNodeBridgeSmoke(stdout, marker) {
-  const lines = String(stdout || "")
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-  const markerIndex = lines.indexOf(marker);
-  if (markerIndex === -1) {
-    throw new Error(
-      "nodejs bridge did not print the console.log smoke marker; ego-browser nodejs may have exited without executing stdin",
-    );
-  }
-  const payload = lines[markerIndex + 1];
-  if (!payload) {
-    throw new Error("nodejs bridge smoke did not print runtime probe data");
-  }
-  try {
-    return JSON.parse(payload);
-  } catch (error) {
-    throw new Error(
-      `nodejs bridge smoke printed invalid runtime probe data: ${payload}`,
-    );
-  }
 }
 
 async function readCaseAssertionCount(resultPath, stdout) {

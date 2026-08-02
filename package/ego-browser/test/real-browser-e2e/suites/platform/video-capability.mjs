@@ -1,4 +1,4 @@
-export function videoCapabilityCase() {
+export function taskSpaceVideoCapabilityCase() {
   return `
     const task = await egoBrowser.useOrCreateTaskSpace(taskName);
 

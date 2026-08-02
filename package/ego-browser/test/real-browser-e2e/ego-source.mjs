@@ -18,6 +18,7 @@ export function egoSource(body, context) {
     ffmpegPath,
     ffprobePath,
     metadataPath,
+    xmlParserUrl,
     keepTaskSpace,
     caseResultPath,
   } = context;
@@ -39,6 +40,7 @@ export function egoSource(body, context) {
     const ffmpegPath = ${JSON.stringify(ffmpegPath)};
     const ffprobePath = ${JSON.stringify(ffprobePath)};
     const metadataPath = ${JSON.stringify(metadataPath)};
+    const xmlParserUrl = ${JSON.stringify(xmlParserUrl)};
     const keepTaskSpace = ${JSON.stringify(keepTaskSpace)};
     const caseResultPath = ${JSON.stringify(caseResultPath)};
     if (ffmpegPath) process.env.EGO_BROWSER_FFMPEG_PATH = ffmpegPath;

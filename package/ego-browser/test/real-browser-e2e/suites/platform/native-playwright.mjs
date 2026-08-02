@@ -1,4 +1,4 @@
-export function playwrightTaskSpaceCase() {
+export function nativePlaywrightCase() {
   return `
     const task = await egoBrowser.useOrCreateTaskSpace(taskName);
 
@@ -12,7 +12,7 @@ export function playwrightTaskSpaceCase() {
     });
     assertEqual(await task.page.title(), "Ego Browser Lab", "native Playwright Page navigates the TaskSpace");
     assertEqual(
-      await task.page.getByRole("heading", { name: "One browser behavior. One clear signal." }).count(),
+      await task.page.getByRole("heading", { name: "Test routes" }).count(),
       1,
       "native Playwright Locator resolves page content",
     );

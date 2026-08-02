@@ -1,4 +1,4 @@
-export function taskSpaceContextLifecycleCase() {
+export function contextLifecycleCase() {
   return `
     const lifecycleSpaceCount = 3;
     const lifecycleSpaces = [];
@@ -149,7 +149,7 @@ export function taskSpaceContextLifecycleCase() {
         );
         assertEqual(
           await primaryPage
-            .getByRole("heading", { name: "One browser behavior. One clear signal." })
+            .getByRole("heading", { name: "Test routes" })
             .count(),
           1,
           "native Playwright locators operate in the restored primary tab",
