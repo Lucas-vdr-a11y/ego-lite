@@ -10,6 +10,17 @@ export const ariaSnapshotCase = {
         timeout: 20_000,
       });
 
+      const fullPageSnapshot = await egoBrowser.snapshot();
+      assertIncludes(
+        fullPageSnapshot.content,
+        "Dispatch queue",
+        "egoBrowser.snapshot captures full-page structured context",
+      );
+      assert(
+        Array.isArray(fullPageSnapshot.refs),
+        "egoBrowser.snapshot returns reference metadata",
+      );
+
       const bodySnapshot = await page.locator("body").ariaSnapshot({ ref: true });
       assertIncludes(
         bodySnapshot,

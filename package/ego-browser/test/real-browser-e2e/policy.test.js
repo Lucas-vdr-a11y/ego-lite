@@ -362,6 +362,26 @@ test("real-browser e2e exercises native Playwright by default", () => {
   assert.doesNotMatch(source, /scenario-test-controls|start-test|fail-test/);
 });
 
+test("real-browser e2e verifies native Playwright CDPSession behavior", () => {
+  const cdpSessionCase = e2eCases.find(
+    (testCase) => testCase.name === "Playwright CDP session",
+  );
+
+  assert.ok(cdpSessionCase);
+  assert.equal(cdpSessionCase.kind, "platform");
+  assert.notEqual(cdpSessionCase.optIn, true);
+  const source = cdpSessionCase.body();
+  assert.match(source, /task\.context\.newCDPSession\(page\)/);
+  assert.match(source, /session\.send\("Runtime\.evaluate"/);
+  assert.match(source, /session\.on\(eventName/);
+  assert.match(source, /"Runtime\.bindingCalled"/);
+  assert.match(source, /"Network\.responseReceived"/);
+  assert.match(source, /session\.detach\(\)/);
+  assert.match(source, /detached CDP session rejects later commands/);
+  assert.match(source, /remappedSession/);
+  assert.doesNotMatch(source, /\bcdp\(/);
+});
+
 test("test-site progress reporting is isolated from the Playwright platform case", () => {
   const progressCase = e2eCases.find(
     (testCase) => testCase.name === "test-site scenario progress",
@@ -456,6 +476,22 @@ test("forms e2e covers validation boundaries instead of only empty values", () =
   assert.match(source, /invalid stakeholder email/);
 });
 
+test("network e2e waits for rendered response state", () => {
+  const networkCase = scenarioCases.find(
+    (testCase) => testCase.name === "web test: network",
+  );
+  assert.ok(networkCase);
+  const source = networkCase.body();
+  assert.match(
+    source,
+    /networkStatus\.filter\(\{ hasText: \/\^503\$\/ \}\)\.waitFor\(\)/,
+  );
+  assert.match(
+    source,
+    /networkStatus\.filter\(\{ hasText: \/\^200\$\/ \}\)\.waitFor\(\)/,
+  );
+});
+
 test("upload e2e covers mixed accepted and rejected selections", () => {
   const uploadCase = scenarioCases.find(
     (testCase) => testCase.name === "web test: uploads",
@@ -489,6 +525,10 @@ test("rich text e2e covers validation, history, and destructive cancellation", (
   assert.match(source, /Undo/);
   assert.match(source, /Redo/);
   assert.match(source, /Blockquote/);
+  assert.match(source, /editor\.press\("ControlOrMeta\+A"\)/);
+  assert.match(source, /editor\.press\("Backspace"\)/);
+  assert.match(source, /page\.keyboard\.insertText/);
+  assert.doesNotMatch(source, /editor\.fill\(/);
 });
 
 test("drag and drop e2e covers cancelled and reverse movement", () => {

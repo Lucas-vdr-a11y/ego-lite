@@ -25,6 +25,11 @@ type ReplayCommand = {
   params: Record<string, unknown>;
 };
 
+type PassthroughSession = {
+  clientTargetId: string;
+  nativeTargetId: string;
+};
+
 type PageRoute = {
   clientTargetId: string;
   nativeTargetId: string;
@@ -60,6 +65,8 @@ export class EgoCdpTransport {
       method: unknown;
       clientSessionId?: string;
       nativeSessionId?: string;
+      attachedTarget?: PassthroughSession;
+      detachedSessionId?: string;
     }
   >();
   readonly #internalRequests = new Map<
@@ -77,6 +84,7 @@ export class EgoCdpTransport {
   readonly #routesByNativeSession = new Map<string, PageRoute>();
   readonly #routesByClientTarget = new Map<string, PageRoute>();
   readonly #routesByNativeTarget = new Map<string, PageRoute>();
+  readonly #passthroughSessions = new Map<string, PassthroughSession>();
   readonly #deferredEvents: any[] = [];
   readonly #manuallyAttachingTargets = new Set<string>();
   readonly #internallyDetachedSessions = new Set<string>();
@@ -182,6 +190,27 @@ export class EgoCdpTransport {
     const route = clientSessionId
       ? this.#routesByClientSession.get(clientSessionId)
       : undefined;
+    const attachTargetId =
+      message.method === "Target.attachToTarget" &&
+      typeof message.params?.targetId === "string"
+        ? message.params.targetId
+        : undefined;
+    const attachRoute = attachTargetId
+      ? this.#routesByClientTarget.get(attachTargetId) ||
+        this.#routesByNativeTarget.get(attachTargetId)
+      : undefined;
+    const attachedTarget = attachRoute
+      ? {
+          clientTargetId: attachRoute.clientTargetId,
+          nativeTargetId: attachRoute.nativeTargetId,
+        }
+      : undefined;
+    const detachedSessionId =
+      message.method === "Target.detachFromTarget" &&
+      typeof message.params?.sessionId === "string" &&
+      this.#passthroughSessions.has(message.params.sessionId)
+        ? message.params.sessionId
+        : undefined;
     if (route && isReplayableSessionCommand(message.method)) {
       const params = message.params || {};
       route.replayCommands.set(`${message.method}:${JSON.stringify(params)}`, {
@@ -195,10 +224,12 @@ export class EgoCdpTransport {
       method: message.method,
       clientSessionId,
       nativeSessionId: route?.nativeSessionId,
+      attachedTarget,
+      detachedSessionId,
     });
     this.#updatePendingWork();
     try {
-      const nativeMessage = route
+      const nativeMessage: any = route
         ? {
             ...message,
             id: nativeId,
@@ -206,6 +237,12 @@ export class EgoCdpTransport {
             params: rewriteOutgoingProtocolParams(message.params || {}, route),
           }
         : { ...message, id: nativeId };
+      if (attachedTarget) {
+        nativeMessage.params = {
+          ...(nativeMessage.params || {}),
+          targetId: attachedTarget.nativeTargetId,
+        };
+      }
       const result = this.#runtime.sendCDPMessage(
         JSON.stringify(nativeMessage),
       );
@@ -238,6 +275,7 @@ export class EgoCdpTransport {
     this.#routesByNativeSession.clear();
     this.#routesByClientTarget.clear();
     this.#routesByNativeTarget.clear();
+    this.#passthroughSessions.clear();
     this.#sessionsByTarget.clear();
     this.#targetsBySession.clear();
     this.#deferredEvents.length = 0;
@@ -259,7 +297,10 @@ export class EgoCdpTransport {
 
   async closeAndWait() {
     if (!this.closed && this.#targetIds) {
-      const sessionIds = [...this.#targetsBySession.keys()];
+      const sessionIds = new Set([
+        ...this.#targetsBySession.keys(),
+        ...this.#passthroughSessions.keys(),
+      ]);
       await this.#sendNativeCommand(
         "Target.setAutoAttach",
         {
@@ -313,12 +354,27 @@ export class EgoCdpTransport {
       if (pending.clientSessionId) {
         message.sessionId = pending.clientSessionId;
       }
+      const attachedSessionId = message.result?.sessionId;
+      if (
+        !message.error &&
+        pending.attachedTarget &&
+        typeof attachedSessionId === "string"
+      ) {
+        this.#passthroughSessions.set(
+          attachedSessionId,
+          pending.attachedTarget,
+        );
+      }
+      if (!message.error && pending.detachedSessionId) {
+        this.#passthroughSessions.delete(pending.detachedSessionId);
+      }
       this.#filterResponse(pending.method, message);
       this.#emit(message);
       return;
     }
     if (this.#isRetiredSessionEvent(message)) return;
     if (this.#rebindDetachedRoute(message)) return;
+    if (this.#deliverPassthroughDetach(message)) return;
     if (!this.#acceptEvent(message)) {
       if (
         this.#activeOperations > 0 &&
@@ -456,6 +512,22 @@ export class EgoCdpTransport {
         targetId: clientTargetId,
       },
     });
+  }
+
+  #deliverPassthroughDetach(message: any) {
+    if (message.method !== "Target.detachedFromTarget") return false;
+    const sessionId = message.params?.sessionId;
+    if (typeof sessionId !== "string") return false;
+    const session = this.#passthroughSessions.get(sessionId);
+    if (!session) return false;
+    this.#passthroughSessions.delete(sessionId);
+    if (this.#internallyDetachedSessions.has(sessionId)) return true;
+    const params = { ...(message.params || {}) };
+    if (params.targetId === session.nativeTargetId) {
+      params.targetId = session.clientTargetId;
+    }
+    this.#emit({ ...message, params });
+    return true;
   }
 
   #observeRouteEvent(message: any, route: PageRoute) {
@@ -662,7 +734,10 @@ export class EgoCdpTransport {
       );
     }
     if (typeof message.sessionId === "string") {
-      return this.#targetsBySession.has(message.sessionId);
+      return (
+        this.#targetsBySession.has(message.sessionId) ||
+        this.#passthroughSessions.has(message.sessionId)
+      );
     }
     return true;
   }

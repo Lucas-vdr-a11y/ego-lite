@@ -68,6 +68,41 @@ export async function showTaskState(state: string) {
   return assertNoEgoError(await ego.setAgentTaskState(state), "showTaskState");
 }
 
+export type SnapshotOptions = {
+  scope?: "full_page" | "only_within_viewport";
+  includeActionMarks?: boolean;
+  interactiveOnly?: boolean;
+  includeStableLocator?: boolean;
+  maxResultLength?: number;
+};
+
+export type SnapshotResult = {
+  content: string;
+  refs: Array<{
+    backendNodeId: number;
+    role?: string;
+    name?: string;
+    loc?: string;
+  }>;
+};
+
+/**
+ * Capture a structured snapshot for the current TaskSpace.
+ * @param {SnapshotOptions} [options] Native snapshot options. Defaults to the full page.
+ * @returns {Promise<SnapshotResult>} Structured snapshot content and reference metadata.
+ */
+export async function snapshot(
+  options?: SnapshotOptions,
+): Promise<SnapshotResult> {
+  const ego = globalThis.ego;
+  if (!ego || typeof ego.snapshot !== "function") {
+    throw new Error("snapshot requires ego.snapshot");
+  }
+  const result =
+    options === undefined ? await ego.snapshot() : await ego.snapshot(options);
+  return assertNoEgoError(result, "snapshot");
+}
+
 /*
  * Task space ownership policy (`ownership`: "agent" | "agentDelegatedToUser" | "user").
  * "agent" and "agentDelegatedToUser" are both agent-owned (see isAgentOwned) — the
@@ -508,6 +543,7 @@ function createEgoBrowserFacade() {
   return {
     helper: egoBrowserHelper,
     showTaskState,
+    snapshot,
     listProfile: listProfiles,
     listTaskSpace: listTaskSpaces,
     newTaskSpace: async (name, profileId) =>

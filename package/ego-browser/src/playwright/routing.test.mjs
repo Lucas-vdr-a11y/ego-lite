@@ -889,6 +889,270 @@ test("the Ego Playwright transport keeps the Playwright Page identity while repl
   transport.close();
 });
 
+async function createNavigatedCdpSessionTransport() {
+  let nextNativeId = 1_000_000_450;
+  let replacementAttachCount = 0;
+  const sent = [];
+  const runtime = {
+    async createTab() {
+      return { targetId: "replacement-target" };
+    },
+    sendCDPMessage(payload) {
+      const request = JSON.parse(payload);
+      sent.push(request);
+      let result = {};
+      if (request.method === "Target.getTargetInfo") {
+        result = {
+          targetInfo: {
+            targetId: request.params.targetId,
+            type: "page",
+            title: "Selected",
+            url:
+              request.params.targetId === "replacement-target"
+                ? "https://example.test/after"
+                : "about:blank",
+          },
+        };
+      } else if (request.method === "Target.attachToTarget") {
+        if (request.params.targetId === "replacement-target") {
+          replacementAttachCount += 1;
+          result = {
+            sessionId:
+              replacementAttachCount === 1
+                ? "replacement-session"
+                : "playwright-cdp-session",
+          };
+        } else {
+          result = { sessionId: "client-session" };
+        }
+      } else if (request.method === "Page.getFrameTree") {
+        result = {
+          frameTree: {
+            frame: {
+              id:
+                request.sessionId === "replacement-session"
+                  ? "replacement-frame"
+                  : "client-frame",
+              loaderId:
+                request.sessionId === "replacement-session"
+                  ? "replacement-loader"
+                  : "client-loader",
+              name: "",
+              url:
+                request.sessionId === "replacement-session"
+                  ? "https://example.test/after"
+                  : "about:blank",
+            },
+          },
+        };
+      } else if (request.method === "Runtime.evaluate") {
+        result = {
+          result: {
+            type: "string",
+            value:
+              request.params.expression === "document.readyState"
+                ? "complete"
+                : "cdp-command-result",
+          },
+        };
+      }
+      if (request.method === "Target.detachFromTarget") {
+        queueMicrotask(() => {
+          runtime.onCDPMessage(
+            JSON.stringify({
+              method: "Target.detachedFromTarget",
+              params: {
+                sessionId: request.params.sessionId,
+                targetId: "replacement-target",
+              },
+            }),
+          );
+        });
+      }
+      queueMicrotask(() => {
+        runtime.onCDPMessage(
+          JSON.stringify({
+            id: request.id,
+            result,
+            ...(request.sessionId ? { sessionId: request.sessionId } : {}),
+          }),
+        );
+      });
+    },
+  };
+  const transport = egoTransport.createEgoCdpTransport(runtime, {
+    targetIds: ["client-target"],
+    allocateMessageId: () => nextNativeId++,
+  });
+  const received = [];
+  transport.onmessage = (message) => received.push(message);
+
+  transport.send({
+    id: 50,
+    method: "Target.setAutoAttach",
+    params: {
+      autoAttach: true,
+      waitForDebuggerOnStart: true,
+      flatten: true,
+    },
+  });
+  for (let index = 0; index < 6; index += 1) await waitForImmediate();
+  transport.send({
+    id: 51,
+    method: "Page.navigate",
+    params: {
+      frameId: "client-frame",
+      url: "https://example.test/after",
+    },
+    sessionId: "client-session",
+  });
+  const navigationDeadline = Date.now() + 500;
+  while (
+    !received.some((message) => message.id === 51) &&
+    Date.now() < navigationDeadline
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.ok(received.some((message) => message.id === 51));
+  sent.length = 0;
+  received.length = 0;
+  return { received, runtime, sent, transport };
+}
+
+async function attachPlaywrightCdpSession(harness) {
+  harness.transport.send({
+    id: 52,
+    method: "Target.attachToTarget",
+    params: { targetId: "client-target", flatten: true },
+  });
+  for (let index = 0; index < 3; index += 1) await waitForImmediate();
+  return harness.received.find((message) => message.id === 52);
+}
+
+test("the Ego Playwright transport maps CDPSession commands and events to the navigated target", async () => {
+  const harness = await createNavigatedCdpSessionTransport();
+  const attachResponse = await attachPlaywrightCdpSession(harness);
+
+  assert.equal(
+    harness.sent.find(
+      (request) =>
+        request.method === "Target.attachToTarget" &&
+        request.id >= 1_000_000_450,
+    )?.params.targetId,
+    "replacement-target",
+  );
+  assert.equal(attachResponse?.result?.sessionId, "playwright-cdp-session");
+
+  harness.transport.send({
+    id: 53,
+    method: "Runtime.evaluate",
+    params: { expression: "document.title", returnByValue: true },
+    sessionId: "playwright-cdp-session",
+  });
+  for (let index = 0; index < 2; index += 1) await waitForImmediate();
+  assert.equal(harness.sent.at(-1).sessionId, "playwright-cdp-session");
+  assert.deepEqual(
+    harness.received.find((message) => message.id === 53),
+    {
+      id: 53,
+      result: {
+        result: { type: "string", value: "cdp-command-result" },
+      },
+      sessionId: "playwright-cdp-session",
+    },
+  );
+
+  harness.runtime.onCDPMessage(
+    JSON.stringify({
+      method: "Runtime.bindingCalled",
+      params: { name: "probe", payload: "event-payload" },
+      sessionId: "playwright-cdp-session",
+    }),
+  );
+  harness.runtime.onCDPMessage(
+    JSON.stringify({
+      method: "Runtime.bindingCalled",
+      params: { name: "foreign", payload: "hidden" },
+      sessionId: "foreign-session",
+    }),
+  );
+  await waitForImmediate();
+  assert.deepEqual(
+    harness.received.find(
+      (message) =>
+        message.method === "Runtime.bindingCalled" &&
+        message.params.name === "probe",
+    ),
+    {
+      method: "Runtime.bindingCalled",
+      params: { name: "probe", payload: "event-payload" },
+      sessionId: "playwright-cdp-session",
+    },
+  );
+  assert.equal(
+    harness.received.some((message) => message.params?.payload === "hidden"),
+    false,
+  );
+  harness.transport.close();
+});
+
+test("detaching a Playwright CDPSession preserves the primary page route", async () => {
+  const harness = await createNavigatedCdpSessionTransport();
+  await attachPlaywrightCdpSession(harness);
+  harness.received.length = 0;
+  harness.sent.length = 0;
+
+  harness.transport.send({
+    id: 54,
+    method: "Target.detachFromTarget",
+    params: { sessionId: "playwright-cdp-session" },
+  });
+  for (let index = 0; index < 3; index += 1) await waitForImmediate();
+  assert.deepEqual(
+    harness.received.find(
+      (message) => message.method === "Target.detachedFromTarget",
+    ),
+    {
+      method: "Target.detachedFromTarget",
+      params: {
+        sessionId: "playwright-cdp-session",
+        targetId: "client-target",
+      },
+    },
+  );
+
+  harness.transport.send({
+    id: 55,
+    method: "Runtime.evaluate",
+    params: { expression: "location.href", returnByValue: true },
+    sessionId: "client-session",
+  });
+  for (let index = 0; index < 2; index += 1) await waitForImmediate();
+  assert.equal(harness.sent.at(-1).sessionId, "replacement-session");
+  assert.equal(
+    harness.received.find((message) => message.id === 55)?.sessionId,
+    "client-session",
+  );
+  harness.transport.close();
+});
+
+test("closing the Playwright transport detaches its additional CDPSessions", async () => {
+  const harness = await createNavigatedCdpSessionTransport();
+  await attachPlaywrightCdpSession(harness);
+  harness.sent.length = 0;
+
+  await harness.transport.closeAndWait();
+
+  assert.deepEqual(
+    harness.sent
+      .filter((request) => request.method === "Target.detachFromTarget")
+      .map((request) => request.params.sessionId)
+      .sort(),
+    ["playwright-cdp-session", "replacement-session"],
+  );
+  assert.equal(harness.transport.closed, true);
+});
+
 test("the Ego Playwright transport completes Page.navigate when the replacement document commits", async () => {
   let nextNativeId = 1_000_000_325;
   const runtime = {

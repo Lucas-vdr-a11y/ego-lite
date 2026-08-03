@@ -5,6 +5,7 @@ import { crossRoundPersistenceCase } from "./platform/cross-round-persistence.mj
 import { nativePlaywrightCase } from "./platform/native-playwright.mjs";
 import { networkRoutingCase } from "./platform/network-routing.mjs";
 import { ownershipLifecycleCase } from "./platform/ownership-lifecycle.mjs";
+import { playwrightCdpSessionCase } from "./platform/playwright-cdp-session.mjs";
 import { taskSpaceProfileCase } from "./platform/profile-selection.mjs";
 import { taskSpaceControlCase } from "./platform/taskspace-control.mjs";
 import { taskSpaceVideoCapabilityCase } from "./platform/video-capability.mjs";
@@ -38,6 +39,7 @@ export const e2eCases = [
     body: nativePlaywrightCase,
   },
   ariaSnapshotCase,
+  playwrightCdpSessionCase,
   networkRoutingCase,
   nativeCloseRegressionCase,
 ];

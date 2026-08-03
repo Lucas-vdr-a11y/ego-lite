@@ -15,15 +15,15 @@ ego-browser is a Chromium-based browser. It provides an `ego-browser nodejs` ent
 Scripts receive two categories of preloaded APIs:
 
 - **Native Playwright APIs**: TaskSpace methods expose Playwright 1.52 `Page` and `BrowserContext` objects as `task.page` and `task.context`.
-- **ego-browser-specific APIs**: `egoBrowser`, `site`, `fetch`, and `cdp`. See §4.
+- **ego-browser-specific APIs**: `egoBrowser` and `site`. See §4.
 
 The native Playwright surface is meant to be used directly. For ordinary page and locator work, rely on familiar Playwright methods and the needs of the task. Use `egoBrowser.helper(...)` when an exact ego-browser-specific signature, option, or return value matters. Calling it without a name lists the `egoBrowser` methods:
 
 ```js
-console.log(egoBrowser.helper())
-console.log(egoBrowser.helper('egoBrowser.listProfile()'))
-console.log(egoBrowser.helper('egoBrowser.newTaskSpace'))
-console.log(egoBrowser.helper('egoBrowser.completeTaskSpace'))
+console.log(egoBrowser.helper());
+console.log(egoBrowser.helper("egoBrowser.listProfile()"));
+console.log(egoBrowser.helper("egoBrowser.newTaskSpace"));
+console.log(egoBrowser.helper("egoBrowser.completeTaskSpace"));
 ```
 
 All public time parameters and options use milliseconds, including `timeout`, `interval`, `delay`, and `polling`.
@@ -113,13 +113,9 @@ For “today”, “current”, or “latest” tasks, establish the current tim
 ## 4. ego-browser-specific APIs
 
 - **TaskSpace Playwright objects**: TaskSpace selection methods expose the active native Playwright Page as `task.page` and its BrowserContext as `task.context`. Use `task.context.pages()` and `task.context.newPage()` for additional pages.
-
-- **`egoBrowser.showTaskState`**: shows a concise action description to the user. Immediately before clicking, double-clicking, hovering, dragging, or scrolling, call it once with 3-6 words; for example, `await egoBrowser.showTaskState('open account settings')`.
-
-- **`site`**: discovers and runs reusable site skills and reads site learning context.
-- **`fetch`**: `fetch.server` requests from Node.js; `fetch.browser` requests from the current page origin.
-- **`cdp`**: directly calls Chrome DevTools Protocol capabilities that the facade does not cover.
 - **`egoBrowser.helper`**: called without arguments, lists all `egoBrowser` methods; with an exact public path such as `egoBrowser.helper('egoBrowser.newTaskSpace')`, returns that API's signature and documentation.
+- **`egoBrowser.showTaskState`**: shows a concise action description to the user. Immediately before clicking, double-clicking, hovering, dragging, or scrolling, call it once with 3-6 words; for example, `await egoBrowser.showTaskState('open account settings')`.
+- **`site`**: discovers and runs reusable site skills and reads site learning context.
 
 ## 5. Ownership and control
 

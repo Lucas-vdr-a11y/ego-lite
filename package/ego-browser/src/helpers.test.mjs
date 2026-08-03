@@ -184,6 +184,7 @@ test("egoBrowser owns the canonical TaskSpace surface", () => {
     "listTaskSpace",
     "newTaskSpace",
     "showTaskState",
+    "snapshot",
     "switchTaskSpace",
     "takeOverTaskSpace",
     "useOrCreateTaskSpace",
@@ -208,6 +209,7 @@ test("egoBrowser.helper lists the egoBrowser facade by default", () => {
   assert.match(output, /egoBrowser\.listProfile\(\)/);
   assert.match(output, /egoBrowser\.listTaskSpace\(\)/);
   assert.match(output, /egoBrowser\.showTaskState\(state\)/);
+  assert.match(output, /egoBrowser\.snapshot\(options\?\)/);
   assert.doesNotMatch(output, /egoBrowser\.listTaskSpaces\(\)/);
 });
 
@@ -237,6 +239,59 @@ test("egoBrowser.showTaskState requires the native task-state bridge", async () 
     await assert.rejects(
       () => helperContext().egoBrowser.showTaskState("open account settings"),
       /showTaskState requires ego\.setAgentTaskState/,
+    );
+  });
+});
+
+test("egoBrowser.snapshot delegates to the native snapshot bridge", async () => {
+  const result = { content: "page structure", refs: [] };
+  const calls = [];
+
+  await withEgo(
+    {
+      async snapshot(...args) {
+        calls.push(args);
+        return result;
+      },
+    },
+    async () => {
+      assert.equal(await helperContext().egoBrowser.snapshot(), result);
+    },
+  );
+
+  assert.deepEqual(calls, [[]]);
+});
+
+test("egoBrowser.snapshot passes native snapshot options unchanged", async () => {
+  const options = {
+    scope: "full_page",
+    includeActionMarks: true,
+    interactiveOnly: false,
+    includeStableLocator: true,
+    maxResultLength: 4000,
+  };
+  const calls = [];
+
+  await withEgo(
+    {
+      async snapshot(...args) {
+        calls.push(args);
+        return { content: "page structure", refs: [] };
+      },
+    },
+    async () => {
+      await helperContext().egoBrowser.snapshot(options);
+    },
+  );
+
+  assert.deepEqual(calls, [[options]]);
+});
+
+test("egoBrowser.snapshot requires the native snapshot bridge", async () => {
+  await withEgo({}, async () => {
+    await assert.rejects(
+      () => helperContext().egoBrowser.snapshot(),
+      /snapshot requires ego\.snapshot/,
     );
   });
 });

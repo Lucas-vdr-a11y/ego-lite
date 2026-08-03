@@ -16,16 +16,22 @@ export const richTextScenarioCase = scenarioCase(
       await page.getByLabel("Article title").fill("Singapore pilot release");
       await page.getByLabel("Publishing status").selectOption("review");
       const editor = page.getByRole("textbox", { name: "Rich text article" });
-      await editor.fill("");
+      async function replaceEditorText(text) {
+        await editor.click();
+        await editor.press("ControlOrMeta+A");
+        await editor.press("Backspace");
+        if (text) await page.keyboard.insertText(text);
+      }
+      await replaceEditorText("");
       await page.waitForFunction(() => document.querySelector('[data-testid="rich-text-word-count"]')?.textContent === "0 words");
       await page.getByRole("button", { name: "Save article" }).click();
       assertEqual(await page.getByTestId("rich-text-error").textContent(), "Article body is required", "article cannot be saved without a document body");
-      await editor.fill("Release owner confirmed");
+      await replaceEditorText("Release owner confirmed");
       await editor.press("ControlOrMeta+A");
       await page.getByRole("button", { name: "Blockquote" }).click();
       assertIncludes(await page.getByTestId("rich-text-html").textContent(), "<blockquote>", "blockquote action creates semantic quoted content");
       assertIncludes(await page.getByTestId("article-preview").textContent(), "Release owner confirmed", "preview includes the quoted release ownership note");
-      await editor.fill("Regional pilot approved");
+      await replaceEditorText("Regional pilot approved");
       await editor.press("ControlOrMeta+A");
       await page.getByRole("button", { name: "Bold" }).click();
       await page.getByRole("button", { name: "Heading 2" }).click();
@@ -33,7 +39,7 @@ export const richTextScenarioCase = scenarioCase(
 
       await editor.press("ArrowRight");
       await editor.press("Enter");
-      await page.keyboard.type("Notify regional reviewers");
+      await page.keyboard.insertText("Notify regional reviewers");
       await page.getByRole("button", { name: "Bullet list" }).click();
       assertIncludes(await page.getByTestId("article-preview").textContent(), "Notify regional reviewers", "live reader preview mirrors visible article content");
       await page.getByRole("button", { name: "Undo" }).click();

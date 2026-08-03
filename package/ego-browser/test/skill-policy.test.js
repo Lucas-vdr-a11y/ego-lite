@@ -38,6 +38,21 @@ test("skill keeps outer Bash timeouts above aggregate in-script operation timeou
   assert.match(skill, /do not shorten the outer Bash timeout/);
 });
 
+test("skill keeps compatibility fetch and cdp helpers out of primary guidance", () => {
+  const apiCategories = skill.match(
+    /Scripts receive two categories of preloaded APIs:([\s\S]*?)\n\nThe native Playwright surface/,
+  )?.[1];
+  const egoBrowserApis = skill.match(
+    /## 4\. ego-browser-specific APIs([\s\S]*?)(?=\n## )/,
+  )?.[1];
+
+  assert.ok(apiCategories);
+  assert.match(apiCategories, /`egoBrowser` and `site`/);
+  assert.doesNotMatch(apiCategories, /`fetch`|`cdp`/);
+  assert.ok(egoBrowserApis);
+  assert.doesNotMatch(egoBrowserApis, /\*\*`(?:fetch|cdp)`\*\*/);
+});
+
 test("skill avoids mutating controls that already match the requested state", () => {
   const actAndVerify = skill.match(
     /### 3\.4 Act and verify([\s\S]*?)(?=\n## )/,
@@ -47,6 +62,19 @@ test("skill avoids mutating controls that already match the requested state", ()
   assert.match(actAndVerify, /final state/i);
   assert.match(actAndVerify, /already holds/i);
   assert.match(actAndVerify, /do not (?:repeat|change|mutate)/i);
+});
+
+test("skill scopes ARIA snapshots to the smallest sufficient locator", () => {
+  const snapshots = skill.match(
+    /### 3\.2 Generate snapshots proactively([\s\S]*?)(?=\n### )/,
+  )?.[1];
+
+  assert.ok(snapshots);
+  assert.match(snapshots, /smallest sufficient scope/);
+  assert.match(snapshots, /relevant local locator/);
+  assert.match(snapshots, /use `body` only when/);
+  assert.match(snapshots, /locator\.ariaSnapshot/);
+  assert.doesNotMatch(snapshots, /egoBrowser\.snapshot\(\)/);
 });
 
 test("skill documents concise user-visible state for pointer actions", () => {

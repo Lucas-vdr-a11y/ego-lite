@@ -23,12 +23,27 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
         name: "state",
         type: "string",
         required: true,
-        description:
-          "A concise description of 3-6 words or 3-6 Chinese characters.",
+        description: "A concise description of 3-6 words.",
       },
     ],
     returns: "Promise<unknown>",
     example: "await egoBrowser.showTaskState('open account settings')",
+  },
+  "egoBrowser.snapshot": {
+    signature: "egoBrowser.snapshot(options?) => Promise<SnapshotResult>",
+    description:
+      "Capture a structured snapshot of the current TaskSpace page. The native scope defaults to the full page; use locator.ariaSnapshot() for a known local accessible subtree.",
+    params: [
+      {
+        name: "options",
+        type: "object",
+        description:
+          "Native snapshot options: scope ('full_page' or 'only_within_viewport'), includeActionMarks, interactiveOnly, includeStableLocator, and maxResultLength.",
+      },
+    ],
+    returns: "Promise<{ content: string, refs: SnapshotRef[] }>",
+    example:
+      "const snapshot = await egoBrowser.snapshot(); console.log(snapshot.content)",
   },
   "egoBrowser.listProfile": {
     signature: "egoBrowser.listProfile() => Promise<ProfileInfo[]>",
