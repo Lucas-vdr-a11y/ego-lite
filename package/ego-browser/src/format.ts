@@ -14,6 +14,22 @@ export type FunctionDoc = {
 };
 
 export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
+  "egoBrowser.showTaskState": {
+    signature: "egoBrowser.showTaskState(state) => Promise<unknown>",
+    description:
+      "Show concise user-visible progress text for the current TaskSpace. Call it immediately before a semantic pointer action such as clicking, double-clicking, hovering, dragging, or scrolling.",
+    params: [
+      {
+        name: "state",
+        type: "string",
+        required: true,
+        description:
+          "A concise description of 3-6 words or 3-6 Chinese characters.",
+      },
+    ],
+    returns: "Promise<unknown>",
+    example: "await egoBrowser.showTaskState('open account settings')",
+  },
   "egoBrowser.listProfile": {
     signature: "egoBrowser.listProfile() => Promise<ProfileInfo[]>",
     description:

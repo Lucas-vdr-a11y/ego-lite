@@ -183,6 +183,7 @@ test("egoBrowser owns the canonical TaskSpace surface", () => {
     "listProfile",
     "listTaskSpace",
     "newTaskSpace",
+    "showTaskState",
     "switchTaskSpace",
     "takeOverTaskSpace",
     "useOrCreateTaskSpace",
@@ -206,7 +207,38 @@ test("egoBrowser.helper lists the egoBrowser facade by default", () => {
   assert.match(output, /egoBrowser\.helper\(name\?\)/);
   assert.match(output, /egoBrowser\.listProfile\(\)/);
   assert.match(output, /egoBrowser\.listTaskSpace\(\)/);
+  assert.match(output, /egoBrowser\.showTaskState\(state\)/);
   assert.doesNotMatch(output, /egoBrowser\.listTaskSpaces\(\)/);
+});
+
+test("egoBrowser.showTaskState delegates to the native ego bridge", async () => {
+  const states = [];
+
+  await withEgo(
+    {
+      async setAgentTaskState(state) {
+        states.push(state);
+        return "task state updated";
+      },
+    },
+    async () => {
+      assert.equal(
+        await helperContext().egoBrowser.showTaskState("open account settings"),
+        "task state updated",
+      );
+    },
+  );
+
+  assert.deepEqual(states, ["open account settings"]);
+});
+
+test("egoBrowser.showTaskState requires the native task-state bridge", async () => {
+  await withEgo({}, async () => {
+    await assert.rejects(
+      () => helperContext().egoBrowser.showTaskState("open account settings"),
+      /showTaskState requires ego\.setAgentTaskState/,
+    );
+  });
 });
 
 test("egoBrowser.helper documents Profile discovery", () => {

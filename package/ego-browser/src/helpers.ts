@@ -55,6 +55,19 @@ export async function listProfiles() {
   return result.profiles;
 }
 
+/**
+ * Show user-visible task progress for the current TaskSpace.
+ * @param {string} state Concise action description.
+ * @returns {Promise<unknown>} Native task-state update result.
+ */
+export async function showTaskState(state: string) {
+  const ego = globalThis.ego;
+  if (!ego || typeof ego.setAgentTaskState !== "function") {
+    throw new Error("showTaskState requires ego.setAgentTaskState");
+  }
+  return assertNoEgoError(await ego.setAgentTaskState(state), "showTaskState");
+}
+
 /*
  * Task space ownership policy (`ownership`: "agent" | "agentDelegatedToUser" | "user").
  * "agent" and "agentDelegatedToUser" are both agent-owned (see isAgentOwned) — the
@@ -494,6 +507,7 @@ function createEgoBrowserFacade() {
   };
   return {
     helper: egoBrowserHelper,
+    showTaskState,
     listProfile: listProfiles,
     listTaskSpace: listTaskSpaces,
     newTaskSpace: async (name, profileId) =>

@@ -49,6 +49,24 @@ test("skill avoids mutating controls that already match the requested state", ()
   assert.match(actAndVerify, /do not (?:repeat|change|mutate)/i);
 });
 
+test("skill documents concise user-visible state for pointer actions", () => {
+  const egoBrowserApis = skill.match(
+    /## 4\. ego-browser-specific APIs([\s\S]*?)(?=\n## )/,
+  )?.[1];
+
+  assert.ok(egoBrowserApis);
+  assert.match(
+    egoBrowserApis,
+    /await egoBrowser\.showTaskState\('open account settings'\)/,
+  );
+  assert.match(egoBrowserApis, /3-6 words/);
+  assert.match(
+    egoBrowserApis,
+    /clicking, double-clicking, hovering, dragging, or scrolling/,
+  );
+  assert.match(egoBrowserApis, /call it once/);
+});
+
 test("profile reference limits Profile selection to explicit user requirements", () => {
   const profilerUrl = new URL(
     "../../../skills/ego-browser/references/profiler.md",

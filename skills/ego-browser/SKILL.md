@@ -113,6 +113,9 @@ For “today”, “current”, or “latest” tasks, establish the current tim
 ## 4. ego-browser-specific APIs
 
 - **TaskSpace Playwright objects**: TaskSpace selection methods expose the active native Playwright Page as `task.page` and its BrowserContext as `task.context`. Use `task.context.pages()` and `task.context.newPage()` for additional pages.
+
+- **`egoBrowser.showTaskState`**: shows a concise action description to the user. Immediately before clicking, double-clicking, hovering, dragging, or scrolling, call it once with 3-6 words; for example, `await egoBrowser.showTaskState('open account settings')`.
+
 - **`site`**: discovers and runs reusable site skills and reads site learning context.
 - **`fetch`**: `fetch.server` requests from Node.js; `fetch.browser` requests from the current page origin.
 - **`cdp`**: directly calls Chrome DevTools Protocol capabilities that the facade does not cover.
