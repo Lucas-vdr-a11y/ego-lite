@@ -420,6 +420,13 @@ test("collaborative document e2e covers concurrent editing and peer departure", 
   assert.ok(collaborationCase);
   const source = collaborationCase.body();
   assert.match(source, /Promise\.all/);
+  assert.match(source, /primaryEditor\.press\("Home"\)/);
+  assert.match(source, /collaboratorEditor\.press\("End"\)/);
+  assert.match(source, /page\.keyboard\.insertText/);
+  assert.match(source, /collaboratorPage\.keyboard\.insertText/);
+  assert.doesNotMatch(source, /keyboard\.type/);
+  assert.match(source, /finally/);
+  assert.match(source, /collaboratorPage\.isClosed\(\)/);
   assert.match(source, /1 online/);
   assert.match(source, /Cancel/);
   assert.match(source, /Undo document change/);
@@ -477,6 +484,7 @@ test("rich text e2e covers validation, history, and destructive cancellation", (
   assert.ok(richTextCase);
   const source = richTextCase.body();
   assert.match(source, /Article body is required/);
+  assert.match(source, /rich-text-word-count.*0 words/s);
   assert.match(source, /Cancel/);
   assert.match(source, /Undo/);
   assert.match(source, /Redo/);

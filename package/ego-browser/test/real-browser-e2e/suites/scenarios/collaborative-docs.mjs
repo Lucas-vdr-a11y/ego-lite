@@ -19,6 +19,7 @@ export const collaborativeDocsScenarioCase = scenarioCase(
       assertEqual(await page.getByTestId("sync-status").textContent(), "All changes synced", "primary editor persists its local CRDT state");
 
       const collaboratorPage = await task.context.newPage();
+      try {
       await collaboratorPage.goto(baseUrl + "/tests/collaborative-docs?user=Aisha%20Rahman", {
         waitUntil: "load",
         timeout: 20_000,
@@ -30,17 +31,13 @@ export const collaborativeDocsScenarioCase = scenarioCase(
       await page.waitForFunction(() => document.querySelector('[data-testid="collaborator-count"]')?.textContent === "2 online");
       assertEqual(await page.getByTestId("collaborator-count").textContent(), "2 online", "primary tab reports both active collaborators");
 
+      await primaryEditor.click();
+      await primaryEditor.press("Home");
+      await collaboratorEditor.click();
+      await collaboratorEditor.press("End");
       await Promise.all([
-        (async () => {
-          await primaryEditor.click();
-          await primaryEditor.press("End");
-          await page.keyboard.type(" Recorded by Mei.");
-        })(),
-        (async () => {
-          await collaboratorEditor.click();
-          await collaboratorEditor.press("End");
-          await collaboratorPage.keyboard.type(" Reviewed by Aisha.");
-        })(),
+        page.keyboard.insertText("Recorded by Mei. "),
+        collaboratorPage.keyboard.insertText(" Reviewed by Aisha."),
       ]);
       await page.waitForFunction(() => {
         const text = document.querySelector('[aria-label="Collaborative document"]')?.textContent || "";
@@ -76,7 +73,9 @@ export const collaborativeDocsScenarioCase = scenarioCase(
       );
       await page.reload({ waitUntil: "load" });
       assertIncludes(await page.getByRole("textbox", { name: "Collaborative document" }).textContent(), "Reviewed by Aisha", "restored shared document survives a full page reload");
-      await collaboratorPage.close();
+      } finally {
+        if (!collaboratorPage.isClosed()) await collaboratorPage.close().catch(() => {});
+      }
       await page.waitForFunction(() => document.querySelector('[data-testid="collaborator-count"]')?.textContent === "1 online");
       assertEqual(await page.getByTestId("collaborator-count").textContent(), "1 online", "presence returns to one editor after the collaborator leaves");
       await page.getByRole("button", { name: "Reset document" }).click();

@@ -17,6 +17,7 @@ export const richTextScenarioCase = scenarioCase(
       await page.getByLabel("Publishing status").selectOption("review");
       const editor = page.getByRole("textbox", { name: "Rich text article" });
       await editor.fill("");
+      await page.waitForFunction(() => document.querySelector('[data-testid="rich-text-word-count"]')?.textContent === "0 words");
       await page.getByRole("button", { name: "Save article" }).click();
       assertEqual(await page.getByTestId("rich-text-error").textContent(), "Article body is required", "article cannot be saved without a document body");
       await editor.fill("Release owner confirmed");
