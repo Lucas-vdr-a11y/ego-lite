@@ -161,4 +161,3 @@ When anything remains unmet or unproven, return to the original task space and c
 - [profiler](references/profiler.md) — Read when the user explicitly asks to create a TaskSpace with a specific browser Profile.
 - [Playwright 1.52.0 API reference](https://github.com/microsoft/playwright/blob/v1.52.0/packages/playwright-core/types/types.d.ts)
 - [Human verification and captcha handling](references/captcha.md) — read when a webpage requires the user to complete human verification or a CAPTCHA.
-- [Video recording support and current limitations](references/video.md) — read when the user asks to record or export a browser session as video.

@@ -9,10 +9,6 @@ const skill = readFileSync(
   new URL("../../../skills/ego-browser/SKILL.md", import.meta.url),
   "utf8",
 );
-const video = readFileSync(
-  new URL("../../../skills/ego-browser/references/video.md", import.meta.url),
-  "utf8",
-);
 
 test("skill uses the TaskSpace object model without documenting the removed Browser API", () => {
   const quickStart = skill.match(/## 2\. Quick start([\s\S]*?)## 3\./)?.[1];
@@ -51,17 +47,6 @@ test("skill avoids mutating controls that already match the requested state", ()
   assert.match(actAndVerify, /final state/i);
   assert.match(actAndVerify, /already holds/i);
   assert.match(actAndVerify, /do not (?:repeat|change|mutate)/i);
-});
-
-test("skill routes video requests to current native TaskSpace guidance", () => {
-  assert.match(
-    skill,
-    /\[Video recording support and current limitations\]\(references\/video\.md\)/,
-  );
-  assert.match(video, /`task\.page\.video\(\)` returns `null`/);
-  assert.match(video, /There is currently no supported API/);
-  assert.doesNotMatch(video, /await page\.screencast\.(?:start|stop)\(/);
-  assert.match(video, /Do not call `task\.context\.browser\(\)\.newContext/);
 });
 
 test("profile reference limits Profile selection to explicit user requirements", () => {
