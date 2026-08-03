@@ -1,6 +1,7 @@
 import { raw } from "hono/html";
 
 import bootstrapStyles from "bootstrap/dist/css/bootstrap.min.css?raw";
+import quillSnowStyles from "quill/dist/quill.snow.css?raw";
 import styles from "../styles.css?raw";
 
 const interactiveScenarios = new Set([
@@ -53,6 +54,7 @@ export default function Layout({ title, children, scriptSrc }) {
           {title ? `${title} · Ego Browser Lab` : "Ego Browser Lab"}
         </title>
         <style data-ui-foundation="bootstrap">{raw(bootstrapStyles)}</style>
+        <style data-rich-text-editor="quill-snow">{raw(quillSnowStyles)}</style>
         <style data-ui-theme="ego-browser">{raw(styles)}</style>
       </head>
       <body>

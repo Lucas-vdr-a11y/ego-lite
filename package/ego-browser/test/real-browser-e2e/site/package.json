@@ -17,6 +17,7 @@
     "bootstrap": "5.3.8",
     "hono": "4.12.33",
     "konva": "^10.3.0",
+    "quill": "2.0.2",
     "sortablejs": "^1.15.7",
     "tabulator-tables": "^6.5.2",
     "yjs": "^13.6.31"

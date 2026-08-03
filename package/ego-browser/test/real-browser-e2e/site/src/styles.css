@@ -2823,12 +2823,14 @@ select:focus-visible,
   box-shadow: var(--ui-shadow);
 }
 
-.document-sheet .tiptap {
+.document-sheet .tiptap,
+.document-sheet .ql-editor {
   min-height: 100%;
   outline: 0;
 }
 
-.document-sheet .tiptap h2 {
+.document-sheet .tiptap h2,
+.document-sheet .ql-editor h2 {
   margin: 0 0 var(--ui-space-3);
   font-size: 1.5rem;
   letter-spacing: -0.03em;
@@ -2836,13 +2838,17 @@ select:focus-visible,
 
 .document-sheet .tiptap p,
 .document-sheet .tiptap li,
-.document-sheet .tiptap blockquote {
+.document-sheet .tiptap blockquote,
+.document-sheet .ql-editor p,
+.document-sheet .ql-editor li,
+.document-sheet .ql-editor blockquote {
   max-width: 65ch;
   font-size: 0.925rem;
   line-height: 1.55;
 }
 
-.document-sheet .tiptap blockquote {
+.document-sheet .tiptap blockquote,
+.document-sheet .ql-editor blockquote {
   margin-left: 0;
   padding-left: var(--ui-space-4);
   border-left: 3px solid var(--ui-primary);
@@ -2949,11 +2955,65 @@ select:focus-visible,
   align-items: center;
 }
 
+.rich-text-toolbar.ql-toolbar.ql-snow {
+  border: 0;
+  border-bottom: 1px solid var(--ui-border);
+  font-family: inherit;
+}
+
+.rich-text-toolbar .ql-formats {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ui-space-1);
+  margin: 0;
+}
+
+.rich-text-toolbar.ql-snow button,
+.rich-text-toolbar.ql-snow .ql-picker-label {
+  border: 1px solid transparent;
+  border-radius: var(--ui-radius-sm);
+}
+
+.rich-text-toolbar.ql-snow button:focus-visible,
+.rich-text-toolbar.ql-snow .ql-picker-label:focus-visible {
+  outline: 2px solid var(--ui-primary);
+  outline-offset: 2px;
+}
+
+.document-sheet > #rich-text-editor.ql-container.ql-snow {
+  min-height: 100%;
+  padding: 0;
+  border: 1px solid var(--ui-border);
+  font-family: inherit;
+  font-size: inherit;
+}
+
+.document-sheet #rich-text-editor .ql-editor {
+  min-height: 100%;
+  padding: var(--ui-space-5);
+}
+
+.document-sheet .ql-tooltip a.ql-action {
+  display: inline-block;
+}
+
+.document-sheet .ql-tooltip a.ql-action::after {
+  margin-left: 0;
+  padding-right: 0;
+  border-right: 0;
+  content: none;
+}
+
+.article-preview .ql-align-center {
+  text-align: center;
+}
+
 .toolbar-spacer {
   flex: 1;
 }
 
-.rich-text-toolbar button[aria-pressed="true"] {
+.rich-text-toolbar button[aria-pressed="true"],
+.rich-text-toolbar button.ql-active {
   border-color: var(--ui-primary);
   color: var(--ui-primary-hover);
   background: var(--ui-primary-soft);

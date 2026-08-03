@@ -1,5 +1,4 @@
-import { Editor } from "@tiptap/core";
-import StarterKit from "@tiptap/starter-kit";
+import Quill from "quill";
 
 const storageKey = "ego-browser:rich-text-article:v2";
 const initialArticle = {
@@ -7,11 +6,19 @@ const initialArticle = {
   status: "draft",
   html: "<h2>August release</h2><p>Prepare the regional launch note for reviewers.</p>",
 };
-const statusLabels = { draft: "Draft", review: "Ready for review", approved: "Approved" };
+const statusLabels = {
+  draft: "Draft",
+  review: "Ready for review",
+  approved: "Approved",
+};
 const titleInput = document.querySelector("#article-title");
 const statusSelect = document.querySelector("#article-status");
-const wordCount = document.querySelector('[data-testid="rich-text-word-count"]');
-const saveState = document.querySelector('[data-testid="rich-text-save-state"]');
+const wordCount = document.querySelector(
+  '[data-testid="rich-text-word-count"]',
+);
+const saveState = document.querySelector(
+  '[data-testid="rich-text-save-state"]',
+);
 const htmlOutput = document.querySelector('[data-testid="rich-text-html"]');
 const preview = document.querySelector('[data-testid="article-preview"]');
 const error = document.querySelector('[data-testid="rich-text-error"]');
@@ -22,7 +29,12 @@ const resetDialog = document.querySelector("#reset-article-dialog");
 function readArticle() {
   try {
     const saved = JSON.parse(localStorage.getItem(storageKey));
-    if (saved && typeof saved.title === "string" && typeof saved.html === "string") return saved;
+    if (
+      saved &&
+      typeof saved.title === "string" &&
+      typeof saved.html === "string"
+    )
+      return saved;
   } catch {}
   return { ...initialArticle };
 }
@@ -31,48 +43,98 @@ const savedArticle = readArticle();
 titleInput.value = savedArticle.title;
 statusSelect.value = savedArticle.status;
 
-const editor = new Editor({
-  element: document.querySelector("#rich-text-editor"),
-  extensions: [StarterKit],
-  content: savedArticle.html,
-  editorProps: { attributes: { "aria-label": "Rich text article", role: "textbox" } },
+const editor = new Quill("#rich-text-editor", {
+  modules: {
+    toolbar: {
+      container: "#rich-text-toolbar",
+      handlers: {
+        undo() {
+          this.quill.history.undo();
+        },
+        redo() {
+          this.quill.history.redo();
+        },
+      },
+    },
+  },
+  placeholder: "Write the release article…",
+  theme: "snow",
 });
+editor.root.setAttribute("aria-label", "Rich text article");
+editor.root.setAttribute("role", "textbox");
 
-const commands = {
-  paragraph: () => editor.chain().focus().setParagraph().run(),
-  heading2: () => editor.chain().focus().toggleHeading({ level: 2 }).run(),
-  heading3: () => editor.chain().focus().toggleHeading({ level: 3 }).run(),
-  bold: () => editor.chain().focus().toggleBold().run(),
-  italic: () => editor.chain().focus().toggleItalic().run(),
-  strike: () => editor.chain().focus().toggleStrike().run(),
-  bulletList: () => editor.chain().focus().toggleBulletList().run(),
-  orderedList: () => editor.chain().focus().toggleOrderedList().run(),
-  blockquote: () => editor.chain().focus().toggleBlockquote().run(),
-  undo: () => editor.chain().focus().undo().run(),
-  redo: () => editor.chain().focus().redo().run(),
-};
+function labelQuillControls() {
+  const toolbar = document.querySelector("#rich-text-toolbar");
+  const colorPicker = toolbar.querySelector(".ql-color.ql-picker");
+  colorPicker
+    ?.querySelector(".ql-picker-label")
+    ?.setAttribute("aria-label", "Text color");
+  colorPicker?.querySelectorAll(".ql-picker-item").forEach((item) => {
+    item.setAttribute("aria-label", item.dataset.label || "Default");
+  });
+
+  const tooltip = editor.container.querySelector(".ql-tooltip");
+  tooltip?.querySelector("[data-link]")?.setAttribute("aria-label", "Link URL");
+  const linkAction = tooltip?.querySelector(".ql-action");
+  linkAction?.setAttribute("role", "button");
+  linkAction?.setAttribute("tabindex", "0");
+  const syncLinkAction = () => {
+    const label = tooltip.classList.contains("ql-editing")
+      ? "Apply link"
+      : "Edit link";
+    linkAction.textContent = label;
+    linkAction.setAttribute("aria-label", label);
+  };
+  if (tooltip && linkAction) {
+    new MutationObserver(syncLinkAction).observe(tooltip, {
+      attributeFilter: ["class"],
+      attributes: true,
+    });
+    linkAction.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      linkAction.click();
+    });
+    syncLinkAction();
+  }
+  tooltip
+    ?.querySelector(".ql-remove")
+    ?.setAttribute("aria-label", "Remove link");
+}
+
+labelQuillControls();
+editor.clipboard.dangerouslyPasteHTML(savedArticle.html, "silent");
+editor.history.clear();
 
 function setDirty(dirty = true) {
   saveState.textContent = dirty ? "Unsaved changes" : "All changes saved";
   saveButton.disabled = !dirty;
 }
 
-function isCommandActive(command) {
-  if (command === "paragraph") return editor.isActive("paragraph");
-  if (command === "heading2") return editor.isActive("heading", { level: 2 });
-  if (command === "heading3") return editor.isActive("heading", { level: 3 });
-  return editor.isActive(command);
+function updatePressedStates() {
+  const formats = editor.getFormat();
+  document
+    .querySelectorAll("#rich-text-toolbar button[aria-pressed]")
+    .forEach((button) => {
+      const format = [...button.classList]
+        .find((name) => name.startsWith("ql-"))
+        ?.slice(3);
+      const expected = button.value || true;
+      const active =
+        expected === true
+          ? Boolean(formats[format])
+          : String(formats[format] || "") === expected;
+      button.setAttribute("aria-pressed", String(active));
+    });
 }
 
 function render() {
   const words = editor.getText().trim().split(/\s+/u).filter(Boolean).length;
   wordCount.textContent = `${words} ${words === 1 ? "word" : "words"}`;
-  const html = editor.getHTML();
+  const html = editor.getSemanticHTML();
   htmlOutput.textContent = html;
   preview.innerHTML = html;
-  document.querySelectorAll("[data-rich-command]").forEach((button) => {
-    if (button.hasAttribute("aria-pressed")) button.setAttribute("aria-pressed", String(isCommandActive(button.dataset.richCommand)));
-  });
+  updatePressedStates();
 }
 
 function markDirty() {
@@ -81,16 +143,8 @@ function markDirty() {
   render();
 }
 
-document.querySelectorAll("[data-rich-command]").forEach((button) => {
-  button.addEventListener("mousedown", (event) => event.preventDefault());
-  button.addEventListener("click", () => {
-    commands[button.dataset.richCommand]();
-    render();
-  });
-});
-
-editor.on("update", markDirty);
-editor.on("selectionUpdate", render);
+editor.on("text-change", markDirty);
+editor.on("selection-change", render);
 titleInput.addEventListener("input", markDirty);
 statusSelect.addEventListener("change", markDirty);
 
@@ -102,31 +156,39 @@ saveButton.addEventListener("click", () => {
   }
   if (!editor.getText().trim()) {
     error.textContent = "Article body is required";
-    editor.commands.focus();
+    editor.focus();
     return;
   }
-  localStorage.setItem(storageKey, JSON.stringify({
-    title: titleInput.value.trim(),
-    status: statusSelect.value,
-    html: editor.getHTML(),
-  }));
+  localStorage.setItem(
+    storageKey,
+    JSON.stringify({
+      title: titleInput.value.trim(),
+      status: statusSelect.value,
+      html: editor.getSemanticHTML(),
+    }),
+  );
   titleInput.value = titleInput.value.trim();
   error.textContent = "";
   setDirty(false);
   result.textContent = `${statusLabels[statusSelect.value]} article saved`;
 });
 
-document.querySelector("#reset-rich-text").addEventListener("click", () => resetDialog.showModal());
-document.querySelector("#confirm-article-reset").addEventListener("click", () => {
-  localStorage.removeItem(storageKey);
-  titleInput.value = initialArticle.title;
-  statusSelect.value = initialArticle.status;
-  editor.commands.setContent(initialArticle.html);
-  error.textContent = "";
-  setDirty(false);
-  result.textContent = "Article reset to the starting draft";
-  render();
-});
+document
+  .querySelector("#reset-rich-text")
+  .addEventListener("click", () => resetDialog.showModal());
+document
+  .querySelector("#confirm-article-reset")
+  .addEventListener("click", () => {
+    localStorage.removeItem(storageKey);
+    titleInput.value = initialArticle.title;
+    statusSelect.value = initialArticle.status;
+    editor.clipboard.dangerouslyPasteHTML(initialArticle.html, "api");
+    editor.history.clear();
+    error.textContent = "";
+    setDirty(false);
+    result.textContent = "Article reset to the starting draft";
+    render();
+  });
 
 render();
 setDirty(false);

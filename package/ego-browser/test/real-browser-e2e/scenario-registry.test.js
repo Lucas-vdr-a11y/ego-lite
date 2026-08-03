@@ -48,12 +48,14 @@ test("declares focused editor, collaboration, and spreadsheet dependencies", asy
     "@tiptap/pm",
     "@tiptap/starter-kit",
     "@tiptap/y-tiptap",
+    "quill",
     "tabulator-tables",
     "yjs",
   ];
   for (const dependency of expectedDependencies) {
     assert.equal(typeof packageJson.dependencies[dependency], "string");
   }
+  assert.equal(packageJson.dependencies.quill, "2.0.2");
 });
 
 test("covers every business scenario with a real-browser journey", () => {
