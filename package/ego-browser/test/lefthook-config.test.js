@@ -18,30 +18,21 @@ test("pre-commit branch freshness tracks main", async () => {
 });
 
 test("repository workflow routes sprint branches into main", async () => {
-  const [
-    sourcePolicy,
-    ci,
-    qualityGates,
-    pullRequestTemplate,
-    contributing,
-    agents,
-  ] = await Promise.all([
-    repoFile(".github/workflows/main-pr-source.yml"),
-    repoFile(".github/workflows/ci.yml"),
-    repoFile(".github/workflows/quality-gates.yml"),
-    repoFile(".github/pull_request_template.md"),
-    repoFile("CONTRIBUTING.md"),
-    repoFile("AGENTS.md"),
-  ]);
+  const [sourcePolicy, ci, pullRequestTemplate, contributing, agents] =
+    await Promise.all([
+      repoFile(".github/workflows/main-pr-source.yml"),
+      repoFile(".github/workflows/ci.yml"),
+      repoFile(".github/pull_request_template.md"),
+      repoFile("CONTRIBUTING.md"),
+      repoFile("AGENTS.md"),
+    ]);
 
   assert.match(sourcePolicy, /HEAD_REF: \$\{\{ github\.head_ref \}\}/);
   assert.match(sourcePolicy, /sprint-\?\*/);
   assert.doesNotMatch(sourcePolicy, /require-dev|dev branch/i);
 
-  for (const workflow of [ci, qualityGates]) {
-    assert.match(workflow, /- "sprint-\*"/);
-    assert.doesNotMatch(workflow, /^\s+- dev$/m);
-  }
+  assert.match(ci, /- "sprint-\*"/);
+  assert.doesNotMatch(ci, /^\s+- dev$/m);
 
   assert.match(pullRequestTemplate, /sprint-\*/);
   assert.doesNotMatch(
