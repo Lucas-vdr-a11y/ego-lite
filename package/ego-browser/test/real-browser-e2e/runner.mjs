@@ -31,6 +31,7 @@ const egoBrowserSdkPath = join(packageDir, "dist", "out", "index.js");
 const xmlParserUrl = import.meta.resolve("fast-xml-parser");
 const egoBrowserArgs = ["nodejs", "--sdk-path", egoBrowserSdkPath];
 const execFileAsync = promisify(execFile);
+export const WEB_LANE_COUNT = 1;
 const verboseCaseOutput =
   process.env.EGO_BROWSER_REAL_E2E_VERBOSE_CASE_OUTPUT === "1" ||
   process.env.EGO_BROWSER_REAL_E2E_VERBOSE_CASE_OUTPUT === "true";
@@ -601,7 +602,7 @@ export async function runRealBrowserE2e() {
     const taskName = `ego-lite real browser e2e ${Date.now()}-${Math.random()
       .toString(16)
       .slice(2)}`;
-    const webTaskSpaceNames = parallelTaskSpaceNames(taskName, 2);
+    const webTaskSpaceNames = parallelTaskSpaceNames(taskName, WEB_LANE_COUNT);
 
     Object.assign(context, {
       artifactDir,

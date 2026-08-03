@@ -36,33 +36,16 @@ test("real-browser e2e lets each embedded Node round settle before starting the 
   assert.ok(Date.now() - startedAt >= 5);
 });
 
-test("real-browser e2e partitions scenario cases across two independent TaskSpaces", () => {
+test("real-browser e2e serializes scenario cases in one TaskSpace lane", () => {
   const cases = ["a", "b", "c", "d", "e"];
-  assert.deepEqual(runner.partitionE2eCases(cases, 2), [
-    ["a", "c", "e"],
-    ["b", "d"],
+  assert.equal(runner.WEB_LANE_COUNT, 1);
+  assert.deepEqual(runner.partitionE2eCases(cases, runner.WEB_LANE_COUNT), [
+    cases,
   ]);
   assert.deepEqual(
-    runner.partitionE2eCases(
-      [
-        { name: "left", parallelLane: 0 },
-        { name: "right", parallelLane: 1 },
-        { name: "left-again", parallelLane: 0 },
-      ],
-      2,
-    ),
-    [
-      [
-        { name: "left", parallelLane: 0 },
-        { name: "left-again", parallelLane: 0 },
-      ],
-      [{ name: "right", parallelLane: 1 }],
-    ],
+    runner.parallelTaskSpaceNames("suite", runner.WEB_LANE_COUNT),
+    ["suite web lane 1"],
   );
-  assert.deepEqual(runner.parallelTaskSpaceNames("suite", 2), [
-    "suite web lane 1",
-    "suite web lane 2",
-  ]);
 });
 
 test("real-browser e2e classifies platform and scenario cases explicitly", () => {
@@ -244,6 +227,9 @@ test("platform e2e covers ownership preservation, ARIA refs, and network routing
   assert.ok(routing);
   assert.match(routing.body(), /page\.route\(/);
   assert.match(routing.body(), /route\.fulfill\(/);
+  assert.match(routing.body(), /route\.continue\(/);
+  assert.match(routing.body(), /route\.abort\(/);
+  assert.match(routing.body(), /waitForEvent\("requestfailed"/);
   assert.match(routing.body(), /page\.unroute\(/);
 });
 
@@ -358,6 +344,8 @@ test("real-browser e2e exercises native Playwright by default", () => {
   const source = playwrightCase.body();
   assert.match(source, /task\.page\.goto/);
   assert.match(source, /task\.context\.newPage/);
+  assert.match(source, /task\.page\.waitForEvent\("popup"/);
+  assert.match(source, /await popup\.close\(\)/);
   assert.doesNotMatch(source, /task\.tabs|openOrReuse/);
   assert.doesNotMatch(source, /scenario-test-controls|start-test|fail-test/);
 });
@@ -377,6 +365,12 @@ test("real-browser e2e verifies native Playwright CDPSession behavior", () => {
   assert.match(source, /"Runtime\.bindingCalled"/);
   assert.match(source, /"Network\.responseReceived"/);
   assert.match(source, /session\.detach\(\)/);
+  assert.match(source, /secondarySession/);
+  assert.match(source, /Promise\.all/);
+  assert.match(
+    source,
+    /detaching the second CDP session preserves the primary session/,
+  );
   assert.match(source, /detached CDP session rejects later commands/);
   assert.match(source, /remappedSession/);
   assert.doesNotMatch(source, /\bcdp\(/);
@@ -528,7 +522,45 @@ test("rich text e2e covers validation, history, and destructive cancellation", (
   assert.match(source, /editor\.press\("ControlOrMeta\+A"\)/);
   assert.match(source, /editor\.press\("Backspace"\)/);
   assert.match(source, /page\.keyboard\.insertText/);
+  assert.match(source, /Underline/);
+  assert.match(source, /Align center/);
+  assert.match(source, /Text color/);
+  assert.match(source, /Blue/);
+  assert.match(source, /Link URL/);
+  assert.match(source, /Italic/);
+  assert.match(source, /Strike/);
+  assert.match(source, /Heading 3/);
+  assert.match(source, /Code block/);
+  assert.match(source, /Numbered list/);
+  assert.match(source, /Clear formatting/);
   assert.doesNotMatch(source, /editor\.fill\(/);
+});
+
+test("rich text fixture uses Quill Snow with an accessible extended toolbar", () => {
+  const clientSource = readFileSync(
+    new URL("./site/src/scenarios/rich-text/client.js", import.meta.url),
+    "utf8",
+  );
+  const viewSource = readFileSync(
+    new URL("./site/src/scenarios/rich-text/view.jsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(clientSource, /import Quill from ["']quill["']/);
+  assert.match(clientSource, /theme:\s*["']snow["']/);
+  assert.match(clientSource, /getSemanticHTML\(\)/);
+  assert.match(clientSource, /Link URL/);
+  assert.match(clientSource, /Apply link/);
+  assert.doesNotMatch(clientSource, /@tiptap/);
+  for (const label of [
+    "Underline",
+    "Insert link",
+    "Align center",
+    "Code block",
+    "Clear formatting",
+  ]) {
+    assert.match(viewSource, new RegExp(`aria-label=["']${label}["']`));
+  }
 });
 
 test("drag and drop e2e covers cancelled and reverse movement", () => {

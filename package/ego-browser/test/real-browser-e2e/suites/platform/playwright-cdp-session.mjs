@@ -104,6 +104,31 @@ export const playwrightCdpSessionCase = {
           "cdp network event",
           "the observed request preserves its application payload",
         );
+
+        const secondarySession = await task.context.newCDPSession(page);
+        const currentTitle = await page.title();
+        let concurrentEvaluations;
+        try {
+          concurrentEvaluations = await Promise.all([
+            session.send("Runtime.evaluate", {
+              expression: "'primary-' + document.title",
+              returnByValue: true,
+            }),
+            secondarySession.send("Runtime.evaluate", {
+              expression: "'secondary-' + document.title",
+              returnByValue: true,
+            }),
+          ]);
+        } finally {
+          await secondarySession.detach();
+        }
+        assertEqual(concurrentEvaluations[0].result.value, "primary-" + currentTitle, "the primary CDP session completes while another session is attached");
+        assertEqual(concurrentEvaluations[1].result.value, "secondary-" + currentTitle, "a second CDP session independently completes commands");
+        const primaryAfterSecondaryDetach = await session.send("Runtime.evaluate", {
+          expression: "location.pathname",
+          returnByValue: true,
+        });
+        assertEqual(primaryAfterSecondaryDetach.result.value, "/tests/network", "detaching the second CDP session preserves the primary session");
       } finally {
         await session.detach();
       }

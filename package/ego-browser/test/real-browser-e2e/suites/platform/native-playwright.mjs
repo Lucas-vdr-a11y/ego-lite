@@ -31,5 +31,31 @@ export function nativePlaywrightCase() {
     } finally {
       await secondary.close();
     }
+
+    await task.page.goto(baseUrl + "/tests/forms?platform=popup", {
+      waitUntil: "load",
+      timeout: 20_000,
+    });
+    await task.page.evaluate((url) => {
+      const trigger = document.createElement("button");
+      trigger.type = "button";
+      trigger.textContent = "Open decision popup";
+      trigger.addEventListener("click", () => window.open(url, "_blank"));
+      document.body.append(trigger);
+    }, baseUrl + "/tests/navigation/destination?source=popup");
+    const popupPromise = task.page.waitForEvent("popup", { timeout: 10_000 });
+    await task.page.getByRole("button", { name: "Open decision popup" }).click();
+    const popup = await popupPromise;
+    try {
+      await popup.waitForLoadState("load", { timeout: 10_000 });
+      assertIncludes(popup.url(), "source=popup", "Page popup event returns the newly opened target");
+      assertEqual(
+        await popup.getByRole("heading", { name: "Launch in two measured phases." }).count(),
+        1,
+        "popup Page remains fully operable through native Playwright",
+      );
+    } finally {
+      await popup.close();
+    }
   `;
 }

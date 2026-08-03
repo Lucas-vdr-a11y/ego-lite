@@ -229,6 +229,7 @@ export function createTestSiteApp(taskName) {
     return context.json({
       ok: true,
       echo: payload.message,
+      mode,
       source: "ego-browser-hono-test-site",
     });
   });
