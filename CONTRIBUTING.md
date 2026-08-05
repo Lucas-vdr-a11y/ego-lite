@@ -181,7 +181,7 @@ stdin JS → runMain() → injected helpers → CDP / DOM / AX resolution → op
 ### Task Space Model
 
 A `Task Space` is an isolated browsing context provided by ego-browser: it owns its own tab set but inherits the user's login state.
-Because every heredoc runs in a fresh Node process, **the agent must call `useOrCreateTaskSpace(name)` at the start of every heredoc to re-attach to the same task space**, and end with `completeTaskSpace(name, { keep })` in the final round.
+In the first heredoc, create a uniquely named space with `egoBrowser.newTaskSpace(name)` and retain its numeric `task.id`. Because every heredoc runs in a fresh Node process, later rounds must call `egoBrowser.switchTaskSpace(id)` to re-attach. End with `egoBrowser.completeTaskSpace(id)` to preserve the result for the user or `egoBrowser.closeTaskSpace(id)` to delete it.
 
 Control (`agent` ↔ `user`) is handed off via the `handOffTaskSpace` / `takeOverTaskSpace` / `waitForAgentControl` protocol — for example, when the user needs to log in manually or solve a CAPTCHA.
 

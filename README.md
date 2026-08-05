@@ -54,7 +54,7 @@ The first time your agent runs a browser task, it walks you through installing t
 
 Paste this into your agent:
 
-```
+```text
 Set up ego lite for me: https://github.com/citrolabs/ego-lite
 
 Read `skills/ego-browser/references/install.md` and follow the steps to install ego lite.
@@ -66,7 +66,7 @@ On first launch, ego lite asks one question, whether to migrate your Chrome data
 
 In your agent CLI, type `/ego-browser` followed by a space, then describe what you want in plain language:
 
-```
+```text
 ego-browser follow @ego_agent on x.com for me
 ```
 
@@ -104,7 +104,6 @@ Most tools can automate a browser. The real questions are what browser the agent
 
 Two other categories try to solve the same problem. Browser automation frameworks like Browser-Use and Vercel's agent-browser are libraries the agent calls; they ship no browser of their own, so they need a separate one to drive and your logins rarely carry cleanly. AI browsers like ChatGPT Atlas and Perplexity Comet ship a built-in agent, and only that agent can drive the browser. ego lite is one browser, designed from the start for you and any agent you bring to share.
 
-
 ## Benchmarks
 
 We benchmarked ego lite against Vercel's agent-browser on four complex browser automation tasks. ego lite finished each task up to 2.5× faster, with substantially fewer tokens. The harder the task, the bigger the gap. Check the comparison.
@@ -124,16 +123,6 @@ Tutorials, the full tool reference, and integration guides live at [lite.ego.app
 - [Discord](https://discord.gg/5eGZVvHbTq), questions, setup help, and skill sharing
 - [GitHub Discussions](https://github.com/citrolabs/ego-lite/discussions), ideas and longer threads
 - [X/Twitter](https://x.com/ego_agent), updates and releases
-
-## Star History
-
-<a href="https://www.star-history.com/?repos=citrolabs%2Fego-lite&type=date&legend=top-left">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=citrolabs/ego-lite&type=date&theme=dark&legend=top-left&sealed_token=REc3U13uyXA_SL88c2BU0N5DOPw40Uiufp-RaA8pQS-JIMVaaxcGBjHmFV3Vwn9GMMIiL5e40DXSqHNcDjtXItvqvpMr013AaU6OkphU5o60GjasXVoXTQRR4TkWQSCPrPIxmKHehNll1TAsdoQ8rD3wPyRaj-Z_iHXqDDWf9b0gSWHxkyYoMUj6yWxY" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=citrolabs/ego-lite&type=date&legend=top-left&sealed_token=REc3U13uyXA_SL88c2BU0N5DOPw40Uiufp-RaA8pQS-JIMVaaxcGBjHmFV3Vwn9GMMIiL5e40DXSqHNcDjtXItvqvpMr013AaU6OkphU5o60GjasXVoXTQRR4TkWQSCPrPIxmKHehNll1TAsdoQ8rD3wPyRaj-Z_iHXqDDWf9b0gSWHxkyYoMUj6yWxY" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=citrolabs/ego-lite&type=date&legend=top-left&sealed_token=REc3U13uyXA_SL88c2BU0N5DOPw40Uiufp-RaA8pQS-JIMVaaxcGBjHmFV3Vwn9GMMIiL5e40DXSqHNcDjtXItvqvpMr013AaU6OkphU5o60GjasXVoXTQRR4TkWQSCPrPIxmKHehNll1TAsdoQ8rD3wPyRaj-Z_iHXqDDWf9b0gSWHxkyYoMUj6yWxY" />
- </picture>
-</a>
 
 ## License
 

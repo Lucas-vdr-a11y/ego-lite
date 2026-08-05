@@ -71,7 +71,7 @@ Use “establish context → observe → choose a path → act → verify” as 
 
 ### 3.1 Establish context
 
-Use one task space for one user goal. In the first round, call `const task = await egoBrowser.newTaskSpace(shortGoalName)`, immediately print the returned numeric `task.id`, and then begin page operations. In every later working Bash round, use that numeric ID to call `const task = await egoBrowser.switchTaskSpace(taskId)` before any page or tab operation; if the ID no longer exists, the call fails. Failure recovery, retries, and follow-up work for the same goal use the same ID.
+Use one task space for one user goal. In the first round, call `const task = await egoBrowser.newTaskSpace(shortGoalName)`, immediately print the returned numeric `task.id`, and then begin page operations. TaskSpace names must be unique; if the name already exists, `newTaskSpace` fails before creating another space. In every later working Bash round, use that numeric ID to call `const task = await egoBrowser.switchTaskSpace(taskId)` before any page or tab operation; if the ID no longer exists, the call fails. Failure recovery, retries, and follow-up work for the same goal use the same ID.
 
 When the user refers to the current page, use `task.page`. Use `task.context.pages()` to inspect all open pages and `task.context.newPage()` to create another page. Use `page.bringToFront()` to foreground a page and `page.close()` to close it.
 
@@ -115,11 +115,11 @@ For “today”, “current”, or “latest” tasks, establish the current tim
 - **TaskSpace Playwright objects**: TaskSpace selection methods expose the active native Playwright Page as `task.page` and its BrowserContext as `task.context`. Use `task.context.pages()` and `task.context.newPage()` for additional pages.
 - **`egoBrowser.helper`**: called without arguments, lists all `egoBrowser` methods; with an exact public path such as `egoBrowser.helper('egoBrowser.newTaskSpace')`, returns that API's signature and documentation.
 - **`egoBrowser.showTaskState`**: shows a concise action description to the user. Immediately before clicking, double-clicking, hovering, dragging, or scrolling, call it once with 3-6 words; for example, `await egoBrowser.showTaskState('open account settings')`.
-- **`site`**: discovers and runs reusable site skills and reads site learning context.
+- **`egoBrowser.site`**: use `egoBrowser.site.discover(url?)` to find matching reusable site skills, `egoBrowser.site.learnContext(url?)` to read their knowledge and tool schemas, and `egoBrowser.site.runTool(...)` or `egoBrowser.site.runBrowserTool(...)` to execute a declared tool. `egoBrowser.site.skills(...)` and `egoBrowser.site.skillsForUrl(...)` remain available compatibility names. The top-level `site` facade is a temporary compatibility alias. Use `egoBrowser.helper('egoBrowser.site')` to list the exact surface.
 
 ## 5. Ownership and control
 
-A task space can have ownership `agent`, `agentDelegatedToUser`, or `user`. `egoBrowser.useOrCreateTaskSpace(...)` does not automatically claim a user-owned space.
+A task space can have ownership `agent`, `agentDelegatedToUser`, or `user`. `egoBrowser.switchTaskSpace(...)` accepts only agent-owned spaces and never claims a user-owned space.
 
 A “user is controlling”, “inactive”, or “not assigned” error is a hard stop for the entire browser task. Do not retry, work around it, or call `egoBrowser.takeOverTaskSpace(...)` automatically. Ask the user first, then follow the claim / takeOver flow below only after explicit confirmation.
 

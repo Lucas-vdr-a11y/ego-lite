@@ -32,8 +32,8 @@ Data flow: `stdin JS` → `runMain()` → `helperContext()` helpers → browser 
 ## Task Spaces
 Task spaces are isolated browsing contexts with an ownership model (`agent` / `user`):
 - `listProfile()` returns the profiles available to new task spaces. Pass a returned profile `id` to `newTaskSpace(name, profileId)`; a task space's profile cannot be changed after creation.
-- `useOrCreateTaskSpace(nameOrId)` reuses an agent-owned space or creates a new one; it no longer auto-claims user-owned spaces. Use `claimTaskSpace(nameOrId)` to take ownership of a user-owned space. Ids are numeric; prefer `task.id` over names across rounds.
-- `switchTaskSpace` requires agent ownership; `newTaskSpace` creates; `completeTaskSpace(nameOrId, { keep })` finishes (`keep` is mandatory).
+- `newTaskSpace(name, profileId?)` creates a uniquely named space and rejects an existing exact name. Preserve its numeric `task.id`; every later round uses `switchTaskSpace(id)`, which requires agent ownership. Use `claimTaskSpace(id)` only after the user explicitly permits taking over a user-owned space.
+- `completeTaskSpace(id)` preserves the result for the user; `closeTaskSpace(id)` destructively removes it.
 - Control handoff: `handOffTaskSpace` / `takeOverTaskSpace` / `waitForAgentControl`.
 
 ## Key Directories

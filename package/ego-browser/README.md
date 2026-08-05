@@ -14,7 +14,9 @@ npm run build     # bundle to dist/out/index.js
 npm test          # build + tsc --noEmit + node --test
 ```
 
-The build emits `dist/out/index.js`; its runtime dependency is `playwright-core`. The ego-browser browser dispatches `ego-browser nodejs <<'EOF' ... EOF` heredocs to that bundle. TaskSpace creation and selection return the active native Playwright `page` and `context`.
+The build emits a standalone, minified `dist/out/index.js` with the required Chromium/CDP subset of `playwright-core` embedded; the release payload does not need `node_modules`. The ego-browser browser dispatches `ego-browser nodejs <<'EOF' ... EOF` heredocs to that bundle. TaskSpace creation and selection return the active native Playwright `page` and `context`.
+
+An embedding host must await the SDK module import and bridge readiness before it evaluates any user source. It must not start evaluation from a fire-and-forget import. After startup, verify that `globalThis.egoBrowser`, `globalThis.site`, and the other required globals exist; if they do not, fail the invocation as a host startup error without evaluating the heredoc. The `installEgoSdk(..., { ready })` gate delays asynchronous helper calls until a host-provided bridge promise settles, but it cannot protect code that the host evaluates before the SDK module itself has loaded.
 
 ```bash
 ego-browser nodejs <<'EOF'
@@ -82,6 +84,7 @@ The top-level repo README has the full helper inventory and the task-space / con
 
 - The browser runtime owns task spaces and CDP transport. Playwright owns Page, BrowserContext, Locator, input, navigation, events, and downloads.
 - A TaskSpace exposes its active native Playwright `Page` and `BrowserContext`; additional pages use `task.context.pages()` and `task.context.newPage()`.
+- Callback-only CDP hosts use compatibility routing when navigation replaces a target. It preserves load waiting, main-document status, final URL, and request completion, but cannot reconstruct response headers or body, redirect-chain request objects, transfer timing and sizes, cache or service-worker provenance, server address, or TLS details that were emitted before attachment.
 - `egoBrowser`, `site`, `fetch`, and `cdp` remain ego-browser-specific control surfaces; use `egoBrowser.helper()` to inspect their documented APIs.
 - Site-specific reusable experience belongs under `skills/ego-browser/learnings/`, not in this package.
 
