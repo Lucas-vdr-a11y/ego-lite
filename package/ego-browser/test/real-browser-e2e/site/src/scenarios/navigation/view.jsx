@@ -76,7 +76,11 @@ export default function NavigationSurface() {
                 aria-label="Search current section"
                 placeholder="Filter records"
               />
-              <button id="clear-knowledge-search" type="button" class="btn btn-outline-secondary">
+              <button
+                id="clear-knowledge-search"
+                type="button"
+                class="btn btn-outline-secondary"
+              >
                 Clear knowledge search
               </button>
             </div>

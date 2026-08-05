@@ -7,14 +7,30 @@ export default function KeyboardSurface() {
         <div class="editor-toolbar">
           <span class="toolbar-note">Draft autosave is off</span>
           <output data-testid="save-status">Unsaved changes</output>
-          <div class="btn-group btn-group-sm" role="group" aria-label="Text formatting">
-            <button type="button" class="btn btn-outline-secondary" data-editor-command="bold">
+          <div
+            class="btn-group btn-group-sm"
+            role="group"
+            aria-label="Text formatting"
+          >
+            <button
+              type="button"
+              class="btn btn-outline-secondary"
+              data-editor-command="bold"
+            >
               Bold
             </button>
-            <button type="button" class="btn btn-outline-secondary" data-editor-command="italic">
+            <button
+              type="button"
+              class="btn btn-outline-secondary"
+              data-editor-command="italic"
+            >
               Italic
             </button>
-            <button type="button" class="btn btn-outline-secondary" data-editor-command="insertUnorderedList">
+            <button
+              type="button"
+              class="btn btn-outline-secondary"
+              data-editor-command="insertUnorderedList"
+            >
               Bulleted list
             </button>
           </div>

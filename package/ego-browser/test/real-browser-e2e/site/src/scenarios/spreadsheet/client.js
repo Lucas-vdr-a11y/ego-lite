@@ -8,9 +8,30 @@ document.head.append(style);
 
 const storageKey = "ego-browser:launch-budget:v2";
 const initialRows = [
-  { id: "research", workItem: "Research interviews", owner: "Mei Lin", quantity: 2, rate: 1200, amount: 2400 },
-  { id: "prototype", workItem: "Prototype QA", owner: "Aisha Rahman", quantity: 3, rate: 900, amount: 2700 },
-  { id: "legal", workItem: "Legal review", owner: "Daniel Wong", quantity: 1, rate: 1500, amount: 1500 },
+  {
+    id: "research",
+    workItem: "Research interviews",
+    owner: "Mei Lin",
+    quantity: 2,
+    rate: 1200,
+    amount: 2400,
+  },
+  {
+    id: "prototype",
+    workItem: "Prototype QA",
+    owner: "Aisha Rahman",
+    quantity: 3,
+    rate: 900,
+    amount: 2700,
+  },
+  {
+    id: "legal",
+    workItem: "Legal review",
+    owner: "Daniel Wong",
+    quantity: 1,
+    rate: 1500,
+    amount: 1500,
+  },
 ];
 const fields = ["workItem", "owner", "quantity", "rate", "amount"];
 const editableFields = new Set(fields.slice(0, 4));
@@ -49,7 +70,8 @@ let future = [];
 function decorateRow(row) {
   const data = row.getData();
   row.getElement().dataset.testid = `budget-row-${data.id}`;
-  for (const cell of row.getCells()) cell.getElement().dataset.column = cell.getField();
+  for (const cell of row.getCells())
+    cell.getElement().dataset.column = cell.getField();
 }
 
 const table = new Tabulator("#budget-grid", {
@@ -58,14 +80,40 @@ const table = new Tabulator("#budget-grid", {
   layout: "fitColumns",
   editTriggerEvent: "dblclick",
   selectableRows: 1,
-  rowHeader: { formatter: "rownum", headerSort: false, width: 42, hozAlign: "center" },
+  rowHeader: {
+    formatter: "rownum",
+    headerSort: false,
+    width: 42,
+    hozAlign: "center",
+  },
   columnDefaults: { headerSort: false },
   columns: [
     { title: "Work item", field: "workItem", minWidth: 190, editor: "input" },
     { title: "Owner", field: "owner", minWidth: 150, editor: "input" },
-    { title: "Qty", field: "quantity", width: 82, hozAlign: "right", editor: "number", editorParams: { min: 0, step: 1 } },
-    { title: "Rate", field: "rate", width: 118, hozAlign: "right", editor: "number", formatter: (cell) => currency(cell.getValue()), editorParams: { min: 0, step: 50 } },
-    { title: "Amount", field: "amount", width: 130, hozAlign: "right", formatter: (cell) => currency(cell.getValue()) },
+    {
+      title: "Qty",
+      field: "quantity",
+      width: 82,
+      hozAlign: "right",
+      editor: "number",
+      editorParams: { min: 0, step: 1 },
+    },
+    {
+      title: "Rate",
+      field: "rate",
+      width: 118,
+      hozAlign: "right",
+      editor: "number",
+      formatter: (cell) => currency(cell.getValue()),
+      editorParams: { min: 0, step: 50 },
+    },
+    {
+      title: "Amount",
+      field: "amount",
+      width: 130,
+      hozAlign: "right",
+      formatter: (cell) => currency(cell.getValue()),
+    },
   ],
 });
 
@@ -82,7 +130,9 @@ function renderActions() {
 
 function renderTotal(message) {
   const rows = table.getData();
-  total.textContent = currency(rows.reduce((sum, row) => sum + Number(row.amount || 0), 0));
+  total.textContent = currency(
+    rows.reduce((sum, row) => sum + Number(row.amount || 0), 0),
+  );
   result.textContent = message || `${rows.length} budget lines`;
   table.getRows().forEach(decorateRow);
   renderActions();
@@ -95,9 +145,10 @@ function selectCell(cell) {
   const column = fields.indexOf(cell.getField());
   activeCell.textContent = `${String.fromCharCode(65 + column)}${row}`;
   formulaBar.disabled = !editableFields.has(cell.getField());
-  formulaBar.value = cell.getField() === "amount"
-    ? `=${cell.getRow().getData().quantity}*${cell.getRow().getData().rate}`
-    : String(cell.getValue());
+  formulaBar.value =
+    cell.getField() === "amount"
+      ? `=${cell.getRow().getData().quantity}*${cell.getRow().getData().rate}`
+      : String(cell.getValue());
   renderActions();
 }
 
@@ -105,7 +156,10 @@ function validationMessage(field, value) {
   if ((field === "workItem" || field === "owner") && !String(value).trim()) {
     return `${field === "workItem" ? "Work item" : "Owner"} is required`;
   }
-  if ((field === "quantity" || field === "rate") && (!Number.isFinite(Number(value)) || Number(value) < 0)) {
+  if (
+    (field === "quantity" || field === "rate") &&
+    (!Number.isFinite(Number(value)) || Number(value) < 0)
+  ) {
     return `${field === "quantity" ? "Quantity" : "Rate"} must be zero or greater`;
   }
   return "";
@@ -137,7 +191,11 @@ table.on("cellEditing", (cell) => {
   editingSnapshot = copyRows(table.getData());
   queueMicrotask(() => {
     const input = cell.getElement().querySelector("input");
-    if (input) input.setAttribute("aria-label", `${cell.getColumn().getDefinition().title} for ${cell.getRow().getData().workItem}`);
+    if (input)
+      input.setAttribute(
+        "aria-label",
+        `${cell.getColumn().getDefinition().title} for ${cell.getRow().getData().workItem}`,
+      );
   });
 });
 table.on("cellClick", (_event, cell) => selectCell(cell));
@@ -150,7 +208,10 @@ table.on("cellEdited", async (cell) => {
     return;
   }
   error.textContent = "";
-  const value = cell.getField() === "quantity" || cell.getField() === "rate" ? Number(cell.getValue()) : String(cell.getValue()).trim();
+  const value =
+    cell.getField() === "quantity" || cell.getField() === "rate"
+      ? Number(cell.getValue())
+      : String(cell.getValue()).trim();
   const data = { ...cell.getRow().getData(), [cell.getField()]: value };
   await cell.getRow().update(calculateRow(data));
   remember(editingSnapshot || table.getData());
@@ -169,7 +230,10 @@ formulaBar.addEventListener("keydown", async (event) => {
     return;
   }
   const snapshot = copyRows(table.getData());
-  const value = field === "quantity" || field === "rate" ? Number(formulaBar.value) : formulaBar.value.trim();
+  const value =
+    field === "quantity" || field === "rate"
+      ? Number(formulaBar.value)
+      : formulaBar.value.trim();
   const row = selectedCell.getRow();
   await row.update(calculateRow({ ...row.getData(), [field]: value }));
   remember(snapshot);
@@ -179,16 +243,25 @@ formulaBar.addEventListener("keydown", async (event) => {
   renderTotal();
 });
 
-document.querySelector("#add-budget-row").addEventListener("click", async () => {
-  const snapshot = copyRows(table.getData());
-  const next = table.getDataCount() + 1;
-  const row = await table.addRow({ id: `new-${next}`, workItem: `New budget item ${next}`, owner: "Unassigned", quantity: 1, rate: 0, amount: 0 });
-  remember(snapshot);
-  decorateRow(row);
-  row.select();
-  selectCell(row.getCell("workItem"));
-  renderTotal();
-});
+document
+  .querySelector("#add-budget-row")
+  .addEventListener("click", async () => {
+    const snapshot = copyRows(table.getData());
+    const next = table.getDataCount() + 1;
+    const row = await table.addRow({
+      id: `new-${next}`,
+      workItem: `New budget item ${next}`,
+      owner: "Unassigned",
+      quantity: 1,
+      rate: 0,
+      amount: 0,
+    });
+    remember(snapshot);
+    decorateRow(row);
+    row.select();
+    selectCell(row.getCell("workItem"));
+    renderTotal();
+  });
 
 deleteButton.addEventListener("click", async () => {
   const [row] = table.getSelectedRows();
@@ -217,14 +290,16 @@ redoButton.addEventListener("click", async () => {
   setDirty();
 });
 
-document.querySelector("#reset-workbook").addEventListener("click", async () => {
-  localStorage.removeItem(storageKey);
-  history = [];
-  future = [];
-  await replaceRows(initialRows, "Workbook reset to 3 budget lines");
-  error.textContent = "";
-  setDirty(false);
-});
+document
+  .querySelector("#reset-workbook")
+  .addEventListener("click", async () => {
+    localStorage.removeItem(storageKey);
+    history = [];
+    future = [];
+    await replaceRows(initialRows, "Workbook reset to 3 budget lines");
+    error.textContent = "";
+    setDirty(false);
+  });
 
 saveButton.addEventListener("click", () => {
   localStorage.setItem(storageKey, JSON.stringify(table.getData()));

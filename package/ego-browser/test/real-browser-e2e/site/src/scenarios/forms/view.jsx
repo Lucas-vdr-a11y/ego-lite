@@ -84,7 +84,11 @@ export default function FormsSurface() {
               </label>
               <label>
                 Stakeholder email
-                <input id="stakeholder-email" class="form-control" type="email" />
+                <input
+                  id="stakeholder-email"
+                  class="form-control"
+                  type="email"
+                />
               </label>
               <label>
                 Stakeholder role
@@ -102,7 +106,11 @@ export default function FormsSurface() {
             >
               Add stakeholder
             </button>
-            <output data-testid="stakeholder-error" class="form-text text-danger" role="status" />
+            <output
+              data-testid="stakeholder-error"
+              class="form-text text-danger"
+              role="status"
+            />
           </fieldset>
         </div>
       </form>

@@ -72,7 +72,12 @@ export default function DialogsSurface() {
           <p>
             Name <output data-testid="release-name">Not set</output>
           </p>
-          <button id="publish-release" type="button" class="btn btn-success" disabled>
+          <button
+            id="publish-release"
+            type="button"
+            class="btn btn-success"
+            disabled
+          >
             Publish release
           </button>
         </div>

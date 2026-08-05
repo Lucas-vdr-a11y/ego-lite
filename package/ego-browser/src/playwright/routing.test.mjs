@@ -1045,7 +1045,9 @@ test("the Ego Playwright transport keeps the Playwright Page identity while repl
   transport.close();
 });
 
-async function createNavigatedCdpSessionTransport({ detachError = false } = {}) {
+async function createNavigatedCdpSessionTransport({
+  detachError = false,
+} = {}) {
   let nextNativeId = 1_000_000_450;
   let replacementAttachCount = 0;
   const sent = [];
@@ -1301,10 +1303,13 @@ test("detaching a Playwright CDPSession preserves the primary page route", async
     false,
     "an explicit detach completes from its command response without racing a detach event",
   );
-  assert.deepEqual(harness.received.find((message) => message.id === 54), {
-    id: 54,
-    result: {},
-  });
+  assert.deepEqual(
+    harness.received.find((message) => message.id === 54),
+    {
+      id: 54,
+      result: {},
+    },
+  );
 
   harness.transport.send({
     id: 55,
@@ -2169,7 +2174,10 @@ test("Page.close replies before native close events reach Playwright", async () 
   });
 
   const deadline = Date.now() + 500;
-  while (!received.some((message) => message.id === 45) && Date.now() < deadline) {
+  while (
+    !received.some((message) => message.id === 45) &&
+    Date.now() < deadline
+  ) {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
 

@@ -7,7 +7,10 @@ import * as bundlePlugin from "../scripts/playwright-core-bundle-plugin.mjs";
 test("the minified Playwright server keeps protocol error names stable", async () => {
   assert.equal(typeof bundlePlugin.patchPlaywrightServerErrors, "function");
   const source = await readFile(
-    new URL("../node_modules/playwright-core/lib/server/errors.js", import.meta.url),
+    new URL(
+      "../node_modules/playwright-core/lib/server/errors.js",
+      import.meta.url,
+    ),
     "utf8",
   );
   const patched = bundlePlugin.patchPlaywrightServerErrors(

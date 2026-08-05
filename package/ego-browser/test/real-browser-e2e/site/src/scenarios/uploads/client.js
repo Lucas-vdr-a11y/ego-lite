@@ -17,7 +17,10 @@ const acceptedExtensions = new Set(["txt", "md", "csv"]);
 let selectionVersion = 0;
 
 async function checksum(file) {
-  const digest = await crypto.subtle.digest("SHA-256", await file.arrayBuffer());
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    await file.arrayBuffer(),
+  );
   return Array.from(new Uint8Array(digest), (byte) =>
     byte.toString(16).padStart(2, "0"),
   ).join("");

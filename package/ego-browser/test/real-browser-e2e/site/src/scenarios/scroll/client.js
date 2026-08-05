@@ -9,7 +9,9 @@ const activeActivity = document.querySelector(
 );
 let activeIndex = 0;
 const reviewed = new Set();
-const activityDetail = document.querySelector('[data-testid="activity-detail"]');
+const activityDetail = document.querySelector(
+  '[data-testid="activity-detail"]',
+);
 const reviewedCount = document.querySelector(
   '[data-testid="reviewed-activity-count"]',
 );
@@ -23,7 +25,10 @@ function renderActivity() {
   activityDetail.textContent = activities[activeIndex].dataset.activityDetail;
   activities.forEach((activity, index) => {
     activity.classList.toggle("active-activity", index === activeIndex);
-    activity.setAttribute("aria-current", index === activeIndex ? "true" : "false");
+    activity.setAttribute(
+      "aria-current",
+      index === activeIndex ? "true" : "false",
+    );
   });
   reviewButton.textContent = reviewed.has(activeIndex)
     ? "Mark activity unreviewed"

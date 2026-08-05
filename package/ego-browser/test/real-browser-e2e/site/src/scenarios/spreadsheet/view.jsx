@@ -13,26 +13,59 @@ export default function SpreadsheetSurface() {
       </header>
 
       <div class="sheet-toolbar" role="toolbar" aria-label="Workbook actions">
-        <div class="cell-reference" data-testid="active-cell" aria-label="Active cell">
+        <div
+          class="cell-reference"
+          data-testid="active-cell"
+          aria-label="Active cell"
+        >
           A1
         </div>
         <label class="formula-field">
           <span>Formula</span>
-          <input id="formula-bar" aria-label="Formula bar" value="Select a cell" disabled />
+          <input
+            id="formula-bar"
+            aria-label="Formula bar"
+            value="Select a cell"
+            disabled
+          />
         </label>
         <div class="toolbar-actions">
-          <button id="add-budget-row" type="button" aria-label="Add budget row">Add row</button>
-          <button id="delete-budget-row" type="button" aria-label="Delete selected row" disabled>
+          <button id="add-budget-row" type="button" aria-label="Add budget row">
+            Add row
+          </button>
+          <button
+            id="delete-budget-row"
+            type="button"
+            aria-label="Delete selected row"
+            disabled
+          >
             Delete row
           </button>
-          <button id="undo-workbook" type="button" aria-label="Undo workbook change" disabled>
+          <button
+            id="undo-workbook"
+            type="button"
+            aria-label="Undo workbook change"
+            disabled
+          >
             Undo
           </button>
-          <button id="redo-workbook" type="button" aria-label="Redo workbook change" disabled>
+          <button
+            id="redo-workbook"
+            type="button"
+            aria-label="Redo workbook change"
+            disabled
+          >
             Redo
           </button>
-          <button id="reset-workbook" type="button" aria-label="Reset workbook">Reset</button>
-          <button id="save-workbook" type="button" class="btn btn-primary" disabled>
+          <button id="reset-workbook" type="button" aria-label="Reset workbook">
+            Reset
+          </button>
+          <button
+            id="save-workbook"
+            type="button"
+            class="btn btn-primary"
+            disabled
+          >
             Save workbook
           </button>
         </div>

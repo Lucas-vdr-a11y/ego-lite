@@ -42,27 +42,57 @@ export default function ScrollSurface() {
           <small>Independent scroll region</small>
         </div>
         <div id="nested-scroll" class="nested-scroll">
-          <article data-activity-name="Courtyard entry" data-activity-detail="Indirect light and a deep threshold slow the courtyard entry." role="button" tabindex="0" aria-label="Open Courtyard entry activity">
+          <article
+            data-activity-name="Courtyard entry"
+            data-activity-detail="Indirect light and a deep threshold slow the courtyard entry."
+            role="button"
+            tabindex="0"
+            aria-label="Open Courtyard entry activity"
+          >
             <span>07:40</span>
             <strong>Courtyard entry</strong>
             <p>Indirect light and deep threshold.</p>
           </article>
-          <article data-activity-name="Covered linkway" data-activity-detail="Cross breeze was recorded at both ends of the linkway." role="button" tabindex="0" aria-label="Open Covered linkway activity">
+          <article
+            data-activity-name="Covered linkway"
+            data-activity-detail="Cross breeze was recorded at both ends of the linkway."
+            role="button"
+            tabindex="0"
+            aria-label="Open Covered linkway activity"
+          >
             <span>08:05</span>
             <strong>Covered linkway</strong>
             <p>Cross breeze recorded at both ends.</p>
           </article>
-          <article data-activity-name="Market edge" data-activity-detail="Street sound falls sharply behind the planting edge." role="button" tabindex="0" aria-label="Open Market edge activity">
+          <article
+            data-activity-name="Market edge"
+            data-activity-detail="Street sound falls sharply behind the planting edge."
+            role="button"
+            tabindex="0"
+            aria-label="Open Market edge activity"
+          >
             <span>08:32</span>
             <strong>Market edge</strong>
             <p>Sound falls sharply behind planting.</p>
           </article>
-          <article data-activity-name="Community room" data-activity-detail="The community room doors remain fully open before noon." role="button" tabindex="0" aria-label="Open Community room activity">
+          <article
+            data-activity-name="Community room"
+            data-activity-detail="The community room doors remain fully open before noon."
+            role="button"
+            tabindex="0"
+            aria-label="Open Community room activity"
+          >
             <span>09:10</span>
             <strong>Community room</strong>
             <p>Doors remain fully open before noon.</p>
           </article>
-          <article data-activity-name="Final marker" data-activity-detail="The final observation closes the five-stop field walk." role="button" tabindex="0" aria-label="Open Final marker activity">
+          <article
+            data-activity-name="Final marker"
+            data-activity-detail="The final observation closes the five-stop field walk."
+            role="button"
+            tabindex="0"
+            aria-label="Open Final marker activity"
+          >
             <span>09:46</span>
             <strong>Final marker</strong>
             <p id="nested-marker">Nested marker reached</p>
@@ -111,11 +141,16 @@ export default function ScrollSurface() {
           <p data-testid="activity-detail">
             Indirect light and a deep threshold slow the courtyard entry.
           </p>
-          <button id="review-activity" type="button" class="btn btn-sm btn-primary">
+          <button
+            id="review-activity"
+            type="button"
+            class="btn btn-sm btn-primary"
+          >
             Mark activity reviewed
           </button>
           <span>
-            Reviewed <output data-testid="reviewed-activity-count">0</output> / 5
+            Reviewed <output data-testid="reviewed-activity-count">0</output> /
+            5
           </span>
         </div>
         <p class="small text-secondary mb-0">

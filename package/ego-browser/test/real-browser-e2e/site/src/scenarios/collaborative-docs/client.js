@@ -12,18 +12,25 @@ const clientId = crypto.randomUUID();
 const params = new URLSearchParams(location.search);
 let userName = params.get("user") || "Mei Lin";
 const userNameInput = document.querySelector("#collab-user-name");
-const collaboratorCount = document.querySelector('[data-testid="collaborator-count"]');
-const collaborationStatus = document.querySelector('[data-testid="collab-status"]');
+const collaboratorCount = document.querySelector(
+  '[data-testid="collaborator-count"]',
+);
+const collaborationStatus = document.querySelector(
+  '[data-testid="collab-status"]',
+);
 const syncStatus = document.querySelector('[data-testid="sync-status"]');
 const versionLabel = document.querySelector('[data-testid="collab-version"]');
 const versionCount = document.querySelector('[data-testid="version-count"]');
-const versionHistory = document.querySelector('[data-testid="version-history"]');
+const versionHistory = document.querySelector(
+  '[data-testid="version-history"]',
+);
 const result = document.querySelector('[data-testid="collab-result"]');
 const resetDialog = document.querySelector("#reset-collab-dialog");
 const channel = new BroadcastChannel(roomName);
 const documentModel = new Y.Doc();
 const peers = new Map();
-const initialContent = "<h2>Regional pilot decision</h2><p>Document the launch recommendation and review evidence together.</p>";
+const initialContent =
+  "<h2>Regional pilot decision</h2><p>Document the launch recommendation and review evidence together.</p>";
 
 userNameInput.value = userName;
 
@@ -56,7 +63,9 @@ const editor = new Editor({
     StarterKit.configure({ undoRedo: false }),
     Collaboration.configure({ document: documentModel }),
   ],
-  editorProps: { attributes: { "aria-label": "Collaborative document", role: "textbox" } },
+  editorProps: {
+    attributes: { "aria-label": "Collaborative document", role: "textbox" },
+  },
 });
 
 if (!persistedState) editor.commands.setContent(initialContent);
@@ -107,18 +116,30 @@ function renderVersionHistory() {
 function renderFormatting() {
   document.querySelectorAll("[data-collab-command]").forEach((button) => {
     if (!button.hasAttribute("aria-pressed")) return;
-    button.setAttribute("aria-pressed", String(editor.isActive(button.dataset.collabCommand)));
+    button.setAttribute(
+      "aria-pressed",
+      String(editor.isActive(button.dataset.collabCommand)),
+    );
   });
 }
 
 function persist() {
-  localStorage.setItem(storageKey, encodeUpdate(Y.encodeStateAsUpdate(documentModel)));
+  localStorage.setItem(
+    storageKey,
+    encodeUpdate(Y.encodeStateAsUpdate(documentModel)),
+  );
   syncStatus.textContent = "All changes synced";
 }
 
 documentModel.on("update", (update, origin) => {
   persist();
-  if (origin !== remoteOrigin) channel.postMessage({ type: "update", sender: clientId, user: userName, update });
+  if (origin !== remoteOrigin)
+    channel.postMessage({
+      type: "update",
+      sender: clientId,
+      user: userName,
+      update,
+    });
 });
 
 channel.addEventListener("message", (event) => {
@@ -128,11 +149,22 @@ channel.addEventListener("message", (event) => {
     Y.applyUpdate(documentModel, new Uint8Array(message.update), remoteOrigin);
     result.textContent = `Changes received from ${message.user || "a collaborator"}`;
   }
-  if (message.type === "sync-request") channel.postMessage({ type: "update", sender: clientId, user: userName, update: Y.encodeStateAsUpdate(documentModel) });
+  if (message.type === "sync-request")
+    channel.postMessage({
+      type: "update",
+      sender: clientId,
+      user: userName,
+      update: Y.encodeStateAsUpdate(documentModel),
+    });
   if (message.type === "presence" || message.type === "hello") {
     peers.set(message.sender, message.user);
     renderPresence();
-    if (message.type === "hello") channel.postMessage({ type: "presence", sender: clientId, user: userName });
+    if (message.type === "hello")
+      channel.postMessage({
+        type: "presence",
+        sender: clientId,
+        user: userName,
+      });
   }
   if (message.type === "leave") {
     peers.delete(message.sender);
@@ -169,34 +201,48 @@ userNameInput.addEventListener("change", () => {
 document.querySelector("#save-doc-version").addEventListener("click", () => {
   const nextVersion = Number(localStorage.getItem(versionKey) || "1") + 1;
   const versions = readHistory();
-  versions.push({ number: nextVersion, author: userName, html: editor.getHTML() });
+  versions.push({
+    number: nextVersion,
+    author: userName,
+    html: editor.getHTML(),
+  });
   localStorage.setItem(versionKey, String(nextVersion));
   localStorage.setItem(historyKey, JSON.stringify(versions));
   versionLabel.textContent = `Version ${nextVersion}`;
   result.textContent = `Version ${nextVersion} saved by ${userName}`;
   renderVersionHistory();
-  channel.postMessage({ type: "version", sender: clientId, number: nextVersion });
+  channel.postMessage({
+    type: "version",
+    sender: clientId,
+    number: nextVersion,
+  });
 });
 
 versionHistory.addEventListener("click", (event) => {
   const button = event.target.closest("[data-restore-version]");
   if (!button) return;
-  const version = readHistory().find((candidate) => candidate.number === Number(button.dataset.restoreVersion));
+  const version = readHistory().find(
+    (candidate) => candidate.number === Number(button.dataset.restoreVersion),
+  );
   if (!version) return;
   editor.commands.setContent(version.html);
   result.textContent = `Version ${version.number} restored`;
 });
 
-document.querySelector("#reset-collaborative-doc").addEventListener("click", () => resetDialog.showModal());
-document.querySelector("#confirm-collab-reset").addEventListener("click", () => {
-  editor.commands.setContent(initialContent);
-  localStorage.removeItem(historyKey);
-  localStorage.setItem(versionKey, "1");
-  versionLabel.textContent = "Version 1";
-  result.textContent = "Document reset to the shared starting point";
-  renderVersionHistory();
-  channel.postMessage({ type: "version", sender: clientId, number: 1 });
-});
+document
+  .querySelector("#reset-collaborative-doc")
+  .addEventListener("click", () => resetDialog.showModal());
+document
+  .querySelector("#confirm-collab-reset")
+  .addEventListener("click", () => {
+    editor.commands.setContent(initialContent);
+    localStorage.removeItem(historyKey);
+    localStorage.setItem(versionKey, "1");
+    versionLabel.textContent = "Version 1";
+    result.textContent = "Document reset to the shared starting point";
+    renderVersionHistory();
+    channel.postMessage({ type: "version", sender: clientId, number: 1 });
+  });
 
 versionLabel.textContent = `Version ${localStorage.getItem(versionKey) || "1"}`;
 persist();

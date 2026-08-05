@@ -302,17 +302,13 @@ export async function runRealBrowserE2e() {
     // the platform suite.
     const source = createNodeBridgeSmokeSource(marker);
     try {
-      const { stdout, stderr } = await runCommand(
-        "ego-browser",
-        args,
-        {
-          cwd: packageDir,
-          ...(sdkPath ? { egoBrowserSdkPath: sdkPath } : {}),
-          echo: verboseCaseOutput,
-          input: source,
-          timeoutMs,
-        },
-      );
+      const { stdout, stderr } = await runCommand("ego-browser", args, {
+        cwd: packageDir,
+        ...(sdkPath ? { egoBrowserSdkPath: sdkPath } : {}),
+        echo: verboseCaseOutput,
+        input: source,
+        timeoutMs,
+      });
       const probe = parseNodeBridgeSmoke(`${stdout}\n${stderr}`, marker);
       const validation = validateNodeBridgeProbe(probe);
       if (!validation.ok) {

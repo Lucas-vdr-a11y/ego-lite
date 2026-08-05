@@ -120,14 +120,9 @@ export function installEgoSdk(
   return target;
 }
 
-function exposeSdkGlobal(
-  target: InstallTarget,
-  name: string,
-  value: unknown,
-) {
+function exposeSdkGlobal(target: InstallTarget, name: string, value: unknown) {
   let values = (target as Record<symbol, unknown>)[SDK_GLOBAL_VALUES] as
-    | Record<string, unknown>
-    | undefined;
+    Record<string, unknown> | undefined;
   if (!values) {
     values = Object.create(null);
     Object.defineProperty(target, SDK_GLOBAL_VALUES, {

@@ -2,8 +2,12 @@ const sections = document.querySelectorAll("[data-section]");
 const activeSection = document.querySelector(
   '[data-testid="navigation-section"]',
 );
-const sectionHeading = document.querySelector('[data-testid="section-heading"]');
-const sectionRecords = document.querySelector('[data-testid="section-records"]');
+const sectionHeading = document.querySelector(
+  '[data-testid="section-heading"]',
+);
+const sectionRecords = document.querySelector(
+  '[data-testid="section-records"]',
+);
 const sectionResultCount = document.querySelector(
   '[data-testid="section-result-count"]',
 );
@@ -64,9 +68,11 @@ sections.forEach((button) => {
 });
 
 search.addEventListener("input", renderRecords);
-document.querySelector("#clear-knowledge-search").addEventListener("click", () => {
-  search.value = "";
-  renderRecords();
-  search.focus();
-});
+document
+  .querySelector("#clear-knowledge-search")
+  .addEventListener("click", () => {
+    search.value = "";
+    renderRecords();
+    search.focus();
+  });
 renderRecords();

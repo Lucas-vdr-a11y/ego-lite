@@ -127,8 +127,18 @@ document.querySelector("#request-form").addEventListener("submit", (event) => {
   result.textContent = `Scheduled: ${name.value.trim()}`;
   const [year, month, day] = targetDate.value.split("-").map(Number);
   const months = [
-    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec",
   ];
   document.querySelector('[data-testid="form-schedule"]').textContent =
     `${day} ${months[month - 1]} ${year}`;

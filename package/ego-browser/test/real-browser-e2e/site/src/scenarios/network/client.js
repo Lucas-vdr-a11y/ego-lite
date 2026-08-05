@@ -6,7 +6,9 @@ const payload = document.querySelector('[data-testid="network-payload"]');
 const referenceOutput = document.querySelector(
   '[data-testid="network-reference"]',
 );
-const attemptsOutput = document.querySelector('[data-testid="network-attempts"]');
+const attemptsOutput = document.querySelector(
+  '[data-testid="network-attempts"]',
+);
 const historyOutput = document.querySelector('[data-testid="network-history"]');
 const history = [];
 
