@@ -963,7 +963,7 @@ test("the Ego Playwright transport keeps the Playwright Page identity while repl
     id: 33,
     method: "Page.navigate",
     params: {
-      frameId: "client-frame",
+      frameId: "client-target",
       url: "https://example.test/after",
     },
     sessionId: "client-session",
@@ -993,7 +993,7 @@ test("the Ego Playwright transport keeps the Playwright Page identity while repl
     {
       id: 33,
       result: {
-        frameId: "client-frame",
+        frameId: "client-target",
         loaderId: "replacement-loader",
       },
       sessionId: "client-session",
@@ -1004,7 +1004,7 @@ test("the Ego Playwright transport keeps the Playwright Page identity while repl
       (message) =>
         message.method === "Page.frameNavigated" &&
         message.sessionId === "client-session" &&
-        message.params.frame.id === "client-frame",
+        message.params.frame.id === "client-target",
     ),
   );
   assert.ok(
@@ -1012,7 +1012,7 @@ test("the Ego Playwright transport keeps the Playwright Page identity while repl
       (message) =>
         message.method === "Page.lifecycleEvent" &&
         message.params.name === "load" &&
-        message.params.frameId === "client-frame",
+        message.params.frameId === "client-target",
     ),
   );
   const replacementRuntimeEnableIndex = sent.findIndex(
@@ -1090,7 +1090,7 @@ async function createNavigatedCdpSessionTransport({
               id:
                 request.sessionId === "replacement-session"
                   ? "replacement-frame"
-                  : "client-frame",
+                  : "client-target",
               loaderId:
                 request.sessionId === "replacement-session"
                   ? "replacement-loader"
@@ -1187,7 +1187,7 @@ async function createNavigatedCdpSessionTransport({
     id: 51,
     method: "Page.navigate",
     params: {
-      frameId: "client-frame",
+      frameId: "client-target",
       url: "https://example.test/after",
     },
     sessionId: "client-session",
@@ -1420,7 +1420,7 @@ test("the Ego Playwright transport reports the committed redirect URL for Page.n
               id:
                 request.sessionId === "replacement-session"
                   ? "replacement-frame"
-                  : "client-frame",
+                  : "client-target",
               loaderId:
                 request.sessionId === "replacement-session"
                   ? "replacement-loader"
@@ -1481,7 +1481,7 @@ test("the Ego Playwright transport reports the committed redirect URL for Page.n
     id: 36,
     method: "Page.navigate",
     params: {
-      frameId: "client-frame",
+      frameId: "client-target",
       url: "https://example.test/redirect",
     },
     sessionId: "client-session",
@@ -1504,7 +1504,7 @@ test("the Ego Playwright transport reports the committed redirect URL for Page.n
     {
       id: 36,
       result: {
-        frameId: "client-frame",
+        frameId: "client-target",
         loaderId: "replacement-loader",
       },
       sessionId: "client-session",
@@ -2005,12 +2005,18 @@ test("the Ego Playwright transport does not close a target reused by createTab n
     id: 41,
     method: "Page.navigate",
     params: {
-      frameId: "client-frame",
+      frameId: "reused-target",
       url: "https://example.test/after",
     },
     sessionId: "client-session",
   });
-  for (let index = 0; index < 10; index += 1) await waitForImmediate();
+  const navigationDeadline = Date.now() + 1_000;
+  while (
+    !received.some((message) => message.id === 41) &&
+    Date.now() < navigationDeadline
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
 
   assert.equal(
     sent.some((request) => request.method === "Target.closeTarget"),
@@ -2454,4 +2460,248 @@ test("the TaskSpace Playwright transport does not fall back to getCDPEndpoint", 
 
 test("the removed local CDP bridge is no longer exported", () => {
   assert.equal(playwrightTaskSpace.createLocalCdpBridge, undefined);
+});
+
+async function createTaskSpaceTransportHarness({ tabs }) {
+  const { FakeNativeBrowser } = await import("./fake-native-harness.mjs");
+  const fake = new FakeNativeBrowser();
+  for (const [targetId, url] of tabs) fake.addTab(targetId, url);
+  const received = [];
+  const pendingWork = [];
+  const transport = egoTransport.createEgoCdpTransport(fake.runtime, {
+    targetIds: tabs.map(([targetId]) => targetId),
+    onPendingWorkChange: (count) => pendingWork.push(count),
+  });
+  transport.releaseConnectionKeepAlive();
+  transport.onmessage = (message) => received.push(message);
+  transport.send({
+    id: 1,
+    method: "Target.setAutoAttach",
+    params: { autoAttach: true, waitForDebuggerOnStart: true, flatten: true },
+  });
+  const settled = Date.now() + 2_000;
+  while (fake.sessions.size < tabs.length && Date.now() < settled) {
+    await waitForImmediate();
+  }
+  return { fake, transport, received, pendingWork };
+}
+
+function gateListTabs(fake) {
+  let release;
+  const gate = new Promise((resolve) => (release = resolve));
+  const originalListTabs = fake.runtime.listTabs;
+  fake.runtime.listTabs = async () => {
+    await gate;
+    return originalListTabs();
+  };
+  return () => release();
+}
+
+async function waitForMessage(received, predicate, timeoutMs = 3_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const match = received.find(predicate);
+    if (match) return match;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  return received.find(predicate);
+}
+
+test("commands sent during a session rebind are delivered after the route rebinds", async () => {
+  const harness = await createTaskSpaceTransportHarness({
+    tabs: [["tab-main", "https://main.test/"]],
+  });
+  const { fake, transport, received } = harness;
+  const oldSession = [...fake.sessions.keys()][0];
+  const releaseListTabs = gateListTabs(fake);
+
+  fake.sessions.delete(oldSession);
+  fake.emit({
+    method: "Target.detachedFromTarget",
+    params: { sessionId: oldSession, targetId: "tab-main" },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+
+  transport.send({
+    id: 70,
+    method: "Runtime.evaluate",
+    params: { expression: "1 + 1" },
+    sessionId: oldSession,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.equal(
+    received.find((message) => message.id === 70),
+    undefined,
+    "the command is held while the route rebinds instead of failing",
+  );
+
+  releaseListTabs();
+  const reply = await waitForMessage(received, (message) => message.id === 70);
+  assert.ok(reply, "the held command completes after the rebind");
+  assert.equal(reply.error, undefined);
+  assert.equal(reply.sessionId, oldSession);
+  await transport.closeAndWait();
+});
+
+test("browser-level cookie commands prefer an attached route", async () => {
+  const harness = await createTaskSpaceTransportHarness({
+    tabs: [
+      ["tab-a", "https://a.test/"],
+      ["tab-b", "https://b.test/"],
+    ],
+  });
+  const { fake, transport, received } = harness;
+  const sessionA = [...fake.sessions.entries()].find(
+    ([, targetId]) => targetId === "tab-a",
+  )[0];
+  const releaseListTabs = gateListTabs(fake);
+
+  fake.sessions.delete(sessionA);
+  fake.emit({
+    method: "Target.detachedFromTarget",
+    params: { sessionId: sessionA, targetId: "tab-a" },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+
+  transport.send({ id: 77, method: "Storage.getCookies", params: {} });
+  const reply = await waitForMessage(received, (message) => message.id === 77);
+  assert.ok(reply, "the cookie command completes");
+  assert.equal(
+    reply.error,
+    undefined,
+    "the cookie command uses a healthy route instead of the rebinding one",
+  );
+  assert.deepEqual(reply.result, { cookies: [] });
+  releaseListTabs();
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  await transport.closeAndWait();
+});
+
+test("a native send error rejects in-flight commands without closing the transport", async () => {
+  const harness = await createTaskSpaceTransportHarness({
+    tabs: [["tab-main", "https://main.test/"]],
+  });
+  const { fake, transport, received } = harness;
+  const mainSession = [...fake.sessions.keys()][0];
+
+  const originalSend = fake.runtime.sendCDPMessage;
+  fake.runtime.sendCDPMessage = () => {};
+  transport.send({
+    id: 91,
+    method: "Runtime.evaluate",
+    params: { expression: "1" },
+    sessionId: mainSession,
+  });
+  await waitForImmediate();
+  fake.runtime.onSendCDPMessageError?.(
+    "Task space is not assigned to an agent.",
+    "EGO_TASK_SPACE_INACTIVE",
+  );
+
+  const failed = await waitForMessage(received, (message) => message.id === 91);
+  assert.ok(failed, "the in-flight command is rejected");
+  assert.match(failed.error?.message || "", /EGO_TASK_SPACE_INACTIVE/);
+  assert.equal(
+    transport.closed,
+    false,
+    "a task-level send error must not tear down the whole transport",
+  );
+
+  fake.runtime.sendCDPMessage = originalSend;
+  transport.send({ id: 92, method: "Target.getTargets", params: {} });
+  const recovered = await waitForMessage(
+    received,
+    (message) => message.id === 92,
+  );
+  assert.ok(recovered, "the transport keeps working after the send error");
+  assert.equal(recovered.error, undefined);
+  await transport.closeAndWait();
+});
+
+test("popups opened concurrently with different URLs are both attached", async () => {
+  const harness = await createTaskSpaceTransportHarness({
+    tabs: [["tab-main", "https://main.test/"]],
+  });
+  const { fake, transport, received } = harness;
+  const mainSession = [...fake.sessions.keys()][0];
+  const releaseListTabs = gateListTabs(fake);
+
+  fake.addTab("tab-popup-a", "https://popup.test/a");
+  fake.addTab("tab-popup-b", "https://popup.test/b");
+  fake.emit({
+    method: "Page.windowOpen",
+    params: { url: "https://popup.test/a", windowName: "a" },
+    sessionId: mainSession,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  fake.emit({
+    method: "Page.windowOpen",
+    params: { url: "https://popup.test/b", windowName: "b" },
+    sessionId: mainSession,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  releaseListTabs();
+
+  const attachedA = await waitForMessage(
+    received,
+    (message) =>
+      message.method === "Target.attachedToTarget" &&
+      message.params?.targetInfo?.targetId === "tab-popup-a",
+  );
+  const attachedB = await waitForMessage(
+    received,
+    (message) =>
+      message.method === "Target.attachedToTarget" &&
+      message.params?.targetInfo?.targetId === "tab-popup-b",
+  );
+  assert.ok(attachedA, "the first popup is attached");
+  assert.ok(attachedB, "the second popup is attached as well");
+  await transport.closeAndWait();
+});
+
+test("replayed toggle commands preserve the client's final state", async () => {
+  const harness = await createTaskSpaceTransportHarness({
+    tabs: [["tab-main", "https://main.test/"]],
+  });
+  const { fake, transport, received } = harness;
+  const mainSession = [...fake.sessions.keys()][0];
+
+  const toggles = [
+    { id: 50, cacheDisabled: true },
+    { id: 51, cacheDisabled: false },
+    { id: 52, cacheDisabled: true },
+  ];
+  for (const toggle of toggles) {
+    transport.send({
+      id: toggle.id,
+      method: "Network.setCacheDisabled",
+      params: { cacheDisabled: toggle.cacheDisabled },
+      sessionId: mainSession,
+    });
+  }
+  await waitForMessage(received, (message) => message.id === 52);
+
+  transport.send({
+    id: 53,
+    method: "Page.navigate",
+    params: { frameId: "tab-main", url: "https://main.test/next" },
+    sessionId: mainSession,
+  });
+  await waitForMessage(received, (message) => message.id === 53, 5_000);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+
+  const replacementSession = [...fake.sessions.keys()].at(-1);
+  assert.notEqual(replacementSession, mainSession);
+  const replayed = fake.log.filter(
+    (request) =>
+      request.sessionId === replacementSession &&
+      request.method === "Network.setCacheDisabled",
+  );
+  assert.ok(replayed.length >= 1, "the toggle command is replayed");
+  assert.equal(
+    replayed.at(-1).params.cacheDisabled,
+    true,
+    "the replayed toggle ends on the client's final state",
+  );
+  await transport.closeAndWait();
 });

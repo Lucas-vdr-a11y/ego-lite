@@ -592,6 +592,7 @@ test("egoBrowser lists lightweight TaskSpace information without switching", asy
 
 test("egoBrowser complete and close return structured success results", async () => {
   const calls = [];
+  let closed = false;
   const task = {
     taskId: "inspect-products",
     id: 7,
@@ -602,7 +603,7 @@ test("egoBrowser complete and close return structured success results", async ()
     {
       async listTaskSpaces() {
         calls.push(["listTaskSpaces"]);
-        return { taskSpaces: [task] };
+        return { taskSpaces: closed ? [] : [task] };
       },
       async useTaskSpace(id) {
         calls.push(["useTaskSpace", id]);
@@ -614,6 +615,7 @@ test("egoBrowser complete and close return structured success results", async ()
       },
       async closeTaskSpace() {
         calls.push(["closeTaskSpace"]);
+        closed = true;
         return {};
       },
     },
@@ -635,7 +637,45 @@ test("egoBrowser complete and close return structured success results", async ()
     ["listTaskSpaces"],
     ["useTaskSpace", 7],
     ["closeTaskSpace"],
+    ["listTaskSpaces"],
   ]);
+});
+
+test("egoBrowser close waits until the TaskSpace is no longer listed", async () => {
+  let closed = false;
+  let listingsAfterClose = 0;
+  const task = {
+    taskId: "slow-teardown",
+    id: 9,
+    name: "Slow teardown",
+    ownership: "agent",
+  };
+  await withEgo(
+    {
+      async listTaskSpaces() {
+        if (!closed) return { taskSpaces: [task] };
+        listingsAfterClose += 1;
+        // The native side keeps listing the space for a few polls after the
+        // close command resolves, as the real browser does.
+        return { taskSpaces: listingsAfterClose < 3 ? [task] : [] };
+      },
+      async useTaskSpace() {
+        return {};
+      },
+      async closeTaskSpace() {
+        closed = true;
+        return {};
+      },
+    },
+    async () => {
+      const context = helperContext();
+      assert.deepEqual(await context.egoBrowser.closeTaskSpace(task.id), {
+        done: true,
+      });
+    },
+  );
+
+  assert.equal(listingsAfterClose, 3);
 });
 
 test("egoBrowser terminal actions close the active Playwright connection", async () => {
@@ -1191,19 +1231,22 @@ test("completeTaskSpace waits for async useTaskSpace before completing", async (
 
 test("completeTaskSpace claims user-owned spaces before closing", async () => {
   const calls = [];
+  let closed = false;
   await withEgo(
     {
       async listTaskSpaces() {
         calls.push(["listTaskSpaces"]);
         return {
-          taskSpaces: [
-            {
-              taskId: "checkout-flow",
-              id: 7,
-              name: "checkout-flow",
-              ownership: "user",
-            },
-          ],
+          taskSpaces: closed
+            ? []
+            : [
+                {
+                  taskId: "checkout-flow",
+                  id: 7,
+                  name: "checkout-flow",
+                  ownership: "user",
+                },
+              ],
         };
       },
       async claimTaskSpace(id, name) {
@@ -1216,6 +1259,7 @@ test("completeTaskSpace claims user-owned spaces before closing", async () => {
       },
       async closeTaskSpace() {
         calls.push(["closeTaskSpace"]);
+        closed = true;
         return "7 task space closed.";
       },
     },
@@ -1229,6 +1273,7 @@ test("completeTaskSpace claims user-owned spaces before closing", async () => {
     ["claimTaskSpace", 7, "checkout-flow"],
     ["useTaskSpace", 7],
     ["closeTaskSpace"],
+    ["listTaskSpaces"],
   ]);
 });
 

@@ -41,6 +41,8 @@ type PageRoute = {
   generation: number;
   state: "attached" | "navigating" | "rebinding" | "closed";
   replayCommands: Map<string, ReplayCommand>;
+  heldMessages?: any[];
+  pendingTransition?: Promise<void>;
   passiveNavigation?: {
     key: string;
     generation: number;
@@ -97,6 +99,11 @@ export class EgoCdpTransport {
   readonly #unsubscribe: () => void;
   #connecting = true;
   #discoveringOpenedTargets = false;
+  readonly #popupDiscoveryQueue: Array<{
+    openerTargetId?: string;
+    expectedUrl?: string;
+  }> = [];
+  #popupDiscoveryDeadline = 0;
   #activeOperations = 0;
   #lastPendingWork = 0;
 
@@ -116,12 +123,8 @@ export class EgoCdpTransport {
     if (options.targetIds) this.#targetIds = new Set(options.targetIds);
     this.#unsubscribe = subscribeEgoCdpTransport(runtime, {
       message: (payload) => this.#dispatch(payload),
-      error: (message, errorCode) => {
-        this.close(
-          [errorCode, message].filter(Boolean).join(": ") ||
-            "native CDP send failed",
-        );
-      },
+      error: (message, errorCode) =>
+        this.#handleNativeSendError(message, errorCode),
     });
     this.#updatePendingWork();
   }
@@ -189,11 +192,7 @@ export class EgoCdpTransport {
             },
           });
         })
-        .finally(() => {
-          this.#activeOperations -= 1;
-          if (this.#activeOperations === 0) this.#deferredEvents.length = 0;
-          this.#updatePendingWork();
-        });
+        .finally(() => this.#endOperation());
       return;
     }
     if (message.method === "Target.closeTarget") {
@@ -206,8 +205,19 @@ export class EgoCdpTransport {
       typeof this.#runtime.createTab === "function"
     ) {
       const route = this.#routesByClientSession.get(message.sessionId);
-      if (route) {
-        this.#replaceTaskSpaceTargetForNavigation(message, route);
+      // Only main-frame navigations need the TaskSpace tab-replacement flow;
+      // subframe navigations commit natively on the existing target.
+      const navigateFrameId = message.params?.frameId;
+      const mainFrameId = route
+        ? (route.clientMainFrameId ?? route.clientTargetId)
+        : undefined;
+      if (
+        route &&
+        (typeof navigateFrameId !== "string" || navigateFrameId === mainFrameId)
+      ) {
+        const run = () => this.#runNavigationReplacement(message, route);
+        const previous = route.pendingTransition ?? Promise.resolve();
+        route.pendingTransition = previous.then(run, run);
         return;
       }
     }
@@ -216,6 +226,15 @@ export class EgoCdpTransport {
     const route = clientSessionId
       ? this.#routesByClientSession.get(clientSessionId)
       : undefined;
+    if (
+      route &&
+      (route.state === "navigating" || route.state === "rebinding")
+    ) {
+      // The native session is being swapped; hold the command and replay it
+      // against the replacement session once the transition settles.
+      (route.heldMessages ??= []).push(message);
+      return;
+    }
     const attachTargetId =
       message.method === "Target.attachToTarget" &&
       typeof message.params?.targetId === "string"
@@ -239,10 +258,12 @@ export class EgoCdpTransport {
         : undefined;
     if (route && isReplayableSessionCommand(message.method)) {
       const params = message.params || {};
-      route.replayCommands.set(`${message.method}:${JSON.stringify(params)}`, {
-        method: message.method,
-        params,
-      });
+      const replayKey = `${message.method}:${JSON.stringify(params)}`;
+      // Delete before set so a repeated command moves to the end of the replay
+      // order; toggle sequences (enable → disable → enable) then replay to the
+      // client's final state instead of the first-seen order.
+      route.replayCommands.delete(replayKey);
+      route.replayCommands.set(replayKey, { method: message.method, params });
     }
     const nativeId = this.#allocateMessageId();
     this.#pendingIds.set(nativeId, {
@@ -273,9 +294,16 @@ export class EgoCdpTransport {
         JSON.stringify(nativeMessage),
       );
       void Promise.resolve(result).catch((error) => {
-        this.#pendingIds.delete(nativeId);
+        if (!this.#pendingIds.delete(nativeId)) return;
         this.#updatePendingWork();
-        this.close((error as Error)?.message || String(error));
+        this.#emit({
+          id: message.id,
+          error: {
+            code: -32_000,
+            message: (error as Error)?.message || String(error),
+          },
+          ...(clientSessionId ? { sessionId: clientSessionId } : {}),
+        });
       });
     } catch (error) {
       this.#pendingIds.delete(nativeId);
@@ -320,6 +348,54 @@ export class EgoCdpTransport {
     if (!this.#connecting) return;
     this.#connecting = false;
     this.#updatePendingWork();
+  }
+
+  // Native send errors are task-level (the callback carries no request id and
+  // once the task space is inactive every in-flight send fails alike), so all
+  // in-flight requests are rejected. The transport stays open: the condition
+  // is transient (e.g. the user took control) and commands succeed again after
+  // the task space is handed back.
+  #handleNativeSendError(message: unknown, errorCode?: string) {
+    if (this.closed) return;
+    const description =
+      [errorCode, typeof message === "string" ? message : undefined]
+        .filter(Boolean)
+        .join(": ") || "native CDP send failed";
+    for (const pending of this.#internalRequests.values()) {
+      clearTimeout(pending.timer);
+      pending.reject(new Error(description));
+    }
+    this.#internalRequests.clear();
+    const pendingEntries = [...this.#pendingIds.values()];
+    this.#pendingIds.clear();
+    for (const pending of pendingEntries) {
+      this.#emit({
+        id: pending.clientId,
+        error: { code: -32_000, message: description },
+        ...(pending.clientSessionId
+          ? { sessionId: pending.clientSessionId }
+          : {}),
+      });
+    }
+    this.#updatePendingWork();
+  }
+
+  #endOperation() {
+    this.#activeOperations -= 1;
+    if (this.#activeOperations === 0) this.#deferredEvents.length = 0;
+    this.#updatePendingWork();
+  }
+
+  #flushHeldMessages(route: PageRoute) {
+    const held = route.heldMessages?.splice(0) ?? [];
+    for (const message of held) {
+      if (this.closed) return;
+      try {
+        this.send(message);
+      } catch {
+        // The command's own error handling already reported the failure.
+      }
+    }
   }
 
   async closeAndWait() {
@@ -408,8 +484,20 @@ export class EgoCdpTransport {
       return;
     }
     if (this.#isRetiredSessionEvent(message)) return;
-    if (this.#isInternalTargetCloseEvent(message)) return;
+    if (this.#isInternalTargetCloseEvent(message)) {
+      // The tombstone has served its purpose once the close event arrives.
+      this.#internallyClosedTargets.delete(message.params.targetId);
+      return;
+    }
     if (this.#rebindDetachedRoute(message)) return;
+    if (
+      message.method === "Target.detachedFromTarget" &&
+      typeof message.params?.sessionId === "string"
+    ) {
+      // A detached session emits no further events; drop its tombstone so the
+      // retired set does not grow for the lifetime of the transport.
+      this.#retiredNativeSessions.delete(message.params.sessionId);
+    }
     if (this.#deliverPassthroughDetach(message)) return;
     if (!this.#acceptEvent(message)) {
       if (
@@ -419,6 +507,8 @@ export class EgoCdpTransport {
         this.#deferredEvents.length < 10_000
       ) {
         this.#deferredEvents.push(message);
+      } else if (this.#isInternalDetachEvent(message)) {
+        this.#internallyDetachedSessions.delete(message.params.sessionId);
       }
       return;
     }
@@ -509,8 +599,8 @@ export class EgoCdpTransport {
         this.#deliverDetachedRoute(route);
       }
     })().finally(() => {
-      this.#activeOperations -= 1;
-      this.#updatePendingWork();
+      this.#endOperation();
+      this.#flushHeldMessages(route);
     });
     return true;
   }
@@ -557,7 +647,10 @@ export class EgoCdpTransport {
     const session = this.#passthroughSessions.get(sessionId);
     if (!session) return false;
     this.#passthroughSessions.delete(sessionId);
-    if (this.#internallyDetachedSessions.has(sessionId)) return true;
+    if (this.#internallyDetachedSessions.has(sessionId)) {
+      this.#internallyDetachedSessions.delete(sessionId);
+      return true;
+    }
     if (
       [...this.#pendingIds.values()].some(
         (pending) => pending.detachedSessionId === sessionId,
@@ -701,10 +794,7 @@ export class EgoCdpTransport {
         }
         await new Promise<void>((resolve) => setTimeout(resolve, 10));
       } while (Date.now() < deadline);
-    })().finally(() => {
-      this.#activeOperations -= 1;
-      this.#updatePendingWork();
-    });
+    })().finally(() => this.#endOperation());
   }
 
   #deliverEvent(message: any) {
@@ -891,53 +981,56 @@ export class EgoCdpTransport {
           error: { code: -32_000, message: error?.message || String(error) },
         });
       })
-      .finally(() => {
-        this.#activeOperations -= 1;
-        if (this.#activeOperations === 0) this.#deferredEvents.length = 0;
-        this.#updatePendingWork();
-      });
+      .finally(() => this.#endOperation());
   }
 
   #discoverOpenedTargets(openerTargetId?: string, expectedUrl?: string) {
-    if (
-      !this.#targetIds ||
-      typeof this.#runtime.listTabs !== "function" ||
-      this.#discoveringOpenedTargets
-    ) {
+    if (!this.#targetIds || typeof this.#runtime.listTabs !== "function") {
       return;
     }
+    // Every windowOpen queues its own discovery entry; a single scan loop
+    // serves the whole queue so concurrently opened popups are all attached.
+    this.#popupDiscoveryQueue.push({ openerTargetId, expectedUrl });
+    this.#popupDiscoveryDeadline = Date.now() + 2_000;
+    if (this.#discoveringOpenedTargets) return;
     this.#discoveringOpenedTargets = true;
     this.#activeOperations += 1;
     this.#updatePendingWork();
     void (async () => {
-      const deadline = Date.now() + 2_000;
       do {
         const listed = await this.#runtime.listTabs!();
         const tabs = listed?.tabs || listed?.targetInfos || [];
-        const openedTargetIds = tabs
-          .filter(
-            (tab) => typeof expectedUrl !== "string" || tab.url === expectedUrl,
-          )
-          .map((tab) => tab.targetId)
-          .filter(
-            (targetId): targetId is string =>
-              typeof targetId === "string" && !this.#targetIds!.has(targetId),
-          );
-        if (openedTargetIds.length > 0) {
-          for (const targetId of openedTargetIds) {
-            this.#targetIds.add(targetId);
-            await this.#attachTaskSpaceTarget(targetId, openerTargetId);
+        for (const tab of tabs) {
+          const targetId = tab.targetId;
+          if (typeof targetId !== "string" || this.#targetIds!.has(targetId)) {
+            continue;
           }
-          return;
+          const queue = this.#popupDiscoveryQueue;
+          if (queue.length === 0) break;
+          let index = queue.findIndex(
+            (entry) =>
+              typeof entry.expectedUrl === "string" &&
+              entry.expectedUrl === tab.url,
+          );
+          if (index === -1) {
+            index = queue.findIndex(
+              (entry) => typeof entry.expectedUrl !== "string",
+            );
+          }
+          if (index === -1) continue;
+          const [entry] = queue.splice(index, 1);
+          this.#targetIds!.add(targetId);
+          await this.#attachTaskSpaceTarget(targetId, entry.openerTargetId);
         }
+        if (this.#popupDiscoveryQueue.length === 0) return;
         await new Promise<void>((resolve) => setTimeout(resolve, 20));
-      } while (!this.closed && Date.now() < deadline);
+      } while (!this.closed && Date.now() < this.#popupDiscoveryDeadline);
+      this.#popupDiscoveryQueue.length = 0;
     })()
       .catch(() => undefined)
       .finally(() => {
         this.#discoveringOpenedTargets = false;
-        this.#activeOperations -= 1;
-        this.#updatePendingWork();
+        this.#endOperation();
       });
   }
 
@@ -1037,7 +1130,7 @@ export class EgoCdpTransport {
     this.#targetsBySession.set(nativeSessionId, nativeTargetId);
   }
 
-  #replaceTaskSpaceTargetForNavigation(message: any, route: PageRoute) {
+  async #runNavigationReplacement(message: any, route: PageRoute) {
     const clientFrameId = message.params?.frameId;
     const url = message.params?.url;
     if (typeof clientFrameId !== "string" || typeof url !== "string") {
@@ -1051,6 +1144,17 @@ export class EgoCdpTransport {
       });
       return;
     }
+    if (this.closed || route.state === "closed") {
+      this.#emit({
+        id: message.id,
+        error: {
+          code: -32_000,
+          message: "Cannot navigate: the page has been closed",
+        },
+        sessionId: route.clientSessionId,
+      });
+      return;
+    }
 
     route.state = "navigating";
     this.#activeOperations += 1;
@@ -1058,13 +1162,10 @@ export class EgoCdpTransport {
     const previousNativeTargetId = route.nativeTargetId;
     const previousNativeSessionId = route.nativeSessionId;
     this.#retiredNativeSessions.add(previousNativeSessionId);
-    this.#emit({
-      method: "Runtime.executionContextsCleared",
-      params: {},
-      sessionId: route.clientSessionId,
-    });
+    let replacementTargetId: string | undefined;
+    let replacementSessionId: string | undefined;
 
-    void (async () => {
+    await (async () => {
       const previousFrameTree = await this.#sendNativeCommand(
         "Page.getFrameTree",
         {},
@@ -1073,24 +1174,25 @@ export class EgoCdpTransport {
       ).catch(() => undefined);
       const previousFrame = previousFrameTree?.frameTree?.frame;
       const created: any = await this.#runtime.createTab!(url);
-      const replacementTargetId =
-        created?.targetId || created?.result?.targetId;
-      if (created?.error || typeof replacementTargetId !== "string") {
+      const newTargetId = created?.targetId || created?.result?.targetId;
+      if (created?.error || typeof newTargetId !== "string") {
         throw new Error(
           created?.error ||
             "ego.createTab did not return a replacement targetId",
         );
       }
+      replacementTargetId = newTargetId;
 
       route.state = "rebinding";
-      if (replacementTargetId === previousNativeTargetId) {
+      if (newTargetId === previousNativeTargetId) {
         this.#internallyDetachedSessions.add(route.nativeSessionId);
         await this.#sendNativeCommand("Target.detachFromTarget", {
           sessionId: route.nativeSessionId,
         }).catch(() => undefined);
       }
-      const { sessionId: replacementSessionId } =
-        await this.#attachNativeTarget(replacementTargetId);
+      const { sessionId: newSessionId } =
+        await this.#attachNativeTarget(newTargetId);
+      replacementSessionId = newSessionId;
       for (const command of route.replayCommands.values()) {
         if (
           command.method === "Runtime.runIfWaitingForDebugger" ||
@@ -1101,29 +1203,37 @@ export class EgoCdpTransport {
         this.#sendNativeFireAndForget(
           command.method,
           command.params,
-          replacementSessionId,
+          newSessionId,
         );
       }
       this.#sendNativeFireAndForget(
         "Runtime.runIfWaitingForDebugger",
         {},
-        replacementSessionId,
+        newSessionId,
       );
       const { frame, documentState } = await this.#waitForNavigationCommit(
-        replacementSessionId,
+        newSessionId,
         url,
         previousFrame,
         this.#navigationCommitTimeoutMs,
       );
       const replacementFrameId =
-        typeof frame.id === "string" ? frame.id : replacementTargetId;
+        typeof frame.id === "string" ? frame.id : newTargetId;
       route.clientMainFrameId = clientFrameId;
       this.#replaceNativeRoute(
         route,
-        replacementTargetId,
-        replacementSessionId,
+        newTargetId,
+        newSessionId,
         replacementFrameId,
       );
+      // The old document's execution contexts are gone only once the
+      // replacement target has committed; announcing it earlier would brick
+      // the page when the navigation fails.
+      this.#emit({
+        method: "Runtime.executionContextsCleared",
+        params: {},
+        sessionId: route.clientSessionId,
+      });
       const requestFinished = this.#emitNavigationResponse(
         route,
         url,
@@ -1132,7 +1242,7 @@ export class EgoCdpTransport {
       );
       this.#flushDeferredEvents();
 
-      if (replacementTargetId !== previousNativeTargetId) {
+      if (newTargetId !== previousNativeTargetId) {
         this.#sendNativeFireAndForget("Target.closeTarget", {
           targetId: previousNativeTargetId,
         });
@@ -1165,7 +1275,7 @@ export class EgoCdpTransport {
         this.#sendNativeFireAndForget(
           command.method,
           rewriteOutgoingProtocolParams(command.params, route),
-          replacementSessionId,
+          newSessionId,
         );
       }
 
@@ -1189,6 +1299,22 @@ export class EgoCdpTransport {
         if (route.nativeSessionId === previousNativeSessionId) {
           this.#retiredNativeSessions.delete(previousNativeSessionId);
         }
+        // The replacement tab never became the route's target; close it so a
+        // failed navigation does not leak a stray tab into the TaskSpace.
+        if (
+          replacementTargetId !== undefined &&
+          replacementTargetId !== previousNativeTargetId &&
+          route.nativeTargetId !== replacementTargetId
+        ) {
+          this.#internallyClosedTargets.add(replacementTargetId);
+          if (replacementSessionId !== undefined) {
+            this.#internallyDetachedSessions.add(replacementSessionId);
+            this.#retiredNativeSessions.add(replacementSessionId);
+          }
+          this.#sendNativeFireAndForget("Target.closeTarget", {
+            targetId: replacementTargetId,
+          });
+        }
         route.state = "attached";
         this.#emit({
           id: message.id,
@@ -1197,8 +1323,8 @@ export class EgoCdpTransport {
         });
       })
       .finally(() => {
-        this.#activeOperations -= 1;
-        this.#updatePendingWork();
+        this.#endOperation();
+        this.#flushHeldMessages(route);
       });
   }
 
@@ -1289,9 +1415,12 @@ export class EgoCdpTransport {
   }
 
   #routeStorageCookieCommand(message: any) {
-    const route = [...this.#routesByClientSession.values()].find(
-      (candidate) => candidate.state !== "closed",
-    );
+    // Cookies are browser-global; prefer a route whose native session is
+    // usable right now over one that is mid-navigation or mid-rebind.
+    const routes = [...this.#routesByClientSession.values()];
+    const route =
+      routes.find((candidate) => candidate.state === "attached") ??
+      routes.find((candidate) => candidate.state !== "closed");
     if (!route) {
       this.#emit({
         id: message.id,
@@ -1443,8 +1572,7 @@ export class EgoCdpTransport {
     this.#updatePendingWork();
     void this.#waitForTargetClosed(nativeTargetId).finally(() => {
       complete();
-      this.#activeOperations -= 1;
-      this.#updatePendingWork();
+      this.#endOperation();
     });
   }
 
@@ -1603,11 +1731,23 @@ function isReplayableSessionCommand(method: unknown): method is string {
   return (
     typeof method === "string" &&
     [
+      "Emulation.setDeviceMetricsOverride",
+      "Emulation.setEmulatedMedia",
       "Emulation.setFocusEmulationEnabled",
+      "Emulation.setGeolocationOverride",
+      "Emulation.setLocaleOverride",
+      "Emulation.setScriptExecutionDisabled",
+      "Emulation.setTimezoneOverride",
+      "Emulation.setTouchEmulationEnabled",
+      "Emulation.setUserAgentOverride",
+      "Fetch.disable",
+      "Fetch.enable",
       "Log.enable",
       "Network.enable",
+      "Network.emulateNetworkConditions",
       "Network.setCacheDisabled",
       "Network.setExtraHTTPHeaders",
+      "Network.setUserAgentOverride",
       "Page.addScriptToEvaluateOnNewDocument",
       "Page.createIsolatedWorld",
       "Page.enable",
@@ -1617,6 +1757,7 @@ function isReplayableSessionCommand(method: unknown): method is string {
       "Runtime.addBinding",
       "Runtime.enable",
       "Runtime.runIfWaitingForDebugger",
+      "Security.setIgnoreCertificateErrors",
       "Target.setAutoAttach",
     ].includes(method)
   );
