@@ -22,6 +22,7 @@ const interactiveScenarios = new Set([
   "collaborative-docs",
   "spreadsheet",
   "rich-text",
+  "visual-path",
 ]);
 
 export function scenarioModulePath(slug) {

@@ -546,7 +546,8 @@ select:focus-visible,
 .request-layout,
 .editorial-layout,
 .asset-layout,
-.tracker-layout {
+.tracker-layout,
+.visual-path-layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(17rem, 22rem);
 }
@@ -2192,6 +2193,81 @@ select:focus-visible,
   font-size: 0.8rem;
   font-weight: 600;
   text-decoration: none;
+}
+
+.visual-stack {
+  min-width: 0;
+}
+
+.visual-block {
+  padding: 1rem;
+  border-bottom: 1px solid var(--ui-border);
+}
+
+.visual-note {
+  margin: 0.75rem 0 1rem;
+  color: var(--ui-muted);
+  font-size: 0.78rem;
+}
+
+.visual-row {
+  display: flex;
+  align-items: flex-end;
+  padding-bottom: 0.5rem;
+}
+
+.visual-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+/* The swatch stays a single flat colour: the e2e case locates it by matching
+   that exact value in a screenshot, so no border, gradient or label may bleed
+   into it. The outline sits outside the box and does not disturb the fill. */
+.visual-swatch {
+  display: block;
+  padding: 0;
+  border: 0;
+  outline: 1px solid var(--ui-border);
+  cursor: pointer;
+}
+
+.visual-caption {
+  color: var(--ui-muted);
+  font-size: 0.62rem;
+  white-space: nowrap;
+}
+
+.visual-canvas {
+  display: block;
+  max-width: 100%;
+  border: 1px solid var(--ui-border);
+  touch-action: none;
+}
+
+.visual-marks {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  pointer-events: none;
+}
+
+.visual-mark {
+  position: absolute;
+  width: 26px;
+  height: 26px;
+  margin: -13px 0 0 -13px;
+}
+
+.visual-mark-index {
+  position: absolute;
+  top: 4px;
+  left: 30px;
+  color: #e5241a;
+  font-size: 0.62rem;
+  font-weight: 700;
 }
 
 @media (max-width: 74rem) {

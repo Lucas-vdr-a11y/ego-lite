@@ -7,6 +7,7 @@ import { TEST_CASES } from "./site/test-cases.mjs";
 import { e2eCases } from "./suites/index.mjs";
 import { taskSpaceControlCase } from "./suites/platform/taskspace-control.mjs";
 import { scenarioCases } from "./suites/scenarios/index.mjs";
+import { visualPathScenarioCase } from "./suites/scenarios/visual-path.mjs";
 import * as runner from "./runner.mjs";
 
 const expectedWebTestRoutes = TEST_CASES.map((testCase) => testCase.route);
@@ -305,6 +306,20 @@ test("every scenario observes page state before a mutating browser action", () =
     assert.doesNotMatch(operations, directLocatorAction, testCase.name);
     assert.doesNotMatch(operations, directInputAction, testCase.name);
   }
+});
+
+test("the visual-path journey takes every coordinate from screenshot pixels", () => {
+  const source = visualPathScenarioCase.body();
+  const operations = source.slice(source.indexOf("/* scenario operations */"));
+
+  assert.match(operations, /locateSwatch\(/);
+  assert.match(operations, /toCssPoint\(/);
+  // Reading a result back through a test id is fine; asking the layout where a
+  // target sits is not, because that turns this into another semantic case.
+  assert.doesNotMatch(
+    operations,
+    /boundingBox\(|getBoundingClientRect\(|scrollIntoView/,
+  );
 });
 
 test("task-space keep mode does not create a destructively closed scratch space", () => {

@@ -30,6 +30,7 @@ const runnerDir = dirname(fileURLToPath(import.meta.url));
 const packageDir = join(runnerDir, "..", "..");
 const egoBrowserSdkPath = join(packageDir, "dist", "out", "index.js");
 const xmlParserUrl = import.meta.resolve("fast-xml-parser");
+const pixelToolsUrl = import.meta.resolve("./suites/scenarios/pixel-tools.mjs");
 const egoBrowserArgs = ["nodejs", "--sdk-path", egoBrowserSdkPath];
 const execFileAsync = promisify(execFile);
 export const WEB_LANE_COUNT = 1;
@@ -801,6 +802,7 @@ export async function runRealBrowserE2e() {
       ffprobePath,
       metadataPath,
       xmlParserUrl,
+      pixelToolsUrl,
       taskName,
       tempDir,
       uploadPath,

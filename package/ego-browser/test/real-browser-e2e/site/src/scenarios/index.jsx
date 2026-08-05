@@ -15,6 +15,7 @@ import RichTextSurface from "./rich-text/view.jsx";
 import ScrollSurface from "./scroll/view.jsx";
 import SpreadsheetSurface from "./spreadsheet/view.jsx";
 import UploadsSurface from "./uploads/view.jsx";
+import VisualPathSurface from "./visual-path/view.jsx";
 
 export const surfaces = {
   clicks: ClicksSurface,
@@ -34,4 +35,5 @@ export const surfaces = {
   "collaborative-docs": CollaborativeDocsSurface,
   spreadsheet: SpreadsheetSurface,
   "rich-text": RichTextSurface,
+  "visual-path": VisualPathSurface,
 };
