@@ -3,6 +3,10 @@
   "version": "0.1.0",
   "description": "TaskSpace control and native Playwright integration for ego-browser.",
   "type": "module",
+  "imports": {
+    "#playwright-runtime": "./playwright-runtime.cjs",
+    "#playwright-transport": "./playwright-transport.cjs"
+  },
   "bin": {
     "ego-browser": "./dist/out/index.js"
   },
@@ -14,6 +18,7 @@
     "build": "node scripts/build.mjs && npm --workspace ego-browser-test-site run build",
     "e2e": "node scripts/run-real-browser-e2e.mjs",
     "e2e:native-close": "EGO_BROWSER_REAL_E2E_ONLY='native task space close regression' node scripts/run-real-browser-e2e.mjs",
+    "e2e:process-contention": "EGO_BROWSER_REAL_E2E_ONLY='TaskSpace process contention' node scripts/run-real-browser-e2e.mjs",
     "prepare": "if [ \"$CI\" = \"true\" ]; then exit 0; fi; cd ../.. && lefthook install",
     "style:check": "prettier --check",
     "typecheck": "tsc --noEmit",
@@ -44,6 +49,7 @@
     "playwright-core": "1.52.0"
   },
   "overrides": {
+    "hono": "4.13.0",
     "@hono/vite-dev-server": {
       "@hono/node-server": "2.0.12"
     }
