@@ -54,6 +54,9 @@ export default defineConfig(({ command, mode }) => {
   }
 
   return {
+    server: {
+      host: "localhost",
+    },
     plugins:
       command === "serve"
         ? [

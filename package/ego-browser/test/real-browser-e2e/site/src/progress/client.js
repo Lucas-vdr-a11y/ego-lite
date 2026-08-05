@@ -104,12 +104,24 @@ document.querySelectorAll("[data-test-progress-controls]").forEach((root) => {
     .addEventListener("click", () => updateProgress(slug, "failed"));
 });
 
-const events = new EventSource("/api/test-progress/events");
-events.addEventListener("progress", (event) => {
-  const payload = JSON.parse(event.data);
-  progress = normalizeProgress(payload.progress);
-  render();
-});
+function connectProgressChannel() {
+  const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+  const socket = new WebSocket(
+    `${protocol}//${location.host}/api/test-progress/events`,
+  );
+  socket.addEventListener("message", (event) => {
+    const payload = JSON.parse(event.data);
+    progress = normalizeProgress(payload.progress);
+    render();
+  });
+  socket.addEventListener(
+    "close",
+    () => setTimeout(connectProgressChannel, 250),
+    { once: true },
+  );
+}
+
+connectProgressChannel();
 
 document.documentElement.dataset.progressSync = "idle";
 render();

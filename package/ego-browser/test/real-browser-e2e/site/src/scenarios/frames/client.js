@@ -4,7 +4,13 @@ document.querySelector("#load-frame").addEventListener("click", (event) => {
   const frame = document.createElement("iframe");
   frame.id = "test-frame";
   frame.title = "Browser test frame";
-  frame.src = "/frames/content";
+  if (new URLSearchParams(location.search).has("cross-site")) {
+    const frameUrl = new URL("/frames/content", location.href);
+    frameUrl.hostname = "checkout.localhost";
+    frame.src = frameUrl.href;
+  } else {
+    frame.src = "/frames/content";
+  }
   document.querySelector("#frame-slot").replaceChildren(frame);
   hostStatus.textContent = "Partner checkout loaded";
   event.currentTarget.disabled = true;

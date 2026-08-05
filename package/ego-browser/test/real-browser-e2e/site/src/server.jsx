@@ -3,8 +3,8 @@ import { fileURLToPath } from "node:url";
 import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
-import { streamSSE } from "hono/streaming";
 import { raw } from "hono/html";
+import { WebSocket, WebSocketServer } from "ws";
 
 import { findTestCase, TEST_CASES } from "../test-cases.mjs";
 import AppHeader from "./components/app-header.jsx";
@@ -12,15 +12,16 @@ import HomePage from "./components/home-page.jsx";
 import Layout from "./components/layout.jsx";
 import TestPage from "./components/test-page.jsx";
 
+const realtimeServers = new WeakMap();
+
 function documentHtml(content) {
   return `<!doctype html>${content}`;
 }
 
-export function createTestSiteApp(taskName) {
+export function createTestSiteApp(taskName, options = {}) {
   const app = new Hono();
   let downloadRequests = 0;
   const progress = {};
-  let progressRevision = 0;
   const progressStatuses = new Set(["in-progress", "completed", "failed"]);
   const progressSlugs = new Set(TEST_CASES.map((testCase) => testCase.slug));
   if (import.meta.env.PROD) {
@@ -39,20 +40,7 @@ export function createTestSiteApp(taskName) {
   );
   app.get("/api/test-progress", (context) => context.json({ progress }));
   app.get("/api/test-progress/events", (context) =>
-    streamSSE(context, async (stream) => {
-      let sentRevision = -1;
-      while (!stream.aborted) {
-        if (sentRevision !== progressRevision) {
-          sentRevision = progressRevision;
-          await stream.writeSSE({
-            event: "progress",
-            id: String(progressRevision),
-            data: JSON.stringify({ progress }),
-          });
-        }
-        await stream.sleep(100);
-      }
-    }),
+    context.text("WebSocket upgrade required", 426),
   );
   app.put("/api/test-progress/:slug", async (context) => {
     const slug = context.req.param("slug");
@@ -61,7 +49,7 @@ export function createTestSiteApp(taskName) {
       return context.json({ error: "Invalid scenario progress" }, 400);
     }
     progress[slug] = payload.status;
-    progressRevision += 1;
+    options.onProgressChange?.(progress);
     return context.json({ progress });
   });
   app.get("/", (context) => context.html(documentHtml(<HomePage />)));
@@ -111,6 +99,54 @@ export function createTestSiteApp(taskName) {
       ),
     ),
   );
+  app.get("/tests/navigation/delayed-document", async (context) => {
+    const requestedDelay = Number(context.req.query("delay"));
+    const delay = Number.isFinite(requestedDelay)
+      ? Math.min(Math.max(requestedDelay, 0), 15_000)
+      : 700;
+    await new Promise((resolve) => setTimeout(resolve, delay));
+    return context.html(
+      documentHtml(
+        <html lang="en">
+          <head>
+            <meta charset="utf-8" />
+            <title>Delayed document ready</title>
+          </head>
+          <body>delayed-document-body</body>
+        </html>,
+      ),
+    );
+  });
+  app.get("/tests/navigation/not-found", (context) =>
+    context.html(
+      documentHtml(
+        <html lang="en">
+          <head>
+            <meta charset="utf-8" />
+            <title>Navigation target missing</title>
+          </head>
+          <body>navigation-not-found-body</body>
+        </html>,
+      ),
+      404,
+    ),
+  );
+  app.get("/tests/navigation/redirect", (context) =>
+    context.redirect("/tests/navigation/redirect-target", 302),
+  );
+  app.get("/tests/navigation/redirect-target", (context) =>
+    context.html(
+      documentHtml(
+        <html lang="en">
+          <head>
+            <meta charset="utf-8" />
+            <title>Redirect target ready</title>
+          </head>
+          <body>redirect-target-body</body>
+        </html>,
+      ),
+    ),
+  );
   app.get("/frames/content", (context) =>
     context.html(
       documentHtml(
@@ -120,7 +156,7 @@ export function createTestSiteApp(taskName) {
             <title>Secure partner checkout</title>
             <style>
               {raw(
-                "*{box-sizing:border-box}body{margin:0;padding:24px;color:#1f2937;background:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:14px}header{display:flex;justify-content:space-between;padding-bottom:14px;border-bottom:1px solid #e2e8f0}header span{color:#64748b;font-size:11px;font-weight:650}h2{margin:22px 0 16px;font-size:22px;font-weight:650;letter-spacing:-.03em}.fields{display:grid;grid-template-columns:1fr 1fr;gap:10px}.field{display:block;padding:12px;border:1px solid #e2e8f0;border-radius:8px;background:#fff}.field span,label>span{display:block;color:#64748b;font-size:10px;font-weight:650}.wide{grid-column:1/-1}input[type=text]{width:100%;min-height:40px;margin-top:5px;padding:8px 10px;border:1px solid #cbd5e1;border-radius:7px;background:#fff;font:inherit}.terms{display:flex;align-items:center;gap:8px;margin-top:12px}.terms input{width:18px;height:18px}input:focus-visible,button:focus-visible{outline:2px solid #2563eb;outline-offset:2px}.actions{display:grid;grid-template-columns:1fr auto;gap:8px}button{min-height:42px;margin-top:16px;padding:8px 14px;border:1px solid #2563eb;border-radius:7px;color:#fff;background:#2563eb;font-weight:650}.secondary{color:#1f2937;border-color:#cbd5e1;background:#fff}output{display:block;margin-top:12px;padding:10px;border-radius:7px;color:#166534;background:#f0fdf4;font-weight:600;text-align:center}",
+                "*{box-sizing:border-box}body{margin:0;padding:24px;color:#1f2937;background:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:14px}header{display:flex;justify-content:space-between;padding-bottom:14px;border-bottom:1px solid #e2e8f0}header span{color:#64748b;font-size:11px;font-weight:650}h2{margin:22px 0 16px;font-size:22px;font-weight:650;letter-spacing:-.03em}.fields{display:grid;grid-template-columns:1fr 1fr;gap:10px}.field{display:block;padding:12px;border:1px solid #e2e8f0;border-radius:8px;background:#fff}.field span,label>span{display:block;color:#64748b;font-size:10px;font-weight:650}.wide{grid-column:1/-1}input[type=text]{width:100%;min-height:40px;margin-top:5px;padding:8px 10px;border:1px solid #cbd5e1;border-radius:7px;background:#fff;font:inherit}.terms{display:flex;align-items:center;gap:8px;margin-top:12px}.terms input{width:18px;height:18px}input:focus-visible,button:focus-visible{outline:2px solid #2563eb;outline-offset:2px}.actions{display:grid;grid-template-columns:1fr auto;gap:8px}button{min-height:42px;margin-top:16px;padding:8px 14px;border:1px solid #2563eb;border-radius:7px;color:#fff;background:#2563eb;font-weight:650}.secondary{color:#1f2937;border-color:#cbd5e1;background:#fff}output{display:block;margin-top:12px;padding:10px;border-radius:7px;color:#166534;background:#f0fdf4;font-weight:600;text-align:center}.pickup-map{width:100%;height:260px;border:1px solid #cbd5e1;border-radius:8px;background:#fff}",
               )}
             </style>
           </head>
@@ -186,6 +222,15 @@ export function createTestSiteApp(taskName) {
               </div>
               <output data-testid="frame-result">Awaiting confirmation</output>
             </form>
+            <h2>Pickup location</h2>
+            <iframe
+              id="pickup-map"
+              class="pickup-map"
+              title="Pickup location map"
+              src="https://www.openstreetmap.org/export/embed.html?bbox=-0.004017949104309083%2C51.47612752641776%2C0.00030577182769775396%2C51.478569861898606&layer=mapnik"
+              loading="lazy"
+              referrerPolicy="strict-origin-when-cross-origin"
+            ></iframe>
             <script>
               {raw(`
                 const form = document.querySelector('#payment-form');
@@ -256,7 +301,14 @@ export function createTestSiteApp(taskName) {
 }
 
 export async function startTestSite(taskName) {
-  const app = createTestSiteApp(taskName);
+  let latestProgress = {};
+  let broadcastProgress = () => {};
+  const app = createTestSiteApp(taskName, {
+    onProgressChange(progress) {
+      latestProgress = { ...progress };
+      broadcastProgress(latestProgress);
+    },
+  });
   let server;
   const info = await new Promise((resolve, reject) => {
     server = serve(
@@ -265,11 +317,44 @@ export async function startTestSite(taskName) {
     );
     server.once("error", reject);
   });
+  const webSocketServer = new WebSocketServer({ noServer: true });
+  const clients = new Set();
+  webSocketServer.on("connection", (socket) => {
+    clients.add(socket);
+    socket.once("close", () => clients.delete(socket));
+    socket.send(JSON.stringify({ progress: latestProgress }));
+  });
+  broadcastProgress = (progress) => {
+    const message = JSON.stringify({ progress });
+    for (const client of clients) {
+      if (client.readyState === WebSocket.OPEN) client.send(message);
+    }
+  };
+  server.on("upgrade", (request, socket, head) => {
+    const url = new URL(
+      request.url || "/",
+      `http://${request.headers.host || "127.0.0.1"}`,
+    );
+    if (url.pathname !== "/api/test-progress/events") {
+      socket.destroy();
+      return;
+    }
+    webSocketServer.handleUpgrade(request, socket, head, (client) => {
+      webSocketServer.emit("connection", client, request);
+    });
+  });
+  realtimeServers.set(server, { clients, webSocketServer });
   return { server, baseUrl: `http://127.0.0.1:${info.port}` };
 }
 
 export async function closeTestSite(server) {
   if (!server) return;
+  const realtime = realtimeServers.get(server);
+  if (realtime) {
+    for (const client of realtime.clients) client.terminate();
+    await new Promise((resolve) => realtime.webSocketServer.close(resolve));
+    realtimeServers.delete(server);
+  }
   await new Promise((resolve, reject) => {
     server.close((error) => (error ? reject(error) : resolve()));
     server.closeIdleConnections?.();
