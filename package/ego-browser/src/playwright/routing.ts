@@ -16,6 +16,7 @@ export type EgoCdpRuntime = {
 
 export type TransportOptions = {
   allocateMessageId?: () => number;
+  navigationCommitTimeoutMs?: number;
   onPendingWorkChange?: (count: number) => void;
   targetIds?: Iterable<string>;
 };
@@ -47,6 +48,8 @@ type PageRoute = {
     loaderId?: string;
     lifecycleNames: Set<string>;
     frameStopped: boolean;
+    requestId?: string;
+    requestFinished: boolean;
   };
 };
 
@@ -57,6 +60,7 @@ export class EgoCdpTransport {
 
   readonly #runtime: EgoCdpRuntime;
   readonly #allocateMessageId: () => number;
+  readonly #navigationCommitTimeoutMs: number;
   readonly #onPendingWorkChange: (count: number) => void;
   readonly #pendingIds = new Map<
     number,
@@ -88,6 +92,7 @@ export class EgoCdpTransport {
   readonly #deferredEvents: any[] = [];
   readonly #manuallyAttachingTargets = new Set<string>();
   readonly #internallyDetachedSessions = new Set<string>();
+  readonly #internallyClosedTargets = new Set<string>();
   readonly #retiredNativeSessions = new Set<string>();
   readonly #unsubscribe: () => void;
   #connecting = true;
@@ -98,6 +103,14 @@ export class EgoCdpTransport {
   constructor(runtime: EgoCdpRuntime, options: TransportOptions = {}) {
     this.#runtime = runtime;
     this.#allocateMessageId = options.allocateMessageId || allocateCdpMessageId;
+    this.#navigationCommitTimeoutMs =
+      options.navigationCommitTimeoutMs ?? 30_000;
+    if (
+      !Number.isFinite(this.#navigationCommitTimeoutMs) ||
+      this.#navigationCommitTimeoutMs <= 0
+    ) {
+      throw new TypeError("navigationCommitTimeoutMs must be positive");
+    }
     this.#onPendingWorkChange =
       options.onPendingWorkChange || createNodeKeepAlive();
     if (options.targetIds) this.#targetIds = new Set(options.targetIds);
@@ -117,7 +130,20 @@ export class EgoCdpTransport {
     if (this.closed) throw new Error("Ego CDP transport is closed");
     const compatibilityResult = playwrightCompatibilityResult(message.method);
     if (compatibilityResult !== undefined) {
-      this.#emit({ id: message.id, result: compatibilityResult });
+      this.#emit({
+        id: message.id,
+        result: compatibilityResult,
+        ...(typeof message.sessionId === "string"
+          ? { sessionId: message.sessionId }
+          : {}),
+      });
+      return;
+    }
+    if (
+      message.sessionId === undefined &&
+      storageCookieCommand(message.method)
+    ) {
+      this.#routeStorageCookieCommand(message);
       return;
     }
     if (
@@ -281,6 +307,7 @@ export class EgoCdpTransport {
     this.#deferredEvents.length = 0;
     this.#manuallyAttachingTargets.clear();
     this.#internallyDetachedSessions.clear();
+    this.#internallyClosedTargets.clear();
     this.#retiredNativeSessions.clear();
     this.#updatePendingWork();
     const onclose = this.onclose;
@@ -350,6 +377,14 @@ export class EgoCdpTransport {
       if (!pending) return;
       this.#pendingIds.delete(message.id);
       this.#updatePendingWork();
+      if (
+        pending.detachedSessionId &&
+        message.error &&
+        /closed|detached/i.test(message.error.message || "")
+      ) {
+        delete message.error;
+        message.result = {};
+      }
       message.id = pending.clientId;
       if (pending.clientSessionId) {
         message.sessionId = pending.clientSessionId;
@@ -373,6 +408,7 @@ export class EgoCdpTransport {
       return;
     }
     if (this.#isRetiredSessionEvent(message)) return;
+    if (this.#isInternalTargetCloseEvent(message)) return;
     if (this.#rebindDetachedRoute(message)) return;
     if (this.#deliverPassthroughDetach(message)) return;
     if (!this.#acceptEvent(message)) {
@@ -522,6 +558,13 @@ export class EgoCdpTransport {
     if (!session) return false;
     this.#passthroughSessions.delete(sessionId);
     if (this.#internallyDetachedSessions.has(sessionId)) return true;
+    if (
+      [...this.#pendingIds.values()].some(
+        (pending) => pending.detachedSessionId === sessionId,
+      )
+    ) {
+      return true;
+    }
     const params = { ...(message.params || {}) };
     if (params.targetId === session.nativeTargetId) {
       params.targetId = session.clientTargetId;
@@ -550,6 +593,9 @@ export class EgoCdpTransport {
             typeof frame.loaderId === "string" ? frame.loaderId : undefined,
           lifecycleNames: new Set(),
           frameStopped: false,
+          requestId:
+            typeof frame.loaderId === "string" ? frame.loaderId : undefined,
+          requestFinished: false,
         };
         this.#completePassiveNavigation(route, frame, key);
       }
@@ -573,6 +619,12 @@ export class EgoCdpTransport {
       message.params?.frameId === navigation.nativeFrameId
     ) {
       navigation.frameStopped = true;
+    } else if (
+      (message.method === "Network.loadingFinished" ||
+        message.method === "Network.loadingFailed") &&
+      message.params?.requestId === navigation.requestId
+    ) {
+      navigation.requestFinished = true;
     }
   }
 
@@ -630,6 +682,18 @@ export class EgoCdpTransport {
             this.#emit({
               method: "Page.frameStoppedLoading",
               params: { frameId },
+              sessionId: route.clientSessionId,
+            });
+          }
+          if (navigation.requestId && !navigation.requestFinished) {
+            navigation.requestFinished = true;
+            this.#emit({
+              method: "Network.loadingFinished",
+              params: {
+                requestId: navigation.requestId,
+                timestamp: Date.now() / 1_000,
+                encodedDataLength: 0,
+              },
               sessionId: route.clientSessionId,
             });
           }
@@ -699,6 +763,14 @@ export class EgoCdpTransport {
       ) {
         return false;
       }
+      if (
+        targetInfo?.type === "iframe" &&
+        typeof message.sessionId === "string" &&
+        (this.#routesByNativeSession.has(message.sessionId) ||
+          this.#targetsBySession.has(message.sessionId))
+      ) {
+        return true;
+      }
       this.#admitTargetFromOpener(targetInfo);
       return this.#targetIds.has(targetInfo?.targetId);
     }
@@ -753,6 +825,13 @@ export class EgoCdpTransport {
     return (
       message.method === "Target.detachedFromTarget" &&
       this.#internallyDetachedSessions.has(message.params?.sessionId)
+    );
+  }
+
+  #isInternalTargetCloseEvent(message: any) {
+    return (
+      message.method === "Target.targetDestroyed" &&
+      this.#internallyClosedTargets.has(message.params?.targetId)
     );
   }
 
@@ -1030,10 +1109,11 @@ export class EgoCdpTransport {
         {},
         replacementSessionId,
       );
-      const frame = await this.#waitForNavigationCommit(
+      const { frame, documentState } = await this.#waitForNavigationCommit(
         replacementSessionId,
         url,
         previousFrame,
+        this.#navigationCommitTimeoutMs,
       );
       const replacementFrameId =
         typeof frame.id === "string" ? frame.id : replacementTargetId;
@@ -1043,6 +1123,12 @@ export class EgoCdpTransport {
         replacementTargetId,
         replacementSessionId,
         replacementFrameId,
+      );
+      const requestFinished = this.#emitNavigationResponse(
+        route,
+        url,
+        frame,
+        documentState,
       );
       this.#flushDeferredEvents();
 
@@ -1093,6 +1179,9 @@ export class EgoCdpTransport {
           typeof frame.loaderId === "string" ? frame.loaderId : undefined,
         lifecycleNames: new Set(),
         frameStopped: false,
+        requestId:
+          typeof frame.loaderId === "string" ? frame.loaderId : undefined,
+        requestFinished,
       };
       this.#completePassiveNavigation(route, frame, navigationKey);
     })()
@@ -1113,15 +1202,131 @@ export class EgoCdpTransport {
       });
   }
 
+  #emitNavigationResponse(
+    route: PageRoute,
+    requestedUrl: string,
+    frame: any,
+    documentState: any,
+  ) {
+    if (typeof frame.loaderId !== "string") return true;
+    const deferredRequest = this.#deferredEvents.some(
+      (message) =>
+        message.sessionId === route.nativeSessionId &&
+        message.method === "Network.requestWillBeSent" &&
+        message.params?.requestId === frame.loaderId,
+    );
+    const deferredResponse = this.#deferredEvents.some(
+      (message) =>
+        message.sessionId === route.nativeSessionId &&
+        message.method === "Network.responseReceived" &&
+        message.params?.requestId === frame.loaderId,
+    );
+    const deferredFinished = this.#deferredEvents.some(
+      (message) =>
+        message.sessionId === route.nativeSessionId &&
+        (message.method === "Network.loadingFinished" ||
+          message.method === "Network.loadingFailed") &&
+        message.params?.requestId === frame.loaderId,
+    );
+    const timestamp = Date.now() / 1_000;
+    const finalUrl =
+      typeof documentState?.url === "string"
+        ? documentState.url
+        : frame.url || requestedUrl;
+    const status =
+      typeof documentState?.responseStatus === "number" &&
+      documentState.responseStatus > 0
+        ? documentState.responseStatus
+        : 200;
+    if (!deferredRequest) {
+      this.#emit({
+        method: "Network.requestWillBeSent",
+        params: {
+          requestId: frame.loaderId,
+          loaderId: frame.loaderId,
+          documentURL: finalUrl,
+          request: {
+            url: finalUrl,
+            method: "GET",
+            headers: {},
+          },
+          timestamp,
+          wallTime: timestamp,
+          initiator: { type: "other" },
+          type: "Document",
+          frameId: route.clientMainFrameId,
+          hasUserGesture: false,
+        },
+        sessionId: route.clientSessionId,
+      });
+    }
+    if (!deferredResponse) {
+      this.#emit({
+        method: "Network.responseReceived",
+        params: {
+          requestId: frame.loaderId,
+          loaderId: frame.loaderId,
+          timestamp,
+          type: "Document",
+          response: {
+            url: finalUrl,
+            status,
+            statusText: status === 200 ? "OK" : "",
+            headers: {},
+            mimeType: documentState?.contentType || "text/html",
+            connectionReused: false,
+            connectionId: 0,
+            encodedDataLength: 0,
+            securityState: "unknown",
+          },
+          hasExtraInfo: false,
+          frameId: route.clientMainFrameId,
+        },
+        sessionId: route.clientSessionId,
+      });
+    }
+    return deferredFinished;
+  }
+
+  #routeStorageCookieCommand(message: any) {
+    const route = [...this.#routesByClientSession.values()].find(
+      (candidate) => candidate.state !== "closed",
+    );
+    if (!route) {
+      this.#emit({
+        id: message.id,
+        error: {
+          code: -32_000,
+          message: `${message.method} requires an attached TaskSpace page`,
+        },
+      });
+      return;
+    }
+    const nativeMethod = storageCookieCommand(message.method)!;
+    const params =
+      message.method === "Storage.setCookies"
+        ? { cookies: message.params?.cookies || [] }
+        : {};
+    void this.#sendNativeCommand(nativeMethod, params, route.nativeSessionId)
+      .then((result) => this.#emit({ id: message.id, result }))
+      .catch((error) => {
+        this.#emit({
+          id: message.id,
+          error: { code: -32_000, message: error?.message || String(error) },
+        });
+      });
+  }
+
   async #waitForNavigationCommit(
     sessionId: string,
     requestedUrl: string,
     previousFrame?: { loaderId?: string; url?: string },
-    timeoutMs = 8_000,
+    timeoutMs = 30_000,
   ) {
     const deadline = Date.now() + timeoutMs;
     const stableForMs = 50;
     let lastFrame: any;
+    let lastDocumentState: any;
     let commitCandidateKey: string | undefined;
     let commitCandidateSince = 0;
     do {
@@ -1135,27 +1340,49 @@ export class EgoCdpTransport {
       const frame = frameTree?.frameTree?.frame;
       if (frame) lastFrame = frame;
       const frameUrl = typeof frame?.url === "string" ? frame.url : "";
-      const committed =
+      const documentResult = await this.#sendNativeCommand(
+        "Runtime.evaluate",
+        {
+          expression:
+            "(() => { const entry = performance.getEntriesByType('navigation')[0]; return { url: location.href, readyState: document.readyState, contentType: document.contentType, responseStatus: entry?.responseStatus }; })()",
+          returnByValue: true,
+        },
+        sessionId,
+        1_000,
+      ).catch(() => undefined);
+      const documentState = documentResult?.result?.value;
+      if (documentState && typeof documentState === "object") {
+        lastDocumentState = documentState;
+      }
+      const frameCommitted =
         frameUrl === requestedUrl ||
         (frameUrl !== "" &&
           frameUrl !== "about:blank" &&
           (frameUrl !== previousFrame?.url ||
             frame?.loaderId !== previousFrame?.loaderId));
-      if (committed) {
+      const documentCommitted =
+        !lastDocumentState ||
+        lastDocumentState.url === frameUrl ||
+        lastDocumentState.url === requestedUrl;
+      if (frameCommitted && documentCommitted) {
         const candidateKey = `${frame.loaderId || ""}\0${frameUrl}`;
         if (candidateKey !== commitCandidateKey) {
           commitCandidateKey = candidateKey;
           commitCandidateSince = Date.now();
         } else if (Date.now() - commitCandidateSince >= stableForMs) {
-          return frame;
+          return { frame, documentState: lastDocumentState };
         }
       } else {
         commitCandidateKey = undefined;
       }
       await new Promise<void>((resolve) => setTimeout(resolve, 10));
     } while (Date.now() < deadline);
+    const observedUrl =
+      typeof lastFrame?.url === "string" && lastFrame.url.trim()
+        ? lastFrame.url
+        : undefined;
     throw new Error(
-      `navigation did not commit: ${lastFrame?.url || requestedUrl}`,
+      `navigation did not commit within ${timeoutMs}ms (requested ${JSON.stringify(requestedUrl)}, last observed ${JSON.stringify(observedUrl || "unavailable")})`,
     );
   }
 
@@ -1167,9 +1394,10 @@ export class EgoCdpTransport {
         : undefined;
     const nativeTargetId = route?.nativeTargetId || clientTargetId;
     const nativeSessionId =
-      typeof nativeTargetId === "string"
+      route?.nativeSessionId ||
+      (typeof nativeTargetId === "string"
         ? this.#sessionsByTarget.get(nativeTargetId)
-        : undefined;
+        : undefined);
     const clientSessionId = route?.clientSessionId || nativeSessionId;
     const complete = () => {
       if (route) this.#removeRoute(route);
@@ -1194,6 +1422,11 @@ export class EgoCdpTransport {
     };
 
     if (typeof nativeTargetId === "string") {
+      this.#internallyClosedTargets.add(nativeTargetId);
+      if (nativeSessionId) {
+        this.#internallyDetachedSessions.add(nativeSessionId);
+        this.#retiredNativeSessions.add(nativeSessionId);
+      }
       this.#sendNativeFireAndForget("Target.closeTarget", {
         targetId: nativeTargetId,
       });
@@ -1387,6 +1620,13 @@ function isReplayableSessionCommand(method: unknown): method is string {
       "Target.setAutoAttach",
     ].includes(method)
   );
+}
+
+function storageCookieCommand(method: unknown) {
+  if (method === "Storage.getCookies") return "Network.getAllCookies";
+  if (method === "Storage.setCookies") return "Network.setCookies";
+  if (method === "Storage.clearCookies") return "Network.clearBrowserCookies";
+  return undefined;
 }
 
 export function playwrightCompatibilityResult(method: unknown) {

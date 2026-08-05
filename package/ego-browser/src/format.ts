@@ -63,7 +63,7 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
     signature:
       "egoBrowser.newTaskSpace(name, profileId?) => Promise<TaskSpace>",
     description:
-      "Create and select an agent-owned TaskSpace, optionally using a profile id returned by listProfile(). The selected profile determines the TaskSpace browser identity, cookies, storage, and login state.",
+      "Create and select an agent-owned TaskSpace, optionally using a profile id returned by listProfile(). Exact names must be unique: use switchTaskSpace(id) for an existing agent-owned TaskSpace, or choose a new name when the existing space is user-owned. The selected profile determines the TaskSpace browser identity, cookies, storage, and login state.",
     params: [
       {
         name: "name",
@@ -128,23 +128,6 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
     ],
     returns: 'Promise<{ done: true } | { done: false, skipped: "user-owned" }>',
     example: "console.log(await egoBrowser.closeTaskSpace(space.id))",
-  },
-  "egoBrowser.useOrCreateTaskSpace": {
-    signature:
-      "egoBrowser.useOrCreateTaskSpace(nameOrId) => Promise<TaskSpace>",
-    description:
-      "Select an existing TaskSpace or create one by name, returning native Playwright page and context objects. A user-owned match remains user-owned and is not claimed.",
-    params: [
-      {
-        name: "nameOrId",
-        type: "string | number",
-        required: true,
-        description: "Task space name, taskId, or numeric id.",
-      },
-    ],
-    returns: "Promise<TaskSpace>",
-    example:
-      "const task = await egoBrowser.useOrCreateTaskSpace('google sheets task')",
   },
   "egoBrowser.claimTaskSpace": {
     signature: "egoBrowser.claimTaskSpace(nameOrId) => Promise<TaskSpace>",
@@ -213,8 +196,8 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
     example:
       "console.log(await egoBrowser.waitForAgentControlTaskSpace(task.id))",
   },
-  "site.skills": {
-    signature: "site.skills(url?) => Promise<object[]>",
+  "egoBrowser.site.skills": {
+    signature: "egoBrowser.site.skills(url?) => Promise<object[]>",
     description:
       "List site learning packs matching a URL, or the current page URL when omitted.",
     params: [
@@ -226,10 +209,25 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
     ],
     returns: "Promise<object[]>",
     example:
-      "console.log(await site.skills('https://www.google.com/search?q=test'))",
+      "console.log(await egoBrowser.site.skills('https://www.google.com/search?q=test'))",
   },
-  "site.skillsForUrl": {
-    signature: "site.skillsForUrl(url) => Promise<object[]>",
+  "egoBrowser.site.discover": {
+    signature: "egoBrowser.site.discover(url?) => Promise<object[]>",
+    description:
+      "Discover site learning packs matching a URL, or the current page URL when omitted. This is the descriptive alias of egoBrowser.site.skills().",
+    params: [
+      {
+        name: "url",
+        type: "string",
+        description: "URL to inspect. Defaults to current page URL.",
+      },
+    ],
+    returns: "Promise<object[]>",
+    example:
+      "console.log(await egoBrowser.site.discover('https://youtube.com/'))",
+  },
+  "egoBrowser.site.skillsForUrl": {
+    signature: "egoBrowser.site.skillsForUrl(url) => Promise<object[]>",
     description:
       "List site learning packs whose manifest domains match the URL.",
     params: [
@@ -241,12 +239,14 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
       },
     ],
     returns: "Promise<object[]>",
-    example: "console.log(await site.skillsForUrl('https://x.com/home'))",
+    example:
+      "console.log(await egoBrowser.site.skillsForUrl('https://x.com/home'))",
   },
-  "site.runTool": {
-    signature: "site.runTool(siteId, toolName, args?) => Promise<tool result>",
+  "egoBrowser.site.runTool": {
+    signature:
+      "egoBrowser.site.runTool(siteId, toolName, args?) => Promise<tool result>",
     description:
-      "Run a Node-side learned site tool. Inspect site.learnContext(url).tools[].args and tools[].returns for the exact schema before calling.",
+      "Run a Node-side learned site tool. Inspect egoBrowser.site.learnContext(url).tools[].args and tools[].returns for the exact schema before calling.",
     params: [
       {
         name: "siteId",
@@ -267,15 +267,15 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
       },
     ],
     returns:
-      "Promise<tool result declared by manifest.json returns; inspect site.learnContext(url).tools[].returns>",
+      "Promise<tool result declared by manifest.json returns; inspect egoBrowser.site.learnContext(url).tools[].returns>",
     example:
-      "const ctx = await site.learnContext('https://www.google.com/search?q=test'); console.log(ctx.tools); const results = await site.runTool('google', 'search_and_extract', { query: 'openai', maxResults: 5 })",
+      "const ctx = await egoBrowser.site.learnContext('https://www.google.com/search?q=test'); console.log(ctx.tools); const results = await egoBrowser.site.runTool('google', 'search_and_extract', { query: 'openai', maxResults: 5 })",
   },
-  "site.runBrowserTool": {
+  "egoBrowser.site.runBrowserTool": {
     signature:
-      "site.runBrowserTool(siteId, toolName, args?) => Promise<tool result>",
+      "egoBrowser.site.runBrowserTool(siteId, toolName, args?) => Promise<tool result>",
     description:
-      "Run a browser-side learned tool in the current page context. Inspect site.learnContext(url).tools[].args and tools[].returns for the exact schema before calling.",
+      "Run a browser-side learned tool in the current page context. Inspect egoBrowser.site.learnContext(url).tools[].args and tools[].returns for the exact schema before calling.",
     params: [
       {
         name: "siteId",
@@ -296,12 +296,12 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
       },
     ],
     returns:
-      "Promise<tool result declared by manifest.json returns; inspect site.learnContext(url).tools[].returns>",
+      "Promise<tool result declared by manifest.json returns; inspect egoBrowser.site.learnContext(url).tools[].returns>",
     example:
-      "const ctx = await site.learnContext('https://x.com/home'); console.log(ctx.tools); const post = await site.runBrowserTool('x-com', 'post_from_active_element')",
+      "const ctx = await egoBrowser.site.learnContext('https://x.com/home'); console.log(ctx.tools); const post = await egoBrowser.site.runBrowserTool('x-com', 'post_from_active_element')",
   },
-  "site.learnContext": {
-    signature: "site.learnContext(url?) => Promise<object>",
+  "egoBrowser.site.learnContext": {
+    signature: "egoBrowser.site.learnContext(url?) => Promise<object>",
     description:
       "Load matching learning notes and exact tool schemas, including args and returns, for a URL or the current page URL.",
     params: [
@@ -314,7 +314,7 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
     returns:
       "Promise<{ exists, siteId, siteName, knowledge, tools: Array<{ siteId, toolName, toolType, description, args, returns, example }> }>",
     example:
-      "console.log(await site.learnContext('https://www.google.com/search?q=test'))",
+      "console.log(await egoBrowser.site.learnContext('https://www.google.com/search?q=test'))",
   },
   "fetch.server": {
     signature: "fetch.server(url, options?) => Promise<string>",
@@ -398,7 +398,7 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
         name: "name",
         type: "string",
         description:
-          "Exact public path, such as egoBrowser.listTaskSpace or site.runTool. Defaults to the egoBrowser namespace.",
+          "Exact public path, such as egoBrowser.listTaskSpace or egoBrowser.site.runTool. Defaults to the egoBrowser namespace.",
       },
     ],
     returns: "string",

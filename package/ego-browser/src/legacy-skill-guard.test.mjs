@@ -12,7 +12,6 @@ const EXPECTED_TASK_SPACE_REPLACEMENTS = {
   listTaskSpaces: "egoBrowser.listTaskSpace()",
   switchTaskSpace: "egoBrowser.switchTaskSpace(nameOrId)",
   newTaskSpace: "egoBrowser.newTaskSpace(name)",
-  useOrCreateTaskSpace: "egoBrowser.useOrCreateTaskSpace(nameOrId)",
   claimTaskSpace: "egoBrowser.claimTaskSpace(nameOrId)",
   completeTaskSpace: "egoBrowser.completeTaskSpace(nameOrId)",
   handOffTaskSpace: "egoBrowser.handOffTaskSpace(nameOrId)",

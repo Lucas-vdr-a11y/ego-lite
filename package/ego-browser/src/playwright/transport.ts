@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
+
+import { WebSocketTransport } from "#playwright-transport";
 
 import {
   createEgoCdpTransport,
@@ -119,8 +119,5 @@ async function selectedTargets(runtime: EgoCdpRuntime) {
 }
 
 function loadPlaywrightWebSocketTransport(): WebSocketTransportClass {
-  const require = createRequire(import.meta.url);
-  const packageJson = require.resolve("playwright-core/package.json");
-  return require(join(dirname(packageJson), "lib/server/transport.js"))
-    .WebSocketTransport;
+  return WebSocketTransport;
 }

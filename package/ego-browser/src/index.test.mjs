@@ -61,8 +61,29 @@ test("installEgoSdk exposes TaskSpace control without legacy page or tabs global
     assert.equal(typeof target.egoBrowser, "object");
     assert.equal(typeof target.egoBrowser.listProfile, "function");
     assert.equal(typeof target.egoBrowser.newTaskSpace, "function");
+    assert.equal(typeof target.fetch, "function");
+    assert.equal(typeof target.fetch.server, "function");
+    assert.equal(typeof target.fetch.browser, "function");
     assert.equal(target.page, undefined);
     assert.equal(target.tabs, undefined);
+  } finally {
+    console.log = originalLog;
+  }
+});
+
+test("installed SDK globals survive cleanup in a reused Node runtime", () => {
+  const originalLog = console.log;
+  const target = {};
+  try {
+    installEgoSdk(target, { cliLog() {} });
+    const egoBrowser = target.egoBrowser;
+
+    for (const name of ["egoBrowser", "site", "fetch", "cdp"]) {
+      assert.equal(Reflect.deleteProperty(target, name), false, name);
+      target[name] = undefined;
+      assert.notEqual(target[name], undefined, name);
+    }
+    assert.equal(target.egoBrowser, egoBrowser);
   } finally {
     console.log = originalLog;
   }

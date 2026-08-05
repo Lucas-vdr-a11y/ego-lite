@@ -11,6 +11,8 @@ const restoreDefaultPlaywrightConnector =
     context: {},
     close: async () => {},
   }));
+const EXISTING_TASK_SPACE_ID = 2_147_482_900;
+const NEW_TASK_SPACE_ID = 2_147_482_801;
 
 test.after(async () => {
   await disconnectPlaywrightTaskSpace();
@@ -24,7 +26,7 @@ class FakeEgo {
     this.selectedId = null;
     this.nextId =
       Math.max(
-        0,
+        NEW_TASK_SPACE_ID - 1,
         ...this.taskSpaces.map((space) =>
           typeof space.id === "number" ? space.id : 0,
         ),
@@ -150,7 +152,7 @@ test("the CLI disposes its Playwright TaskSpace connection after the script", as
     );
 
     assert.equal(result.exitCode, 0);
-    assert.deepEqual(calls, [["close", 1]]);
+    assert.deepEqual(calls, [["close", NEW_TASK_SPACE_ID]]);
   } finally {
     await disconnectPlaywrightTaskSpace();
     restore();
@@ -162,7 +164,7 @@ test("taskspace e2e creates and selects a missing task space", async () => {
   const result = await runTaskspaceScript(
     ego,
     `
-    const task = await egoBrowser.useOrCreateTaskSpace("checkout-flow");
+    const task = await egoBrowser.newTaskSpace("checkout-flow");
     console.log(JSON.stringify({ task, selected: ego.selectedId }));
   `,
   );
@@ -171,18 +173,18 @@ test("taskspace e2e creates and selects a missing task space", async () => {
   assert.deepEqual(firstJsonLine(result.stdout), {
     task: {
       taskId: "checkout-flow",
-      id: 1,
+      id: NEW_TASK_SPACE_ID,
       name: "checkout-flow",
       createdBy: "agent",
       ownership: "agent",
       recentTabTitles: [],
     },
-    selected: 1,
+    selected: NEW_TASK_SPACE_ID,
   });
   assert.deepEqual(ego.calls, [
     ["listTaskSpaces"],
     ["createTaskSpace", "checkout-flow"],
-    ["useTaskSpace", 1],
+    ["useTaskSpace", NEW_TASK_SPACE_ID],
   ]);
 });
 
@@ -190,7 +192,7 @@ test("taskspace e2e reuses an existing agent-owned task space", async () => {
   const ego = new FakeEgo([
     {
       taskId: "checkout-flow",
-      id: 7,
+      id: EXISTING_TASK_SPACE_ID,
       name: "Checkout flow",
       createdBy: "agent",
       ownership: "agent",
@@ -199,7 +201,7 @@ test("taskspace e2e reuses an existing agent-owned task space", async () => {
   const result = await runTaskspaceScript(
     ego,
     `
-    const task = await egoBrowser.useOrCreateTaskSpace(7);
+    const task = await egoBrowser.switchTaskSpace(${EXISTING_TASK_SPACE_ID});
     console.log(JSON.stringify({ task, selected: ego.selectedId }));
   `,
   );
@@ -208,21 +210,24 @@ test("taskspace e2e reuses an existing agent-owned task space", async () => {
   assert.deepEqual(firstJsonLine(result.stdout), {
     task: {
       taskId: "checkout-flow",
-      id: 7,
+      id: EXISTING_TASK_SPACE_ID,
       name: "Checkout flow",
       createdBy: "agent",
       ownership: "agent",
     },
-    selected: 7,
+    selected: EXISTING_TASK_SPACE_ID,
   });
-  assert.deepEqual(ego.calls, [["listTaskSpaces"], ["useTaskSpace", 7]]);
+  assert.deepEqual(ego.calls, [
+    ["listTaskSpaces"],
+    ["useTaskSpace", EXISTING_TASK_SPACE_ID],
+  ]);
 });
 
 test("taskspace e2e claims and selects an existing user-owned task space", async () => {
   const ego = new FakeEgo([
     {
       taskId: "checkout-flow",
-      id: 7,
+      id: EXISTING_TASK_SPACE_ID,
       name: "checkout-flow",
       createdBy: "user",
       ownership: "user",
@@ -240,42 +245,18 @@ test("taskspace e2e claims and selects an existing user-owned task space", async
   assert.deepEqual(firstJsonLine(result.stdout), {
     task: {
       taskId: "checkout-flow",
-      id: 7,
+      id: EXISTING_TASK_SPACE_ID,
       name: "checkout-flow",
       createdBy: "agent",
       ownership: "agent",
     },
-    selected: 7,
+    selected: EXISTING_TASK_SPACE_ID,
   });
   assert.deepEqual(ego.calls, [
     ["listTaskSpaces"],
-    ["claimTaskSpace", 7, "checkout-flow"],
-    ["useTaskSpace", 7],
+    ["claimTaskSpace", EXISTING_TASK_SPACE_ID, "checkout-flow"],
+    ["useTaskSpace", EXISTING_TASK_SPACE_ID],
   ]);
-});
-
-test("taskspace e2e useOrCreateTaskSpace selects user-owned spaces without claiming and surfaces the owned user-control guidance", async () => {
-  const ego = new FakeEgo([
-    {
-      taskId: "checkout-flow",
-      id: 7,
-      name: "checkout-flow",
-      createdBy: "user",
-      ownership: "user",
-    },
-  ]);
-
-  // Native rejects with error_code EGO_TASK_SPACE_USER_IN_CONTROL, so the agent
-  // sees ego-browser's owned guidance block, not the raw native text.
-  await assert.rejects(
-    () =>
-      runTaskspaceScript(
-        ego,
-        `await egoBrowser.useOrCreateTaskSpace("checkout-flow")`,
-      ),
-    /has taken control of this task space/,
-  );
-  assert.deepEqual(ego.calls, [["listTaskSpaces"], ["useTaskSpace", 7]]);
 });
 
 test("taskspace e2e exposes only the egoBrowser TaskSpace facade", async () => {
@@ -349,7 +330,7 @@ test("taskspace e2e rejects explicit use of a user-owned task space", async () =
   const ego = new FakeEgo([
     {
       taskId: "checkout-flow",
-      id: 7,
+      id: EXISTING_TASK_SPACE_ID,
       name: "checkout-flow",
       createdBy: "user",
       ownership: "user",
@@ -371,7 +352,7 @@ test("taskspace e2e rejects unknown task space ownership", async () => {
   const ego = new FakeEgo([
     {
       taskId: "checkout-flow",
-      id: 7,
+      id: EXISTING_TASK_SPACE_ID,
       name: "checkout-flow",
       ownership: "shared",
     },
@@ -381,9 +362,9 @@ test("taskspace e2e rejects unknown task space ownership", async () => {
     () =>
       runTaskspaceScript(
         ego,
-        `await egoBrowser.useOrCreateTaskSpace("checkout-flow")`,
+        `await egoBrowser.switchTaskSpace("checkout-flow")`,
       ),
-    /ownership "shared"/,
+    /requires an agent-owned task space/,
   );
   assert.deepEqual(ego.calls, [["listTaskSpaces"]]);
 });
@@ -392,7 +373,7 @@ test("taskspace e2e surfaces newTaskSpace binding errors", async () => {
   const ego = new FakeEgo([
     {
       taskId: "checkout-flow",
-      id: 7,
+      id: EXISTING_TASK_SPACE_ID,
       name: "checkout-flow",
       ownership: "agent",
     },
@@ -401,7 +382,7 @@ test("taskspace e2e surfaces newTaskSpace binding errors", async () => {
   await assert.rejects(
     () =>
       runTaskspaceScript(ego, `await egoBrowser.newTaskSpace("checkout-flow")`),
-    /newTaskSpace: Task space already exists: checkout-flow/,
+    /TaskSpace .* already uses this name.*switchTaskSpace/,
   );
-  assert.deepEqual(ego.calls, [["createTaskSpace", "checkout-flow"]]);
+  assert.deepEqual(ego.calls, [["listTaskSpaces"]]);
 });

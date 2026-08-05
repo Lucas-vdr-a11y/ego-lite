@@ -332,6 +332,8 @@ export function waitForBrowserEvent(
       predicate,
       resolve,
       reject,
+      sessionId:
+        currentTargetContext()?.sessionId ?? state.sessionId ?? undefined,
       processing: Promise.resolve(),
       cancelTimer: () => {},
       cleanup: () => signal?.removeEventListener("abort", onAbort),
@@ -489,6 +491,7 @@ function handleMessage(message) {
     }
   }
   for (const waiter of [...eventWaiters]) {
+    if (waiter.sessionId && waiter.sessionId !== data.sessionId) continue;
     waiter.processing = waiter.processing
       .then(async () => {
         if (!eventWaiters.includes(waiter)) return;

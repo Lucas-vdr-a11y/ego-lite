@@ -117,7 +117,7 @@ test("the Playwright connector falls back to the last native target", async () =
   await session.close();
 });
 
-test("the Playwright connector reuses one Browser connection for one TaskSpace", async () => {
+test("the Playwright connector creates a fresh Browser connection for each selection", async () => {
   const firstPage = { targetId: "target-first" };
   const secondPage = { targetId: "target-second" };
   let activeTargetId = firstPage.targetId;
@@ -166,13 +166,15 @@ test("the Playwright connector reuses one Browser connection for one TaskSpace",
   assert.equal(first.page, firstPage);
   assert.equal(second.page, secondPage);
   assert.equal(first.close, second.close);
-  assert.equal(connectCalls, 1);
-  await second.close();
+  assert.equal(connectCalls, 2);
   assert.equal(browserCloseCalls, 1);
+  await second.close();
+  assert.equal(browserCloseCalls, 2);
 });
 
-test("the Playwright connector keeps the active transport when the same TaskSpace is selected again", async () => {
+test("the Playwright connector recreates the transport when the same TaskSpace is selected again", async () => {
   let transportCalls = 0;
+  let transportCloseCalls = 0;
   let connectCalls = 0;
   const page = {};
   const connector = playwrightTaskSpace.createPlaywrightTaskSpaceConnector({
@@ -185,7 +187,9 @@ test("the Playwright connector keeps the active transport when the same TaskSpac
       transportCalls += 1;
       return {
         connectToken: `ws+ego://transport/${transportCalls}`,
-        async close() {},
+        async close() {
+          transportCloseCalls += 1;
+        },
       };
     },
     connectOverCDP: async () => {
@@ -204,9 +208,11 @@ test("the Playwright connector keeps the active transport when the same TaskSpac
 
   assert.equal(first.page, page);
   assert.equal(second.page, page);
-  assert.equal(transportCalls, 1);
-  assert.equal(connectCalls, 1);
+  assert.equal(transportCalls, 2);
+  assert.equal(connectCalls, 2);
+  assert.equal(transportCloseCalls, 1);
   await second.close();
+  assert.equal(transportCloseCalls, 2);
 });
 
 test("the Playwright connector reconnects when the TaskSpace changes", async () => {
@@ -309,6 +315,20 @@ test("only Playwright FrameThrottler timers are safe to unref", () => {
   assert.equal(
     playwrightTaskSpace.isPlaywrightFrameThrottlerTimer(
       35,
+      "Error\n    at FrameThrottler._tick (/release/index.js:1:12345)",
+    ),
+    true,
+  );
+  assert.equal(
+    playwrightTaskSpace.isPlaywrightFrameThrottlerTimer(
+      35,
+      "Error\n    at Km._tick (/release/index.js:8473:12345)",
+    ),
+    true,
+  );
+  assert.equal(
+    playwrightTaskSpace.isPlaywrightFrameThrottlerTimer(
+      35,
       "Error\n    at userTimer (app.js:1:1)",
     ),
     false,
@@ -345,7 +365,7 @@ test("connecting another TaskSpace closes the previous Playwright session", asyn
     restore();
   }
 
-  assert.deepEqual(calls, ["connect:7", "connect:8", "close:7", "close:8"]);
+  assert.deepEqual(calls, ["connect:7", "close:7", "connect:8", "close:8"]);
 });
 
 test("preparing a different TaskSpace selection closes the current transport first", async () => {
@@ -371,4 +391,28 @@ test("preparing a different TaskSpace selection closes the current transport fir
   }
 
   assert.deepEqual(calls, ["close:7"]);
+});
+
+test("preparing the same TaskSpace selection also closes the current transport", async () => {
+  const calls = [];
+  const restore = playwrightTaskSpace.setPlaywrightTaskSpaceConnector(
+    async (space) => ({
+      page: { taskSpaceId: space.id },
+      context: { taskSpaceId: space.id },
+      async close() {
+        calls.push(`close:${space.id}`);
+      },
+    }),
+  );
+
+  try {
+    await playwrightTaskSpace.connectPlaywrightTaskSpace({ id: 7 });
+    await playwrightTaskSpace.disconnectPlaywrightTaskSpaceForSelection({
+      id: 7,
+    });
+    assert.deepEqual(calls, ["close:7"]);
+  } finally {
+    restore();
+    await playwrightTaskSpace.disconnectPlaywrightTaskSpace();
+  }
 });

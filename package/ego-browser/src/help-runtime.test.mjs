@@ -17,8 +17,14 @@ test("help(name) returns current ego-browser API documentation", () => {
 test("help() lists namespaces present in the current context", () => {
   const list = help({ egoBrowser: {}, site: {}, cdp() {} });
   assert.ok(Array.isArray(list));
-  assert.ok(list.some((entry) => String(entry).startsWith("egoBrowser:")));
-  assert.ok(list.some((entry) => String(entry).startsWith("site:")));
+  const egoBrowserDocs = list.find((entry) =>
+    String(entry).startsWith("egoBrowser:"),
+  );
+  assert.match(String(egoBrowserDocs), /egoBrowser\.site\.discover/);
+  assert.equal(
+    list.some((entry) => String(entry).startsWith("site:")),
+    false,
+  );
   assert.ok(list.some((entry) => entry?.name === "cdp"));
 });
 

@@ -1,3 +1,4 @@
+import { chromium } from "#playwright-runtime";
 import type { Browser, BrowserContext, Page } from "playwright-core";
 
 import { createEgoPlaywrightTransport } from "./transport.js";
@@ -18,7 +19,6 @@ const disconnectedConnector: PlaywrightTaskSpaceConnector = async () => {
 
 let connector = disconnectedConnector;
 let activeSession: PlaywrightTaskSpaceSession | undefined;
-let activeTaskSpaceKey: string | undefined;
 
 export type EgoPlaywrightRuntime = {
   listTabs?: () => Promise<{
@@ -67,14 +67,12 @@ export function createPlaywrightTaskSpaceConnector(
   dependencies: PlaywrightConnectorDependencies,
 ): PlaywrightTaskSpaceConnector {
   let browser: Browser | undefined;
-  let browserSpaceKey: string | undefined;
   let closeTransport: (() => Promise<void>) | undefined;
 
   const close = async () => {
     const currentBrowser = browser;
     const currentTransportClose = closeTransport;
     browser = undefined;
-    browserSpaceKey = undefined;
     closeTransport = undefined;
     if (currentTransportClose) {
       try {
@@ -94,15 +92,11 @@ export function createPlaywrightTaskSpaceConnector(
     }
 
     try {
-      const spaceKey = taskSpaceKey(space);
-      if (!browser || spaceKey === undefined || spaceKey !== browserSpaceKey) {
-        if (browser) await close();
-        const transport = await dependencies.transport(runtime, space);
-        closeTransport = transport.close;
-        browser = await dependencies.connectOverCDP(transport.connectToken);
-        transport.connected?.();
-        browserSpaceKey = spaceKey;
-      }
+      if (browser) await close();
+      const transport = await dependencies.transport(runtime, space);
+      closeTransport = transport.close;
+      browser = await dependencies.connectOverCDP(transport.connectToken);
+      transport.connected?.();
       const listed = await runtime.listTabs();
       const nativeTabs = listed.tabs || listed.targetInfos || [];
       const activeTab =
@@ -124,19 +118,11 @@ export function createPlaywrightTaskSpaceConnector(
   };
 }
 
-function taskSpaceKey(space: Record<string, unknown>) {
-  const value = space.id ?? space.taskId;
-  return typeof value === "string" || typeof value === "number"
-    ? String(value)
-    : undefined;
-}
-
 export function createNativePlaywrightTaskSpaceConnector() {
   return createPlaywrightTaskSpaceConnector({
     runtime: () => (globalThis as any).ego,
     transport: (runtime) => createNativePlaywrightTransport(runtime),
     connectOverCDP: async (connectToken) => {
-      const { chromium } = await import("playwright-core");
       const restoreTimerPatch = installPlaywrightFrameTimerUnref();
       try {
         const browser = await chromium.connectOverCDP(connectToken);
@@ -157,8 +143,8 @@ export function isPlaywrightFrameThrottlerTimer(
   return (
     (delay === 35 || delay === 200) &&
     typeof stack === "string" &&
-    stack.includes("FrameThrottler._tick") &&
-    stack.includes("playwright-core")
+    (stack.includes("FrameThrottler._tick") ||
+      /\bat [\w$]{1,3}\._tick \(/.test(stack))
   );
 }
 
@@ -263,7 +249,7 @@ async function locatePlaywrightPage(
 export async function connectPlaywrightTaskSpace(
   space: Record<string, unknown>,
 ) {
-  const previous = activeSession;
+  await disconnectPlaywrightTaskSpace();
   const session = await connector(space);
   if (session.page === undefined || session.context === undefined) {
     await session.close();
@@ -272,30 +258,19 @@ export async function connectPlaywrightTaskSpace(
     );
   }
   activeSession = session;
-  activeTaskSpaceKey = taskSpaceKey(space);
-  if (previous && previous.close !== session.close) {
-    await previous.close();
-  }
   return session;
 }
 
 export async function disconnectPlaywrightTaskSpace() {
   const session = activeSession;
   activeSession = undefined;
-  activeTaskSpaceKey = undefined;
   await session?.close();
 }
 
 export async function disconnectPlaywrightTaskSpaceForSelection(
-  space: Record<string, unknown>,
+  _space: Record<string, unknown>,
 ) {
-  const nextTaskSpaceKey = taskSpaceKey(space);
-  if (
-    activeSession &&
-    (nextTaskSpaceKey === undefined || nextTaskSpaceKey !== activeTaskSpaceKey)
-  ) {
-    await disconnectPlaywrightTaskSpace();
-  }
+  await disconnectPlaywrightTaskSpace();
 }
 
 export function setPlaywrightTaskSpaceConnector(

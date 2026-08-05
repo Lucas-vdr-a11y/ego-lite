@@ -21,6 +21,7 @@ import {
   setNoticeTrailer,
 } from "./output-sink.js";
 import { runMain } from "./run.js";
+import { releaseTaskSpaceLease } from "./taskspace-lease.js";
 import { emitUpdateNotice, type VersionSource } from "./update-notice.js";
 
 type HelperFunction = (...args: unknown[]) => unknown;
@@ -40,7 +41,11 @@ export * from "./helpers.js";
 export { runMain } from "./run.js";
 
 export async function disposeEgoSdk() {
-  await disconnectPlaywrightTaskSpace();
+  try {
+    await disconnectPlaywrightTaskSpace();
+  } finally {
+    releaseTaskSpaceLease();
+  }
 }
 
 export function enablePlaywrightTaskSpaces() {
@@ -53,6 +58,7 @@ const SYNC_HELPER_PATHS = new Set(["egoBrowser.helper"]);
 // Marks an ego runtime whose mutating methods have already been wrapped, so a
 // second installEgoSdk call cannot double-wrap createTab / task-space methods.
 const EGO_WRAPPED = Symbol.for("egoBrowser.sdkWrapped");
+const SDK_GLOBAL_VALUES = Symbol.for("egoBrowser.sdkGlobalValues");
 
 export function installEgoSdk(
   target: InstallTarget = globalThis,
@@ -70,12 +76,7 @@ export function installEgoSdk(
   });
   for (const [name, value] of Object.entries(context)) {
     const exposed = wrapReady(value, readySignal, () => readyError, [name]);
-    Object.defineProperty(target, name, {
-      value: exposed,
-      writable: true,
-      configurable: true,
-      enumerable: false,
-    });
+    exposeSdkGlobal(target, name, exposed);
   }
   installLegacySkillGuards(target);
   const usingDefaultLog = !options.cliLog;
@@ -119,6 +120,43 @@ export function installEgoSdk(
   return target;
 }
 
+function exposeSdkGlobal(
+  target: InstallTarget,
+  name: string,
+  value: unknown,
+) {
+  let values = (target as Record<symbol, unknown>)[SDK_GLOBAL_VALUES] as
+    | Record<string, unknown>
+    | undefined;
+  if (!values) {
+    values = Object.create(null);
+    Object.defineProperty(target, SDK_GLOBAL_VALUES, {
+      value: values,
+      configurable: false,
+      enumerable: false,
+      writable: false,
+    });
+  }
+
+  const installed = Object.hasOwn(values, name);
+  const descriptor = Object.getOwnPropertyDescriptor(target, name);
+  if (descriptor && !descriptor.configurable) {
+    if (!installed) {
+      throw new Error(`cannot install ego-browser SDK global: ${name}`);
+    }
+    values[name] = value;
+    return;
+  }
+
+  values[name] = value;
+  Object.defineProperty(target, name, {
+    get: () => values![name],
+    set: () => {},
+    configurable: false,
+    enumerable: false,
+  });
+}
+
 function wrapReady(
   value: unknown,
   readySignal: Promise<unknown>,
@@ -127,12 +165,18 @@ function wrapReady(
 ): unknown {
   if (typeof value === "function") {
     if (SYNC_HELPER_PATHS.has(path.join("."))) return value;
-    return async (...args: unknown[]) => {
+    const wrapped = async (...args: unknown[]) => {
       await readySignal;
       const error = readyError();
       if (error) throw error;
       return value(...args);
     };
+    for (const [key, child] of Object.entries(value)) {
+      Object.assign(wrapped, {
+        [key]: wrapReady(child, readySignal, readyError, [...path, key]),
+      });
+    }
+    return wrapped;
   }
   if (!value || typeof value !== "object") return value;
   if (Array.isArray(value)) {

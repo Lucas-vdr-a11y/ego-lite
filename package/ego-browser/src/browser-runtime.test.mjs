@@ -390,10 +390,14 @@ test("waitForBrowserEvent resolves future matching events", async () => {
       (event) => event.method === "Page.downloadWillBegin",
       500,
     );
-    fireEvent("Page.downloadWillBegin", {
-      guid: "download-1",
-      suggestedFilename: "file.png",
-    });
+    fireEvent(
+      "Page.downloadWillBegin",
+      {
+        guid: "download-1",
+        suggestedFilename: "file.png",
+      },
+      state.sessionId,
+    );
     const event = await promise;
     assert.equal(event.params.guid, "download-1");
   } finally {
@@ -405,24 +409,55 @@ test("waitForBrowserEvent ignores events that happened before waiting", async ()
   installAutoEgo();
   try {
     await browserCdp("Runtime.evaluate", { expression: "1" });
-    fireEvent("Page.downloadWillBegin", {
-      guid: "old-download",
-      suggestedFilename: "old.png",
-    });
+    fireEvent(
+      "Page.downloadWillBegin",
+      {
+        guid: "old-download",
+        suggestedFilename: "old.png",
+      },
+      state.sessionId,
+    );
     const promise = waitForBrowserEvent(
       (event) => event.method === "Page.downloadWillBegin",
       500,
     );
-    fireEvent("Page.downloadWillBegin", {
-      guid: "new-download",
-      suggestedFilename: "new.png",
-    });
+    fireEvent(
+      "Page.downloadWillBegin",
+      {
+        guid: "new-download",
+        suggestedFilename: "new.png",
+      },
+      state.sessionId,
+    );
     const event = await promise;
     assert.equal(event.params.guid, "new-download");
   } finally {
     cleanup();
   }
 });
+
+for (const method of ["Page.downloadWillBegin", "Network.requestWillBeSent"]) {
+  test(`waitForBrowserEvent isolates ${method} by the active session`, async () => {
+    installAutoEgo();
+    try {
+      await browserCdp("Runtime.evaluate", { expression: "1" });
+      const activeSessionId = state.sessionId;
+      const promise = waitForBrowserEvent(
+        (event) =>
+          event.method === method && event.params.marker === "matching-event",
+        500,
+      );
+
+      fireEvent(method, { marker: "matching-event" }, "session-b");
+      fireEvent(method, { marker: "matching-event" }, activeSessionId);
+
+      const event = await promise;
+      assert.equal(event.sessionId, activeSessionId);
+    } finally {
+      cleanup();
+    }
+  });
+}
 
 test("waitForBrowserEvent serializes async predicates in event order", async () => {
   installAutoEgo();
@@ -436,8 +471,16 @@ test("waitForBrowserEvent serializes async predicates in event order", async () 
       observed.push(event.params.order);
       return event.params.match;
     }, 500);
-    fireEvent("Network.requestWillBeSent", { order: 1, match: false });
-    fireEvent("Network.requestWillBeSent", { order: 2, match: true });
+    fireEvent(
+      "Network.requestWillBeSent",
+      { order: 1, match: false },
+      state.sessionId,
+    );
+    fireEvent(
+      "Network.requestWillBeSent",
+      { order: 2, match: true },
+      state.sessionId,
+    );
     const event = await promise;
     assert.equal(event.params.order, 2);
     assert.deepEqual(observed, [1, 2]);
@@ -458,7 +501,7 @@ test("waitForBrowserEvent treats timeout 0 as no timeout", async () => {
       (error) => ({ error }),
     );
     await new Promise((resolve) => setTimeout(resolve, 10));
-    fireEvent("Runtime.consoleAPICalled", { ready: true });
+    fireEvent("Runtime.consoleAPICalled", { ready: true }, state.sessionId);
     const result = await outcome;
     assert.equal(result.error, undefined);
     assert.equal(result.event.params.ready, true);

@@ -237,6 +237,138 @@ test("the direct Playwright transport exposes only targets from the selected Tas
   await lease.close();
 });
 
+test("the direct Playwright transport forwards only OOPIF descendants of the selected TaskSpace page session", async () => {
+  const runtime = {
+    sendCDPMessage() {},
+  };
+  const transport = egoTransport.createEgoCdpTransport(runtime, {
+    targetIds: ["selected-target"],
+  });
+  const received = [];
+  transport.onmessage = (message) => received.push(message);
+
+  runtime.onCDPMessage(
+    JSON.stringify({
+      method: "Target.attachedToTarget",
+      params: {
+        sessionId: "selected-session",
+        targetInfo: { targetId: "selected-target", type: "page" },
+      },
+    }),
+  );
+  runtime.onCDPMessage(
+    JSON.stringify({
+      method: "Target.attachedToTarget",
+      sessionId: "foreign-session",
+      params: {
+        sessionId: "foreign-oopif-session",
+        targetInfo: { targetId: "foreign-oopif", type: "iframe" },
+        waitingForDebugger: false,
+      },
+    }),
+  );
+  runtime.onCDPMessage(
+    JSON.stringify({
+      method: "Target.attachedToTarget",
+      sessionId: "selected-session",
+      params: {
+        sessionId: "oopif-session",
+        targetInfo: { targetId: "oopif-frame", type: "iframe" },
+        waitingForDebugger: false,
+      },
+    }),
+  );
+  runtime.onCDPMessage(
+    JSON.stringify({
+      method: "Page.frameNavigated",
+      sessionId: "oopif-session",
+      params: {
+        frame: {
+          id: "oopif-frame",
+          parentId: "selected-frame",
+          url: "https://frame.example.test/",
+        },
+      },
+    }),
+  );
+  runtime.onCDPMessage(
+    JSON.stringify({
+      method: "Target.attachedToTarget",
+      sessionId: "oopif-session",
+      params: {
+        sessionId: "nested-oopif-session",
+        targetInfo: { targetId: "nested-oopif-frame", type: "iframe" },
+        waitingForDebugger: false,
+      },
+    }),
+  );
+  runtime.onCDPMessage(
+    JSON.stringify({
+      method: "Page.frameNavigated",
+      sessionId: "nested-oopif-session",
+      params: {
+        frame: {
+          id: "nested-oopif-frame",
+          parentId: "oopif-frame",
+          url: "https://nested.example.test/",
+        },
+      },
+    }),
+  );
+
+  await waitForImmediate();
+  assert.deepEqual(received, [
+    {
+      method: "Target.attachedToTarget",
+      params: {
+        sessionId: "selected-session",
+        targetInfo: { targetId: "selected-target", type: "page" },
+      },
+    },
+    {
+      method: "Target.attachedToTarget",
+      sessionId: "selected-session",
+      params: {
+        sessionId: "oopif-session",
+        targetInfo: { targetId: "oopif-frame", type: "iframe" },
+        waitingForDebugger: false,
+      },
+    },
+    {
+      method: "Page.frameNavigated",
+      sessionId: "oopif-session",
+      params: {
+        frame: {
+          id: "oopif-frame",
+          parentId: "selected-frame",
+          url: "https://frame.example.test/",
+        },
+      },
+    },
+    {
+      method: "Target.attachedToTarget",
+      sessionId: "oopif-session",
+      params: {
+        sessionId: "nested-oopif-session",
+        targetInfo: { targetId: "nested-oopif-frame", type: "iframe" },
+        waitingForDebugger: false,
+      },
+    },
+    {
+      method: "Page.frameNavigated",
+      sessionId: "nested-oopif-session",
+      params: {
+        frame: {
+          id: "nested-oopif-frame",
+          parentId: "oopif-frame",
+          url: "https://nested.example.test/",
+        },
+      },
+    },
+  ]);
+  transport.close();
+});
+
 test("the direct Playwright transport completes root auto-attach with missing TaskSpace targets", async () => {
   let nextNativeId = 1_000_000_100;
   const sent = [];
@@ -436,6 +568,30 @@ test("the Ego Playwright transport supplies Browser metadata and accepts unsuppo
   assert.equal(received[0].result.protocolVersion, "1.3");
   assert.match(received[0].result.product, /^Chrome\//);
   assert.deepEqual(received[1], { id: 12, result: {} });
+  transport.close();
+});
+
+test("the Ego Playwright transport preserves browser CDPSession ids on compatibility responses", async () => {
+  const transport = egoTransport.createEgoCdpTransport({
+    sendCDPMessage() {
+      throw new Error("compatibility commands must not reach native CDP");
+    },
+  });
+  const received = [];
+  transport.onmessage = (message) => received.push(message);
+
+  transport.send({
+    id: 13,
+    method: "Browser.getVersion",
+    params: {},
+    sessionId: "browser-session",
+  });
+
+  await waitForImmediate();
+  assert.equal(received.length, 1);
+  assert.equal(received[0].id, 13);
+  assert.equal(received[0].sessionId, "browser-session");
+  assert.equal(received[0].result.protocolVersion, "1.3");
   transport.close();
 });
 
@@ -889,7 +1045,7 @@ test("the Ego Playwright transport keeps the Playwright Page identity while repl
   transport.close();
 });
 
-async function createNavigatedCdpSessionTransport() {
+async function createNavigatedCdpSessionTransport({ detachError = false } = {}) {
   let nextNativeId = 1_000_000_450;
   let replacementAttachCount = 0;
   const sent = [];
@@ -955,6 +1111,27 @@ async function createNavigatedCdpSessionTransport() {
                 : "cdp-command-result",
           },
         };
+      } else if (request.method === "Network.getAllCookies") {
+        result = {
+          cookies: [
+            {
+              name: "session",
+              value: "selected-task-space",
+              domain: "example.test",
+              path: "/",
+              expires: -1,
+              size: 30,
+              httpOnly: true,
+              secure: true,
+              session: true,
+              sameSite: "Lax",
+              priority: "Medium",
+              sameParty: false,
+              sourceScheme: "Secure",
+              sourcePort: 443,
+            },
+          ],
+        };
       }
       if (request.method === "Target.detachFromTarget") {
         queueMicrotask(() => {
@@ -973,7 +1150,14 @@ async function createNavigatedCdpSessionTransport() {
         runtime.onCDPMessage(
           JSON.stringify({
             id: request.id,
-            result,
+            ...(detachError && request.method === "Target.detachFromTarget"
+              ? {
+                  error: {
+                    code: -32_000,
+                    message: "Target page, context or browser has been closed",
+                  },
+                }
+              : { result }),
             ...(request.sessionId ? { sessionId: request.sessionId } : {}),
           }),
         );
@@ -1097,7 +1281,9 @@ test("the Ego Playwright transport maps CDPSession commands and events to the na
 });
 
 test("detaching a Playwright CDPSession preserves the primary page route", async () => {
-  const harness = await createNavigatedCdpSessionTransport();
+  const harness = await createNavigatedCdpSessionTransport({
+    detachError: true,
+  });
   await attachPlaywrightCdpSession(harness);
   harness.received.length = 0;
   harness.sent.length = 0;
@@ -1108,18 +1294,17 @@ test("detaching a Playwright CDPSession preserves the primary page route", async
     params: { sessionId: "playwright-cdp-session" },
   });
   for (let index = 0; index < 3; index += 1) await waitForImmediate();
-  assert.deepEqual(
-    harness.received.find(
+  assert.equal(
+    harness.received.some(
       (message) => message.method === "Target.detachedFromTarget",
     ),
-    {
-      method: "Target.detachedFromTarget",
-      params: {
-        sessionId: "playwright-cdp-session",
-        targetId: "client-target",
-      },
-    },
+    false,
+    "an explicit detach completes from its command response without racing a detach event",
   );
+  assert.deepEqual(harness.received.find((message) => message.id === 54), {
+    id: 54,
+    result: {},
+  });
 
   harness.transport.send({
     id: 55,
@@ -1133,6 +1318,49 @@ test("detaching a Playwright CDPSession preserves the primary page route", async
     harness.received.find((message) => message.id === 55)?.sessionId,
     "client-session",
   );
+  harness.transport.close();
+});
+
+test("browser-level Storage cookie commands use the selected TaskSpace session", async () => {
+  const harness = await createNavigatedCdpSessionTransport();
+  harness.sent.length = 0;
+  harness.received.length = 0;
+
+  harness.transport.send({ id: 56, method: "Storage.getCookies", params: {} });
+  for (let index = 0; index < 3; index += 1) await waitForImmediate();
+
+  assert.equal(harness.sent[0].method, "Network.getAllCookies");
+  assert.equal(harness.sent[0].sessionId, "replacement-session");
+  assert.equal(
+    harness.received.find((message) => message.id === 56)?.result.cookies[0]
+      .value,
+    "selected-task-space",
+  );
+  harness.transport.send({
+    id: 57,
+    method: "Storage.setCookies",
+    params: {
+      cookies: [
+        {
+          name: "session",
+          value: "updated",
+          domain: "example.test",
+          path: "/",
+        },
+      ],
+    },
+  });
+  harness.transport.send({
+    id: 58,
+    method: "Storage.clearCookies",
+    params: {},
+  });
+  for (let index = 0; index < 3; index += 1) await waitForImmediate();
+  assert.equal(harness.sent[1].method, "Network.setCookies");
+  assert.equal(harness.sent[1].sessionId, "replacement-session");
+  assert.equal(harness.sent[1].params.cookies[0].value, "updated");
+  assert.equal(harness.sent[2].method, "Network.clearBrowserCookies");
+  assert.equal(harness.sent[2].sessionId, "replacement-session");
   harness.transport.close();
 });
 
@@ -1153,7 +1381,7 @@ test("closing the Playwright transport detaches its additional CDPSessions", asy
   assert.equal(harness.transport.closed, true);
 });
 
-test("the Ego Playwright transport completes Page.navigate when the replacement document commits", async () => {
+test("the Ego Playwright transport reports the committed redirect URL for Page.navigate", async () => {
   let nextNativeId = 1_000_000_325;
   const runtime = {
     async createTab() {
@@ -1169,7 +1397,7 @@ test("the Ego Playwright transport completes Page.navigate when the replacement 
             type: "page",
             url:
               request.params.targetId === "replacement-target"
-                ? "https://example.test/slow"
+                ? "https://example.test/redirect-target"
                 : "about:blank",
           },
         };
@@ -1194,13 +1422,29 @@ test("the Ego Playwright transport completes Page.navigate when the replacement 
                   : "client-loader",
               url:
                 request.sessionId === "replacement-session"
-                  ? "https://example.test/slow"
+                  ? "https://example.test/redirect-target"
                   : "about:blank",
             },
           },
         };
       } else if (request.method === "Runtime.evaluate") {
-        result = { result: { type: "string", value: "loading" } };
+        result = {
+          result: {
+            type:
+              request.params.expression === "document.readyState"
+                ? "string"
+                : "object",
+            value:
+              request.params.expression === "document.readyState"
+                ? "complete"
+                : {
+                    url: "https://example.test/redirect-target",
+                    readyState: "complete",
+                    contentType: "text/html",
+                    responseStatus: 200,
+                  },
+          },
+        };
       }
       queueMicrotask(() => {
         runtime.onCDPMessage(
@@ -1233,13 +1477,17 @@ test("the Ego Playwright transport completes Page.navigate when the replacement 
     method: "Page.navigate",
     params: {
       frameId: "client-frame",
-      url: "https://example.test/slow",
+      url: "https://example.test/redirect",
     },
     sessionId: "client-session",
   });
   const deadline = Date.now() + 150;
   while (
-    !received.some((message) => message.id === 36) &&
+    !received.some(
+      (message) =>
+        message.method === "Page.lifecycleEvent" &&
+        message.params?.name === "load",
+    ) &&
     Date.now() < deadline
   ) {
     await new Promise((resolve) => setTimeout(resolve, 10));
@@ -1257,6 +1505,30 @@ test("the Ego Playwright transport completes Page.navigate when the replacement 
       sessionId: "client-session",
     },
   );
+  const requestIndex = received.findIndex(
+    (message) => message.method === "Network.requestWillBeSent",
+  );
+  const responseIndex = received.findIndex(
+    (message) => message.method === "Network.responseReceived",
+  );
+  const frameIndex = received.findIndex(
+    (message) => message.method === "Page.frameNavigated",
+  );
+  const finishedIndex = received.findIndex(
+    (message) => message.method === "Network.loadingFinished",
+  );
+  assert.ok(requestIndex !== -1 && requestIndex < frameIndex);
+  assert.ok(responseIndex !== -1 && responseIndex < frameIndex);
+  assert.ok(finishedIndex > frameIndex);
+  assert.equal(
+    received[requestIndex].params.request.url,
+    "https://example.test/redirect-target",
+  );
+  assert.equal(
+    received[responseIndex].params.response.url,
+    "https://example.test/redirect-target",
+  );
+  assert.equal(received[responseIndex].params.response.status, 200);
 });
 
 test("the Ego Playwright transport completes passive same-target navigations for Playwright", async () => {
@@ -1830,6 +2102,87 @@ test("the Ego Playwright transport confirms native tab removal before completing
       result: { success: true },
     },
   );
+  transport.close();
+});
+
+test("Page.close replies before native close events reach Playwright", async () => {
+  let listCalls = 0;
+  const runtime = {
+    async listTabs() {
+      listCalls += 1;
+      return listCalls < 2
+        ? { tabs: [{ targetId: "closing-target" }] }
+        : { tabs: [] };
+    },
+    sendCDPMessage(payload) {
+      const request = JSON.parse(payload);
+      if (request.method !== "Target.closeTarget") return;
+      queueMicrotask(() => {
+        runtime.onCDPMessage(
+          JSON.stringify({
+            method: "Inspector.detached",
+            params: { reason: "Render process gone." },
+            sessionId: "closing-session",
+          }),
+        );
+        runtime.onCDPMessage(
+          JSON.stringify({
+            method: "Target.detachedFromTarget",
+            params: {
+              sessionId: "closing-session",
+              targetId: "closing-target",
+            },
+          }),
+        );
+        runtime.onCDPMessage(
+          JSON.stringify({
+            method: "Target.targetDestroyed",
+            params: { targetId: "closing-target" },
+          }),
+        );
+      });
+    },
+  };
+  const transport = egoTransport.createEgoCdpTransport(runtime, {
+    targetIds: ["closing-target"],
+  });
+  const received = [];
+  transport.onmessage = (message) => received.push(message);
+
+  runtime.onCDPMessage(
+    JSON.stringify({
+      method: "Target.attachedToTarget",
+      params: {
+        sessionId: "closing-session",
+        targetInfo: { targetId: "closing-target", type: "page" },
+        waitingForDebugger: false,
+      },
+    }),
+  );
+  await waitForImmediate();
+  received.length = 0;
+
+  transport.send({
+    id: 45,
+    method: "Target.closeTarget",
+    params: { targetId: "closing-target" },
+  });
+
+  const deadline = Date.now() + 500;
+  while (!received.some((message) => message.id === 45) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+
+  assert.deepEqual(received, [
+    { id: 45, result: { success: true } },
+    {
+      method: "Target.detachedFromTarget",
+      params: {
+        sessionId: "closing-session",
+        targetId: "closing-target",
+      },
+    },
+  ]);
   transport.close();
 });
 

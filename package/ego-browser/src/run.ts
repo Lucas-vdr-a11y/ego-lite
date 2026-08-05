@@ -9,6 +9,7 @@ import * as helpers from "./helpers.js";
 import { installLegacySkillGuards } from "./legacy-skill-guard.js";
 import { bufferOutput, flushSink, resetSink } from "./output-sink.js";
 import { disconnectPlaywrightTaskSpace } from "./playwright/taskspace.js";
+import { releaseTaskSpaceLease } from "./taskspace-lease.js";
 
 type WritableLike = {
   write(chunk: string): unknown;
@@ -129,6 +130,7 @@ async function execute(code: string, stdout: WritableLike) {
   } catch (error) {
     thrown ??= error;
   }
+  releaseTaskSpaceLease();
   thrown = addExecutionHint(thrown);
   // A thrown Error surfaces a hard-stop message on its own, so flush as a thrown
   // completion (drop the buffer, stay silent) and let it propagate.

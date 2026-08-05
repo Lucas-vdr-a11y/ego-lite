@@ -14,12 +14,18 @@ import {
   setPlaywrightTaskSpaceConnector,
 } from "./playwright/taskspace.js";
 import {
+  acquireTaskSpaceLease,
+  releaseTaskSpaceLease,
+} from "./taskspace-lease.js";
+import {
   loadBrowserToolSource,
   loadLearnedContext,
   runNodeSiteTool,
   siteSkillsForUrl as siteSkillsForUrlCore,
   wrapBrowserTool,
 } from "./learning/index.js";
+
+const nativeFetch = globalThis.fetch?.bind(globalThis);
 
 export { NAME } from "./state.js";
 export { cdp } from "./cdp-eval.js";
@@ -167,6 +173,25 @@ export async function newTaskSpace(name, profileId?: string) {
   if (!ego || typeof ego.createTaskSpace !== "function") {
     throw new Error("newTaskSpace requires ego.createTaskSpace");
   }
+  const existing = (await listTaskSpaces()).find(
+    (space) => space.name === name,
+  );
+  if (existing) {
+    const id = taskSpaceNumericId(existing, "newTaskSpace");
+    if (isAgentOwned(existing.ownership)) {
+      throw new Error(
+        `newTaskSpace cannot create ${JSON.stringify(name)}: TaskSpace ${id} already uses this name and is agent-owned; use egoBrowser.switchTaskSpace(${id}) or choose a unique name`,
+      );
+    }
+    if (existing.ownership === "user") {
+      throw new Error(
+        `newTaskSpace cannot create ${JSON.stringify(name)}: TaskSpace ${id} already uses this name and is user-owned; choose a unique name or close it with egoBrowser.closeTaskSpace(${id})`,
+      );
+    }
+    throw new Error(
+      `newTaskSpace cannot create ${JSON.stringify(name)}: TaskSpace ${id} already uses this name with ownership ${JSON.stringify(existing.ownership)}`,
+    );
+  }
   const result =
     profileId === undefined
       ? await ego.createTaskSpace(name)
@@ -177,37 +202,6 @@ export async function newTaskSpace(name, profileId?: string) {
   }
   taskSpaceNumericId(created, "newTaskSpace");
   return selectTaskSpace(ego, created, "newTaskSpace");
-}
-
-/**
- * Use an existing agent-owned task space, or create it when missing. User-owned
- * spaces are selected but not claimed (the EGO_TASK_SPACE_USER_IN_CONTROL error
- * surfaces) — call claimTaskSpace(nameOrId) to take ownership.
- * @param {string|number} nameOrId Task space name or numeric id.
- * @returns {Promise<{taskId:string,id:number,name:string,createdBy?:string,ownership?:string,recentTabTitles?:string[]}>}
- */
-export async function useOrCreateTaskSpace(nameOrId) {
-  const spaces = await listTaskSpaces();
-  const existing = findMatchingTaskSpace(spaces, nameOrId);
-  if (!existing) {
-    if (typeof nameOrId === "number") {
-      throw new Error(`task space not found: ${nameOrId}`);
-    }
-    return newTaskSpace(nameOrId);
-  }
-  if (isAgentOwned(existing.ownership)) {
-    return selectTaskSpace(globalThis.ego, existing, "useOrCreateTaskSpace");
-  }
-  if (existing.ownership === "user") {
-    // Don't claim user-owned spaces here. Select it as-is; the user stays in
-    // control, so EGO_TASK_SPACE_USER_IN_CONTROL surfaces (as ego-browser's owned
-    // guidance, not the raw native text). Call claimTaskSpace(nameOrId) to take
-    // ownership.
-    return selectTaskSpace(globalThis.ego, existing, "useOrCreateTaskSpace");
-  }
-  throw new Error(
-    `useOrCreateTaskSpace cannot use task space ${JSON.stringify(nameOrId)} with ownership ${JSON.stringify(existing.ownership)}`,
-  );
 }
 
 /**
@@ -244,7 +238,13 @@ async function selectTaskSpace(ego, space, op: string) {
   }
   const id = taskSpaceNumericId(space, op);
   await disconnectPlaywrightTaskSpaceForSelection(space);
-  assertNoEgoError(await ego.useTaskSpace(id), op);
+  await acquireTaskSpaceLease(id);
+  try {
+    assertNoEgoError(await ego.useTaskSpace(id), op);
+  } catch (error) {
+    releaseTaskSpaceLease(id);
+    throw error;
+  }
   return space;
 }
 
@@ -527,9 +527,16 @@ async function currentTaskSpaceUrl() {
   return tabs.find((tab) => tab.active)?.url || tabs.at(-1)?.url || "";
 }
 
-function createEgoBrowserFacade() {
+function createEgoBrowserFacade(site) {
   const wrapTaskSpace = async (space) => {
-    const playwright = await connectPlaywrightTaskSpace(space);
+    const id = taskSpaceNumericId(space, "TaskSpace Playwright connection");
+    let playwright;
+    try {
+      playwright = await connectPlaywrightTaskSpace(space);
+    } catch (error) {
+      releaseTaskSpaceLease(id);
+      throw error;
+    }
     const task = {
       ...space,
     };
@@ -542,6 +549,7 @@ function createEgoBrowserFacade() {
   };
   return {
     helper: egoBrowserHelper,
+    site,
     showTaskState,
     snapshot,
     listProfile: listProfiles,
@@ -550,8 +558,6 @@ function createEgoBrowserFacade() {
       wrapTaskSpace(await newTaskSpace(name, profileId)),
     switchTaskSpace: async (nameOrId) =>
       wrapTaskSpace(await switchTaskSpace(nameOrId)),
-    useOrCreateTaskSpace: async (nameOrId) =>
-      wrapTaskSpace(await useOrCreateTaskSpace(nameOrId)),
     claimTaskSpace: async (nameOrId) =>
       wrapTaskSpace(await claimTaskSpace(nameOrId)),
     handOffTaskSpace: async (nameOrId) => {
@@ -579,6 +585,7 @@ function createEgoBrowserFacade() {
 
 function createSiteFacade() {
   return {
+    discover: siteSkills,
     skills: siteSkills,
     skillsForUrl: siteSkillsForUrl,
     runTool: runSiteTool,
@@ -588,7 +595,13 @@ function createSiteFacade() {
 }
 
 function egoBrowserHelper(name = "egoBrowser") {
-  const result = helpRuntime({}, name);
+  const canonicalName =
+    name === "site"
+      ? "egoBrowser.site"
+      : name.startsWith("site.")
+        ? `egoBrowser.${name}`
+        : name;
+  const result = helpRuntime({}, canonicalName);
   if (typeof result === "string") return result;
   if (Array.isArray(result)) {
     return result
@@ -598,14 +611,20 @@ function egoBrowserHelper(name = "egoBrowser") {
   return formatHelp(result);
 }
 
+function createFetchFacade() {
+  const fetch = nativeFetch || (() => Promise.reject(new Error("fetch is unavailable")));
+  return Object.assign(fetch, {
+    server: serverFetch,
+    browser: browserFetch,
+  });
+}
+
 export function helperContext(extra: any = {}) {
+  const site = createSiteFacade();
   const all = {
-    egoBrowser: createEgoBrowserFacade(),
-    site: createSiteFacade(),
-    fetch: {
-      server: serverFetch,
-      browser: browserFetch,
-    },
+    egoBrowser: createEgoBrowserFacade(site),
+    site,
+    fetch: createFetchFacade(),
     cdp,
     ...extra,
   };

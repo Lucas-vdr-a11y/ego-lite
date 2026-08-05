@@ -190,14 +190,14 @@ test("an uncaught browser-global ReferenceError points to task.page.evaluate", a
 
 test("an uncaught legacy task-space helper reports a stale skill instead of a ReferenceError", async () => {
   const result = await runScript(`
-    await useOrCreateTaskSpace("checkout-flow");
+    await newTaskSpace("checkout-flow");
   `);
 
   assert.ok(result.error, "expected runMain to reject");
   assert.equal(result.error.name, "EgoBrowserSkillStaleError");
   assert.match(result.error.message, /^\[ego-browser:skill-stale\]/);
-  assert.match(result.error.message, /useOrCreateTaskSpace/);
-  assert.match(result.error.message, /egoBrowser\.useOrCreateTaskSpace/);
+  assert.match(result.error.message, /newTaskSpace/);
+  assert.match(result.error.message, /egoBrowser\.newTaskSpace/);
   assert.doesNotMatch(result.error.message, /is not defined/);
   assert.equal(result.stdout, "");
 });
@@ -206,7 +206,7 @@ test("a swallowed legacy task-space helper collapses output to one stale-skill m
   const result = await runScript(`
     console.log("before");
     try {
-      await useOrCreateTaskSpace("checkout-flow");
+      await newTaskSpace("checkout-flow");
     } catch (error) {
       console.log("swallowed: " + error.message);
     }
@@ -216,7 +216,7 @@ test("a swallowed legacy task-space helper collapses output to one stale-skill m
   assert.equal(result.exitCode, 0);
   assert.equal(result.error, null);
   assert.match(result.stdout, /^\[ego-browser:skill-stale\]/);
-  assert.match(result.stdout, /egoBrowser\.useOrCreateTaskSpace/);
+  assert.match(result.stdout, /egoBrowser\.newTaskSpace/);
   assert.doesNotMatch(result.stdout, /before|swallowed|after/);
   assert.equal(result.stdout.match(/\[ego-browser:skill-stale\]/g)?.length, 1);
 });
