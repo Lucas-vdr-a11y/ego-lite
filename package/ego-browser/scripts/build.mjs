@@ -5,6 +5,7 @@ import {
   open,
   readFile,
   readdir,
+  rename,
   rm,
   writeFile,
 } from "node:fs/promises";
@@ -18,6 +19,10 @@ import resolve from "@rollup/plugin-node-resolve";
 import typescript from "@rollup/plugin-typescript";
 
 import { extractHelpDocs } from "./extract-help-docs.mjs";
+import {
+  assertPlaywrightBundleInputs,
+  playwrightCoreBundlePlugin,
+} from "./playwright-core-bundle-plugin.mjs";
 
 const HELP_DOCS_PLACEHOLDER = '"__EGO_EMBEDDED_HELP_DOCS__"';
 
@@ -70,6 +75,8 @@ try {
     external: [
       ...builtinModules,
       ...builtinModules.map((m) => `node:${m}`),
+      "#playwright-runtime",
+      "#playwright-transport",
       "playwright-core",
     ],
     plugins: [
@@ -89,6 +96,38 @@ try {
   await bundle.close();
 
   await embedHelpDocs(bundledCli, join(distDir, "src", "help-runtime.js"));
+
+  const minifiedBundle = join(outDir, "index.bundle.js");
+  const bundleResult = await build({
+    ...common,
+    banner: {
+      js: 'import { createRequire as __createRequire } from "node:module"; import { dirname as __pathDirname } from "node:path"; import { fileURLToPath as __fileURLToPath } from "node:url"; const require = __createRequire(import.meta.url); const __filename = __fileURLToPath(import.meta.url); const __dirname = __pathDirname(__filename);',
+    },
+    bundle: true,
+    entryPoints: [bundledCli],
+    keepNames: false,
+    legalComments: "none",
+    metafile: true,
+    minify: true,
+    outfile: minifiedBundle,
+    plugins: [playwrightCoreBundlePlugin()],
+    sourcemap: false,
+  });
+  assertPlaywrightBundleInputs(bundleResult.metafile);
+  await rename(minifiedBundle, bundledCli);
+
+  const playwrightPackageDir = join(root, "node_modules", "playwright-core");
+  const noticeFiles = ["LICENSE", "NOTICE", "ThirdPartyNotices.txt"];
+  const notices = await Promise.all(
+    noticeFiles.map(async (name) => {
+      const contents = await readFile(join(playwrightPackageDir, name), "utf8");
+      return `===== playwright-core ${name} =====\n\n${contents.trim()}\n`;
+    }),
+  );
+  await writeFile(
+    join(outDir, "THIRD_PARTY_LICENSES.txt"),
+    `${notices.join("\n")}\n`,
+  );
 
   await cp(skillSourceDir, bundledSkillDir, { recursive: true });
   await chmod(bundledCli, 0o755);
