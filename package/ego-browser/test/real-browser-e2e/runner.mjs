@@ -16,7 +16,8 @@ import { promisify } from "node:util";
 
 import { egoSource } from "./ego-source.mjs";
 import { closeFixtureServer, startFixtureServer } from "./fixture.mjs";
-import { runCommand } from "./run-command.mjs";
+import { createCodexCommandTools } from "./codex-command.mjs";
+import { cancelCommandSession, runCommand } from "./run-command.mjs";
 import { e2eCases } from "./suites/index.mjs";
 import {
   createNodeBridgeSmokeSource,
@@ -35,6 +36,20 @@ export const WEB_LANE_COUNT = 1;
 const verboseCaseOutput =
   process.env.EGO_BROWSER_REAL_E2E_VERBOSE_CASE_OUTPUT === "1" ||
   process.env.EGO_BROWSER_REAL_E2E_VERBOSE_CASE_OUTPUT === "true";
+
+export function nodeBridgeSmokeConfigurations(sdkPath) {
+  return [
+    {
+      name: "bundled nodejs bridge smoke",
+      args: ["nodejs"],
+    },
+    {
+      name: "worktree nodejs bridge smoke",
+      args: ["nodejs", "--sdk-path", sdkPath],
+      egoBrowserSdkPath: sdkPath,
+    },
+  ];
+}
 
 export function createCaseContext(context, keepTaskSpace) {
   return { ...context, keepTaskSpace };
@@ -153,6 +168,23 @@ export async function waitForNodeRoundToSettle(delayMs = 300) {
   await new Promise((resolve) => setTimeout(resolve, delayMs));
 }
 
+export async function waitForJsonFile(path, timeoutMs = 10000) {
+  const deadline = Date.now() + timeoutMs;
+  while (true) {
+    try {
+      return JSON.parse(await readFile(path, "utf8"));
+    } catch (error) {
+      if (error?.code !== "ENOENT" && !(error instanceof SyntaxError)) {
+        throw error;
+      }
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(`timed out waiting for JSON file: ${path}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}
+
 export function partitionE2eCases(testCases, laneCount) {
   if (!Number.isInteger(laneCount) || laneCount < 1) {
     throw new TypeError("laneCount must be a positive integer");
@@ -257,8 +289,8 @@ export async function runRealBrowserE2e() {
     caseResults.push({ name, status, durationMs, assertionCount, message });
   }
 
-  async function runNodeBridgeSmoke(timeoutMs = 15000) {
-    const name = "nodejs bridge smoke";
+  async function runNodeBridgeSmoke(configuration, timeoutMs = 15000) {
+    const { name, args, egoBrowserSdkPath: sdkPath } = configuration;
     console.log(`-- ${name}`);
     const startedAt = Date.now();
     const marker = `EGO_NODEJS_BRIDGE_SMOKE_${Date.now()}`;
@@ -272,10 +304,10 @@ export async function runRealBrowserE2e() {
     try {
       const { stdout, stderr } = await runCommand(
         "ego-browser",
-        egoBrowserArgs,
+        args,
         {
           cwd: packageDir,
-          egoBrowserSdkPath,
+          ...(sdkPath ? { egoBrowserSdkPath: sdkPath } : {}),
           echo: verboseCaseOutput,
           input: source,
           timeoutMs,
@@ -305,7 +337,11 @@ export async function runRealBrowserE2e() {
   }
 
   async function maybeRunNodeBridgeSmoke() {
-    await runNodeBridgeSmoke();
+    for (const configuration of nodeBridgeSmokeConfigurations(
+      egoBrowserSdkPath,
+    )) {
+      await runNodeBridgeSmoke(configuration);
+    }
   }
 
   async function runEgoCase(name, body, timeoutMs = 45000, options = {}) {
@@ -412,6 +448,10 @@ export async function runRealBrowserE2e() {
   }
 
   async function maybeRunEgoCase(testCase, timeoutMs = 45000, options = {}) {
+    if (testCase.processContention === true) {
+      await runProcessContentionCase(testCase, timeoutMs, options);
+      return;
+    }
     if (!shouldRunE2eCase(testCase, onlyCases)) {
       console.log(`-- ${testCase.name} (skipped)`);
       recordResult(testCase.name, "skip", 0, 0);
@@ -466,6 +506,159 @@ export async function runRealBrowserE2e() {
       console.log(
         `-- ${testCase.name} passed (${formatDuration(durationMs)}, ${assertionCount} assertions)`,
       );
+    }
+  }
+
+  async function runProcessContentionCase(
+    testCase,
+    timeoutMs = 45000,
+    options = {},
+  ) {
+    if (!shouldRunE2eCase(testCase, onlyCases)) {
+      console.log(`-- ${testCase.name} (skipped)`);
+      recordResult(testCase.name, "skip", 0, 0);
+      return;
+    }
+
+    console.log(`-- ${testCase.name}`);
+    const startedAt = Date.now();
+    const rounds = e2eCaseRounds(testCase);
+    const caseTimeoutMs = testCase.timeoutMs ?? timeoutMs;
+    const readyPath = join(tempDir, "process-contention-ready.json");
+    const holderReadyPath = join(
+      tempDir,
+      "process-contention-holder-ready.json",
+    );
+    const holderResultPath = join(
+      tempDir,
+      `case-result-${nextCaseResultId++}.json`,
+    );
+    let assertionCount = 0;
+    let holderOutput = "";
+    let holderResult;
+    let holderSessionId;
+    const codexTools = createCodexCommandTools();
+
+    await Promise.all(
+      [readyPath, holderReadyPath, holderResultPath].map((path) =>
+        rm(path, { force: true }),
+      ),
+    );
+
+    try {
+      const setup = await runEgoCase(
+        `${testCase.name} setup`,
+        rounds[0](),
+        caseTimeoutMs,
+        { visible: false, record: false, context: options.context },
+      );
+      assertionCount += setup.assertionCount;
+      if (setup.status === "fail") {
+        throw new Error(`setup: ${setup.message}`);
+      }
+
+      const holderSource = egoSource(
+        rounds[1](),
+        createCaseContext(
+          {
+            ...context,
+            ...options.context,
+            caseResultPath: holderResultPath,
+          },
+          keepTaskSpace,
+        ),
+      );
+      holderResult = await codexTools.exec_command({
+        cmd: "ego-browser",
+        args: egoBrowserArgs,
+        cwd: packageDir,
+        egoBrowserSdkPath,
+        echo: verboseCaseOutput,
+        input: holderSource,
+        timeout_ms: testCase.holderTimeoutMs,
+        yield_time_ms: 250,
+      });
+      holderOutput += holderResult.output || "";
+      holderSessionId = holderResult.session_id;
+      if (!holderSessionId) {
+        throw new Error(
+          `TaskSpace holder exited before signalling ready (exit ${holderResult.exit_code})`,
+        );
+      }
+      await waitForJsonFile(
+        holderReadyPath,
+        Math.min(testCase.holderTimeoutMs, 15_000),
+      );
+
+      const contender = await runEgoCase(
+        "TaskSpace process contender",
+        rounds[2](),
+        caseTimeoutMs,
+        { visible: false, record: false, context: options.context },
+      );
+      assertionCount += contender.assertionCount;
+      if (contender.status === "fail") {
+        throw new Error(`contender: ${contender.message}`);
+      }
+
+      while (holderResult.session_id) {
+        holderResult = await codexTools.write_stdin({
+          session_id: holderResult.session_id,
+          yield_time_ms: 1_000,
+        });
+        holderOutput += holderResult.output || "";
+      }
+      if (
+        holderResult.timed_out !== true ||
+        !Number.isInteger(holderResult.exit_code)
+      ) {
+        throw new Error(
+          `TaskSpace holder completed without the expected timeout: ${JSON.stringify(holderResult)}`,
+        );
+      }
+      if (/NodeRuntime disconnected/.test(holderOutput)) {
+        throw new Error(
+          "holder leaked a raw NodeRuntime disconnect diagnostic",
+        );
+      }
+      assertionCount += 1;
+
+      await waitForNodeRoundToSettle(1_000);
+
+      const recovery = await runEgoCase(
+        `${testCase.name} recovery`,
+        rounds[3](),
+        caseTimeoutMs,
+        { visible: false, record: false, context: options.context },
+      );
+      assertionCount += recovery.assertionCount;
+      if (recovery.status === "fail") {
+        throw new Error(`recovery: ${recovery.message}`);
+      }
+
+      const durationMs = Date.now() - startedAt;
+      recordResult(testCase.name, "pass", durationMs, assertionCount);
+      console.log(
+        `-- ${testCase.name} passed (${formatDuration(durationMs)}, ${assertionCount} assertions)`,
+      );
+    } catch (error) {
+      const durationMs = Date.now() - startedAt;
+      const message = error?.message || String(error);
+      recordResult(testCase.name, "fail", durationMs, assertionCount, message);
+      console.error(
+        `[FAIL] ${testCase.name} (${formatDuration(durationMs)}): ${message}`,
+      );
+    } finally {
+      if (holderResult?.session_id && holderSessionId) {
+        cancelCommandSession(holderSessionId);
+        do {
+          holderResult = await codexTools.write_stdin({
+            session_id: holderSessionId,
+            yield_time_ms: 1_000,
+          });
+        } while (holderResult.session_id);
+      }
+      await waitForNodeRoundToSettle();
     }
   }
 

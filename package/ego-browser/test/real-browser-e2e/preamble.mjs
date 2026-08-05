@@ -1,5 +1,5 @@
 // Injected into each real-browser test script.
-const { writeFile } = await import("node:fs/promises");
+const { readFile, writeFile } = await import("node:fs/promises");
 const { join } = await import("node:path");
 
 let __assertionCount = 0;
@@ -73,4 +73,18 @@ async function assertRejects(fn, expected, message) {
     return;
   }
   throw new Error(`${message}: expected rejection`);
+}
+
+async function openE2eTaskSpace(name) {
+  const matches = (await egoBrowser.listTaskSpace()).filter(
+    (space) => space.name === name,
+  );
+  if (matches.length > 1) {
+    throw new Error(
+      `E2E fixture found duplicate TaskSpaces named ${JSON.stringify(name)}`,
+    );
+  }
+  return matches.length === 1
+    ? egoBrowser.switchTaskSpace(matches[0].id)
+    : egoBrowser.newTaskSpace(name);
 }

@@ -21,6 +21,7 @@ export function egoSource(body, context) {
     xmlParserUrl,
     keepTaskSpace,
     caseResultPath,
+    commandCancelPath,
   } = context;
   return `
     ${preamble}
@@ -43,8 +44,21 @@ export function egoSource(body, context) {
     const xmlParserUrl = ${JSON.stringify(xmlParserUrl)};
     const keepTaskSpace = ${JSON.stringify(keepTaskSpace)};
     const caseResultPath = ${JSON.stringify(caseResultPath)};
+    const commandCancelPath = ${JSON.stringify(commandCancelPath)};
     if (ffmpegPath) process.env.EGO_BROWSER_FFMPEG_PATH = ffmpegPath;
     if (ffprobePath) process.env.EGO_BROWSER_FFPROBE_PATH = ffprobePath;
+
+    if (commandCancelPath) {
+      const commandCancelTimer = setInterval(async () => {
+        try {
+          await readFile(commandCancelPath);
+          process.exit(124);
+        } catch (error) {
+          if (error?.code !== "ENOENT") throw error;
+        }
+      }, 25);
+      process.once("exit", () => clearInterval(commandCancelTimer));
+    }
 
     try {
       ${body}

@@ -6,6 +6,7 @@ import { closeFixtureServer, startFixtureServer } from "./fixture.mjs";
 import { TEST_CASES } from "./site/test-cases.mjs";
 
 const { createTestSiteApp } = await import("./site/dist/server.mjs");
+const { default: createViteConfig } = await import("./site/vite.config.js");
 
 const interactiveRoutes = [
   "clicks",
@@ -29,6 +30,12 @@ test("Hono test site exposes a Vite development command", async () => {
   );
 
   assert.equal(packageJson.scripts.dev, "vite");
+});
+
+test("Vite development server stays scoped to localhost", () => {
+  const config = createViteConfig({ command: "serve", mode: "development" });
+
+  assert.equal(config.server?.host, "localhost");
 });
 
 test("Hono test site uses local Bootstrap CSS without Bootstrap JavaScript", async () => {
@@ -86,6 +93,23 @@ test("download fixture records real archive requests", async () => {
   );
   assert.equal(await download.text(), "ego-browser download fixture\n");
   assert.equal(after.requests, 1);
+});
+
+test("frames fixture embeds the OpenStreetMap iframe example", async () => {
+  const app = createTestSiteApp("nested-map-test");
+  const checkoutHtml = await (await app.request("/frames/content")).text();
+  const mapResponse = await app.request("/frames/map");
+
+  assert.match(
+    checkoutHtml,
+    /<iframe[^>]+title=["']Pickup location map["'][^>]*>/,
+  );
+  assert.match(
+    checkoutHtml,
+    /src=["']https:\/\/www\.openstreetmap\.org\/export\/embed\.html\?bbox=-0\.004017949104309083%2C51\.47612752641776%2C0\.00030577182769775396%2C51\.478569861898606&amp;layer=mapnik["']/,
+  );
+  assert.match(checkoutHtml, /loading=["']lazy["']/);
+  assert.equal(mapResponse.status, 404);
 });
 
 test("Hono test site promotes its route list to the page heading", async () => {
@@ -230,12 +254,73 @@ test("Hono test site shares scenario progress between browser processes", async 
     new URL("./site/src/progress/client.js", import.meta.url),
     "utf8",
   );
-  assert.match(
-    client,
-    /new EventSource\(["']\/api\/test-progress\/events["']\)/,
-  );
+  assert.match(client, /new WebSocket\(/);
+  assert.match(client, /\/api\/test-progress\/events/);
+  assert.doesNotMatch(client, /new EventSource\(/);
   assert.doesNotMatch(client, /localStorage/);
 });
+
+test(
+  "running test site broadcasts progress to more than six realtime clients",
+  { timeout: 5_000 },
+  async (t) => {
+    const fixture = await startFixtureServer("realtime-progress-test");
+    const clients = Array.from({ length: 8 }, () => {
+      const socket = new WebSocket(
+        fixture.baseUrl.replace(/^http/, "ws") + "/api/test-progress/events",
+      );
+      const messages = [];
+      const waiters = [];
+      socket.addEventListener("message", (event) => {
+        const payload = JSON.parse(String(event.data));
+        const waiter = waiters.shift();
+        if (waiter) waiter(payload);
+        else messages.push(payload);
+      });
+      return {
+        socket,
+        opened: new Promise((resolve, reject) => {
+          socket.addEventListener("open", resolve, { once: true });
+          socket.addEventListener("error", reject, { once: true });
+        }),
+        nextMessage() {
+          if (messages.length > 0) return Promise.resolve(messages.shift());
+          return new Promise((resolve) => waiters.push(resolve));
+        },
+      };
+    });
+    t.after(async () => {
+      for (const client of clients) client.socket.close();
+      await closeFixtureServer(fixture.server);
+    });
+
+    await Promise.all(clients.map((client) => client.opened));
+    const initial = await Promise.all(
+      clients.map((client) => client.nextMessage()),
+    );
+    assert.deepEqual(
+      initial,
+      Array.from({ length: 8 }, () => ({ progress: {} })),
+    );
+
+    const updates = clients.map((client) => client.nextMessage());
+    const response = await fetch(
+      `${fixture.baseUrl}/api/test-progress/clicks`,
+      {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ status: "in-progress" }),
+      },
+    );
+    assert.equal(response.status, 200);
+    assert.deepEqual(
+      await Promise.all(updates),
+      Array.from({ length: 8 }, () => ({
+        progress: { clicks: "in-progress" },
+      })),
+    );
+  },
+);
 
 test("Hono test site exposes the health endpoint used by native Playwright e2e", async () => {
   const health = await createTestSiteApp("health-test").request("/healthz");

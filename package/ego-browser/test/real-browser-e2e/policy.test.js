@@ -36,6 +36,21 @@ test("real-browser e2e lets each embedded Node round settle before starting the 
   assert.ok(Date.now() - startedAt >= 5);
 });
 
+test("node bridge smoke checks both the bundled and worktree SDK startup paths", () => {
+  assert.equal(typeof runner.nodeBridgeSmokeConfigurations, "function");
+  assert.deepEqual(runner.nodeBridgeSmokeConfigurations("/tmp/sdk.js"), [
+    {
+      name: "bundled nodejs bridge smoke",
+      args: ["nodejs"],
+    },
+    {
+      name: "worktree nodejs bridge smoke",
+      args: ["nodejs", "--sdk-path", "/tmp/sdk.js"],
+      egoBrowserSdkPath: "/tmp/sdk.js",
+    },
+  ]);
+});
+
 test("real-browser e2e serializes scenario cases in one TaskSpace lane", () => {
   const cases = ["a", "b", "c", "d", "e"];
   assert.equal(runner.WEB_LANE_COUNT, 1);
@@ -121,8 +136,22 @@ test("parallel real-browser cases write isolated result files", () => {
   assert.match(laneSource, /lane-1\.json/);
 });
 
-test("TaskSpace context lifecycle runs before existing real-browser cases", () => {
-  assert.equal(e2eCases[0]?.name, "TaskSpace context lifecycle");
+test("SDK global lifecycle runs before TaskSpace browser cases", () => {
+  assert.equal(e2eCases[0]?.name, "SDK global lifecycle");
+  assert.equal(e2eCases[1]?.name, "TaskSpace context lifecycle");
+});
+
+test("SDK global lifecycle protects cached-runtime facade installation", () => {
+  const lifecycle = e2eCases.find(
+    (testCase) => testCase.name === "SDK global lifecycle",
+  );
+
+  assert.ok(lifecycle);
+  assert.equal(lifecycle.kind, "runtime");
+  const source = lifecycle.body();
+  assert.match(source, /Reflect\.deleteProperty\(globalThis, "egoBrowser"\)/);
+  assert.match(source, /globalThis\.egoBrowser = undefined/);
+  assert.match(source, /egoBrowser\.site\.discover/);
 });
 
 test("real-browser e2e maps every dedicated test-site route to one native Playwright case", () => {
@@ -143,10 +172,10 @@ test("real-browser e2e maps every dedicated test-site route to one native Playwr
 test("every web journey records start, completion, and failure in lifecycle order", () => {
   for (const testCase of scenarioCases) {
     const source = testCase.body();
-    const start = source.indexOf('getByTestId("start-test").click()');
+    const start = source.indexOf("const startSnapshot");
     const scenarioOperation = source.indexOf("/* scenario operations */");
-    const finish = source.indexOf('getByTestId("finish-test").click()');
-    const failure = source.indexOf("failButton.click()");
+    const finish = source.indexOf('getByTestId("finish-test")');
+    const failure = source.indexOf('observedAction(page, failButton, "click")');
 
     assert(start >= 0, `${testCase.name} starts from its scenario control`);
     assert(
@@ -233,6 +262,51 @@ test("platform e2e covers ownership preservation, ARIA refs, and network routing
   assert.match(routing.body(), /page\.unroute\(/);
 });
 
+test("frames e2e validates nested frame snapshots and the external map", () => {
+  const frames = e2eCases.find(
+    (testCase) => testCase.name === "web test: frames",
+  );
+  const source = frames?.body() || "";
+
+  assert.ok(frames);
+  assert.match(source, /ariaSnapshot\(\{ ref: true \}\)/);
+  assert.match(source, /aria-ref=/);
+  assert.match(source, /contentFrame\(\)/);
+  assert.match(
+    source,
+    /assertIncludes\(hostSnapshot\.content, 'heading "Embedded checkout"'/,
+  );
+  assert.match(
+    source,
+    /assertIncludes\(checkoutSnapshot\.content, 'heading "Confirm payment details"'/,
+  );
+  assert.match(
+    source,
+    /assertIncludes\(mapFrameUrl, "https:\/\/www\.openstreetmap\.org\/export\/embed\.html\?"/,
+  );
+  assert.match(source, /nestedMapFrame\.parentFrame\(\)\.url\(\)/);
+  assert.doesNotMatch(
+    source,
+    /getBy(?:Role|Label)\([^\n]+\)\.(?:click|fill|check)\(/,
+  );
+});
+
+test("every scenario observes page state before a mutating browser action", () => {
+  const directLocatorAction =
+    /\.(?:click|dblclick|fill|check|uncheck|press|selectOption|setInputFiles|dragTo|hover|focus|tap)\(/;
+  const directInputAction =
+    /\.(?:keyboard|mouse)\.(?:press|insertText|type|move|down|up|wheel)\(/;
+
+  for (const testCase of scenarioCases) {
+    const source = testCase.body();
+    const operations = source.slice(
+      source.indexOf("/* scenario operations */"),
+    );
+    assert.doesNotMatch(operations, directLocatorAction, testCase.name);
+    assert.doesNotMatch(operations, directInputAction, testCase.name);
+  }
+});
+
 test("task-space keep mode does not create a destructively closed scratch space", () => {
   const source = taskSpaceControlCase();
   assert.match(
@@ -254,7 +328,7 @@ test("task-space e2e verifies structured egoBrowser action results", () => {
   assert.match(source, /assertEqual\(waitResult\.done, true/);
   assert.match(source, /ownership, "agentDelegatedToUser"/);
   assert.match(source, /waitFinished, false/);
-  assert.match(source, /same-space reuse keeps the existing Page open/);
+  assert.match(source, /same-space selection closes the previous Page/);
   assert.match(source, /failed TaskSpace selection preserves the current Page/);
 });
 
@@ -335,6 +409,54 @@ test("native task-space close regression remains a dedicated opt-in e2e", () => 
   assert.match(source, /restoredOriginal\.page\.goto/);
 });
 
+test("TaskSpace process contention covers live rejection and timeout recovery", () => {
+  const contention = e2eCases.find(
+    (testCase) => testCase.name === "TaskSpace process contention",
+  );
+
+  assert.ok(contention);
+  assert.equal(contention.optIn, true);
+  assert.equal(contention.processContention, true);
+  assert.equal(contention.holderTimeoutMs, 8_000);
+  assert.equal(contention.rounds.length, 4);
+
+  const [setup, holder, contender, recovery] = contention.rounds.map((round) =>
+    round(),
+  );
+  assert.match(setup, /newTaskSpace/);
+  assert.match(setup, /process-contention-ready\.json/);
+  assert.match(holder, /switchTaskSpace/);
+  assert.match(holder, /process-contention-holder-ready\.json/);
+  assert.match(
+    holder,
+    /new Promise\(\(resolve\) => setTimeout\(resolve, 10_000\)\)/,
+  );
+  assert.doesNotMatch(holder, /process-contention-release/);
+  assert.match(contender, /switchTaskSpace/);
+  assert.match(contender, /already controlled by another ego-browser process/);
+  assert.match(contender, /fails promptly/);
+  assert.match(recovery, /switchTaskSpace/);
+  assert.match(recovery, /recovery timed out/);
+  assert.match(recovery, /accepts new page operations/);
+});
+
+test("TaskSpace process contention follows the Codex exec_command session protocol", () => {
+  const source = readFileSync(new URL("./runner.mjs", import.meta.url), "utf8");
+
+  assert.match(source, /createCodexCommandTools/);
+  assert.match(source, /codexTools\.exec_command/);
+  assert.match(source, /holderResult\.session_id/);
+  assert.match(source, /rounds\[2\]\(\)/);
+  assert.match(source, /TaskSpace process contender/);
+  assert.match(source, /codexTools\.write_stdin/);
+  assert.match(source, /holderResult\.exit_code/);
+  assert.doesNotMatch(source, /holderCancelPath/);
+  assert.doesNotMatch(source, /onCancel:\s*\(sessionId\)/);
+  assert.doesNotMatch(source, /queueProbeResult/);
+  assert.match(source, /waitForNodeRoundToSettle\(1_000\)/);
+  assert.match(source, /NodeRuntime disconnected.*holderOutput/s);
+});
+
 test("real-browser e2e exercises native Playwright by default", () => {
   const playwrightCase = e2eCases.find(
     (testCase) => testCase.name === "native Playwright TaskSpace",
@@ -344,6 +466,9 @@ test("real-browser e2e exercises native Playwright by default", () => {
   const source = playwrightCase.body();
   assert.match(source, /task\.page\.goto/);
   assert.match(source, /task\.context\.newPage/);
+  assert.match(source, /chrome:\/\/bookmarks\//);
+  assert.match(source, /internalPage\.close\(\)/);
+  assert.match(source, /internalPage\.isClosed\(\)/);
   assert.match(source, /task\.page\.waitForEvent\("popup"/);
   assert.match(source, /await popup\.close\(\)/);
   assert.doesNotMatch(source, /task\.tabs|openOrReuse/);
@@ -398,7 +523,7 @@ test("canvas e2e exercises destructive and restorative review actions", () => {
   );
   assert.ok(canvasCase);
   const source = canvasCase.body();
-  assert.match(source, /await eraser\.click\(\)/);
+  assert.match(source, /observedAction\(page, eraser, "click"\)/);
   assert.match(source, /Restore saved review/);
   assert.match(source, /Clear markup/);
   assert.match(source, /eraser-mask/);
@@ -433,14 +558,24 @@ test("collaborative document e2e covers concurrent editing and peer departure", 
   );
   assert.ok(collaborationCase);
   const source = collaborationCase.body();
+  const operations = source.slice(source.indexOf("/* scenario operations */"));
   assert.match(source, /Promise\.all/);
-  assert.match(source, /primaryEditor\.press\("Home"\)/);
-  assert.match(source, /collaboratorEditor\.press\("End"\)/);
-  assert.match(source, /page\.keyboard\.insertText/);
-  assert.match(source, /collaboratorPage\.keyboard\.insertText/);
-  assert.doesNotMatch(source, /keyboard\.type/);
+  assert.match(
+    source,
+    /observedAction\(page, primaryEditor, "press", "Home"\)/,
+  );
+  assert.match(
+    source,
+    /observedAction\(collaboratorPage, collaboratorEditor, "press", "End"\)/,
+  );
+  assert.match(source, /observedKeyboard\(page, primaryEditor, "insertText"/);
+  assert.match(
+    source,
+    /observedKeyboard\(collaboratorPage, collaboratorEditor, "insertText"/,
+  );
+  assert.doesNotMatch(operations, /keyboard\.type/);
   assert.match(source, /finally/);
-  assert.match(source, /collaboratorPage\.isClosed\(\)/);
+  assert.match(source, /observedClosePage\(collaboratorPage/);
   assert.match(source, /1 online/);
   assert.match(source, /Cancel/);
   assert.match(source, /Undo document change/);
@@ -519,9 +654,12 @@ test("rich text e2e covers validation, history, and destructive cancellation", (
   assert.match(source, /Undo/);
   assert.match(source, /Redo/);
   assert.match(source, /Blockquote/);
-  assert.match(source, /editor\.press\("ControlOrMeta\+A"\)/);
-  assert.match(source, /editor\.press\("Backspace"\)/);
-  assert.match(source, /page\.keyboard\.insertText/);
+  assert.match(
+    source,
+    /observedAction\(page, editor, "press", "ControlOrMeta\+A"\)/,
+  );
+  assert.match(source, /observedAction\(page, editor, "press", "Backspace"\)/);
+  assert.match(source, /observedKeyboard\(page, editor, "insertText"/);
   assert.match(source, /Underline/);
   assert.match(source, /Align center/);
   assert.match(source, /Text color/);
@@ -580,6 +718,8 @@ test("navigation e2e follows the scenario link back to the fixture index", () =>
   );
   assert.ok(navigationCase);
   const source = navigationCase.body();
+  assert.match(source, /delayed-document\?delay=9000/);
+  assert.match(source, /former eight-second transport limit/);
   assert.match(source, /← All fixtures/);
   assert.match(source, /Test routes/);
 });
@@ -591,6 +731,16 @@ test("native task-space close regression has a dedicated npm entry point", () =>
   assert.match(
     packageJson.scripts["e2e:native-close"],
     /EGO_BROWSER_REAL_E2E_ONLY=.*native task space close regression/,
+  );
+});
+
+test("TaskSpace process contention has a dedicated npm entry point", () => {
+  const packageJson = JSON.parse(
+    readFileSync(new URL("../../package.json", import.meta.url), "utf8"),
+  );
+  assert.match(
+    packageJson.scripts["e2e:process-contention"],
+    /EGO_BROWSER_REAL_E2E_ONLY=.*TaskSpace process contention/,
   );
 });
 
