@@ -1,6 +1,6 @@
 export function taskSpaceVideoCapabilityCase() {
   return `
-    const task = await egoBrowser.useOrCreateTaskSpace(taskName);
+    const task = await openE2eTaskSpace(taskName);
 
     await task.page.goto(baseUrl, {
       waitUntil: "load",

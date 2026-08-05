@@ -3,12 +3,12 @@ import { scenarioCase } from "./scenario-case.mjs";
 export const downloadsScenarioCase = scenarioCase(
   "downloads",
   `
-      await page.getByLabel("Report format").selectOption("PDF");
+      await observedAction(page, page.getByLabel("Report format"), "selectOption", "PDF");
       assertEqual(await page.getByTestId("visible-report-count").textContent(), "1", "report filter narrows the archive by format");
       assertEqual(await page.getByRole("button", { name: "Unavailable" }).isEnabled(), false, "unavailable exports remain disabled after filtering");
-      await page.getByLabel("Report format").selectOption("all");
+      await observedAction(page, page.getByLabel("Report format"), "selectOption", "all");
       assertEqual(await page.getByTestId("visible-report-count").textContent(), "3", "report filter restores the complete archive");
-      await page.getByRole("button", { name: "Prepare fulfilment exceptions" }).click();
+      await observedAction(page, page.getByRole("button", { name: "Prepare fulfilment exceptions" }), "click");
       assertEqual(await page.getByTestId("report-status").textContent(), "Prepared", "report preparation produces a visible ready state");
       const preparedLink = page.getByRole("link", { name: "Download fulfilment exceptions" });
       assertEqual(await preparedLink.getAttribute("href"), "/api/download?report=fulfilment-exceptions", "prepared report exposes its own downloadable artifact");
@@ -32,7 +32,7 @@ export const downloadsScenarioCase = scenarioCase(
         behavior: "allow",
         downloadPath: artifactDir,
       });
-      await downloadLink.click({ noWaitAfter: true });
+      await observedAction(page, downloadLink, "click", { noWaitAfter: true });
       const savedDownloadPath = join(artifactDir, "ego-browser-sample.txt");
       const fileDeadline = Date.now() + 5_000;
       let previousSize = -1;

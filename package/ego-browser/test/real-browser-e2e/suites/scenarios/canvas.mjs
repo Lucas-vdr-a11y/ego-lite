@@ -41,12 +41,14 @@ export const canvasScenarioCase = scenarioCase(
           x: box.x + box.width * x,
           y: box.y + box.height * y,
         }));
-        await page.mouse.move(points[0].x, points[0].y);
-        await page.mouse.down();
-        for (const point of points.slice(1)) {
-          await page.mouse.move(point.x, point.y, { steps: 3 });
-        }
-        await page.mouse.up();
+        await observedGesture(page, "whiteboard before drawing stroke", async (pointer) => {
+          await pointer.move(points[0].x, points[0].y);
+          await pointer.down();
+          for (const point of points.slice(1)) {
+            await pointer.move(point.x, point.y, { steps: 3 });
+          }
+          await pointer.up();
+        });
       }
 
       function ellipse(cx, cy, rx, ry, segments = 16) {
@@ -59,9 +61,9 @@ export const canvasScenarioCase = scenarioCase(
       const color = page.getByLabel("Brush color");
       const size = page.getByLabel("Brush size");
 
-      await pencil.click();
-      await color.fill("#334155");
-      await size.selectOption("4");
+      await observedAction(page, pencil, "click");
+      await observedAction(page, color, "fill", "#334155");
+      await observedAction(page, size, "selectOption", "4");
       assertEqual(await pencil.getAttribute("aria-pressed"), "true", "villa construction uses the precise pencil tool");
       assertEqual(await color.inputValue(), "#334155", "villa construction uses slate architectural ink");
       await draw([[0.08, 0.43], [0.3, 0.12], [0.53, 0.43]]);
@@ -72,24 +74,24 @@ export const canvasScenarioCase = scenarioCase(
       await draw([[0.36, 0.5], [0.44, 0.5], [0.44, 0.62], [0.36, 0.62], [0.36, 0.5]]);
       await draw([[0.29, 0.84], [0.29, 0.65], [0.38, 0.65], [0.38, 0.84]]);
 
-      await marker.click();
-      await color.fill("#c2410c");
-      await size.selectOption("12");
+      await observedAction(page, marker, "click");
+      await observedAction(page, color, "fill", "#c2410c");
+      await observedAction(page, size, "selectOption", "12");
       assertEqual(await marker.getAttribute("aria-pressed"), "true", "villa roofs use the broad marker tool");
       assertEqual(await color.inputValue(), "#c2410c", "villa roofs use terracotta color");
       await draw([[0.09, 0.42], [0.3, 0.14], [0.52, 0.42]]);
       await draw([[0.5, 0.42], [0.61, 0.27], [0.73, 0.42]]);
 
-      await brush.click();
-      await color.fill("#2563eb");
-      await size.selectOption("8");
+      await observedAction(page, brush, "click");
+      await observedAction(page, color, "fill", "#2563eb");
+      await observedAction(page, size, "selectOption", "8");
       assertEqual(await brush.getAttribute("aria-pressed"), "true", "car body uses the expressive brush tool");
       assertEqual(await color.inputValue(), "#2563eb", "car body uses cobalt blue");
       await draw([[0.46, 0.75], [0.51, 0.66], [0.64, 0.66], [0.69, 0.73], [0.76, 0.75], [0.77, 0.83], [0.44, 0.83], [0.45, 0.76], [0.46, 0.75]]);
 
-      await pen.click();
-      await color.fill("#0f172a");
-      await size.selectOption("8");
+      await observedAction(page, pen, "click");
+      await observedAction(page, color, "fill", "#0f172a");
+      await observedAction(page, size, "selectOption", "8");
       assertEqual(await pen.getAttribute("aria-pressed"), "true", "car details use the solid pen tool");
       assertEqual(await color.inputValue(), "#0f172a", "car details use near-black ink");
       await draw([[0.53, 0.67], [0.56, 0.73], [0.66, 0.73], [0.63, 0.67]]);
@@ -99,14 +101,14 @@ export const canvasScenarioCase = scenarioCase(
       assertEqual(await page.getByTestId("canvas-strokes").textContent(), "13", "real pointer gestures create a detailed villa and parked car");
       assert(Number(await page.getByTestId("canvas-points").textContent()) >= 120, "the villa scene contains enough sampled points to preserve its geometry");
       assertEqual(await page.getByRole("button", { name: "Undo last stroke" }).isEnabled(), true, "drawing enables the undo action");
-      await page.getByRole("button", { name: "Undo last stroke" }).click();
+      await observedAction(page, page.getByRole("button", { name: "Undo last stroke" }), "click");
       assertEqual(await page.getByTestId("canvas-strokes").textContent(), "12", "undo removes the most recent wheel");
       assertEqual(await page.getByRole("button", { name: "Redo stroke" }).isEnabled(), true, "undo enables redo");
-      await page.getByRole("button", { name: "Redo stroke" }).click();
+      await observedAction(page, page.getByRole("button", { name: "Redo stroke" }), "click");
       assertEqual(await page.getByTestId("canvas-strokes").textContent(), "13", "redo restores the parked car wheel");
-      await page.getByRole("button", { name: "Save review" }).click();
+      await observedAction(page, page.getByRole("button", { name: "Save review" }), "click");
       assertEqual(await page.getByTestId("canvas-save-status").textContent(), "Saved 13 strokes", "save review records the complete villa scene");
-      await eraser.click();
+      await observedAction(page, eraser, "click");
       assertEqual(await eraser.getAttribute("aria-pressed"), "true", "eraser becomes the active drawing tool");
       assertEqual(await color.isDisabled(), true, "eraser disables the irrelevant brush color control");
       await draw([[0.48, 0.76], [0.58, 0.76], [0.68, 0.76], [0.75, 0.76]]);
@@ -136,7 +138,7 @@ export const canvasScenarioCase = scenarioCase(
       }
 
       const pngPath = join(artifactDir, "villa-review.png");
-      await page.getByRole("button", { name: "Export PNG" }).click();
+      await observedAction(page, page.getByRole("button", { name: "Export PNG" }), "click");
       await waitForFile(pngPath);
       assertEqual(await page.getByTestId("canvas-export-status").textContent(), "Exported PNG", "PNG export completes for a human-triggered download");
       const pngBytes = await readFile(pngPath);
@@ -144,7 +146,7 @@ export const canvasScenarioCase = scenarioCase(
       assert(pngBytes.length > 10_000, "PNG export contains the rendered villa scene");
 
       const svgPath = join(artifactDir, "villa-review.svg");
-      await page.getByRole("button", { name: "Export SVG" }).click();
+      await observedAction(page, page.getByRole("button", { name: "Export SVG" }), "click");
       await waitForFile(svgPath);
       assertEqual(await page.getByTestId("canvas-export-status").textContent(), "Exported SVG", "SVG export completes for a human-triggered download");
       const svgSource = await readFile(svgPath, "utf8");
@@ -185,10 +187,10 @@ export const canvasScenarioCase = scenarioCase(
       assert(carBounds.minY > height * 0.6 && carBounds.maxX - carBounds.minX > width * 0.28, "SVG geometry contains a wide car parked in front");
       assertEqual(wheels.length, 2, "SVG geometry contains two separate car wheels");
       assert(wheels.every((wheel) => bounds(wheel).maxY > height * 0.84), "both SVG wheels sit below the car body");
-      await page.getByRole("button", { name: "Clear markup" }).click();
+      await observedAction(page, page.getByRole("button", { name: "Clear markup" }), "click");
       assertEqual(await page.getByTestId("canvas-strokes").textContent(), "0", "clear markup removes every drawing and eraser stroke");
       assertEqual(await page.getByTestId("canvas-save-status").textContent(), "Cleared", "clear markup exposes a visible empty-state result");
-      await page.getByRole("button", { name: "Restore saved review" }).click();
+      await observedAction(page, page.getByRole("button", { name: "Restore saved review" }), "click");
       assertEqual(await page.getByTestId("canvas-strokes").textContent(), "13", "restore returns to the last saved drawing without the later eraser gesture");
       assertEqual(await page.getByTestId("canvas-save-status").textContent(), "Restored 13 strokes", "restore reports the recovered saved review");
     `,

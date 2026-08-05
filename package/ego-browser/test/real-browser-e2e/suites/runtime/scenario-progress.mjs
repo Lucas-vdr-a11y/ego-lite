@@ -5,7 +5,7 @@ export const scenarioProgressCase = {
   kind: "runtime",
   body() {
     return `
-      const task = await egoBrowser.useOrCreateTaskSpace(taskName);
+      const task = await openE2eTaskSpace(taskName);
       await task.page.goto(baseUrl + "/tests/forms", {
         waitUntil: "load",
         timeout: 20_000,

@@ -3,12 +3,19 @@ export const networkRoutingCase = {
   kind: "platform",
   body() {
     return `
-      const task = await egoBrowser.useOrCreateTaskSpace(taskName);
+      const task = await openE2eTaskSpace(taskName);
       const page = task.page;
       await page.goto(baseUrl + "/tests/network?platform=routing", {
         waitUntil: "load",
         timeout: 20_000,
       });
+
+      const nodeResponse = await fetch(baseUrl + "/tests/network?mode=node-fetch");
+      assertEqual(nodeResponse.status, 200, "the Node global fetch remains callable");
+      const requestResponse = await task.context.request.get(
+        baseUrl + "/tests/network?mode=context-request",
+      );
+      assertEqual(requestResponse.status(), 200, "BrowserContext.request can read cookies and perform a request");
 
       const routeUrl = baseUrl + "/api/echo?mode=platform-route";
       let intercepted = 0;

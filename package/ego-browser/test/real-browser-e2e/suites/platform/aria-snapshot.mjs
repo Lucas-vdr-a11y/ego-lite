@@ -3,7 +3,7 @@ export const ariaSnapshotCase = {
   kind: "platform",
   body() {
     return `
-      const task = await egoBrowser.useOrCreateTaskSpace(taskName);
+      const task = await openE2eTaskSpace(taskName);
       const page = task.page;
       await page.goto(baseUrl + "/tests/clicks?platform=aria", {
         waitUntil: "load",
@@ -26,6 +26,18 @@ export const ariaSnapshotCase = {
         bodySnapshot,
         "Dispatch queue",
         "a body snapshot establishes full-page semantic context",
+      );
+      const startLine = bodySnapshot
+        .split("\\n")
+        .find((candidate) => /button "(?:Start|Restart) test"/.test(candidate));
+      const startMatch = startLine?.match(/\\[ref=(s\\d+e\\d+)\\]/);
+      assert(startMatch, "the full-page snapshot exposes the lifecycle start ref");
+      await page.locator("aria-ref=" + startMatch[1]).click();
+      await page.locator('html[data-progress-sync="idle"]').waitFor();
+      assertEqual(
+        await page.getByTestId("test-status").textContent(),
+        "In progress",
+        "a full-page ARIA ref can start the scenario lifecycle",
       );
 
       const localScope = page.getByLabel("Orders awaiting dispatch");

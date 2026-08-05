@@ -3,12 +3,23 @@ export const playwrightCdpSessionCase = {
   kind: "platform",
   body() {
     return `
-      const task = await egoBrowser.useOrCreateTaskSpace(taskName);
+      const task = await openE2eTaskSpace(taskName);
       const page = task.page;
       await page.goto(baseUrl + "/tests/network?platform=cdp-session", {
         waitUntil: "load",
         timeout: 20_000,
       });
+
+      const browserSession = await task.context
+        .browser()
+        .newBrowserCDPSession();
+      try {
+        const browserVersion = await browserSession.send("Browser.getVersion");
+        assertEqual(browserVersion.protocolVersion, "1.3", "browser CDPSession receives compatibility responses on its own session");
+        assertIncludes(browserVersion.product, "Chrome/", "browser CDPSession preserves compatibility response payloads");
+      } finally {
+        await browserSession.detach();
+      }
 
       const session = await task.context.newCDPSession(page);
       const bindingName = "__egoCdpSessionProbe_" + Date.now().toString(36);

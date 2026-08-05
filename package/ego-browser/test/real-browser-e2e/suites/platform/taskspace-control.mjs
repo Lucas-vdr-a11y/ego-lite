@@ -1,17 +1,19 @@
 export function taskSpaceControlCase() {
   return `
-    const task = await egoBrowser.useOrCreateTaskSpace(taskName);
-    assertEqual(task.name, taskName, "egoBrowser.useOrCreateTaskSpace selects named task");
+    const task = await openE2eTaskSpace(taskName);
+    assertEqual(task.name, taskName, "the E2E fixture selects the named task");
     await task.page.goto(baseUrl + "/?task-space=same-space-reuse", {
       waitUntil: "load",
       timeout: 20_000,
     });
 
-    const reusedTask = await egoBrowser.useOrCreateTaskSpace(taskName);
-    assertEqual(reusedTask.id, task.id, "egoBrowser.useOrCreateTaskSpace reuses an existing named task");
-    assertEqual(task.page.isClosed(), false, "same-space reuse keeps the existing Page open");
-    assertEqual(reusedTask.page.url(), task.page.url(), "same-space reuse returns the current Page URL");
-    assertEqual(await task.page.title(), "Ego Browser Lab", "the existing Page remains operable after same-space reuse");
+    const taskUrl = task.page.url();
+    const reusedTask = await egoBrowser.switchTaskSpace(task.id);
+    assertEqual(reusedTask.id, task.id, "egoBrowser.switchTaskSpace reuses an existing task by id");
+    assertEqual(task.page.isClosed(), true, "same-space selection closes the previous Page");
+    assertEqual(reusedTask.page === task.page, false, "same-space selection returns a fresh Page");
+    assertEqual(reusedTask.page.url(), taskUrl, "same-space selection preserves the current Page URL");
+    assertEqual(await reusedTask.page.title(), "Ego Browser Lab", "the fresh Page remains operable after same-space selection");
 
     const spaces = await egoBrowser.listTaskSpace();
     assert(spaces.some((space) => space.name === taskName), "egoBrowser.listTaskSpace includes e2e task");
@@ -70,9 +72,9 @@ export function taskSpaceControlCase() {
       "egoBrowser.switchTaskSpace reports missing task space"
     );
     await assertRejects(
-      () => egoBrowser.useOrCreateTaskSpace(99999999),
+      () => egoBrowser.switchTaskSpace(99999999),
       "task space not found",
-      "egoBrowser.useOrCreateTaskSpace rejects missing numeric id"
+      "egoBrowser.switchTaskSpace rejects missing numeric id"
     );
     assertEqual(stableTask.page.isClosed(), false, "failed TaskSpace selection preserves the current Page");
     assertEqual(stableTask.page.url(), stableUrl, "failed TaskSpace selection preserves the current URL");

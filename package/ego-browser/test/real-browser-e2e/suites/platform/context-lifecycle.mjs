@@ -210,6 +210,27 @@ export function contextLifecycleCase() {
         activeHandles = { page: primaryPage, context: task.context };
       }
 
+      const current = lifecycleSpaces[2];
+      const reselectedCurrent = await egoBrowser.switchTaskSpace(current.id);
+      await assertDisconnected(
+        activeHandles,
+        "reselecting the current TaskSpace invalidates stale handles",
+      );
+      assertEqual(
+        reselectedCurrent.context.pages().length,
+        1,
+        "reselecting the current TaskSpace rebuilds its BrowserContext",
+      );
+      assertEqual(
+        await reselectedCurrent.page.evaluate(() => window.name),
+        "primary-2",
+        "reselecting the current TaskSpace preserves browser page state",
+      );
+      activeHandles = {
+        page: reselectedCurrent.page,
+        context: reselectedCurrent.context,
+      };
+
       const middle = lifecycleSpaces[1];
       const closedMiddle = await egoBrowser.closeTaskSpace(middle.id);
       assertEqual(

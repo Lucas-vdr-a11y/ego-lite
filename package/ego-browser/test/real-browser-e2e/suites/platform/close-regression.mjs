@@ -5,7 +5,7 @@ export const nativeCloseRegressionCase = {
   crashGraceMs: 300,
   body() {
     return `
-      const originalTask = await egoBrowser.useOrCreateTaskSpace(taskName);
+      const originalTask = await openE2eTaskSpace(taskName);
       const scratch = await egoBrowser.newTaskSpace(taskName + " native close regression");
       let scratchClosed = false;
       try {
