@@ -2462,15 +2462,20 @@ test("the removed local CDP bridge is no longer exported", () => {
   assert.equal(playwrightTaskSpace.createLocalCdpBridge, undefined);
 });
 
-async function createTaskSpaceTransportHarness({ tabs }) {
+async function createTaskSpaceTransportHarness({
+  tabs,
+  harnessOptions,
+  transportOptions,
+}) {
   const { FakeNativeBrowser } = await import("./fake-native-harness.mjs");
-  const fake = new FakeNativeBrowser();
+  const fake = new FakeNativeBrowser(harnessOptions);
   for (const [targetId, url] of tabs) fake.addTab(targetId, url);
   const received = [];
   const pendingWork = [];
   const transport = egoTransport.createEgoCdpTransport(fake.runtime, {
     targetIds: tabs.map(([targetId]) => targetId),
     onPendingWorkChange: (count) => pendingWork.push(count),
+    ...transportOptions,
   });
   transport.releaseConnectionKeepAlive();
   transport.onmessage = (message) => received.push(message);
@@ -2703,5 +2708,130 @@ test("replayed toggle commands preserve the client's final state", async () => {
     true,
     "the replayed toggle ends on the client's final state",
   );
+  await transport.closeAndWait();
+});
+
+test("a document request paused by replayed interception reaches the client before commit", async () => {
+  const harness = await createTaskSpaceTransportHarness({
+    tabs: [["tab-main", "https://main.test/"]],
+    harnessOptions: { interceptNavigations: true },
+    transportOptions: { navigationCommitTimeoutMs: 1_500 },
+  });
+  const { fake, transport, received } = harness;
+  const mainSession = [...fake.sessions.keys()][0];
+
+  transport.send({
+    id: 80,
+    method: "Fetch.enable",
+    params: {
+      patterns: [{ urlPattern: "*", requestStage: "Request" }],
+      handleAuthRequests: true,
+    },
+    sessionId: mainSession,
+  });
+  await waitForMessage(received, (message) => message.id === 80);
+
+  transport.send({
+    id: 81,
+    method: "Page.navigate",
+    params: { frameId: "tab-main", url: "https://main.test/second" },
+    sessionId: mainSession,
+  });
+
+  const paused = await waitForMessage(
+    received,
+    (message) => message.method === "Fetch.requestPaused",
+  );
+  assert.ok(
+    paused,
+    "the replacement target's paused document request must reach the client " +
+      "while the navigation waits for commit",
+  );
+  assert.equal(paused.sessionId, mainSession);
+  assert.equal(
+    paused.params.frameId,
+    "tab-main",
+    "the paused request reports the client's main frame id",
+  );
+  assert.equal(typeof paused.params.networkId, "string");
+  assert.ok(
+    received.some(
+      (message) =>
+        message.method === "Network.requestWillBeSent" &&
+        message.params?.requestId === paused.params.networkId &&
+        message.sessionId === mainSession,
+    ),
+    "the paired requestWillBeSent reaches the client so interception can dispatch",
+  );
+
+  transport.send({
+    id: 82,
+    method: "Fetch.continueRequest",
+    params: { requestId: paused.params.requestId },
+    sessionId: mainSession,
+  });
+
+  const navigated = await waitForMessage(
+    received,
+    (message) => message.id === 81,
+    5_000,
+  );
+  assert.ok(navigated, "the navigation settles once the request is continued");
+  assert.equal(
+    navigated.error,
+    undefined,
+    `the navigation must commit, got: ${JSON.stringify(navigated?.error)}`,
+  );
+  assert.equal(navigated.result.frameId, "tab-main");
+  assert.deepEqual(fake.continuedRequests, [paused.params.requestId]);
+  await transport.closeAndWait();
+});
+
+test("a held command whose replay throws synchronously still gets an error reply", async () => {
+  const harness = await createTaskSpaceTransportHarness({
+    tabs: [["tab-main", "https://main.test/"]],
+  });
+  const { fake, transport, received } = harness;
+  const oldSession = [...fake.sessions.keys()][0];
+  const releaseListTabs = gateListTabs(fake);
+
+  fake.sessions.delete(oldSession);
+  fake.emit({
+    method: "Target.detachedFromTarget",
+    params: { sessionId: oldSession, targetId: "tab-main" },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+
+  transport.send({
+    id: 85,
+    method: "DOM.getDocument",
+    params: {},
+    sessionId: oldSession,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(
+    received.find((message) => message.id === 85),
+    undefined,
+    "the command is held while the route rebinds",
+  );
+
+  const originalSend = fake.runtime.sendCDPMessage;
+  fake.runtime.sendCDPMessage = (payload) => {
+    if (JSON.parse(payload).method === "DOM.getDocument") {
+      throw new Error("native send failed synchronously");
+    }
+    return originalSend(payload);
+  };
+  releaseListTabs();
+
+  const reply = await waitForMessage(received, (message) => message.id === 85);
+  assert.ok(
+    reply,
+    "the held command must be answered even when its replay throws",
+  );
+  assert.match(reply.error?.message || "", /native send failed synchronously/);
+  assert.equal(reply.sessionId, oldSession);
+
+  fake.runtime.sendCDPMessage = originalSend;
   await transport.closeAndWait();
 });

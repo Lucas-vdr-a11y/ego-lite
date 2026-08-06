@@ -31,6 +31,24 @@ type PassthroughSession = {
   nativeTargetId: string;
 };
 
+// While a navigation replacement waits for its commit, interception traffic
+// must keep flowing: a replayed Fetch.enable pauses the replacement's document
+// request, and only the client can continue it. The bridge exposes the
+// replacement session's Fetch events to the client (and routes the client's
+// Fetch commands back) before the route itself is swapped. Network events are
+// NOT bridged: they stay deferred until commit like every other event, so the
+// commit-time synthesis keeps seeing them in arrival order.
+type NavigationTransition = {
+  nativeSessionId: string;
+  nativeTargetId: string;
+  clientFrameId: string;
+  // networkIds whose Network.requestWillBeSent the bridge has synthesized:
+  // the replacement session attaches after the document request starts, so
+  // Chromium never sends the real one to it. Also consulted at commit so the
+  // navigation-response synthesis does not announce the request twice.
+  announcedRequests: Set<string>;
+};
+
 type PageRoute = {
   clientTargetId: string;
   nativeTargetId: string;
@@ -43,6 +61,7 @@ type PageRoute = {
   replayCommands: Map<string, ReplayCommand>;
   heldMessages?: any[];
   pendingTransition?: Promise<void>;
+  transition?: NavigationTransition;
   passiveNavigation?: {
     key: string;
     generation: number;
@@ -226,14 +245,25 @@ export class EgoCdpTransport {
     const route = clientSessionId
       ? this.#routesByClientSession.get(clientSessionId)
       : undefined;
+    let transitionSessionId: string | undefined;
     if (
       route &&
       (route.state === "navigating" || route.state === "rebinding")
     ) {
-      // The native session is being swapped; hold the command and replay it
-      // against the replacement session once the transition settles.
-      (route.heldMessages ??= []).push(message);
-      return;
+      if (
+        route.transition &&
+        typeof message.method === "string" &&
+        message.method.startsWith("Fetch.")
+      ) {
+        // Interception responses must reach the in-flight replacement session
+        // now: its paused document request is what the commit is waiting on.
+        transitionSessionId = route.transition.nativeSessionId;
+      } else {
+        // The native session is being swapped; hold the command and replay it
+        // against the replacement session once the transition settles.
+        (route.heldMessages ??= []).push(message);
+        return;
+      }
     }
     const attachTargetId =
       message.method === "Target.attachToTarget" &&
@@ -270,7 +300,7 @@ export class EgoCdpTransport {
       clientId: message.id,
       method: message.method,
       clientSessionId,
-      nativeSessionId: route?.nativeSessionId,
+      nativeSessionId: transitionSessionId ?? route?.nativeSessionId,
       attachedTarget,
       detachedSessionId,
     });
@@ -280,7 +310,7 @@ export class EgoCdpTransport {
         ? {
             ...message,
             id: nativeId,
-            sessionId: route.nativeSessionId,
+            sessionId: transitionSessionId ?? route.nativeSessionId,
             params: rewriteOutgoingProtocolParams(message.params || {}, route),
           }
         : { ...message, id: nativeId };
@@ -392,8 +422,22 @@ export class EgoCdpTransport {
       if (this.closed) return;
       try {
         this.send(message);
-      } catch {
-        // The command's own error handling already reported the failure.
+      } catch (error) {
+        // send() rethrows a synchronous native failure without replying, and a
+        // held command has no other caller to report to — answer it here or
+        // the client request hangs forever.
+        if (message.id !== undefined) {
+          this.#emit({
+            id: message.id,
+            error: {
+              code: -32_000,
+              message: (error as Error)?.message || String(error),
+            },
+            ...(typeof message.sessionId === "string"
+              ? { sessionId: message.sessionId }
+              : {}),
+          });
+        }
       }
     }
   }
@@ -499,6 +543,7 @@ export class EgoCdpTransport {
       this.#retiredNativeSessions.delete(message.params.sessionId);
     }
     if (this.#deliverPassthroughDetach(message)) return;
+    if (this.#bridgeTransitionEvent(message)) return;
     if (!this.#acceptEvent(message)) {
       if (
         this.#activeOperations > 0 &&
@@ -532,6 +577,75 @@ export class EgoCdpTransport {
     if (message.method === "Page.windowOpen") {
       this.#discoverOpenedTargets(openerTargetId, message.params?.url);
     }
+  }
+
+  // Deliver Fetch events from an in-flight replacement session to the client
+  // while the navigation waits for commit. Interception cannot wait for the
+  // route swap: the paused document request is what commit is waiting on.
+  // Only the Fetch domain crosses early — Fetch traffic on the replacement
+  // session begins with our own post-transition replay, so the stream cannot
+  // straddle the deferred queue and arrive out of order.
+  #bridgeTransitionEvent(message: any) {
+    const sessionId = message.sessionId;
+    const method = message.method;
+    if (typeof sessionId !== "string" || typeof method !== "string") {
+      return false;
+    }
+    if (!method.startsWith("Fetch.")) return false;
+    let route: PageRoute | undefined;
+    for (const candidate of this.#routesByClientSession.values()) {
+      if (
+        candidate.transition?.nativeSessionId === sessionId &&
+        candidate.state !== "closed"
+      ) {
+        route = candidate;
+        break;
+      }
+    }
+    if (!route) return false;
+    const transition = route.transition!;
+    const clientFrameId =
+      message.params?.frameId === transition.nativeTargetId
+        ? transition.clientFrameId
+        : message.params?.frameId;
+    const networkId = message.params?.networkId;
+    if (
+      method === "Fetch.requestPaused" &&
+      typeof networkId === "string" &&
+      !transition.announcedRequests.has(networkId)
+    ) {
+      // The replacement session attached after the document request started,
+      // so Chromium never sends it the request's Network.requestWillBeSent —
+      // yet Playwright dispatches interception only for paused requests it can
+      // pair with one. Announce the request from the pause's own payload.
+      transition.announcedRequests.add(networkId);
+      const timestamp = Date.now() / 1_000;
+      const isDocument = message.params?.resourceType === "Document";
+      this.#emit({
+        method: "Network.requestWillBeSent",
+        params: {
+          requestId: networkId,
+          ...(isDocument ? { loaderId: networkId } : {}),
+          documentURL: message.params?.request?.url,
+          request: message.params?.request,
+          timestamp,
+          wallTime: timestamp,
+          initiator: { type: "other" },
+          type: message.params?.resourceType,
+          ...(clientFrameId !== undefined ? { frameId: clientFrameId } : {}),
+          hasUserGesture: false,
+        },
+        sessionId: route.clientSessionId,
+      });
+    }
+    // The replacement's main frame id equals its target id (native invariant);
+    // the client knows that frame by the id it navigated.
+    if (message.params?.frameId === transition.nativeTargetId) {
+      message.params.frameId = transition.clientFrameId;
+    }
+    message.sessionId = route.clientSessionId;
+    this.#deliverEvent(message);
+    return true;
   }
 
   #rebindDetachedRoute(message: any) {
@@ -1193,6 +1307,12 @@ export class EgoCdpTransport {
       const { sessionId: newSessionId } =
         await this.#attachNativeTarget(newTargetId);
       replacementSessionId = newSessionId;
+      route.transition = {
+        nativeSessionId: newSessionId,
+        nativeTargetId: newTargetId,
+        clientFrameId,
+        announcedRequests: new Set(),
+      };
       for (const command of route.replayCommands.values()) {
         if (
           command.method === "Runtime.runIfWaitingForDebugger" ||
@@ -1219,6 +1339,10 @@ export class EgoCdpTransport {
       );
       const replacementFrameId =
         typeof frame.id === "string" ? frame.id : newTargetId;
+      // From here on the swapped route handles the session's events itself;
+      // this block runs synchronously, so there is no delivery gap.
+      const transition = route.transition;
+      route.transition = undefined;
       route.clientMainFrameId = clientFrameId;
       this.#replaceNativeRoute(
         route,
@@ -1239,6 +1363,7 @@ export class EgoCdpTransport {
         url,
         frame,
         documentState,
+        transition,
       );
       this.#flushDeferredEvents();
 
@@ -1296,6 +1421,7 @@ export class EgoCdpTransport {
       this.#completePassiveNavigation(route, frame, navigationKey);
     })()
       .catch((error) => {
+        route.transition = undefined;
         if (route.nativeSessionId === previousNativeSessionId) {
           this.#retiredNativeSessions.delete(previousNativeSessionId);
         }
@@ -1333,14 +1459,21 @@ export class EgoCdpTransport {
     requestedUrl: string,
     frame: any,
     documentState: any,
+    transition?: NavigationTransition,
   ) {
     if (typeof frame.loaderId !== "string") return true;
-    const deferredRequest = this.#deferredEvents.some(
-      (message) =>
-        message.sessionId === route.nativeSessionId &&
-        message.method === "Network.requestWillBeSent" &&
-        message.params?.requestId === frame.loaderId,
-    );
+    // The document request may have been announced to the client already —
+    // deferred and about to flush, or synthesized by the transition bridge
+    // when interception paused it — in which case announcing it again here
+    // would hand Playwright a duplicate.
+    const deferredRequest =
+      transition?.announcedRequests.has(frame.loaderId) === true ||
+      this.#deferredEvents.some(
+        (message) =>
+          message.sessionId === route.nativeSessionId &&
+          message.method === "Network.requestWillBeSent" &&
+          message.params?.requestId === frame.loaderId,
+      );
     const deferredResponse = this.#deferredEvents.some(
       (message) =>
         message.sessionId === route.nativeSessionId &&

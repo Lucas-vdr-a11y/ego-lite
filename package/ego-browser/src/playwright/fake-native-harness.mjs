@@ -6,19 +6,32 @@
 // - the main frame id equals the target id
 // - Target.getTargetInfo returns a browserContextId
 // - Page.navigate commits natively and emits frameNavigated + lifecycle events
+// - the document request id equals the committed loader id
+//
+// `interceptNavigations` models the Fetch-interception race on a created tab:
+// the document request stays in flight, and the first Fetch.enable on a
+// session attached to that tab pauses it (Fetch.requestPaused only — the
+// session attached after the request started, so it never sees the request's
+// Network.requestWillBeSent, matching real Chromium). Only
+// Fetch.continueRequest / fulfillRequest lets the navigation commit — a test
+// using this flag must answer the pause.
 
 export class FakeNativeBrowser {
-  constructor() {
+  constructor({ interceptNavigations = false } = {}) {
     this.log = [];
     this.tabs = new Map(); // targetId -> { url, frames: [{id, loaderId, url, parentId?}] }
     this.sessions = new Map(); // sessionId -> targetId
     this.detachedSessions = [];
     this.closedTargets = [];
     this.createdUrls = [];
+    this.continuedRequests = [];
     this.nextSession = 1;
     this.nextContext = 100;
     this.nextLoader = 1;
     this.nextTab = 1;
+    this.nextInterception = 1;
+    this.interceptNavigations = interceptNavigations;
+    this.pendingNavigations = new Map(); // targetId -> { url, requestId, interceptionId, paused }
     // Per-target override: report this URL from getFrameTree/evaluate until
     // cleared, regardless of the tab's real URL (gates navigation commits).
     this.frameUrlOverride = new Map();
@@ -37,6 +50,15 @@ export class FakeNativeBrowser {
         fake.createdUrls.push(url);
         const targetId = `tab-${fake.nextTab++}`;
         fake.addTab(targetId, url);
+        if (fake.interceptNavigations) {
+          fake.frameUrlOverride.set(targetId, "about:blank");
+          fake.pendingNavigations.set(targetId, {
+            url,
+            requestId: fake.tabs.get(targetId).frames[0].loaderId,
+            interceptionId: `int-${fake.nextInterception++}`,
+            paused: false,
+          });
+        }
         return { targetId };
       },
       sendCDPMessage(payload) {
@@ -259,6 +281,87 @@ export class FakeNativeBrowser {
     }
     if (method === "Network.getAllCookies") {
       return this.reply(request, { cookies: [] });
+    }
+    if (method === "Fetch.enable") {
+      this.reply(request, {});
+      const targetId = this.sessions.get(request.sessionId);
+      const pending = targetId
+        ? this.pendingNavigations.get(targetId)
+        : undefined;
+      if (pending && !pending.paused) {
+        pending.paused = true;
+        // No Network.requestWillBeSent here: the session attached after the
+        // document request started, and real Chromium never re-sends it to a
+        // late-attached session. Only the pause reaches this session.
+        this.emit({
+          method: "Fetch.requestPaused",
+          params: {
+            requestId: pending.interceptionId,
+            request: {
+              url: pending.url,
+              method: "GET",
+              headers: {},
+              initialPriority: "VeryHigh",
+              referrerPolicy: "strict-origin-when-cross-origin",
+            },
+            frameId: targetId,
+            resourceType: "Document",
+            networkId: pending.requestId,
+          },
+          sessionId: request.sessionId,
+        });
+      }
+      return;
+    }
+    if (
+      method === "Fetch.continueRequest" ||
+      method === "Fetch.fulfillRequest"
+    ) {
+      const interceptionId = request.params?.requestId;
+      const entry = [...this.pendingNavigations.entries()].find(
+        ([, pending]) => pending.interceptionId === interceptionId,
+      );
+      if (!entry) {
+        return this.replyError(request, `Invalid InterceptionId.`);
+      }
+      const [targetId, pending] = entry;
+      this.continuedRequests.push(interceptionId);
+      this.pendingNavigations.delete(targetId);
+      this.frameUrlOverride.delete(targetId);
+      this.reply(request, {});
+      this.emit({
+        method: "Network.responseReceived",
+        params: {
+          requestId: pending.requestId,
+          loaderId: pending.requestId,
+          timestamp: 2,
+          type: "Document",
+          response: {
+            url: pending.url,
+            status: 200,
+            statusText: "OK",
+            headers: {},
+            mimeType: "text/html",
+            connectionReused: false,
+            connectionId: 0,
+            encodedDataLength: 0,
+            securityState: "secure",
+          },
+          hasExtraInfo: false,
+          frameId: targetId,
+        },
+        sessionId: request.sessionId,
+      });
+      this.emit({
+        method: "Network.loadingFinished",
+        params: {
+          requestId: pending.requestId,
+          timestamp: 2,
+          encodedDataLength: 0,
+        },
+        sessionId: request.sessionId,
+      });
+      return;
     }
     if (method === "Page.navigate") {
       const tab = this.sessionTab(request);

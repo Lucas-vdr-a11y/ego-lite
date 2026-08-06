@@ -16,9 +16,10 @@ const playwrightTransport =
 async function connectFakeTaskSpace({
   startUrl = "https://start.test/",
   childFrameUrl,
+  harnessOptions,
   transportOptions = {},
 } = {}) {
-  const fake = new FakeNativeBrowser();
+  const fake = new FakeNativeBrowser(harnessOptions);
   fake.addTab("tab-start", startUrl, { childFrameUrl });
   const connector = playwrightTaskSpace.createPlaywrightTaskSpaceConnector({
     runtime: () => fake.runtime,
@@ -100,6 +101,39 @@ test("request interception and viewport emulation survive a TaskSpace navigation
     assert.ok(
       onReplacement("Emulation.setDeviceMetricsOverride") >= 1,
       "the viewport override is replayed onto the replacement target",
+    );
+  } finally {
+    await session.close().catch(() => {});
+  }
+});
+
+test("page.route intercepts the document request of a TaskSpace navigation", async () => {
+  const { fake, session } = await connectFakeTaskSpace({
+    harnessOptions: { interceptNavigations: true },
+    transportOptions: { navigationCommitTimeoutMs: 2_000 },
+  });
+  try {
+    const { page } = session;
+    const routedUrls = [];
+    await page.route("**/*", (route) => {
+      routedUrls.push(route.request().url());
+      return route.continue();
+    });
+
+    await page.goto("https://start.test/second", {
+      waitUntil: "commit",
+      timeout: 8_000,
+    });
+
+    assert.ok(
+      routedUrls.includes("https://start.test/second"),
+      `the route handler must see the document request, saw: ${JSON.stringify(routedUrls)}`,
+    );
+    assert.equal(page.url(), "https://start.test/second");
+    assert.equal(
+      fake.continuedRequests.length,
+      1,
+      "the paused document request was continued through the route handler",
     );
   } finally {
     await session.close().catch(() => {});
