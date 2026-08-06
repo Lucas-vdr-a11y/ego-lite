@@ -140,8 +140,7 @@ function isAgentOwned(ownership) {
 }
 
 export type TaskSpaceActionResult =
-  | { done: true }
-  | { done: false; skipped: "user-owned" };
+  { done: true } | { done: false; skipped: "user-owned" };
 
 /**
  * Select an existing task space by id/name for the current Node invocation.
