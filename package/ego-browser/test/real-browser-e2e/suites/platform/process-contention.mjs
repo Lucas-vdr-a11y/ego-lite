@@ -1,9 +1,8 @@
 export const taskSpaceProcessContentionCase = {
   name: "TaskSpace process contention",
   kind: "platform",
-  optIn: true,
   processContention: true,
-  holderTimeoutMs: 8_000,
+  holderTimeoutMs: 10_000,
   rounds: [
     () => `
       const readyPath = join(tempDir, "process-contention-ready.json");
@@ -48,7 +47,13 @@ export const taskSpaceProcessContentionCase = {
         join(tempDir, "process-contention-holder-ready.json"),
         JSON.stringify({ id: holder.id }),
       );
-      await new Promise((resolve) => setTimeout(resolve, 10_000));
+      // The orphaned-holder shape behind real lease deadlocks: an await that
+      // never resolves while pending work keeps the event loop alive. The
+      // interval stands in for that pending native work — without it Node
+      // treats the unsettled top-level await as a clean exit (code 13) and
+      // the lease is released before any contender arrives.
+      setInterval(() => {}, 1_000);
+      await new Promise(() => {});
     `,
     () => `
       const { readFile } = await import("node:fs/promises");
@@ -59,21 +64,36 @@ export const taskSpaceProcessContentionCase = {
         ),
       );
       const startedAt = Date.now();
-      let contentionError;
-      try {
-        await egoBrowser.switchTaskSpace(saved.id);
-      } catch (error) {
-        contentionError = error;
-      }
-      assertIncludes(
-        String(contentionError?.message || contentionError),
-        "already controlled by another ego-browser process",
-        "a concurrent heredoc is rejected before selecting the live holder's TaskSpace",
+      const contender = await egoBrowser.switchTaskSpace(saved.id);
+      assertEqual(
+        Date.now() - startedAt < 5_000,
+        true,
+        "the takeover completes promptly instead of waiting behind the holder",
       );
       assertEqual(
-        Date.now() - startedAt < 3_000,
-        true,
-        "TaskSpace contention fails promptly instead of waiting behind an abandoned command",
+        contender.page.url(),
+        saved.ownerUrl,
+        "the contender takes over the holder's TaskSpace with its page intact",
+      );
+      // Without this the round also passes when the holder died early and
+      // released the lease — a free acquire, not a takeover.
+      const { readFileSync } = await import("node:fs");
+      const { tmpdir } = await import("node:os");
+      const owner = JSON.parse(
+        readFileSync(
+          join(
+            tmpdir(),
+            "ego-browser-taskspace-leases-" + process.getuid(),
+            String(saved.id),
+            "owner.json",
+          ),
+          "utf8",
+        ),
+      );
+      assertEqual(
+        typeof owner.takenOverFrom,
+        "object",
+        "the contender's lease records the takenOverFrom audit",
       );
     `,
     () => `
@@ -84,34 +104,11 @@ export const taskSpaceProcessContentionCase = {
           "utf8",
         ),
       );
-      const deadline = Date.now() + 15_000;
-      let recovered;
-      while (!recovered) {
-        try {
-          recovered = await egoBrowser.switchTaskSpace(saved.id);
-        } catch (error) {
-          if (
-            !String(error?.message || error).includes(
-              "already controlled by another ego-browser process",
-            )
-          ) {
-            throw error;
-          }
-          if (Date.now() >= deadline) {
-            throw new Error("TaskSpace recovery timed out after holder timeout");
-          }
-          await new Promise((resolve) => setTimeout(resolve, 50));
-        }
-      }
-      assertEqual(
-        recovered.page.url(),
-        saved.ownerUrl,
-        "the timed-out holder preserved the TaskSpace page",
-      );
+      const recovered = await egoBrowser.switchTaskSpace(saved.id);
       assertEqual(
         recovered.name,
         saved.name,
-        "the TaskSpace remains recoverable after the holder exits",
+        "the TaskSpace remains addressable after the takeover",
       );
       const recoveryUrl = baseUrl + "/tests/clicks?process-contention=recovered";
       await recovered.page.goto(recoveryUrl, {

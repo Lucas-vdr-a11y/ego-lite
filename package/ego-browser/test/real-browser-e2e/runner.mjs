@@ -605,12 +605,20 @@ export async function runRealBrowserE2e() {
         });
         holderOutput += holderResult.output || "";
       }
-      if (
-        holderResult.timed_out !== true ||
-        !Number.isInteger(holderResult.exit_code)
-      ) {
+      if (holderResult.timed_out === true) {
         throw new Error(
-          `TaskSpace holder completed without the expected timeout: ${JSON.stringify(holderResult)}`,
+          "TaskSpace holder was still running at its timeout; the takeover did not stop it",
+        );
+      }
+      if (holderResult.exit_code !== 1) {
+        throw new Error(
+          `TaskSpace holder exited with ${holderResult.exit_code} instead of the takeover hard stop`,
+        );
+      }
+      if (!/taken over by a newer ego-browser session/.test(holderOutput)) {
+        throw new Error(
+          "TaskSpace holder output is missing the takeover notice; holder " +
+            `output was: ${JSON.stringify(holderOutput.slice(-2000))}`,
         );
       }
       if (/NodeRuntime disconnected/.test(holderOutput)) {
@@ -618,7 +626,7 @@ export async function runRealBrowserE2e() {
           "holder leaked a raw NodeRuntime disconnect diagnostic",
         );
       }
-      assertionCount += 1;
+      assertionCount += 3;
 
       await waitForNodeRoundToSettle(1_000);
 
