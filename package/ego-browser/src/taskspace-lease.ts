@@ -89,21 +89,42 @@ export async function acquireTaskSpaceLease(
     );
   }
   let takenOverFrom: TakenOverFrom | undefined;
-  for (let round = 0; ; round += 1) {
+  let reclaimRounds = 0;
+  let incompleteWaitDeadline: number | undefined;
+  while (true) {
     try {
       mkdirSync(path, { mode: 0o700 });
     } catch (error) {
       if (error?.code !== "EEXIST") throw error;
-      if (round >= MAX_TAKEOVER_ROUNDS) {
+      if (reclaimRounds >= MAX_TAKEOVER_ROUNDS) {
         throw new Error(
           `TaskSpace ${id} lease takeover did not settle after ${MAX_TAKEOVER_ROUNDS} rounds`,
         );
+      }
+      const owner = readOwner(path);
+      if (!owner) {
+        // A directory without owner.json is another acquire caught between
+        // mkdir and its owner publish. Give it staleAfterMs to finish before
+        // treating it as abandoned — reclaiming mid-publish strands both
+        // sessions: this one deletes the directory the other is writing into.
+        const age = leaseDirAgeMs(path);
+        incompleteWaitDeadline ??= Date.now() + staleAfterMs;
+        if (
+          age !== undefined &&
+          age < staleAfterMs &&
+          Date.now() < incompleteWaitDeadline
+        ) {
+          await new Promise<void>((resolve) =>
+            setTimeout(resolve, Math.min(50, heartbeatIntervalMs)),
+          );
+          continue;
+        }
       }
       // Newest session wins: reclaim whatever is there, keeping the previous
       // owner as an audit trail. The previous session's heartbeat notices the
       // foreign token within one interval and stops itself through the
       // lease-lost handler.
-      const owner = readOwner(path);
+      reclaimRounds += 1;
       const heartbeatAgeMs = ownerHeartbeatAgeMs(path, owner);
       if (reclaim(path) && owner) {
         takenOverFrom = {
@@ -144,7 +165,11 @@ export async function acquireTaskSpaceLease(
       releaseHeldLease();
       heldLease = { heartbeatPath, id, path, timer, token };
     } catch (error) {
-      rmSync(path, { recursive: true, force: true });
+      // Clean up only if our own owner file made it in: a failed publish must
+      // not delete a lease directory another session owns by now.
+      if (readOwner(path)?.token === token) {
+        rmSync(path, { recursive: true, force: true });
+      }
       throw error;
     }
 
@@ -202,6 +227,14 @@ function ownerHeartbeatAgeMs(path: string, owner: LeaseOwner | undefined) {
   try {
     const heartbeat = statSync(join(path, `heartbeat-${owner.token}`));
     return Math.max(0, Date.now() - heartbeat.mtimeMs);
+  } catch {
+    return undefined;
+  }
+}
+
+function leaseDirAgeMs(path: string) {
+  try {
+    return Math.max(0, Date.now() - statSync(path).mtimeMs);
   } catch {
     return undefined;
   }

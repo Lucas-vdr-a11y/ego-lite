@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -167,15 +167,104 @@ test("re-acquiring the TaskSpace already held by this session is a no-op", async
   }
 });
 
-test("an incomplete lease directory is reclaimed without an audit trail", async () => {
+test("an abandoned incomplete lease directory is reclaimed without an audit trail", async () => {
   const lockRoot = await mkdtemp(
     join(tmpdir(), "ego-browser-incomplete-lease-test-"),
   );
   const id = 2_147_483_005;
+  const leasePath = join(lockRoot, String(id));
+  await mkdir(leasePath);
+  // Backdate the directory past any grace window: this is a crashed acquire's
+  // leftover, not an acquire that is still publishing its owner file.
+  const past = new Date(Date.now() - 60_000);
+  await utimes(leasePath, past, past);
+
+  try {
+    const started = Date.now();
+    assert.equal(await acquireTaskSpaceLease(id, { lockRoot }), true);
+    assert.ok(
+      Date.now() - started < 2_000,
+      "an abandoned incomplete directory is reclaimed promptly",
+    );
+    assert.equal(readOwnerFile(lockRoot, id).takenOverFrom, undefined);
+  } finally {
+    releaseTaskSpaceLease();
+    await rm(lockRoot, { recursive: true, force: true });
+  }
+});
+
+test("an acquire caught between mkdir and publish is taken over, not destroyed", async () => {
+  const lockRoot = await mkdtemp(
+    join(tmpdir(), "ego-browser-inflight-lease-test-"),
+  );
+  const id = 2_147_483_009;
+  const leasePath = join(lockRoot, String(id));
+  // Another session's acquire has created the directory but not yet written
+  // owner.json — the window between mkdirSync and the owner publish.
+  await mkdir(leasePath);
+  const publishDelayMs = 150;
+  const publisher = setTimeout(() => {
+    writeFile(
+      join(leasePath, "owner.json"),
+      JSON.stringify({
+        heartbeatIntervalMs: 25,
+        pid: process.pid,
+        staleAfterMs: 3_000,
+        threadId: 0,
+        token: "publisher-token",
+      }),
+    ).catch(() => {});
+    writeFile(join(leasePath, "heartbeat-publisher-token"), "").catch(() => {});
+  }, publishDelayMs);
+
+  try {
+    const started = Date.now();
+    assert.equal(
+      await acquireTaskSpaceLease(id, {
+        lockRoot,
+        heartbeatIntervalMs: 25,
+        staleAfterMs: 3_000,
+      }),
+      true,
+    );
+    assert.ok(
+      Date.now() - started >= publishDelayMs - 50,
+      "the contender waits for the in-flight publish instead of racing it",
+    );
+    assert.equal(
+      readOwnerFile(lockRoot, id).takenOverFrom?.token,
+      "publisher-token",
+      "the settled owner is taken over with an audit trail, not silently destroyed",
+    );
+  } finally {
+    clearTimeout(publisher);
+    releaseTaskSpaceLease();
+    await rm(lockRoot, { recursive: true, force: true });
+  }
+});
+
+test("a fresh incomplete lease directory is reclaimed only after the grace window", async () => {
+  const lockRoot = await mkdtemp(
+    join(tmpdir(), "ego-browser-grace-lease-test-"),
+  );
+  const id = 2_147_483_010;
   await mkdir(join(lockRoot, String(id)));
 
   try {
-    assert.equal(await acquireTaskSpaceLease(id, { lockRoot }), true);
+    const started = Date.now();
+    assert.equal(
+      await acquireTaskSpaceLease(id, {
+        lockRoot,
+        heartbeatIntervalMs: 25,
+        staleAfterMs: 200,
+      }),
+      true,
+    );
+    const elapsed = Date.now() - started;
+    assert.ok(
+      elapsed >= 150,
+      `a fresh incomplete directory gets the grace window (elapsed ${elapsed}ms)`,
+    );
     assert.equal(readOwnerFile(lockRoot, id).takenOverFrom, undefined);
   } finally {
     releaseTaskSpaceLease();
