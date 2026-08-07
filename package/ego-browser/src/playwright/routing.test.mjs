@@ -3282,6 +3282,549 @@ test("a held command whose replay throws synchronously still gets an error reply
   await transport.closeAndWait();
 });
 
+test("commands during a pending navigation are answered from the old session", async () => {
+  const harness = await createTaskSpaceTransportHarness({
+    tabs: [["tab-main", "https://main.test/"]],
+    harnessOptions: { interceptNavigations: true },
+    transportOptions: { navigationCommitTimeoutMs: 5_000 },
+  });
+  const { fake, transport, received } = harness;
+  const mainSession = [...fake.sessions.keys()][0];
+
+  transport.send({
+    id: 90,
+    method: "Fetch.enable",
+    params: { patterns: [{ urlPattern: "*", requestStage: "Request" }] },
+    sessionId: mainSession,
+  });
+  await waitForMessage(received, (message) => message.id === 90);
+
+  transport.send({
+    id: 91,
+    method: "Page.navigate",
+    params: { frameId: "tab-main", url: "https://main.test/next" },
+    sessionId: mainSession,
+  });
+  const paused = await waitForMessage(
+    received,
+    (message) => message.method === "Fetch.requestPaused",
+  );
+  assert.ok(paused, "the gated document request holds the navigation open");
+
+  transport.send({
+    id: 92,
+    method: "Runtime.evaluate",
+    params: { expression: "1 + 1", returnByValue: true },
+    sessionId: mainSession,
+  });
+  const evaluated = await waitForMessage(
+    received,
+    (message) => message.id === 92,
+    1_000,
+  );
+  assert.ok(
+    evaluated,
+    "the command is answered while the navigation is still pending",
+  );
+  assert.equal(evaluated.error, undefined);
+  assert.equal(
+    received.some((message) => message.id === 91),
+    false,
+    "the navigation has not committed when the command is answered",
+  );
+  const evaluateRequest = fake.log.find(
+    (request) =>
+      request.method === "Runtime.evaluate" &&
+      request.params?.expression === "1 + 1",
+  );
+  assert.equal(
+    evaluateRequest?.sessionId,
+    mainSession,
+    "the command is served by the old native session",
+  );
+
+  transport.send({
+    id: 93,
+    method: "Fetch.continueRequest",
+    params: { requestId: paused.params.requestId },
+    sessionId: mainSession,
+  });
+  const navigated = await waitForMessage(
+    received,
+    (message) => message.id === 91,
+    5_000,
+  );
+  assert.ok(navigated, "the navigation settles once the gate opens");
+  assert.equal(
+    navigated.error,
+    undefined,
+    `the navigation must commit, got: ${JSON.stringify(navigated?.error)}`,
+  );
+
+  const replacementSession = [...fake.sessions.keys()].at(-1);
+  assert.notEqual(replacementSession, mainSession);
+  transport.send({
+    id: 94,
+    method: "Runtime.evaluate",
+    params: { expression: "2 + 2", returnByValue: true },
+    sessionId: mainSession,
+  });
+  await waitForMessage(received, (message) => message.id === 94);
+  const postSwapRequest = fake.log.find(
+    (request) =>
+      request.method === "Runtime.evaluate" &&
+      request.params?.expression === "2 + 2",
+  );
+  assert.equal(
+    postSwapRequest?.sessionId,
+    replacementSession,
+    "post-swap commands go to the replacement session",
+  );
+  await transport.closeAndWait();
+});
+
+test("replayable commands during a pending navigation are held and replayed to the replacement session", async () => {
+  const harness = await createTaskSpaceTransportHarness({
+    tabs: [["tab-main", "https://main.test/"]],
+    harnessOptions: { interceptNavigations: true },
+    transportOptions: { navigationCommitTimeoutMs: 5_000 },
+  });
+  const { fake, transport, received } = harness;
+  const mainSession = [...fake.sessions.keys()][0];
+
+  transport.send({
+    id: 95,
+    method: "Fetch.enable",
+    params: { patterns: [{ urlPattern: "*", requestStage: "Request" }] },
+    sessionId: mainSession,
+  });
+  await waitForMessage(received, (message) => message.id === 95);
+
+  transport.send({
+    id: 96,
+    method: "Page.navigate",
+    params: { frameId: "tab-main", url: "https://main.test/next" },
+    sessionId: mainSession,
+  });
+  const paused = await waitForMessage(
+    received,
+    (message) => message.method === "Fetch.requestPaused",
+  );
+  assert.ok(paused, "the gated document request holds the navigation open");
+
+  transport.send({
+    id: 97,
+    method: "Network.setExtraHTTPHeaders",
+    params: { headers: { "x-mid-transition": "1" } },
+    sessionId: mainSession,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(
+    received.find((message) => message.id === 97),
+    undefined,
+    "the replayable command is held while the transition is pending",
+  );
+  assert.equal(
+    fake.log.some(
+      (request) => request.method === "Network.setExtraHTTPHeaders",
+    ),
+    false,
+    "the held command reaches no native session before the swap",
+  );
+
+  transport.send({
+    id: 98,
+    method: "Fetch.continueRequest",
+    params: { requestId: paused.params.requestId },
+    sessionId: mainSession,
+  });
+  await waitForMessage(received, (message) => message.id === 96, 5_000);
+  const reply = await waitForMessage(received, (message) => message.id === 97);
+  assert.ok(reply, "the held command completes after the swap");
+  assert.equal(reply.error, undefined);
+  const replacementSession = [...fake.sessions.keys()].at(-1);
+  assert.notEqual(replacementSession, mainSession);
+  const delivered = fake.log.find(
+    (request) => request.method === "Network.setExtraHTTPHeaders",
+  );
+  assert.equal(
+    delivered?.sessionId,
+    replacementSession,
+    "the replayed command reaches the replacement session",
+  );
+  await transport.closeAndWait();
+});
+
+test("commands during a same-target navigation replacement are held until the swap", async () => {
+  const harness = await createTaskSpaceTransportHarness({
+    tabs: [["tab-main", "https://main.test/"]],
+    transportOptions: { navigationCommitTimeoutMs: 5_000 },
+  });
+  const { fake, transport, received } = harness;
+  const mainSession = [...fake.sessions.keys()][0];
+
+  // Model the native tab-reuse branch: createTab hands back the existing
+  // target (navigated to the blank staging page) instead of a fresh one.
+  fake.runtime.createTab = async (url) => {
+    fake.createdUrls.push(url);
+    const tab = fake.tabs.get("tab-main");
+    tab.url = url;
+    tab.frames[0].url = url;
+    return { targetId: "tab-main" };
+  };
+  // Gate the commit: the frame keeps reporting the blank staging URL until
+  // the override is cleared, so the transition stays pending.
+  fake.frameUrlOverride.set("tab-main", "about:blank");
+
+  transport.send({
+    id: 100,
+    method: "Page.navigate",
+    params: { frameId: "tab-main", url: "https://main.test/next" },
+    sessionId: mainSession,
+  });
+  const detachDeadline = Date.now() + 2_000;
+  while (
+    !fake.detachedSessions.includes(mainSession) &&
+    Date.now() < detachDeadline
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.ok(
+    fake.detachedSessions.includes(mainSession),
+    "the reused tab's old session is detached for the replacement attach",
+  );
+
+  transport.send({
+    id: 101,
+    method: "Runtime.evaluate",
+    params: { expression: "1 + 1", returnByValue: true },
+    sessionId: mainSession,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  assert.equal(
+    received.find((message) => message.id === 101),
+    undefined,
+    "the command is held: the old session is already detached",
+  );
+  assert.equal(
+    fake.log.some(
+      (request) =>
+        request.method === "Runtime.evaluate" &&
+        request.params?.expression === "1 + 1",
+    ),
+    false,
+    "the held command is never sent to the detached session",
+  );
+
+  fake.frameUrlOverride.delete("tab-main");
+  const navigated = await waitForMessage(
+    received,
+    (message) => message.id === 100,
+    5_000,
+  );
+  assert.ok(navigated, "the navigation settles once the commit gate opens");
+  assert.equal(
+    navigated.error,
+    undefined,
+    `the navigation must commit, got: ${JSON.stringify(navigated?.error)}`,
+  );
+  const evaluated = await waitForMessage(
+    received,
+    (message) => message.id === 101,
+  );
+  assert.ok(evaluated, "the held command completes after the swap");
+  assert.equal(evaluated.error, undefined);
+  const replacementSession = [...fake.sessions.keys()].at(-1);
+  assert.notEqual(replacementSession, mainSession);
+  const delivered = fake.log.find(
+    (request) =>
+      request.method === "Runtime.evaluate" &&
+      request.params?.expression === "1 + 1",
+  );
+  assert.equal(
+    delivered?.sessionId,
+    replacementSession,
+    "the held command is answered by the replacement session",
+  );
+  await transport.closeAndWait();
+});
+
+test("a new client navigation supersedes the pending one instead of queuing behind it", async () => {
+  const harness = await createTaskSpaceTransportHarness({
+    tabs: [["tab-main", "https://main.test/"]],
+    harnessOptions: { interceptNavigations: true },
+    transportOptions: { navigationCommitTimeoutMs: 10_000 },
+  });
+  const { fake, transport, received } = harness;
+  const mainSession = [...fake.sessions.keys()][0];
+
+  transport.send({
+    id: 110,
+    method: "Fetch.enable",
+    params: { patterns: [{ urlPattern: "*", requestStage: "Request" }] },
+    sessionId: mainSession,
+  });
+  await waitForMessage(received, (message) => message.id === 110);
+
+  // Navigation A is gated: its paused document request is never continued,
+  // modeling a hung server that would otherwise burn the full commit budget.
+  transport.send({
+    id: 111,
+    method: "Page.navigate",
+    params: { frameId: "tab-main", url: "https://main.test/hung" },
+    sessionId: mainSession,
+  });
+  const pausedA = await waitForMessage(
+    received,
+    (message) => message.method === "Fetch.requestPaused",
+  );
+  assert.ok(pausedA, "navigation A is gated on its paused document request");
+
+  const startedAt = Date.now();
+  transport.send({
+    id: 112,
+    method: "Page.navigate",
+    params: { frameId: "tab-main", url: "https://main.test/recovery" },
+    sessionId: mainSession,
+  });
+  const superseded = await waitForMessage(
+    received,
+    (message) => message.id === 111,
+  );
+  assert.match(
+    superseded.error?.message || "",
+    /superseded by a newer navigation/,
+    "the aborted navigation's client message must not dangle",
+  );
+
+  const pausedB = await waitForMessage(
+    received,
+    (message) =>
+      message.method === "Fetch.requestPaused" &&
+      message.params.requestId !== pausedA.params.requestId,
+  );
+  assert.ok(pausedB, "navigation B starts its own document request");
+  transport.send({
+    id: 113,
+    method: "Fetch.continueRequest",
+    params: { requestId: pausedB.params.requestId },
+    sessionId: mainSession,
+  });
+  const navigated = await waitForMessage(
+    received,
+    (message) => message.id === 112,
+    5_000,
+  );
+  assert.ok(navigated, "navigation B settles");
+  assert.equal(
+    navigated.error,
+    undefined,
+    `navigation B must commit, got: ${JSON.stringify(navigated?.error)}`,
+  );
+  assert.ok(
+    Date.now() - startedAt < 5_000,
+    "navigation B must commit far below the pending navigation's commit budget",
+  );
+  assert.ok(
+    fake.closedTargets.includes("tab-1"),
+    "the superseded navigation's replacement tab is closed",
+  );
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(
+    received.filter((message) => message.id === 111).length,
+    1,
+    "the superseded navigation gets exactly one response",
+  );
+  await transport.closeAndWait();
+});
+
+test("rapid successive navigations supersede each other and the final one wins", async () => {
+  const harness = await createTaskSpaceTransportHarness({
+    tabs: [["tab-main", "https://main.test/"]],
+    harnessOptions: { interceptNavigations: true },
+    transportOptions: { navigationCommitTimeoutMs: 10_000 },
+  });
+  const { fake, transport, received } = harness;
+  const mainSession = [...fake.sessions.keys()][0];
+
+  transport.send({
+    id: 115,
+    method: "Fetch.enable",
+    params: { patterns: [{ urlPattern: "*", requestStage: "Request" }] },
+    sessionId: mainSession,
+  });
+  await waitForMessage(received, (message) => message.id === 115);
+
+  transport.send({
+    id: 116,
+    method: "Page.navigate",
+    params: { frameId: "tab-main", url: "https://main.test/a" },
+    sessionId: mainSession,
+  });
+  await waitForMessage(
+    received,
+    (message) => message.method === "Fetch.requestPaused",
+  );
+  // B supersedes the in-flight A; C supersedes the still-queued B.
+  transport.send({
+    id: 117,
+    method: "Page.navigate",
+    params: { frameId: "tab-main", url: "https://main.test/b" },
+    sessionId: mainSession,
+  });
+  transport.send({
+    id: 118,
+    method: "Page.navigate",
+    params: { frameId: "tab-main", url: "https://main.test/c" },
+    sessionId: mainSession,
+  });
+
+  const abortedA = await waitForMessage(
+    received,
+    (message) => message.id === 116,
+  );
+  assert.match(abortedA.error?.message || "", /superseded by a newer/);
+  const abortedB = await waitForMessage(
+    received,
+    (message) => message.id === 117,
+  );
+  assert.match(abortedB.error?.message || "", /superseded by a newer/);
+
+  const pausedC = await waitForMessage(
+    received,
+    (message) =>
+      message.method === "Fetch.requestPaused" &&
+      message.params.request?.url === "https://main.test/c",
+  );
+  assert.ok(pausedC, "the final navigation starts its own document request");
+  transport.send({
+    id: 119,
+    method: "Fetch.continueRequest",
+    params: { requestId: pausedC.params.requestId },
+    sessionId: mainSession,
+  });
+  const navigated = await waitForMessage(
+    received,
+    (message) => message.id === 118,
+    5_000,
+  );
+  assert.ok(navigated, "the final navigation settles");
+  assert.equal(
+    navigated.error,
+    undefined,
+    `the final navigation must commit, got: ${JSON.stringify(navigated?.error)}`,
+  );
+
+  // A's replacement was the first tab the fake minted; B never started, so it
+  // created none; C's replacement (the second minted tab) is the only tab
+  // left after the swap closed the original.
+  assert.ok(
+    fake.closedTargets.includes("tab-1"),
+    "the aborted navigation's replacement tab is closed",
+  );
+  assert.ok(
+    fake.closedTargets.includes("tab-main"),
+    "the original tab is closed by the final swap",
+  );
+  assert.deepEqual(
+    [...fake.tabs.keys()],
+    ["tab-2"],
+    "no replacement tab leaks from the aborted navigations",
+  );
+  assert.equal(fake.tabs.get("tab-2").url, "https://main.test/c");
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(
+    received.filter((message) => message.id === 116).length,
+    1,
+    "navigation A gets exactly one response",
+  );
+  assert.equal(
+    received.filter((message) => message.id === 117).length,
+    1,
+    "navigation B gets exactly one response",
+  );
+  await transport.closeAndWait();
+});
+
+test("a navigation stuck confirming its commit is superseded without waiting out the poll", async () => {
+  const harness = await createTaskSpaceTransportHarness({
+    tabs: [["tab-main", "https://main.test/"]],
+    transportOptions: { navigationCommitTimeoutMs: 10_000 },
+  });
+  const { fake, transport, received } = harness;
+  const mainSession = [...fake.sessions.keys()][0];
+
+  // Gate only navigation A's replacement tab: its frame keeps reporting the
+  // blank staging URL, so A hangs in commit confirmation even though the
+  // native Page.navigate itself already succeeded.
+  const originalCreateTab = fake.runtime.createTab;
+  let gatedTargetId;
+  fake.runtime.createTab = async (url) => {
+    fake.runtime.createTab = originalCreateTab;
+    const created = await originalCreateTab(url);
+    gatedTargetId = created.targetId;
+    fake.frameUrlOverride.set(created.targetId, "about:blank");
+    return created;
+  };
+
+  transport.send({
+    id: 120,
+    method: "Page.navigate",
+    params: { frameId: "tab-main", url: "https://main.test/stuck" },
+    sessionId: mainSession,
+  });
+  // Page.getFrameTree traffic is the commit-confirmation poll: nothing else
+  // in this harness flow issues it, so its appearance proves A is polling.
+  const pollDeadline = Date.now() + 2_000;
+  while (
+    !fake.log.some((request) => request.method === "Page.getFrameTree") &&
+    Date.now() < pollDeadline
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.ok(
+    fake.log.some((request) => request.method === "Page.getFrameTree"),
+    "navigation A reaches its commit-confirmation poll",
+  );
+
+  const startedAt = Date.now();
+  transport.send({
+    id: 121,
+    method: "Page.navigate",
+    params: { frameId: "tab-main", url: "https://main.test/recovery" },
+    sessionId: mainSession,
+  });
+  const superseded = await waitForMessage(
+    received,
+    (message) => message.id === 120,
+  );
+  assert.match(
+    superseded.error?.message || "",
+    /superseded by a newer navigation/,
+    "the poll-gated navigation resolves with the superseded error",
+  );
+  const navigated = await waitForMessage(
+    received,
+    (message) => message.id === 121,
+    5_000,
+  );
+  assert.ok(navigated, "the superseding navigation settles");
+  assert.equal(
+    navigated.error,
+    undefined,
+    `the superseding navigation must commit, got: ${JSON.stringify(navigated?.error)}`,
+  );
+  assert.ok(
+    Date.now() - startedAt < 5_000,
+    "the superseding navigation must not wait out the aborted commit poll",
+  );
+  assert.ok(
+    fake.closedTargets.includes(gatedTargetId),
+    "the aborted navigation's replacement tab is closed",
+  );
+  await transport.closeAndWait();
+});
+
 async function assertInPlaceNavigation(initialUrl) {
   const harness = await createTaskSpaceTransportHarness({
     tabs: [["tab-main", initialUrl]],

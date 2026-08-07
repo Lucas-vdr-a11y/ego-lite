@@ -69,6 +69,17 @@ type PageRoute = {
   state: "attached" | "navigating" | "rebinding" | "closed";
   replayCommands: Map<string, ReplayCommand>;
   heldMessages?: any[];
+  // Set while the route's current native session cannot receive commands: it
+  // was internally detached (same-target navigation replacement) or its native
+  // detach started a rebind. Forwarding would only fail with "Session not
+  // found", so send() holds everything until the transition settles.
+  nativeSessionDetached?: boolean;
+  // A newer client Page.navigate supersedes an older one (stock browser
+  // semantics). Each client navigation bumps the epoch; a queued navigation
+  // that starts with a stale epoch answers "superseded" without doing any
+  // native work, and abortNavigation cancels the one already in flight.
+  navigationEpoch: number;
+  abortNavigation?: (reason: string) => void;
   pendingTransition?: Promise<void>;
   transition?: NavigationTransition;
   passiveNavigation?: {
@@ -250,7 +261,9 @@ export class EgoCdpTransport {
         // race where a createTab issued while another fresh tab's
         // initialization is still in flight returns a tab whose CDP
         // passthrough never answers. The route stays "attached" throughout —
-        // no holds, no synthetic events.
+        // no holds, no synthetic events — and a newer client navigation is
+        // superseded natively by Chromium, so the epoch is not bumped and no
+        // in-flight replacement is aborted for this path.
         if (
           route.state === "attached" &&
           isBlankPageUrl(route.currentMainFrameUrl)
@@ -258,7 +271,16 @@ export class EgoCdpTransport {
           this.#runInPlaceNavigation(message, route);
           return;
         }
-        const run = () => this.#runNavigationReplacement(message, route);
+        // A newer navigation supersedes the pending one (stock browser
+        // semantics): abort the in-flight transition so this one starts as
+        // soon as its cleanup finishes. The chaining stays — it is the
+        // ordering guarantee that lets cleanup complete first.
+        route.navigationEpoch += 1;
+        const epoch = route.navigationEpoch;
+        route.abortNavigation?.(
+          "navigation was superseded by a newer navigation",
+        );
+        const run = () => this.#runNavigationReplacement(message, route, epoch);
         const previous = route.pendingTransition ?? Promise.resolve();
         route.pendingTransition = previous.then(run, run);
         return;
@@ -282,12 +304,24 @@ export class EgoCdpTransport {
         // Interception responses must reach the in-flight replacement session
         // now: its paused document request is what the commit is waiting on.
         transitionSessionId = route.transition.nativeSessionId;
-      } else {
-        // The native session is being swapped; hold the command and replay it
-        // against the replacement session once the transition settles.
+      } else if (
+        isReplayableSessionCommand(message.method) ||
+        route.nativeSessionDetached
+      ) {
+        // Replayable commands mutate session domain state, and the replacement
+        // session took its replay snapshot when the transition started — a
+        // mid-transition command must be held and re-processed after the swap
+        // or the new session would silently miss it. Everything is held once
+        // the old native session is detached: forwarding would only fail with
+        // "Session not found".
         (route.heldMessages ??= []).push(message);
         return;
       }
+      // Everything else keeps operating on the old document through the still
+      // attached native session, matching stock browser semantics during a
+      // pending navigation. If the navigation later commits and destroys the
+      // context, in-flight commands fail with context-destroyed-style errors
+      // exactly as stock Playwright surfaces them.
     }
     const attachTargetId =
       message.method === "Target.attachToTarget" &&
@@ -692,6 +726,9 @@ export class EgoCdpTransport {
 
     this.#rejectPendingSessionCommands(nativeSessionId, route.clientSessionId);
     route.state = "rebinding";
+    // The native session is already gone (its detach started this rebind);
+    // nothing can be forwarded to it until the replacement is in place.
+    route.nativeSessionDetached = true;
     this.#retiredNativeSessions.add(nativeSessionId);
     this.#activeOperations += 1;
     this.#updatePendingWork();
@@ -738,6 +775,7 @@ export class EgoCdpTransport {
         this.#deliverDetachedRoute(route);
       }
     })().finally(() => {
+      route.nativeSessionDetached = false;
       this.#endOperation();
       this.#flushHeldMessages(route);
     });
@@ -1211,6 +1249,7 @@ export class EgoCdpTransport {
       currentMainFrameUrl:
         typeof targetInfo.url === "string" ? targetInfo.url : "",
       generation: 0,
+      navigationEpoch: 0,
       state: "attached",
       replayCommands: new Map(),
     };
@@ -1358,7 +1397,11 @@ export class EgoCdpTransport {
       });
   }
 
-  async #runNavigationReplacement(message: any, route: PageRoute) {
+  async #runNavigationReplacement(
+    message: any,
+    route: PageRoute,
+    epoch: number,
+  ) {
     const clientFrameId = message.params?.frameId;
     const url = message.params?.url;
     if (typeof clientFrameId !== "string" || typeof url !== "string") {
@@ -1383,6 +1426,20 @@ export class EgoCdpTransport {
       });
       return;
     }
+    if (epoch !== route.navigationEpoch) {
+      // A newer navigation arrived while this one was still queued; it never
+      // started, so there is nothing to clean up — just answer the caller.
+      this.#emit({
+        id: message.id,
+        error: {
+          code: -32_000,
+          message: "navigation was superseded by a newer navigation",
+        },
+        sessionId: route.clientSessionId,
+      });
+      return;
+    }
+
     route.state = "navigating";
     this.#activeOperations += 1;
     this.#updatePendingWork();
@@ -1391,6 +1448,25 @@ export class EgoCdpTransport {
     this.#retiredNativeSessions.add(previousNativeSessionId);
     let replacementTargetId: string | undefined;
     let replacementSessionId: string | undefined;
+    // CDP has no cancel message, so an abort can only reject our own awaits:
+    // the long waits below race against this promise, and the in-flight
+    // native command is left to settle on its own (already marked handled).
+    let abortReason: string | undefined;
+    let rejectAbort!: (error: Error) => void;
+    const abortPromise = new Promise<never>((_, reject) => {
+      rejectAbort = reject;
+    });
+    void abortPromise.catch(() => undefined);
+    const abort = (reason: string) => {
+      if (abortReason !== undefined) return;
+      abortReason = reason;
+      rejectAbort(new Error(reason));
+    };
+    route.abortNavigation = abort;
+    const raceAbort = <T>(work: Promise<T>): Promise<T> => {
+      void work.catch(() => undefined);
+      return Promise.race([work, abortPromise]);
+    };
 
     await (async () => {
       // The replacement tab is created blank on purpose: the enable commands
@@ -1410,6 +1486,10 @@ export class EgoCdpTransport {
 
       route.state = "rebinding";
       if (newTargetId === previousNativeTargetId) {
+        // The reused tab's old session is detached before the replacement
+        // attach; from here until the transition settles no command can be
+        // forwarded to it, so send() must hold everything.
+        route.nativeSessionDetached = true;
         this.#internallyDetachedSessions.add(route.nativeSessionId);
         await this.#sendNativeCommand("Target.detachFromTarget", {
           sessionId: route.nativeSessionId,
@@ -1442,6 +1522,9 @@ export class EgoCdpTransport {
         {},
         newSessionId,
       );
+      // An abort during the setup awaits above means the navigation is
+      // already doomed; do not dispatch it natively at all.
+      if (abortReason !== undefined) throw new Error(abortReason);
       // Only now start the real navigation, natively on the armed session.
       // Page.navigate responds when the navigation commits (or fails), which
       // can hinge on the client: a replayed Fetch.enable pauses the document
@@ -1449,11 +1532,13 @@ export class EgoCdpTransport {
       // flowing so the client can resume it while this await is pending.
       let navigateResult: any;
       try {
-        navigateResult = await this.#sendNativeCommand(
-          "Page.navigate",
-          { url },
-          newSessionId,
-          this.#navigationCommitTimeoutMs,
+        navigateResult = await raceAbort(
+          this.#sendNativeCommand(
+            "Page.navigate",
+            { url },
+            newSessionId,
+            this.#navigationCommitTimeoutMs,
+          ),
         );
       } catch (error) {
         const message = (error as Error)?.message || String(error);
@@ -1476,13 +1561,20 @@ export class EgoCdpTransport {
         // promptly instead of burning the whole commit timeout.
         throw new Error("net::ERR_ABORTED; maybe frame was detached?");
       }
-      const { frame, documentState } = await this.#waitForNavigationCommit(
-        newSessionId,
-        url,
-        typeof navigateResult?.loaderId === "string"
-          ? navigateResult.loaderId
-          : undefined,
-        this.#navigationCommitTimeoutMs,
+      const { frame, documentState } = await raceAbort(
+        this.#waitForNavigationCommit(
+          newSessionId,
+          url,
+          typeof navigateResult?.loaderId === "string"
+            ? navigateResult.loaderId
+            : undefined,
+          this.#navigationCommitTimeoutMs,
+          // The race already rejects the transition; this stops the poll loop
+          // itself so an aborted commit wait does not keep probing natively.
+          () => {
+            if (abortReason !== undefined) throw new Error(abortReason);
+          },
+        ),
       );
       const replacementFrameId =
         typeof frame.id === "string" ? frame.id : newTargetId;
@@ -1633,6 +1725,14 @@ export class EgoCdpTransport {
         });
       })
       .finally(() => {
+        // Settled either way: on success the route now points at the usable
+        // replacement session; on failure of the same-target branch the route
+        // is restored to "attached", where the flag is never consulted.
+        // Dropping the abort hook here keeps a stale abort from ever firing
+        // after its transition settled (the next navigation installs its own
+        // hook only after this settles, via the pendingTransition chain).
+        if (route.abortNavigation === abort) route.abortNavigation = undefined;
+        route.nativeSessionDetached = false;
         this.#endOperation();
         this.#flushHeldMessages(route);
       });
@@ -1776,11 +1876,13 @@ export class EgoCdpTransport {
     requestedUrl: string,
     expectedLoaderId: string | undefined,
     timeoutMs: number,
+    throwIfAborted?: () => void,
   ) {
     const deadline = Date.now() + timeoutMs;
     let lastFrame: any;
     do {
       if (this.closed) throw new Error("Ego CDP transport is closed");
+      throwIfAborted?.();
       const frameTree = await this.#sendNativeCommand(
         "Page.getFrameTree",
         {},
