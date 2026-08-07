@@ -2690,6 +2690,258 @@ test("popups opened concurrently with different URLs are both attached", async (
   await transport.closeAndWait();
 });
 
+test("a popup whose tab URL changed before discovery is still attached", async () => {
+  const harness = await createTaskSpaceTransportHarness({
+    tabs: [["tab-main", "https://main.test/"]],
+  });
+  const { fake, transport, received } = harness;
+  const mainSession = [...fake.sessions.keys()][0];
+
+  // The native tab already shows the post-redirect URL, so it can never
+  // equal the windowOpen URL.
+  fake.addTab("tab-popup-moved", "https://popup.test/final");
+  fake.emit({
+    method: "Page.windowOpen",
+    params: { url: "https://popup.test/r", windowName: "" },
+    sessionId: mainSession,
+  });
+
+  const attached = await waitForMessage(
+    received,
+    (message) =>
+      message.method === "Target.attachedToTarget" &&
+      message.params?.targetInfo?.targetId === "tab-popup-moved",
+  );
+  assert.ok(attached, "the redirected popup is attached");
+  assert.equal(attached.params.targetInfo.openerId, "tab-main");
+  await transport.closeAndWait();
+});
+
+test("an exact URL match is preferred over queue order when adopting a popup", async () => {
+  const harness = await createTaskSpaceTransportHarness({
+    tabs: [
+      ["tab-a", "https://a.test/"],
+      ["tab-b", "https://b.test/"],
+    ],
+  });
+  const { fake, transport, received } = harness;
+  const sessionA = [...fake.sessions].find(
+    ([, targetId]) => targetId === "tab-a",
+  )[0];
+  const sessionB = [...fake.sessions].find(
+    ([, targetId]) => targetId === "tab-b",
+  )[0];
+  const releaseListTabs = gateListTabs(fake);
+
+  // The older queued entry does not match the tab URL; the newer one does.
+  fake.emit({
+    method: "Page.windowOpen",
+    params: { url: "https://popup.test/r", windowName: "" },
+    sessionId: sessionA,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  fake.emit({
+    method: "Page.windowOpen",
+    params: { url: "https://popup.test/exact", windowName: "" },
+    sessionId: sessionB,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  fake.addTab("tab-popup", "https://popup.test/exact");
+  releaseListTabs();
+
+  const attached = await waitForMessage(
+    received,
+    (message) =>
+      message.method === "Target.attachedToTarget" &&
+      message.params?.targetInfo?.targetId === "tab-popup",
+  );
+  assert.ok(attached, "the popup is attached");
+  assert.equal(
+    attached.params.targetInfo.openerId,
+    "tab-b",
+    "the exact URL match wins over the older queued entry",
+  );
+  await transport.closeAndWait();
+});
+
+test("concurrent popups both attach when one URL changed before discovery", async () => {
+  const harness = await createTaskSpaceTransportHarness({
+    tabs: [["tab-main", "https://main.test/"]],
+  });
+  const { fake, transport, received } = harness;
+  const mainSession = [...fake.sessions.keys()][0];
+  const releaseListTabs = gateListTabs(fake);
+
+  fake.addTab("tab-popup-exact", "https://popup.test/exact");
+  fake.addTab("tab-popup-moved", "https://popup.test/final");
+  fake.emit({
+    method: "Page.windowOpen",
+    params: { url: "https://popup.test/exact", windowName: "exact" },
+    sessionId: mainSession,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  fake.emit({
+    method: "Page.windowOpen",
+    params: { url: "https://popup.test/r", windowName: "moved" },
+    sessionId: mainSession,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  releaseListTabs();
+
+  const attachedExact = await waitForMessage(
+    received,
+    (message) =>
+      message.method === "Target.attachedToTarget" &&
+      message.params?.targetInfo?.targetId === "tab-popup-exact",
+  );
+  const attachedMoved = await waitForMessage(
+    received,
+    (message) =>
+      message.method === "Target.attachedToTarget" &&
+      message.params?.targetInfo?.targetId === "tab-popup-moved",
+  );
+  assert.ok(attachedExact, "the exact-match popup is attached");
+  assert.ok(attachedMoved, "the redirected popup is attached as well");
+  assert.equal(attachedExact.params.targetInfo.openerId, "tab-main");
+  assert.equal(attachedMoved.params.targetInfo.openerId, "tab-main");
+  await transport.closeAndWait();
+});
+
+test("a redirecting popup is adopted only after its URL settles", async () => {
+  const harness = await createTaskSpaceTransportHarness({
+    tabs: [["tab-main", "https://main.test/"]],
+  });
+  const { fake, transport, received } = harness;
+  const mainSession = [...fake.sessions.keys()][0];
+
+  // Mirror the native timeline: the tab first appears with an empty URL and
+  // only commits to the final URL a few polls later.
+  fake.addTab("tab-popup-late", "");
+  const startedAt = Date.now();
+  fake.emit({
+    method: "Page.windowOpen",
+    params: { url: "https://popup.test/r", windowName: "" },
+    sessionId: mainSession,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  fake.tabs.get("tab-popup-late").url = "https://popup.test/final";
+
+  const attached = await waitForMessage(
+    received,
+    (message) =>
+      message.method === "Target.attachedToTarget" &&
+      message.params?.targetInfo?.targetId === "tab-popup-late",
+  );
+  assert.ok(attached, "the popup is attached after its URL settles");
+  assert.equal(
+    attached.params.targetInfo.url,
+    "https://popup.test/final",
+    "adoption waits for the committed URL instead of racing the navigation",
+  );
+  assert.ok(
+    Date.now() - startedAt < 1_500,
+    "a settled URL is adopted well before the deadline phase",
+  );
+  await transport.closeAndWait();
+});
+
+test("a popup that never navigates is adopted in the deadline phase", async () => {
+  const harness = await createTaskSpaceTransportHarness({
+    tabs: [["tab-main", "https://main.test/"]],
+  });
+  const { fake, transport, received } = harness;
+  const mainSession = [...fake.sessions.keys()][0];
+
+  // A bare window.open() popup: the tab URL stays empty forever, so only the
+  // end-of-deadline adoption can claim it.
+  fake.addTab("tab-popup-blank", "");
+  const startedAt = Date.now();
+  fake.emit({
+    method: "Page.windowOpen",
+    params: { url: "https://popup.test/never", windowName: "" },
+    sessionId: mainSession,
+  });
+
+  const attached = await waitForMessage(
+    received,
+    (message) =>
+      message.method === "Target.attachedToTarget" &&
+      message.params?.targetInfo?.targetId === "tab-popup-blank",
+  );
+  assert.ok(attached, "the blank popup is still attached");
+  assert.equal(attached.params.targetInfo.openerId, "tab-main");
+  assert.ok(
+    Date.now() - startedAt >= 1_000,
+    "an empty URL is never adopted eagerly",
+  );
+  await transport.closeAndWait();
+});
+
+test("a popup after a TaskSpace navigation replacement adopts the popup tab, not the opener", async () => {
+  const harness = await createTaskSpaceTransportHarness({
+    tabs: [["tab-main", "https://main.test/"]],
+  });
+  const { fake, transport, received } = harness;
+  const mainSession = [...fake.sessions.keys()][0];
+
+  // A TaskSpace navigation replacement rebinds the route onto a brand new
+  // native tab (the fake's createTab always mints a fresh targetId).
+  transport.send({
+    id: 60,
+    method: "Page.navigate",
+    params: { frameId: "tab-main", url: "https://main.test/next" },
+    sessionId: mainSession,
+  });
+  await waitForMessage(received, (message) => message.id === 60, 5_000);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  const replacementSession = [...fake.sessions.keys()].at(-1);
+  const replacementTargetId = fake.sessions.get(replacementSession);
+  assert.notEqual(replacementTargetId, "tab-main");
+  const attachesBefore = fake.log.filter(
+    (request) =>
+      request.method === "Target.attachToTarget" &&
+      request.params?.targetId === replacementTargetId,
+  ).length;
+
+  // Redirect case: the popup tab's URL never matches the windowOpen URL, so
+  // adoption must go through the fallback path — which used to grab the
+  // route's own replacement tab because #targetIds had lost track of it.
+  fake.addTab("tab-popup-after-nav", "https://popup.test/final");
+  fake.emit({
+    method: "Page.windowOpen",
+    params: { url: "https://popup.test/r", windowName: "" },
+    sessionId: replacementSession,
+  });
+
+  const attached = await waitForMessage(
+    received,
+    (message) =>
+      message.method === "Target.attachedToTarget" &&
+      message.params?.targetInfo?.targetId === "tab-popup-after-nav",
+  );
+  assert.ok(attached, "the popup tab is adopted");
+  assert.equal(attached.params.targetInfo.openerId, "tab-main");
+  const attachesAfter = fake.log.filter(
+    (request) =>
+      request.method === "Target.attachToTarget" &&
+      request.params?.targetId === replacementTargetId,
+  ).length;
+  assert.equal(
+    attachesAfter,
+    attachesBefore,
+    "the route's native target must not be attached a second time",
+  );
+  assert.ok(
+    !received.some(
+      (message) =>
+        message.method === "Target.attachedToTarget" &&
+        message.params?.targetInfo?.targetId === replacementTargetId,
+    ),
+    "no ghost page is announced for the route's own native target",
+  );
+  await transport.closeAndWait();
+});
+
 test("replayed toggle commands preserve the client's final state", async () => {
   const harness = await createTaskSpaceTransportHarness({
     tabs: [["tab-main", "https://main.test/"]],

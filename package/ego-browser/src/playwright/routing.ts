@@ -770,6 +770,9 @@ export class EgoCdpTransport {
     const clientTargetId = route.clientTargetId;
     this.#removeRoute(route);
     this.#targetIds?.delete(clientTargetId);
+    // After a navigation replacement the native id differs from the client
+    // id; drop both so the dead tab cannot linger in the task-space set.
+    this.#targetIds?.delete(route.nativeTargetId);
     this.#deliverEvent({
       method: "Target.detachedFromTarget",
       params: {
@@ -1136,27 +1139,52 @@ export class EgoCdpTransport {
     this.#activeOperations += 1;
     this.#updatePendingWork();
     void (async () => {
+      // Consecutive polls each unclaimed tab has reported the same URL, used
+      // to tell committed navigations from in-flight ones (loop-local: the
+      // scan loop is single-flight per transport).
+      const urlStability = new Map<string, { url: unknown; polls: number }>();
       do {
         const listed = await this.#runtime.listTabs!();
         const tabs = listed?.tabs || listed?.targetInfos || [];
+        const deadlineImminent =
+          this.#popupDiscoveryDeadline - Date.now() < 300;
         for (const tab of tabs) {
           const targetId = tab.targetId;
-          if (typeof targetId !== "string" || this.#targetIds!.has(targetId)) {
+          if (
+            typeof targetId !== "string" ||
+            this.#targetIds!.has(targetId) ||
+            // A tab that already backs a route is never a popup candidate,
+            // regardless of any drift in the task-space target set.
+            this.#routesByNativeTarget.has(targetId)
+          ) {
             continue;
           }
           const queue = this.#popupDiscoveryQueue;
           if (queue.length === 0) break;
+          const seen = urlStability.get(targetId);
+          const polls = seen && seen.url === tab.url ? seen.polls + 1 : 1;
+          urlStability.set(targetId, { url: tab.url, polls });
           let index = queue.findIndex(
             (entry) =>
               typeof entry.expectedUrl === "string" &&
               entry.expectedUrl === tab.url,
           );
+          // A popup's URL can change before discovery (server redirect, or a
+          // scripted location assignment after window.open()), so an exact
+          // URL miss must not leave a queued entry unspent while an unclaimed
+          // tab exists. Fall back to the oldest entry, but only once the
+          // tab's URL has settled — attaching mid-navigation races the
+          // client's page init against the commit and can leave the page
+          // stuck on a stale URL — or once the deadline is imminent, so
+          // popups that never navigate (bare window.open()) are not lost.
+          // Concurrent redirecting popups may then pair with the wrong
+          // opener, which is still better than losing the popup.
           if (index === -1) {
-            index = queue.findIndex(
-              (entry) => typeof entry.expectedUrl !== "string",
-            );
+            const settled =
+              typeof tab.url === "string" && tab.url !== "" && polls >= 3;
+            if (!settled && !deadlineImminent) continue;
+            index = 0;
           }
-          if (index === -1) continue;
           const [entry] = queue.splice(index, 1);
           this.#targetIds!.add(targetId);
           await this.#attachTaskSpaceTarget(targetId, entry.openerTargetId);
@@ -1261,10 +1289,16 @@ export class EgoCdpTransport {
     this.#routesByNativeTarget.delete(route.nativeTargetId);
     this.#sessionsByTarget.delete(route.nativeTargetId);
     this.#targetsBySession.delete(route.nativeSessionId);
+    // The task-space target set must follow the swap: the replacement tab is
+    // ours now, and the retired tab must not linger as an admission ticket.
+    // Without this, popup discovery mistakes the route's own new tab for an
+    // unclaimed popup.
+    this.#targetIds?.delete(route.nativeTargetId);
     route.nativeTargetId = nativeTargetId;
     route.nativeSessionId = nativeSessionId;
     route.nativeMainFrameId = nativeMainFrameId;
     route.generation += 1;
+    this.#targetIds?.add(nativeTargetId);
     this.#routesByNativeSession.set(nativeSessionId, route);
     this.#routesByNativeTarget.set(nativeTargetId, route);
     this.#sessionsByTarget.set(nativeTargetId, nativeSessionId);
@@ -1807,6 +1841,9 @@ export class EgoCdpTransport {
       if (route) this.#removeRoute(route);
       if (typeof nativeTargetId === "string") {
         this.#sessionsByTarget.delete(nativeTargetId);
+        // After a navigation replacement the native id differs from the
+        // client id; drop both from the task-space set.
+        this.#targetIds?.delete(nativeTargetId);
       }
       if (nativeSessionId) this.#targetsBySession.delete(nativeSessionId);
       if (typeof clientTargetId === "string") {
