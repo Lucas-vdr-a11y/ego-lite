@@ -22,6 +22,7 @@ const clientEntries = [
   "collaborative-docs",
   "spreadsheet",
   "rich-text",
+  "visual-path",
 ];
 
 export default defineConfig(({ command, mode }) => {

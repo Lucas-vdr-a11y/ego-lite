@@ -152,6 +152,15 @@ export const TEST_CASES = [
     description:
       "Write and format a release article, inspect its semantic HTML, and persist the editorial draft.",
   },
+  {
+    slug: "visual-path",
+    route: "/tests/visual-path",
+    number: "18",
+    title: "Alignment board",
+    eyebrow: "Visual path / coordinate calibration",
+    description:
+      "Find calibration targets in the rendered image alone, then confirm every hit lands where it was aimed.",
+  },
 ];
 
 export function findTestCase(slug) {

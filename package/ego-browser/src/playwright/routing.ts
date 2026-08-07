@@ -31,6 +31,27 @@ type PassthroughSession = {
   nativeTargetId: string;
 };
 
+// While a navigation replacement waits for its commit, interception traffic
+// must keep flowing: a replayed Fetch.enable pauses the replacement's document
+// request, and only the client can continue it. The bridge exposes the
+// replacement session's Fetch events to the client (and routes the client's
+// Fetch commands back) before the route itself is swapped. Network events are
+// NOT bridged: they stay deferred until commit like every other event, so the
+// commit-time synthesis keeps seeing them in arrival order.
+type NavigationTransition = {
+  nativeSessionId: string;
+  nativeTargetId: string;
+  clientFrameId: string;
+  // networkIds whose Network.requestWillBeSent the bridge has synthesized:
+  // while interception holds the document request paused, Chromium withholds
+  // the request's real Network.requestWillBeSent, so the bridge announces it
+  // from the pause payload. The real event arrives once the pause resolves
+  // (deferred until the swap) and is dropped there, and the commit-time
+  // navigation-response synthesis consults this set so the request is never
+  // announced twice.
+  announcedRequests: Set<string>;
+};
+
 type PageRoute = {
   clientTargetId: string;
   nativeTargetId: string;
@@ -38,9 +59,29 @@ type PageRoute = {
   nativeSessionId: string;
   clientMainFrameId?: string;
   nativeMainFrameId?: string;
+  // The route's current committed main-frame URL: seeded from the attach-time
+  // targetInfo, updated on every observed main-frame Page.frameNavigated, and
+  // set to the committed URL when a navigation replacement swaps the route.
+  // While it is blank ("", about:blank, chrome://newtab) a client navigation
+  // runs natively in place instead of through the tab-replacement flow.
+  currentMainFrameUrl?: string;
   generation: number;
   state: "attached" | "navigating" | "rebinding" | "closed";
   replayCommands: Map<string, ReplayCommand>;
+  heldMessages?: any[];
+  // Set while the route's current native session cannot receive commands: it
+  // was internally detached (same-target navigation replacement) or its native
+  // detach started a rebind. Forwarding would only fail with "Session not
+  // found", so send() holds everything until the transition settles.
+  nativeSessionDetached?: boolean;
+  // A newer client Page.navigate supersedes an older one (stock browser
+  // semantics). Each client navigation bumps the epoch; a queued navigation
+  // that starts with a stale epoch answers "superseded" without doing any
+  // native work, and abortNavigation cancels the one already in flight.
+  navigationEpoch: number;
+  abortNavigation?: (reason: string) => void;
+  pendingTransition?: Promise<void>;
+  transition?: NavigationTransition;
   passiveNavigation?: {
     key: string;
     generation: number;
@@ -97,6 +138,11 @@ export class EgoCdpTransport {
   readonly #unsubscribe: () => void;
   #connecting = true;
   #discoveringOpenedTargets = false;
+  readonly #popupDiscoveryQueue: Array<{
+    openerTargetId?: string;
+    expectedUrl?: string;
+  }> = [];
+  #popupDiscoveryDeadline = 0;
   #activeOperations = 0;
   #lastPendingWork = 0;
 
@@ -116,12 +162,8 @@ export class EgoCdpTransport {
     if (options.targetIds) this.#targetIds = new Set(options.targetIds);
     this.#unsubscribe = subscribeEgoCdpTransport(runtime, {
       message: (payload) => this.#dispatch(payload),
-      error: (message, errorCode) => {
-        this.close(
-          [errorCode, message].filter(Boolean).join(": ") ||
-            "native CDP send failed",
-        );
-      },
+      error: (message, errorCode) =>
+        this.#handleNativeSendError(message, errorCode),
     });
     this.#updatePendingWork();
   }
@@ -189,11 +231,7 @@ export class EgoCdpTransport {
             },
           });
         })
-        .finally(() => {
-          this.#activeOperations -= 1;
-          if (this.#activeOperations === 0) this.#deferredEvents.length = 0;
-          this.#updatePendingWork();
-        });
+        .finally(() => this.#endOperation());
       return;
     }
     if (message.method === "Target.closeTarget") {
@@ -206,8 +244,45 @@ export class EgoCdpTransport {
       typeof this.#runtime.createTab === "function"
     ) {
       const route = this.#routesByClientSession.get(message.sessionId);
-      if (route) {
-        this.#replaceTaskSpaceTargetForNavigation(message, route);
+      // Only main-frame navigations need the TaskSpace tab-replacement flow;
+      // subframe navigations commit natively on the existing target.
+      const navigateFrameId = message.params?.frameId;
+      const mainFrameId = route
+        ? (route.clientMainFrameId ?? route.clientTargetId)
+        : undefined;
+      if (
+        route &&
+        (typeof navigateFrameId !== "string" || navigateFrameId === mainFrameId)
+      ) {
+        // A blank page needs no replacement tab: the route's session already
+        // has the client's enables armed, so a native Page.navigate on it is
+        // fully interceptable and all real events flow through the normal
+        // delivery path. Skipping createTab here also avoids the app-level
+        // race where a createTab issued while another fresh tab's
+        // initialization is still in flight returns a tab whose CDP
+        // passthrough never answers. The route stays "attached" throughout —
+        // no holds, no synthetic events — and a newer client navigation is
+        // superseded natively by Chromium, so the epoch is not bumped and no
+        // in-flight replacement is aborted for this path.
+        if (
+          route.state === "attached" &&
+          isBlankPageUrl(route.currentMainFrameUrl)
+        ) {
+          this.#runInPlaceNavigation(message, route);
+          return;
+        }
+        // A newer navigation supersedes the pending one (stock browser
+        // semantics): abort the in-flight transition so this one starts as
+        // soon as its cleanup finishes. The chaining stays — it is the
+        // ordering guarantee that lets cleanup complete first.
+        route.navigationEpoch += 1;
+        const epoch = route.navigationEpoch;
+        route.abortNavigation?.(
+          "navigation was superseded by a newer navigation",
+        );
+        const run = () => this.#runNavigationReplacement(message, route, epoch);
+        const previous = route.pendingTransition ?? Promise.resolve();
+        route.pendingTransition = previous.then(run, run);
         return;
       }
     }
@@ -216,6 +291,38 @@ export class EgoCdpTransport {
     const route = clientSessionId
       ? this.#routesByClientSession.get(clientSessionId)
       : undefined;
+    let transitionSessionId: string | undefined;
+    if (
+      route &&
+      (route.state === "navigating" || route.state === "rebinding")
+    ) {
+      if (
+        route.transition &&
+        typeof message.method === "string" &&
+        message.method.startsWith("Fetch.")
+      ) {
+        // Interception responses must reach the in-flight replacement session
+        // now: its paused document request is what the commit is waiting on.
+        transitionSessionId = route.transition.nativeSessionId;
+      } else if (
+        isReplayableSessionCommand(message.method) ||
+        route.nativeSessionDetached
+      ) {
+        // Replayable commands mutate session domain state, and the replacement
+        // session took its replay snapshot when the transition started — a
+        // mid-transition command must be held and re-processed after the swap
+        // or the new session would silently miss it. Everything is held once
+        // the old native session is detached: forwarding would only fail with
+        // "Session not found".
+        (route.heldMessages ??= []).push(message);
+        return;
+      }
+      // Everything else keeps operating on the old document through the still
+      // attached native session, matching stock browser semantics during a
+      // pending navigation. If the navigation later commits and destroys the
+      // context, in-flight commands fail with context-destroyed-style errors
+      // exactly as stock Playwright surfaces them.
+    }
     const attachTargetId =
       message.method === "Target.attachToTarget" &&
       typeof message.params?.targetId === "string"
@@ -239,17 +346,19 @@ export class EgoCdpTransport {
         : undefined;
     if (route && isReplayableSessionCommand(message.method)) {
       const params = message.params || {};
-      route.replayCommands.set(`${message.method}:${JSON.stringify(params)}`, {
-        method: message.method,
-        params,
-      });
+      const replayKey = `${message.method}:${JSON.stringify(params)}`;
+      // Delete before set so a repeated command moves to the end of the replay
+      // order; toggle sequences (enable → disable → enable) then replay to the
+      // client's final state instead of the first-seen order.
+      route.replayCommands.delete(replayKey);
+      route.replayCommands.set(replayKey, { method: message.method, params });
     }
     const nativeId = this.#allocateMessageId();
     this.#pendingIds.set(nativeId, {
       clientId: message.id,
       method: message.method,
       clientSessionId,
-      nativeSessionId: route?.nativeSessionId,
+      nativeSessionId: transitionSessionId ?? route?.nativeSessionId,
       attachedTarget,
       detachedSessionId,
     });
@@ -259,7 +368,7 @@ export class EgoCdpTransport {
         ? {
             ...message,
             id: nativeId,
-            sessionId: route.nativeSessionId,
+            sessionId: transitionSessionId ?? route.nativeSessionId,
             params: rewriteOutgoingProtocolParams(message.params || {}, route),
           }
         : { ...message, id: nativeId };
@@ -273,9 +382,16 @@ export class EgoCdpTransport {
         JSON.stringify(nativeMessage),
       );
       void Promise.resolve(result).catch((error) => {
-        this.#pendingIds.delete(nativeId);
+        if (!this.#pendingIds.delete(nativeId)) return;
         this.#updatePendingWork();
-        this.close((error as Error)?.message || String(error));
+        this.#emit({
+          id: message.id,
+          error: {
+            code: -32_000,
+            message: (error as Error)?.message || String(error),
+          },
+          ...(clientSessionId ? { sessionId: clientSessionId } : {}),
+        });
       });
     } catch (error) {
       this.#pendingIds.delete(nativeId);
@@ -320,6 +436,68 @@ export class EgoCdpTransport {
     if (!this.#connecting) return;
     this.#connecting = false;
     this.#updatePendingWork();
+  }
+
+  // Native send errors are task-level (the callback carries no request id and
+  // once the task space is inactive every in-flight send fails alike), so all
+  // in-flight requests are rejected. The transport stays open: the condition
+  // is transient (e.g. the user took control) and commands succeed again after
+  // the task space is handed back.
+  #handleNativeSendError(message: unknown, errorCode?: string) {
+    if (this.closed) return;
+    const description =
+      [errorCode, typeof message === "string" ? message : undefined]
+        .filter(Boolean)
+        .join(": ") || "native CDP send failed";
+    for (const pending of this.#internalRequests.values()) {
+      clearTimeout(pending.timer);
+      pending.reject(new Error(description));
+    }
+    this.#internalRequests.clear();
+    const pendingEntries = [...this.#pendingIds.values()];
+    this.#pendingIds.clear();
+    for (const pending of pendingEntries) {
+      this.#emit({
+        id: pending.clientId,
+        error: { code: -32_000, message: description },
+        ...(pending.clientSessionId
+          ? { sessionId: pending.clientSessionId }
+          : {}),
+      });
+    }
+    this.#updatePendingWork();
+  }
+
+  #endOperation() {
+    this.#activeOperations -= 1;
+    if (this.#activeOperations === 0) this.#deferredEvents.length = 0;
+    this.#updatePendingWork();
+  }
+
+  #flushHeldMessages(route: PageRoute) {
+    const held = route.heldMessages?.splice(0) ?? [];
+    for (const message of held) {
+      if (this.closed) return;
+      try {
+        this.send(message);
+      } catch (error) {
+        // send() rethrows a synchronous native failure without replying, and a
+        // held command has no other caller to report to — answer it here or
+        // the client request hangs forever.
+        if (message.id !== undefined) {
+          this.#emit({
+            id: message.id,
+            error: {
+              code: -32_000,
+              message: (error as Error)?.message || String(error),
+            },
+            ...(typeof message.sessionId === "string"
+              ? { sessionId: message.sessionId }
+              : {}),
+          });
+        }
+      }
+    }
   }
 
   async closeAndWait() {
@@ -408,9 +586,22 @@ export class EgoCdpTransport {
       return;
     }
     if (this.#isRetiredSessionEvent(message)) return;
-    if (this.#isInternalTargetCloseEvent(message)) return;
+    if (this.#isInternalTargetCloseEvent(message)) {
+      // The tombstone has served its purpose once the close event arrives.
+      this.#internallyClosedTargets.delete(message.params.targetId);
+      return;
+    }
     if (this.#rebindDetachedRoute(message)) return;
+    if (
+      message.method === "Target.detachedFromTarget" &&
+      typeof message.params?.sessionId === "string"
+    ) {
+      // A detached session emits no further events; drop its tombstone so the
+      // retired set does not grow for the lifetime of the transport.
+      this.#retiredNativeSessions.delete(message.params.sessionId);
+    }
     if (this.#deliverPassthroughDetach(message)) return;
+    if (this.#bridgeTransitionEvent(message)) return;
     if (!this.#acceptEvent(message)) {
       if (
         this.#activeOperations > 0 &&
@@ -419,6 +610,8 @@ export class EgoCdpTransport {
         this.#deferredEvents.length < 10_000
       ) {
         this.#deferredEvents.push(message);
+      } else if (this.#isInternalDetachEvent(message)) {
+        this.#internallyDetachedSessions.delete(message.params.sessionId);
       }
       return;
     }
@@ -444,6 +637,76 @@ export class EgoCdpTransport {
     }
   }
 
+  // Deliver Fetch events from an in-flight replacement session to the client
+  // while the navigation waits for commit. Interception cannot wait for the
+  // route swap: the paused document request is what commit is waiting on.
+  // Only the Fetch domain crosses early — Fetch traffic on the replacement
+  // session begins with our own post-transition replay, so the stream cannot
+  // straddle the deferred queue and arrive out of order.
+  #bridgeTransitionEvent(message: any) {
+    const sessionId = message.sessionId;
+    const method = message.method;
+    if (typeof sessionId !== "string" || typeof method !== "string") {
+      return false;
+    }
+    if (!method.startsWith("Fetch.")) return false;
+    let route: PageRoute | undefined;
+    for (const candidate of this.#routesByClientSession.values()) {
+      if (
+        candidate.transition?.nativeSessionId === sessionId &&
+        candidate.state !== "closed"
+      ) {
+        route = candidate;
+        break;
+      }
+    }
+    if (!route) return false;
+    const transition = route.transition!;
+    const clientFrameId =
+      message.params?.frameId === transition.nativeTargetId
+        ? transition.clientFrameId
+        : message.params?.frameId;
+    const networkId = message.params?.networkId;
+    if (
+      method === "Fetch.requestPaused" &&
+      typeof networkId === "string" &&
+      !transition.announcedRequests.has(networkId)
+    ) {
+      // Chromium withholds the request's Network.requestWillBeSent until the
+      // pause is resolved — yet Playwright dispatches interception only for
+      // paused requests it can pair with one. Announce the request from the
+      // pause's own payload; the real event arrives after the client resolves
+      // the pause and is dropped at the swap so it is not delivered twice.
+      transition.announcedRequests.add(networkId);
+      const timestamp = Date.now() / 1_000;
+      const isDocument = message.params?.resourceType === "Document";
+      this.#emit({
+        method: "Network.requestWillBeSent",
+        params: {
+          requestId: networkId,
+          ...(isDocument ? { loaderId: networkId } : {}),
+          documentURL: message.params?.request?.url,
+          request: message.params?.request,
+          timestamp,
+          wallTime: timestamp,
+          initiator: { type: "other" },
+          type: message.params?.resourceType,
+          ...(clientFrameId !== undefined ? { frameId: clientFrameId } : {}),
+          hasUserGesture: false,
+        },
+        sessionId: route.clientSessionId,
+      });
+    }
+    // The replacement's main frame id equals its target id (native invariant);
+    // the client knows that frame by the id it navigated.
+    if (message.params?.frameId === transition.nativeTargetId) {
+      message.params.frameId = transition.clientFrameId;
+    }
+    message.sessionId = route.clientSessionId;
+    this.#deliverEvent(message);
+    return true;
+  }
+
   #rebindDetachedRoute(message: any) {
     if (
       message.method !== "Target.detachedFromTarget" ||
@@ -463,6 +726,9 @@ export class EgoCdpTransport {
 
     this.#rejectPendingSessionCommands(nativeSessionId, route.clientSessionId);
     route.state = "rebinding";
+    // The native session is already gone (its detach started this rebind);
+    // nothing can be forwarded to it until the replacement is in place.
+    route.nativeSessionDetached = true;
     this.#retiredNativeSessions.add(nativeSessionId);
     this.#activeOperations += 1;
     this.#updatePendingWork();
@@ -509,8 +775,9 @@ export class EgoCdpTransport {
         this.#deliverDetachedRoute(route);
       }
     })().finally(() => {
-      this.#activeOperations -= 1;
-      this.#updatePendingWork();
+      route.nativeSessionDetached = false;
+      this.#endOperation();
+      this.#flushHeldMessages(route);
     });
     return true;
   }
@@ -541,6 +808,9 @@ export class EgoCdpTransport {
     const clientTargetId = route.clientTargetId;
     this.#removeRoute(route);
     this.#targetIds?.delete(clientTargetId);
+    // After a navigation replacement the native id differs from the client
+    // id; drop both so the dead tab cannot linger in the task-space set.
+    this.#targetIds?.delete(route.nativeTargetId);
     this.#deliverEvent({
       method: "Target.detachedFromTarget",
       params: {
@@ -557,7 +827,10 @@ export class EgoCdpTransport {
     const session = this.#passthroughSessions.get(sessionId);
     if (!session) return false;
     this.#passthroughSessions.delete(sessionId);
-    if (this.#internallyDetachedSessions.has(sessionId)) return true;
+    if (this.#internallyDetachedSessions.has(sessionId)) {
+      this.#internallyDetachedSessions.delete(sessionId);
+      return true;
+    }
     if (
       [...this.#pendingIds.values()].some(
         (pending) => pending.detachedSessionId === sessionId,
@@ -576,11 +849,11 @@ export class EgoCdpTransport {
   #observeRouteEvent(message: any, route: PageRoute) {
     if (message.method === "Page.frameNavigated") {
       const frame = message.params?.frame;
-      if (
-        frame?.parentId === undefined &&
-        typeof frame?.id === "string" &&
-        route.state === "attached"
-      ) {
+      if (frame?.parentId === undefined && typeof frame?.id === "string") {
+        if (typeof frame.url === "string") {
+          route.currentMainFrameUrl = frame.url;
+        }
+        if (route.state !== "attached") return;
         route.nativeMainFrameId = frame.id;
         route.clientMainFrameId ||= frame.id;
         const key = `${frame.id}\0${frame.loaderId || ""}\0${frame.url || ""}`;
@@ -701,10 +974,7 @@ export class EgoCdpTransport {
         }
         await new Promise<void>((resolve) => setTimeout(resolve, 10));
       } while (Date.now() < deadline);
-    })().finally(() => {
-      this.#activeOperations -= 1;
-      this.#updatePendingWork();
-    });
+    })().finally(() => this.#endOperation());
   }
 
   #deliverEvent(message: any) {
@@ -891,53 +1161,81 @@ export class EgoCdpTransport {
           error: { code: -32_000, message: error?.message || String(error) },
         });
       })
-      .finally(() => {
-        this.#activeOperations -= 1;
-        if (this.#activeOperations === 0) this.#deferredEvents.length = 0;
-        this.#updatePendingWork();
-      });
+      .finally(() => this.#endOperation());
   }
 
   #discoverOpenedTargets(openerTargetId?: string, expectedUrl?: string) {
-    if (
-      !this.#targetIds ||
-      typeof this.#runtime.listTabs !== "function" ||
-      this.#discoveringOpenedTargets
-    ) {
+    if (!this.#targetIds || typeof this.#runtime.listTabs !== "function") {
       return;
     }
+    // Every windowOpen queues its own discovery entry; a single scan loop
+    // serves the whole queue so concurrently opened popups are all attached.
+    this.#popupDiscoveryQueue.push({ openerTargetId, expectedUrl });
+    this.#popupDiscoveryDeadline = Date.now() + 2_000;
+    if (this.#discoveringOpenedTargets) return;
     this.#discoveringOpenedTargets = true;
     this.#activeOperations += 1;
     this.#updatePendingWork();
     void (async () => {
-      const deadline = Date.now() + 2_000;
+      // Consecutive polls each unclaimed tab has reported the same URL, used
+      // to tell committed navigations from in-flight ones (loop-local: the
+      // scan loop is single-flight per transport).
+      const urlStability = new Map<string, { url: unknown; polls: number }>();
       do {
         const listed = await this.#runtime.listTabs!();
         const tabs = listed?.tabs || listed?.targetInfos || [];
-        const openedTargetIds = tabs
-          .filter(
-            (tab) => typeof expectedUrl !== "string" || tab.url === expectedUrl,
-          )
-          .map((tab) => tab.targetId)
-          .filter(
-            (targetId): targetId is string =>
-              typeof targetId === "string" && !this.#targetIds!.has(targetId),
-          );
-        if (openedTargetIds.length > 0) {
-          for (const targetId of openedTargetIds) {
-            this.#targetIds.add(targetId);
-            await this.#attachTaskSpaceTarget(targetId, openerTargetId);
+        const deadlineImminent =
+          this.#popupDiscoveryDeadline - Date.now() < 300;
+        for (const tab of tabs) {
+          const targetId = tab.targetId;
+          if (
+            typeof targetId !== "string" ||
+            this.#targetIds!.has(targetId) ||
+            // A tab that already backs a route is never a popup candidate,
+            // regardless of any drift in the task-space target set.
+            this.#routesByNativeTarget.has(targetId)
+          ) {
+            continue;
           }
-          return;
+          const queue = this.#popupDiscoveryQueue;
+          if (queue.length === 0) break;
+          const seen = urlStability.get(targetId);
+          const polls = seen && seen.url === tab.url ? seen.polls + 1 : 1;
+          urlStability.set(targetId, { url: tab.url, polls });
+          let index = queue.findIndex(
+            (entry) =>
+              typeof entry.expectedUrl === "string" &&
+              entry.expectedUrl === tab.url,
+          );
+          // A popup's URL can change before discovery (server redirect, or a
+          // scripted location assignment after window.open()), so an exact
+          // URL miss must not leave a queued entry unspent while an unclaimed
+          // tab exists. Fall back to the oldest entry, but only once the
+          // tab's URL has settled — attaching mid-navigation races the
+          // client's page init against the commit and can leave the page
+          // stuck on a stale URL — or once the deadline is imminent, so
+          // popups that never navigate (bare window.open()) are not lost.
+          // Concurrent redirecting popups may then pair with the wrong
+          // opener, which is still better than losing the popup.
+          if (index === -1) {
+            const settled =
+              typeof tab.url === "string" && tab.url !== "" && polls >= 3;
+            if (!settled && !deadlineImminent) continue;
+            index = 0;
+          }
+          const [entry] = queue.splice(index, 1);
+          this.#targetIds!.add(targetId);
+          await this.#attachTaskSpaceTarget(targetId, entry.openerTargetId);
         }
+        if (this.#popupDiscoveryQueue.length === 0) return;
         await new Promise<void>((resolve) => setTimeout(resolve, 20));
-      } while (!this.closed && Date.now() < deadline);
+      } while (!this.closed && Date.now() < this.#popupDiscoveryDeadline);
+      this.#popupDiscoveryQueue.length = 0;
     })()
       .catch(() => undefined)
       .finally(() => {
         this.#discoveringOpenedTargets = false;
-        this.#activeOperations -= 1;
-        this.#updatePendingWork();
+        this.#endOperation();
       });
   }
 
@@ -948,7 +1246,10 @@ export class EgoCdpTransport {
       nativeTargetId: targetId,
       clientSessionId: sessionId,
       nativeSessionId: sessionId,
+      currentMainFrameUrl:
+        typeof targetInfo.url === "string" ? targetInfo.url : "",
       generation: 0,
+      navigationEpoch: 0,
       state: "attached",
       replayCommands: new Map(),
     };
@@ -1027,17 +1328,80 @@ export class EgoCdpTransport {
     this.#routesByNativeTarget.delete(route.nativeTargetId);
     this.#sessionsByTarget.delete(route.nativeTargetId);
     this.#targetsBySession.delete(route.nativeSessionId);
+    // The task-space target set must follow the swap: the replacement tab is
+    // ours now, and the retired tab must not linger as an admission ticket.
+    // Without this, popup discovery mistakes the route's own new tab for an
+    // unclaimed popup.
+    this.#targetIds?.delete(route.nativeTargetId);
     route.nativeTargetId = nativeTargetId;
     route.nativeSessionId = nativeSessionId;
     route.nativeMainFrameId = nativeMainFrameId;
     route.generation += 1;
+    this.#targetIds?.add(nativeTargetId);
     this.#routesByNativeSession.set(nativeSessionId, route);
     this.#routesByNativeTarget.set(nativeTargetId, route);
     this.#sessionsByTarget.set(nativeTargetId, nativeSessionId);
     this.#targetsBySession.set(nativeSessionId, nativeTargetId);
   }
 
-  #replaceTaskSpaceTargetForNavigation(message: any, route: PageRoute) {
+  // Navigate the route's existing tab natively. Only reached while the
+  // current page is blank (see send()): the tab keeps its target and session,
+  // so the response is simply relayed to the client with the frame id mapped
+  // back, and errorText / isDownload get the same client-visible semantics as
+  // the replacement flow.
+  #runInPlaceNavigation(message: any, route: PageRoute) {
+    const url = message.params?.url;
+    if (typeof url !== "string") {
+      this.#emit({
+        id: message.id,
+        error: { code: -32_000, message: "Page.navigate requires a url" },
+        sessionId: route.clientSessionId,
+      });
+      return;
+    }
+    void this.#sendNativeCommand(
+      "Page.navigate",
+      rewriteOutgoingProtocolParams(message.params || {}, route),
+      route.nativeSessionId,
+      this.#navigationCommitTimeoutMs,
+    )
+      .then((result) => {
+        if (typeof result?.errorText === "string" && result.errorText !== "") {
+          throw new Error(result.errorText);
+        }
+        if (result?.isDownload === true) {
+          // A download never commits a document; failing here mirrors
+          // Playwright's own abort for download navigations.
+          throw new Error("net::ERR_ABORTED; maybe frame was detached?");
+        }
+        const rewritten = { ...(result || {}) };
+        rewriteIncomingProtocolMessage({ params: rewritten }, route);
+        this.#emit({
+          id: message.id,
+          result: rewritten,
+          sessionId: route.clientSessionId,
+        });
+      })
+      .catch((error) => {
+        const description = (error as Error)?.message || String(error);
+        this.#emit({
+          id: message.id,
+          error: {
+            code: -32_000,
+            message: description.includes("timed out")
+              ? `navigation did not commit within ${this.#navigationCommitTimeoutMs}ms (requested ${JSON.stringify(url)})`
+              : description,
+          },
+          sessionId: route.clientSessionId,
+        });
+      });
+  }
+
+  async #runNavigationReplacement(
+    message: any,
+    route: PageRoute,
+    epoch: number,
+  ) {
     const clientFrameId = message.params?.frameId;
     const url = message.params?.url;
     if (typeof clientFrameId !== "string" || typeof url !== "string") {
@@ -1051,6 +1415,30 @@ export class EgoCdpTransport {
       });
       return;
     }
+    if (this.closed || route.state === "closed") {
+      this.#emit({
+        id: message.id,
+        error: {
+          code: -32_000,
+          message: "Cannot navigate: the page has been closed",
+        },
+        sessionId: route.clientSessionId,
+      });
+      return;
+    }
+    if (epoch !== route.navigationEpoch) {
+      // A newer navigation arrived while this one was still queued; it never
+      // started, so there is nothing to clean up — just answer the caller.
+      this.#emit({
+        id: message.id,
+        error: {
+          code: -32_000,
+          message: "navigation was superseded by a newer navigation",
+        },
+        sessionId: route.clientSessionId,
+      });
+      return;
+    }
 
     route.state = "navigating";
     this.#activeOperations += 1;
@@ -1058,39 +1446,64 @@ export class EgoCdpTransport {
     const previousNativeTargetId = route.nativeTargetId;
     const previousNativeSessionId = route.nativeSessionId;
     this.#retiredNativeSessions.add(previousNativeSessionId);
-    this.#emit({
-      method: "Runtime.executionContextsCleared",
-      params: {},
-      sessionId: route.clientSessionId,
+    let replacementTargetId: string | undefined;
+    let replacementSessionId: string | undefined;
+    // CDP has no cancel message, so an abort can only reject our own awaits:
+    // the long waits below race against this promise, and the in-flight
+    // native command is left to settle on its own (already marked handled).
+    let abortReason: string | undefined;
+    let rejectAbort!: (error: Error) => void;
+    const abortPromise = new Promise<never>((_, reject) => {
+      rejectAbort = reject;
     });
+    void abortPromise.catch(() => undefined);
+    const abort = (reason: string) => {
+      if (abortReason !== undefined) return;
+      abortReason = reason;
+      rejectAbort(new Error(reason));
+    };
+    route.abortNavigation = abort;
+    const raceAbort = <T>(work: Promise<T>): Promise<T> => {
+      void work.catch(() => undefined);
+      return Promise.race([work, abortPromise]);
+    };
 
-    void (async () => {
-      const previousFrameTree = await this.#sendNativeCommand(
-        "Page.getFrameTree",
-        {},
-        route.nativeSessionId,
-        1_000,
-      ).catch(() => undefined);
-      const previousFrame = previousFrameTree?.frameTree?.frame;
-      const created: any = await this.#runtime.createTab!(url);
-      const replacementTargetId =
-        created?.targetId || created?.result?.targetId;
-      if (created?.error || typeof replacementTargetId !== "string") {
+    await (async () => {
+      // The replacement tab is created blank on purpose: the enable commands
+      // replayed below must exist on the session before the document request
+      // starts, otherwise the request is structurally un-interceptable (a
+      // navigation begun by createTab(url) is already in flight by the time
+      // Fetch.enable reaches the new session).
+      const created: any = await this.#runtime.createTab!("about:blank");
+      const newTargetId = created?.targetId || created?.result?.targetId;
+      if (created?.error || typeof newTargetId !== "string") {
         throw new Error(
           created?.error ||
             "ego.createTab did not return a replacement targetId",
         );
       }
+      replacementTargetId = newTargetId;
 
       route.state = "rebinding";
-      if (replacementTargetId === previousNativeTargetId) {
+      if (newTargetId === previousNativeTargetId) {
+        // The reused tab's old session is detached before the replacement
+        // attach; from here until the transition settles no command can be
+        // forwarded to it, so send() must hold everything.
+        route.nativeSessionDetached = true;
         this.#internallyDetachedSessions.add(route.nativeSessionId);
         await this.#sendNativeCommand("Target.detachFromTarget", {
           sessionId: route.nativeSessionId,
         }).catch(() => undefined);
       }
-      const { sessionId: replacementSessionId } =
-        await this.#attachNativeTarget(replacementTargetId);
+      const { sessionId: newSessionId } =
+        await this.#attachNativeTarget(newTargetId);
+      replacementSessionId = newSessionId;
+      route.transition = {
+        nativeSessionId: newSessionId,
+        nativeTargetId: newTargetId,
+        clientFrameId,
+        announcedRequests: new Set(),
+      };
       for (const command of route.replayCommands.values()) {
         if (
           command.method === "Runtime.runIfWaitingForDebugger" ||
@@ -1101,38 +1514,134 @@ export class EgoCdpTransport {
         this.#sendNativeFireAndForget(
           command.method,
           command.params,
-          replacementSessionId,
+          newSessionId,
         );
       }
       this.#sendNativeFireAndForget(
         "Runtime.runIfWaitingForDebugger",
         {},
-        replacementSessionId,
+        newSessionId,
       );
-      const { frame, documentState } = await this.#waitForNavigationCommit(
-        replacementSessionId,
-        url,
-        previousFrame,
-        this.#navigationCommitTimeoutMs,
+      // An abort during the setup awaits above means the navigation is
+      // already doomed; do not dispatch it natively at all.
+      if (abortReason !== undefined) throw new Error(abortReason);
+      // Only now start the real navigation, natively on the armed session.
+      // Page.navigate responds when the navigation commits (or fails), which
+      // can hinge on the client: a replayed Fetch.enable pauses the document
+      // request, and the transition bridge above keeps interception traffic
+      // flowing so the client can resume it while this await is pending.
+      let navigateResult: any;
+      try {
+        navigateResult = await raceAbort(
+          this.#sendNativeCommand(
+            "Page.navigate",
+            { url },
+            newSessionId,
+            this.#navigationCommitTimeoutMs,
+          ),
+        );
+      } catch (error) {
+        const message = (error as Error)?.message || String(error);
+        if (message.includes("timed out")) {
+          throw new Error(
+            `navigation did not commit within ${this.#navigationCommitTimeoutMs}ms (requested ${JSON.stringify(url)})`,
+          );
+        }
+        throw error;
+      }
+      if (
+        typeof navigateResult?.errorText === "string" &&
+        navigateResult.errorText !== ""
+      ) {
+        throw new Error(navigateResult.errorText);
+      }
+      if (navigateResult?.isDownload === true) {
+        // A download never commits a document; failing here mirrors
+        // Playwright's own abort for download navigations so goto rejects
+        // promptly instead of burning the whole commit timeout.
+        throw new Error("net::ERR_ABORTED; maybe frame was detached?");
+      }
+      const { frame, documentState } = await raceAbort(
+        this.#waitForNavigationCommit(
+          newSessionId,
+          url,
+          typeof navigateResult?.loaderId === "string"
+            ? navigateResult.loaderId
+            : undefined,
+          this.#navigationCommitTimeoutMs,
+          // The race already rejects the transition; this stops the poll loop
+          // itself so an aborted commit wait does not keep probing natively.
+          () => {
+            if (abortReason !== undefined) throw new Error(abortReason);
+          },
+        ),
       );
       const replacementFrameId =
-        typeof frame.id === "string" ? frame.id : replacementTargetId;
+        typeof frame.id === "string" ? frame.id : newTargetId;
+      // From here on the swapped route handles the session's events itself;
+      // this block runs synchronously, so there is no delivery gap.
+      const transition = route.transition;
+      route.transition = undefined;
       route.clientMainFrameId = clientFrameId;
+      route.currentMainFrameUrl =
+        typeof documentState?.url === "string"
+          ? documentState.url
+          : typeof frame.url === "string" && frame.url !== ""
+            ? frame.url
+            : url;
       this.#replaceNativeRoute(
         route,
-        replacementTargetId,
-        replacementSessionId,
+        newTargetId,
+        newSessionId,
         replacementFrameId,
+      );
+      // The old document's execution contexts are gone only once the
+      // replacement target has committed; announcing it earlier would brick
+      // the page when the navigation fails.
+      this.#emit({
+        method: "Runtime.executionContextsCleared",
+        params: {},
+        sessionId: route.clientSessionId,
+      });
+      if (transition) {
+        // The transition bridge already announced paused requests to the
+        // client from their pause payloads; the real Network.requestWillBeSent
+        // for those requests arrived afterwards (deferred until this swap) and
+        // must not reach the client a second time. Redirect hops (they carry
+        // redirectResponse) are new information and pass through.
+        for (let index = this.#deferredEvents.length - 1; index >= 0; index--) {
+          const event = this.#deferredEvents[index];
+          if (
+            event.sessionId === newSessionId &&
+            event.method === "Network.requestWillBeSent" &&
+            typeof event.params?.requestId === "string" &&
+            transition.announcedRequests.has(event.params.requestId) &&
+            !event.params.redirectResponse
+          ) {
+            this.#deferredEvents.splice(index, 1);
+          }
+        }
+      }
+      // With Page enabled before the navigation starts, the real committed
+      // Page.frameNavigated is usually sitting in the deferred queue; the
+      // synthetic one below is only the fallback for when it is not.
+      const realFrameNavigated = this.#deferredEvents.some(
+        (event) =>
+          event.sessionId === newSessionId &&
+          event.method === "Page.frameNavigated" &&
+          event.params?.frame?.parentId === undefined &&
+          event.params?.frame?.loaderId === frame.loaderId,
       );
       const requestFinished = this.#emitNavigationResponse(
         route,
         url,
         frame,
         documentState,
+        transition,
       );
       this.#flushDeferredEvents();
 
-      if (replacementTargetId !== previousNativeTargetId) {
+      if (newTargetId !== previousNativeTargetId) {
         this.#sendNativeFireAndForget("Target.closeTarget", {
           targetId: previousNativeTargetId,
         });
@@ -1147,25 +1656,27 @@ export class EgoCdpTransport {
         },
         sessionId: route.clientSessionId,
       });
-      this.#emit({
-        method: "Page.frameNavigated",
-        params: {
-          frame: {
-            ...frame,
-            id: clientFrameId,
-            name: frame.name || "",
-            url,
+      if (!realFrameNavigated) {
+        this.#emit({
+          method: "Page.frameNavigated",
+          params: {
+            frame: {
+              ...frame,
+              id: clientFrameId,
+              name: frame.name || "",
+              url,
+            },
           },
-        },
-        sessionId: route.clientSessionId,
-      });
+          sessionId: route.clientSessionId,
+        });
+      }
 
       for (const command of route.replayCommands.values()) {
         if (!Object.hasOwn(command.params, "frameId")) continue;
         this.#sendNativeFireAndForget(
           command.method,
           rewriteOutgoingProtocolParams(command.params, route),
-          replacementSessionId,
+          newSessionId,
         );
       }
 
@@ -1186,8 +1697,25 @@ export class EgoCdpTransport {
       this.#completePassiveNavigation(route, frame, navigationKey);
     })()
       .catch((error) => {
+        route.transition = undefined;
         if (route.nativeSessionId === previousNativeSessionId) {
           this.#retiredNativeSessions.delete(previousNativeSessionId);
+        }
+        // The replacement tab never became the route's target; close it so a
+        // failed navigation does not leak a stray tab into the TaskSpace.
+        if (
+          replacementTargetId !== undefined &&
+          replacementTargetId !== previousNativeTargetId &&
+          route.nativeTargetId !== replacementTargetId
+        ) {
+          this.#internallyClosedTargets.add(replacementTargetId);
+          if (replacementSessionId !== undefined) {
+            this.#internallyDetachedSessions.add(replacementSessionId);
+            this.#retiredNativeSessions.add(replacementSessionId);
+          }
+          this.#sendNativeFireAndForget("Target.closeTarget", {
+            targetId: replacementTargetId,
+          });
         }
         route.state = "attached";
         this.#emit({
@@ -1197,8 +1725,16 @@ export class EgoCdpTransport {
         });
       })
       .finally(() => {
-        this.#activeOperations -= 1;
-        this.#updatePendingWork();
+        // Settled either way: on success the route now points at the usable
+        // replacement session; on failure of the same-target branch the route
+        // is restored to "attached", where the flag is never consulted.
+        // Dropping the abort hook here keeps a stale abort from ever firing
+        // after its transition settled (the next navigation installs its own
+        // hook only after this settles, via the pendingTransition chain).
+        if (route.abortNavigation === abort) route.abortNavigation = undefined;
+        route.nativeSessionDetached = false;
+        this.#endOperation();
+        this.#flushHeldMessages(route);
       });
   }
 
@@ -1207,14 +1743,21 @@ export class EgoCdpTransport {
     requestedUrl: string,
     frame: any,
     documentState: any,
+    transition?: NavigationTransition,
   ) {
     if (typeof frame.loaderId !== "string") return true;
-    const deferredRequest = this.#deferredEvents.some(
-      (message) =>
-        message.sessionId === route.nativeSessionId &&
-        message.method === "Network.requestWillBeSent" &&
-        message.params?.requestId === frame.loaderId,
-    );
+    // The document request may have been announced to the client already —
+    // deferred and about to flush, or synthesized by the transition bridge
+    // when interception paused it — in which case announcing it again here
+    // would hand Playwright a duplicate.
+    const deferredRequest =
+      transition?.announcedRequests.has(frame.loaderId) === true ||
+      this.#deferredEvents.some(
+        (message) =>
+          message.sessionId === route.nativeSessionId &&
+          message.method === "Network.requestWillBeSent" &&
+          message.params?.requestId === frame.loaderId,
+      );
     const deferredResponse = this.#deferredEvents.some(
       (message) =>
         message.sessionId === route.nativeSessionId &&
@@ -1289,9 +1832,12 @@ export class EgoCdpTransport {
   }
 
   #routeStorageCookieCommand(message: any) {
-    const route = [...this.#routesByClientSession.values()].find(
-      (candidate) => candidate.state !== "closed",
-    );
+    // Cookies are browser-global; prefer a route whose native session is
+    // usable right now over one that is mid-navigation or mid-rebind.
+    const routes = [...this.#routesByClientSession.values()];
+    const route =
+      routes.find((candidate) => candidate.state === "attached") ??
+      routes.find((candidate) => candidate.state !== "closed");
     if (!route) {
       this.#emit({
         id: message.id,
@@ -1317,20 +1863,26 @@ export class EgoCdpTransport {
       });
   }
 
+  // Page.navigate has already committed natively when this runs; it only
+  // waits for the frame tree to reflect that commit. The navigate response's
+  // loaderId is the authoritative marker. A frame still on its initial blank
+  // state ("" or about:blank) is never mistaken for the committed page — the
+  // replacement tab (new or reused) starts on about:blank — but any other
+  // document is accepted: after a successful navigate response a non-blank
+  // frame is the committed document or its successor (e.g. an instant
+  // client-side redirect that already replaced the expected loader).
   async #waitForNavigationCommit(
     sessionId: string,
     requestedUrl: string,
-    previousFrame?: { loaderId?: string; url?: string },
-    timeoutMs = 30_000,
+    expectedLoaderId: string | undefined,
+    timeoutMs: number,
+    throwIfAborted?: () => void,
   ) {
     const deadline = Date.now() + timeoutMs;
-    const stableForMs = 50;
     let lastFrame: any;
-    let lastDocumentState: any;
-    let commitCandidateKey: string | undefined;
-    let commitCandidateSince = 0;
     do {
       if (this.closed) throw new Error("Ego CDP transport is closed");
+      throwIfAborted?.();
       const frameTree = await this.#sendNativeCommand(
         "Page.getFrameTree",
         {},
@@ -1340,40 +1892,28 @@ export class EgoCdpTransport {
       const frame = frameTree?.frameTree?.frame;
       if (frame) lastFrame = frame;
       const frameUrl = typeof frame?.url === "string" ? frame.url : "";
-      const documentResult = await this.#sendNativeCommand(
-        "Runtime.evaluate",
-        {
-          expression:
-            "(() => { const entry = performance.getEntriesByType('navigation')[0]; return { url: location.href, readyState: document.readyState, contentType: document.contentType, responseStatus: entry?.responseStatus }; })()",
-          returnByValue: true,
-        },
-        sessionId,
-        1_000,
-      ).catch(() => undefined);
-      const documentState = documentResult?.result?.value;
-      if (documentState && typeof documentState === "object") {
-        lastDocumentState = documentState;
-      }
-      const frameCommitted =
-        frameUrl === requestedUrl ||
-        (frameUrl !== "" &&
-          frameUrl !== "about:blank" &&
-          (frameUrl !== previousFrame?.url ||
-            frame?.loaderId !== previousFrame?.loaderId));
-      const documentCommitted =
-        !lastDocumentState ||
-        lastDocumentState.url === frameUrl ||
-        lastDocumentState.url === requestedUrl;
-      if (frameCommitted && documentCommitted) {
-        const candidateKey = `${frame.loaderId || ""}\0${frameUrl}`;
-        if (candidateKey !== commitCandidateKey) {
-          commitCandidateKey = candidateKey;
-          commitCandidateSince = Date.now();
-        } else if (Date.now() - commitCandidateSince >= stableForMs) {
-          return { frame, documentState: lastDocumentState };
-        }
-      } else {
-        commitCandidateKey = undefined;
+      const committed =
+        frame !== undefined &&
+        ((expectedLoaderId !== undefined &&
+          frame.loaderId === expectedLoaderId) ||
+          frameUrl === requestedUrl ||
+          (frameUrl !== "" && frameUrl !== "about:blank"));
+      if (committed) {
+        const documentResult = await this.#sendNativeCommand(
+          "Runtime.evaluate",
+          {
+            expression:
+              "(() => { const entry = performance.getEntriesByType('navigation')[0]; return { url: location.href, readyState: document.readyState, contentType: document.contentType, responseStatus: entry?.responseStatus }; })()",
+            returnByValue: true,
+          },
+          sessionId,
+          1_000,
+        ).catch(() => undefined);
+        const value = documentResult?.result?.value;
+        return {
+          frame,
+          documentState: value && typeof value === "object" ? value : undefined,
+        };
       }
       await new Promise<void>((resolve) => setTimeout(resolve, 10));
     } while (Date.now() < deadline);
@@ -1403,6 +1943,9 @@ export class EgoCdpTransport {
       if (route) this.#removeRoute(route);
       if (typeof nativeTargetId === "string") {
         this.#sessionsByTarget.delete(nativeTargetId);
+        // After a navigation replacement the native id differs from the
+        // client id; drop both from the task-space set.
+        this.#targetIds?.delete(nativeTargetId);
       }
       if (nativeSessionId) this.#targetsBySession.delete(nativeSessionId);
       if (typeof clientTargetId === "string") {
@@ -1443,8 +1986,7 @@ export class EgoCdpTransport {
     this.#updatePendingWork();
     void this.#waitForTargetClosed(nativeTargetId).finally(() => {
       complete();
-      this.#activeOperations -= 1;
-      this.#updatePendingWork();
+      this.#endOperation();
     });
   }
 
@@ -1599,15 +2141,38 @@ function rewriteIncomingProtocolMessage(message: any, route: PageRoute) {
   replaceFrameId(params.context?.auxData, "frameId");
 }
 
+// The blank states a route's tab can sit on before its first real document:
+// a fresh tab ("" or about:blank) or the task space's initial chrome://newtab.
+// Navigating away from any of them works natively in place.
+function isBlankPageUrl(url: string | undefined): boolean {
+  return (
+    url === "" ||
+    url === "about:blank" ||
+    (typeof url === "string" && url.startsWith("chrome://newtab"))
+  );
+}
+
 function isReplayableSessionCommand(method: unknown): method is string {
   return (
     typeof method === "string" &&
     [
+      "Emulation.setDeviceMetricsOverride",
+      "Emulation.setEmulatedMedia",
       "Emulation.setFocusEmulationEnabled",
+      "Emulation.setGeolocationOverride",
+      "Emulation.setLocaleOverride",
+      "Emulation.setScriptExecutionDisabled",
+      "Emulation.setTimezoneOverride",
+      "Emulation.setTouchEmulationEnabled",
+      "Emulation.setUserAgentOverride",
+      "Fetch.disable",
+      "Fetch.enable",
       "Log.enable",
       "Network.enable",
+      "Network.emulateNetworkConditions",
       "Network.setCacheDisabled",
       "Network.setExtraHTTPHeaders",
+      "Network.setUserAgentOverride",
       "Page.addScriptToEvaluateOnNewDocument",
       "Page.createIsolatedWorld",
       "Page.enable",
@@ -1617,6 +2182,7 @@ function isReplayableSessionCommand(method: unknown): method is string {
       "Runtime.addBinding",
       "Runtime.enable",
       "Runtime.runIfWaitingForDebugger",
+      "Security.setIgnoreCertificateErrors",
       "Target.setAutoAttach",
     ].includes(method)
   );

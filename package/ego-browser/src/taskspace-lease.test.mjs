@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -21,7 +22,11 @@ const modulePath = fileURLToPath(
   new URL("../dist/src/taskspace-lease.js", import.meta.url),
 );
 
-test("a live process exclusively owns a TaskSpace lease and a dead owner is recoverable", async () => {
+function readOwnerFile(lockRoot, id) {
+  return JSON.parse(readFileSync(join(lockRoot, String(id), "owner.json")));
+}
+
+test("an acquire takes over a live holder in another process and notifies it", async () => {
   const lockRoot = await mkdtemp(join(tmpdir(), "ego-browser-lease-test-"));
   const child = spawn(
     process.execPath,
@@ -29,8 +34,16 @@ test("a live process exclusively owns a TaskSpace lease and a dead owner is reco
       "--input-type=module",
       "-e",
       `
-        import { acquireTaskSpaceLease } from ${JSON.stringify(modulePath)};
-        await acquireTaskSpaceLease(622, { lockRoot: ${JSON.stringify(lockRoot)} });
+        import { acquireTaskSpaceLease, onTaskSpaceLeaseLost } from ${JSON.stringify(modulePath)};
+        onTaskSpaceLeaseLost(({ id }) => {
+          process.stdout.write("lost:" + id + "\\n");
+          process.exit(43);
+        });
+        await acquireTaskSpaceLease(622, {
+          heartbeatIntervalMs: 25,
+          lockRoot: ${JSON.stringify(lockRoot)},
+          staleAfterMs: 200,
+        });
         process.stdout.write("ready\\n");
         setInterval(() => {}, 1000);
       `,
@@ -40,16 +53,15 @@ test("a live process exclusively owns a TaskSpace lease and a dead owner is reco
 
   try {
     await waitForLine(child.stdout, "ready");
+    const lostNotice = waitForLine(child.stdout, "lost:622");
 
-    await assert.rejects(
-      () => acquireTaskSpaceLease(622, { lockRoot }),
-      /TaskSpace 622 is already controlled by another ego-browser process/,
-    );
+    assert.equal(await acquireTaskSpaceLease(622, { lockRoot }), true);
+    const owner = readOwnerFile(lockRoot, 622);
+    assert.equal(owner.takenOverFrom?.pid, child.pid);
 
-    child.kill("SIGKILL");
-    await new Promise((resolve) => child.once("close", resolve));
-
-    await assert.doesNotReject(() => acquireTaskSpaceLease(622, { lockRoot }));
+    await lostNotice;
+    const code = await new Promise((resolve) => child.once("close", resolve));
+    assert.equal(code, 43);
   } finally {
     child.kill("SIGKILL");
     releaseTaskSpaceLease();
@@ -57,7 +69,7 @@ test("a live process exclusively owns a TaskSpace lease and a dead owner is reco
   }
 });
 
-test("a dead worker lease is recoverable while the shared host process stays alive", async () => {
+test("an acquire takes over a worker holder inside the shared host process", async () => {
   const lockRoot = await mkdtemp(
     join(tmpdir(), "ego-browser-worker-lease-test-"),
   );
@@ -66,7 +78,8 @@ test("a dead worker lease is recoverable while the shared host process stays ali
     `
       const { parentPort } = require("node:worker_threads");
       (async () => {
-        const { acquireTaskSpaceLease } = await import(${JSON.stringify(modulePath)});
+        const { acquireTaskSpaceLease, onTaskSpaceLeaseLost } = await import(${JSON.stringify(modulePath)});
+        onTaskSpaceLeaseLost((lost) => parentPort.postMessage({ lost: lost.id }));
         await acquireTaskSpaceLease(${id}, {
           heartbeatIntervalMs: 20,
           lockRoot: ${JSON.stringify(lockRoot)},
@@ -87,17 +100,11 @@ test("a dead worker lease is recoverable while the shared host process stays ali
     if (ready.error) throw new Error(ready.error);
     assert.equal(ready.pid, process.pid);
 
-    await assert.rejects(
-      async () => acquireTaskSpaceLease(id, { lockRoot }),
-      /already controlled by another ego-browser process/,
-    );
+    assert.equal(await acquireTaskSpaceLease(id, { lockRoot }), true);
+    assert.equal(readOwnerFile(lockRoot, id).takenOverFrom?.pid, process.pid);
 
-    await worker.terminate();
-    await new Promise((resolve) => setTimeout(resolve, 150));
-
-    await assert.doesNotReject(async () =>
-      acquireTaskSpaceLease(id, { lockRoot }),
-    );
+    const lost = await waitForWorkerMessage(worker);
+    assert.equal(lost.lost, id);
   } finally {
     await worker.terminate();
     releaseTaskSpaceLease();
@@ -105,7 +112,7 @@ test("a dead worker lease is recoverable while the shared host process stays ali
   }
 });
 
-test("a live but busy worker does not lose its TaskSpace lease", async () => {
+test("a busy holder is taken over and notified once it unblocks", async () => {
   const lockRoot = await mkdtemp(
     join(tmpdir(), "ego-browser-busy-lease-test-"),
   );
@@ -114,10 +121,15 @@ test("a live but busy worker does not lose its TaskSpace lease", async () => {
     `
       const { parentPort } = require("node:worker_threads");
       (async () => {
-        const { acquireTaskSpaceLease } = await import(${JSON.stringify(modulePath)});
-        await acquireTaskSpaceLease(${id}, { lockRoot: ${JSON.stringify(lockRoot)} });
+        const { acquireTaskSpaceLease, onTaskSpaceLeaseLost } = await import(${JSON.stringify(modulePath)});
+        onTaskSpaceLeaseLost((lost) => parentPort.postMessage({ lost: lost.id }));
+        await acquireTaskSpaceLease(${id}, {
+          heartbeatIntervalMs: 20,
+          lockRoot: ${JSON.stringify(lockRoot)},
+          staleAfterMs: 100,
+        });
         parentPort.postMessage("ready");
-        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10_000);
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500);
         setInterval(() => {}, 1_000);
       })().catch((error) => {
         parentPort.postMessage({ error: error?.stack || String(error) });
@@ -128,10 +140,9 @@ test("a live but busy worker does not lose its TaskSpace lease", async () => {
 
   try {
     assert.equal(await waitForWorkerMessage(worker), "ready");
-    await assert.rejects(
-      () => acquireTaskSpaceLease(id, { lockRoot }),
-      /already controlled by another ego-browser process/,
-    );
+    assert.equal(await acquireTaskSpaceLease(id, { lockRoot }), true);
+    const lost = await waitForWorkerMessage(worker);
+    assert.equal(lost.lost, id);
   } finally {
     await worker.terminate();
     releaseTaskSpaceLease();
@@ -139,58 +150,145 @@ test("a live but busy worker does not lose its TaskSpace lease", async () => {
   }
 });
 
-test("a live isolated worker keeps its lease without cross-worker messaging", async () => {
+test("re-acquiring the TaskSpace already held by this session is a no-op", async () => {
   const lockRoot = await mkdtemp(
-    join(tmpdir(), "ego-browser-isolated-lease-test-"),
+    join(tmpdir(), "ego-browser-reacquire-lease-test-"),
   );
   const id = 2_147_483_004;
-  const worker = new Worker(
-    `
-      const { parentPort } = require("node:worker_threads");
-      (async () => {
-        const { acquireTaskSpaceLease } = await import(${JSON.stringify(modulePath)});
-        await acquireTaskSpaceLease(${id}, { lockRoot: ${JSON.stringify(lockRoot)} });
-        process.removeAllListeners("workerMessage");
-        parentPort.postMessage("ready");
-        setInterval(() => {}, 1_000);
-      })().catch((error) => {
-        parentPort.postMessage({ error: error?.stack || String(error) });
-      });
-    `,
-    { eval: true },
-  );
 
   try {
-    assert.equal(await waitForWorkerMessage(worker), "ready");
-    await assert.rejects(
-      () => acquireTaskSpaceLease(id, { lockRoot }),
-      /already controlled by another ego-browser process/,
-    );
+    assert.equal(await acquireTaskSpaceLease(id, { lockRoot }), true);
+    const owner = readOwnerFile(lockRoot, id);
+    assert.equal(await acquireTaskSpaceLease(id, { lockRoot }), false);
+    assert.equal(readOwnerFile(lockRoot, id).token, owner.token);
   } finally {
-    await worker.terminate();
     releaseTaskSpaceLease();
     await rm(lockRoot, { recursive: true, force: true });
   }
 });
 
-test("a live pre-heartbeat lease is not reclaimed during an SDK upgrade", async () => {
+test("an abandoned incomplete lease directory is reclaimed without an audit trail", async () => {
+  const lockRoot = await mkdtemp(
+    join(tmpdir(), "ego-browser-incomplete-lease-test-"),
+  );
+  const id = 2_147_483_005;
+  const leasePath = join(lockRoot, String(id));
+  await mkdir(leasePath);
+  // Backdate the directory past any grace window: this is a crashed acquire's
+  // leftover, not an acquire that is still publishing its owner file.
+  const past = new Date(Date.now() - 60_000);
+  await utimes(leasePath, past, past);
+
+  try {
+    const started = Date.now();
+    assert.equal(await acquireTaskSpaceLease(id, { lockRoot }), true);
+    assert.ok(
+      Date.now() - started < 2_000,
+      "an abandoned incomplete directory is reclaimed promptly",
+    );
+    assert.equal(readOwnerFile(lockRoot, id).takenOverFrom, undefined);
+  } finally {
+    releaseTaskSpaceLease();
+    await rm(lockRoot, { recursive: true, force: true });
+  }
+});
+
+test("an acquire caught between mkdir and publish is taken over, not destroyed", async () => {
+  const lockRoot = await mkdtemp(
+    join(tmpdir(), "ego-browser-inflight-lease-test-"),
+  );
+  const id = 2_147_483_009;
+  const leasePath = join(lockRoot, String(id));
+  // Another session's acquire has created the directory but not yet written
+  // owner.json — the window between mkdirSync and the owner publish.
+  await mkdir(leasePath);
+  const publishDelayMs = 150;
+  const publisher = setTimeout(() => {
+    writeFile(
+      join(leasePath, "owner.json"),
+      JSON.stringify({
+        heartbeatIntervalMs: 25,
+        pid: process.pid,
+        staleAfterMs: 3_000,
+        threadId: 0,
+        token: "publisher-token",
+      }),
+    ).catch(() => {});
+    writeFile(join(leasePath, "heartbeat-publisher-token"), "").catch(() => {});
+  }, publishDelayMs);
+
+  try {
+    const started = Date.now();
+    assert.equal(
+      await acquireTaskSpaceLease(id, {
+        lockRoot,
+        heartbeatIntervalMs: 25,
+        staleAfterMs: 3_000,
+      }),
+      true,
+    );
+    assert.ok(
+      Date.now() - started >= publishDelayMs - 50,
+      "the contender waits for the in-flight publish instead of racing it",
+    );
+    assert.equal(
+      readOwnerFile(lockRoot, id).takenOverFrom?.token,
+      "publisher-token",
+      "the settled owner is taken over with an audit trail, not silently destroyed",
+    );
+  } finally {
+    clearTimeout(publisher);
+    releaseTaskSpaceLease();
+    await rm(lockRoot, { recursive: true, force: true });
+  }
+});
+
+test("a fresh incomplete lease directory is reclaimed only after the grace window", async () => {
+  const lockRoot = await mkdtemp(
+    join(tmpdir(), "ego-browser-grace-lease-test-"),
+  );
+  const id = 2_147_483_010;
+  await mkdir(join(lockRoot, String(id)));
+
+  try {
+    const started = Date.now();
+    assert.equal(
+      await acquireTaskSpaceLease(id, {
+        lockRoot,
+        heartbeatIntervalMs: 25,
+        staleAfterMs: 200,
+      }),
+      true,
+    );
+    const elapsed = Date.now() - started;
+    assert.ok(
+      elapsed >= 150,
+      `a fresh incomplete directory gets the grace window (elapsed ${elapsed}ms)`,
+    );
+    assert.equal(readOwnerFile(lockRoot, id).takenOverFrom, undefined);
+  } finally {
+    releaseTaskSpaceLease();
+    await rm(lockRoot, { recursive: true, force: true });
+  }
+});
+
+test("a legacy pre-heartbeat lease is taken over with an audit trail", async () => {
   const lockRoot = await mkdtemp(
     join(tmpdir(), "ego-browser-legacy-lease-test-"),
   );
-  const id = 2_147_483_005;
+  const id = 2_147_483_006;
   const leasePath = join(lockRoot, String(id));
   await mkdir(leasePath);
   await writeFile(
     join(leasePath, "owner.json"),
     JSON.stringify({ pid: process.pid, threadId: 0, token: "legacy-owner" }),
   );
-  const old = new Date(Date.now() - 60_000);
-  await utimes(leasePath, old, old);
 
   try {
-    await assert.rejects(
-      () => acquireTaskSpaceLease(id, { lockRoot }),
-      /already controlled by another ego-browser process/,
+    assert.equal(await acquireTaskSpaceLease(id, { lockRoot }), true);
+    assert.equal(
+      readOwnerFile(lockRoot, id).takenOverFrom?.token,
+      "legacy-owner",
     );
   } finally {
     releaseTaskSpaceLease();
@@ -198,7 +296,7 @@ test("a live pre-heartbeat lease is not reclaimed during an SDK upgrade", async 
   }
 });
 
-test("switchTaskSpace rejects a concurrent process before native selection", async () => {
+test("switchTaskSpace takes over a concurrent session before native selection", async () => {
   const id = 2_147_483_001;
   const child = spawn(
     process.execPath,
@@ -206,8 +304,9 @@ test("switchTaskSpace rejects a concurrent process before native selection", asy
       "--input-type=module",
       "-e",
       `
-        import { acquireTaskSpaceLease } from ${JSON.stringify(modulePath)};
-        await acquireTaskSpaceLease(${id});
+        import { acquireTaskSpaceLease, onTaskSpaceLeaseLost } from ${JSON.stringify(modulePath)};
+        onTaskSpaceLeaseLost(() => process.exit(43));
+        await acquireTaskSpaceLease(${id}, { heartbeatIntervalMs: 25, staleAfterMs: 200 });
         process.stdout.write("ready\\n");
         setInterval(() => {}, 1000);
       `,
@@ -237,22 +336,20 @@ test("switchTaskSpace rejects a concurrent process before native selection", asy
       },
     };
 
-    await assert.rejects(
-      () => switchTaskSpace(id),
-      /already controlled by another ego-browser process/,
-    );
-    assert.equal(nativeSelections, 0);
+    await switchTaskSpace(id);
+    assert.equal(nativeSelections, 1);
+
+    const code = await new Promise((resolve) => child.once("close", resolve));
+    assert.equal(code, 43);
   } finally {
     globalThis.ego = previousEgo;
     child.kill("SIGKILL");
-    await new Promise((resolve) => child.once("close", resolve));
-    await acquireTaskSpaceLease(id);
     releaseTaskSpaceLease(id);
   }
 });
 
 test("a failed Playwright reconnect releases the selected TaskSpace lease", async () => {
-  const id = 2_147_483_006;
+  const id = 2_147_483_007;
   const previousEgo = globalThis.ego;
   const restoreConnector = __testing.setPlaywrightTaskSpaceConnector(
     async () => {
@@ -284,7 +381,16 @@ test("a failed Playwright reconnect releases the selected TaskSpace lease", asyn
 
     const child = await runChild(`
       import { acquireTaskSpaceLease, releaseTaskSpaceLease } from ${JSON.stringify(modulePath)};
+      import { readFileSync } from "node:fs";
+      import { tmpdir } from "node:os";
+      import { join } from "node:path";
       await acquireTaskSpaceLease(${id});
+      const root = join(tmpdir(), "ego-browser-taskspace-leases-" + process.getuid());
+      const owner = JSON.parse(readFileSync(join(root, "${id}", "owner.json")));
+      if (owner.takenOverFrom) {
+        console.error("lease was not released: " + JSON.stringify(owner.takenOverFrom));
+        process.exit(7);
+      }
       releaseTaskSpaceLease(${id});
     `);
     assert.equal(child.code, 0, child.stderr);
@@ -296,7 +402,7 @@ test("a failed Playwright reconnect releases the selected TaskSpace lease", asyn
 });
 
 test("a failed same-TaskSpace reselection releases the previous lease", async () => {
-  const id = 2_147_483_007;
+  const id = 2_147_483_008;
   const previousEgo = globalThis.ego;
   let selectionCount = 0;
   const restoreConnector = __testing.setPlaywrightTaskSpaceConnector(
@@ -334,7 +440,16 @@ test("a failed same-TaskSpace reselection releases the previous lease", async ()
 
     const child = await runChild(`
       import { acquireTaskSpaceLease, releaseTaskSpaceLease } from ${JSON.stringify(modulePath)};
+      import { readFileSync } from "node:fs";
+      import { tmpdir } from "node:os";
+      import { join } from "node:path";
       await acquireTaskSpaceLease(${id});
+      const root = join(tmpdir(), "ego-browser-taskspace-leases-" + process.getuid());
+      const owner = JSON.parse(readFileSync(join(root, "${id}", "owner.json")));
+      if (owner.takenOverFrom) {
+        console.error("lease was not released: " + JSON.stringify(owner.takenOverFrom));
+        process.exit(7);
+      }
       releaseTaskSpaceLease(${id});
     `);
     assert.equal(child.code, 0, child.stderr);

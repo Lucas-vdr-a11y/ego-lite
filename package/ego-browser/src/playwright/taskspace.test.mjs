@@ -165,11 +165,48 @@ test("the Playwright connector creates a fresh Browser connection for each selec
 
   assert.equal(first.page, firstPage);
   assert.equal(second.page, secondPage);
-  assert.equal(first.close, second.close);
   assert.equal(connectCalls, 2);
   assert.equal(browserCloseCalls, 1);
   await second.close();
   assert.equal(browserCloseCalls, 2);
+});
+
+test("closing a superseded session does not close the current one", async () => {
+  const closes = [];
+  let browserSeq = 0;
+  const connector = playwrightTaskSpace.createPlaywrightTaskSpaceConnector({
+    runtime: () => ({
+      async listTabs() {
+        return { tabs: [{ targetId: "target-1", active: true }] };
+      },
+    }),
+    transport: async () => ({ connectToken: "ws+ego://transport/test" }),
+    connectOverCDP: async () => {
+      const id = ++browserSeq;
+      return {
+        contexts() {
+          return [{ pages: () => [{ id }] }];
+        },
+        async close() {
+          closes.push(`browser-${id}`);
+        },
+      };
+    },
+  });
+
+  const first = await connector({ id: 1 });
+  const second = await connector({ id: 1 });
+  assert.deepEqual(closes, ["browser-1"]);
+
+  await first.close();
+  assert.deepEqual(
+    closes,
+    ["browser-1"],
+    "a stale session close must not close the current session's browser",
+  );
+
+  await second.close();
+  assert.deepEqual(closes, ["browser-1", "browser-2"]);
 });
 
 test("the Playwright connector recreates the transport when the same TaskSpace is selected again", async () => {

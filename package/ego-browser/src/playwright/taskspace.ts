@@ -66,24 +66,10 @@ let patchedSetTimeout: typeof globalThis.setTimeout | undefined;
 export function createPlaywrightTaskSpaceConnector(
   dependencies: PlaywrightConnectorDependencies,
 ): PlaywrightTaskSpaceConnector {
-  let browser: Browser | undefined;
-  let closeTransport: (() => Promise<void>) | undefined;
-
-  const close = async () => {
-    const currentBrowser = browser;
-    const currentTransportClose = closeTransport;
-    browser = undefined;
-    closeTransport = undefined;
-    if (currentTransportClose) {
-      try {
-        await currentTransportClose();
-      } finally {
-        await currentBrowser?.close();
-      }
-    } else {
-      await currentBrowser?.close();
-    }
-  };
+  // The closer of the session currently owning the connection. Each session
+  // gets its own close closure over its own browser/transport, so a stale
+  // session handle can never tear down a newer session's resources.
+  let closeCurrent: (() => Promise<void>) | undefined;
 
   return async (space) => {
     const runtime = dependencies.runtime();
@@ -91,11 +77,36 @@ export function createPlaywrightTaskSpaceConnector(
       throw new Error("Playwright TaskSpace requires ego.listTabs");
     }
 
+    if (closeCurrent) {
+      const closePrevious = closeCurrent;
+      closeCurrent = undefined;
+      await closePrevious();
+    }
+
+    let browser: Browser | undefined;
+    let closeTransport: (() => Promise<void>) | undefined;
+    const closeSession = async () => {
+      if (closeCurrent === closeSession) closeCurrent = undefined;
+      const currentBrowser = browser;
+      const currentTransportClose = closeTransport;
+      browser = undefined;
+      closeTransport = undefined;
+      if (currentTransportClose) {
+        try {
+          await currentTransportClose();
+        } finally {
+          await currentBrowser?.close();
+        }
+      } else {
+        await currentBrowser?.close();
+      }
+    };
+
     try {
-      if (browser) await close();
       const transport = await dependencies.transport(runtime, space);
       closeTransport = transport.close;
       browser = await dependencies.connectOverCDP(transport.connectToken);
+      closeCurrent = closeSession;
       transport.connected?.();
       const listed = await runtime.listTabs();
       const nativeTabs = listed.tabs || listed.targetInfos || [];
@@ -109,10 +120,10 @@ export function createPlaywrightTaskSpaceConnector(
       return {
         page: located.page,
         context: located.context,
-        close,
+        close: closeSession,
       };
     } catch (error) {
-      await close();
+      await closeSession();
       throw error;
     }
   };
@@ -153,9 +164,13 @@ function installPlaywrightFrameTimerUnref() {
   if (playwrightTimerPatchUsers === 1) {
     originalSetTimeout = globalThis.setTimeout;
     patchedSetTimeout = ((callback, delay, ...args) => {
-      const stack = new Error().stack;
       const timer = originalSetTimeout!(callback, delay, ...args);
-      if (isPlaywrightFrameThrottlerTimer(delay, stack)) timer.unref?.();
+      // Capture the stack only for candidate delays; unconditional capture
+      // taxes every setTimeout in the process while the patch is installed.
+      if (delay === 35 || delay === 200) {
+        const stack = new Error().stack;
+        if (isPlaywrightFrameThrottlerTimer(delay, stack)) timer.unref?.();
+      }
       return timer;
     }) as typeof globalThis.setTimeout;
     globalThis.setTimeout = patchedSetTimeout;

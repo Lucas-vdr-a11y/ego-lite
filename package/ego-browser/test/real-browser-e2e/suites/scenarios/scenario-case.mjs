@@ -145,6 +145,11 @@ export function scenarioCase(slug, body) {
         return action(pointer);
       }
 
+      async function observedPixelClick(scope, label, point) {
+        await observedScreenshot(scope, label);
+        return scope.mouse.click(point.x, point.y);
+      }
+
       async function observedDragTo(scope, source, target) {
         await observedScreenshot(scope, "drag-and-drop target context");
         return source.dragTo(target);

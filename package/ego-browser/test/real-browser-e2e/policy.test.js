@@ -7,6 +7,7 @@ import { TEST_CASES } from "./site/test-cases.mjs";
 import { e2eCases } from "./suites/index.mjs";
 import { taskSpaceControlCase } from "./suites/platform/taskspace-control.mjs";
 import { scenarioCases } from "./suites/scenarios/index.mjs";
+import { visualPathScenarioCase } from "./suites/scenarios/visual-path.mjs";
 import * as runner from "./runner.mjs";
 
 const expectedWebTestRoutes = TEST_CASES.map((testCase) => testCase.route);
@@ -307,6 +308,20 @@ test("every scenario observes page state before a mutating browser action", () =
   }
 });
 
+test("the visual-path journey takes every coordinate from screenshot pixels", () => {
+  const source = visualPathScenarioCase.body();
+  const operations = source.slice(source.indexOf("/* scenario operations */"));
+
+  assert.match(operations, /locateSwatch\(/);
+  assert.match(operations, /toCssPoint\(/);
+  // Reading a result back through a test id is fine; asking the layout where a
+  // target sits is not, because that turns this into another semantic case.
+  assert.doesNotMatch(
+    operations,
+    /boundingBox\(|getBoundingClientRect\(|scrollIntoView/,
+  );
+});
+
 test("task-space keep mode does not create a destructively closed scratch space", () => {
   const source = taskSpaceControlCase();
   assert.match(
@@ -409,15 +424,15 @@ test("native task-space close regression remains a dedicated opt-in e2e", () => 
   assert.match(source, /restoredOriginal\.page\.goto/);
 });
 
-test("TaskSpace process contention covers live rejection and timeout recovery", () => {
+test("TaskSpace process contention covers a live takeover and recovery", () => {
   const contention = e2eCases.find(
     (testCase) => testCase.name === "TaskSpace process contention",
   );
 
   assert.ok(contention);
-  assert.equal(contention.optIn, true);
+  assert.notEqual(contention.optIn, true);
   assert.equal(contention.processContention, true);
-  assert.equal(contention.holderTimeoutMs, 8_000);
+  assert.equal(contention.holderTimeoutMs, 10_000);
   assert.equal(contention.rounds.length, 4);
 
   const [setup, holder, contender, recovery] = contention.rounds.map((round) =>
@@ -427,16 +442,19 @@ test("TaskSpace process contention covers live rejection and timeout recovery", 
   assert.match(setup, /process-contention-ready\.json/);
   assert.match(holder, /switchTaskSpace/);
   assert.match(holder, /process-contention-holder-ready\.json/);
-  assert.match(
-    holder,
-    /new Promise\(\(resolve\) => setTimeout\(resolve, 10_000\)\)/,
-  );
-  assert.doesNotMatch(holder, /process-contention-release/);
+  assert.match(holder, /new Promise\(\(\) => \{\}\)/);
+  // The keep-alive interval is load-bearing: a bare unsettled top-level await
+  // exits the process (code 13) and releases the lease before the contender.
+  assert.match(holder, /setInterval/);
+  assert.doesNotMatch(holder, /setTimeout/);
   assert.match(contender, /switchTaskSpace/);
-  assert.match(contender, /already controlled by another ego-browser process/);
-  assert.match(contender, /fails promptly/);
+  assert.doesNotMatch(contender, /already controlled/);
+  assert.match(contender, /takeover completes promptly/);
+  // The audit assert is what separates a real takeover from a free acquire
+  // of an already-released lease.
+  assert.match(contender, /takenOverFrom/);
   assert.match(recovery, /switchTaskSpace/);
-  assert.match(recovery, /recovery timed out/);
+  assert.match(recovery, /remains addressable after the takeover/);
   assert.match(recovery, /accepts new page operations/);
 });
 

@@ -34,11 +34,32 @@ type LeaseOwner = {
   token: string;
 };
 
-const INCOMPLETE_LEASE_GRACE_MS = 5000;
+type TakenOverFrom = {
+  heartbeatAgeMs?: number;
+  pid: number;
+  threadId?: number;
+  token: string;
+};
+
+type LeaseLostHandler = (lost: { id: number }) => void;
+
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 1000;
 const DEFAULT_STALE_AFTER_MS = 5000;
+// A takeover normally needs exactly one reclaim round; more means another
+// session is racing us for the same TaskSpace, and the last writer wins.
+const MAX_TAKEOVER_ROUNDS = 5;
 let heldLease: HeldLease | undefined;
 let exitHookInstalled = false;
+let leaseLostHandler: LeaseLostHandler | undefined;
+
+/**
+ * Register the handler invoked when a newer session takes over this session's
+ * TaskSpace lease. The heartbeat detects the foreign owner within one
+ * interval; the handler must stop this session from driving the TaskSpace.
+ */
+export function onTaskSpaceLeaseLost(handler?: LeaseLostHandler) {
+  leaseLostHandler = handler;
+}
 
 export async function acquireTaskSpaceLease(
   id: number,
@@ -67,17 +88,51 @@ export async function acquireTaskSpaceLease(
       "TaskSpace lease requires staleAfterMs greater than heartbeatIntervalMs",
     );
   }
+  let takenOverFrom: TakenOverFrom | undefined;
+  let reclaimRounds = 0;
+  let incompleteWaitDeadline: number | undefined;
   while (true) {
     try {
       mkdirSync(path, { mode: 0o700 });
     } catch (error) {
       if (error?.code !== "EEXIST") throw error;
-      const owner = readOwner(path);
-      if (!(await isStale(path, owner)) || !reclaim(path)) {
-        const ownerLabel = owner?.pid ? ` (pid ${owner.pid})` : "";
+      if (reclaimRounds >= MAX_TAKEOVER_ROUNDS) {
         throw new Error(
-          `TaskSpace ${id} is already controlled by another ego-browser process${ownerLabel}`,
+          `TaskSpace ${id} lease takeover did not settle after ${MAX_TAKEOVER_ROUNDS} rounds`,
         );
+      }
+      const owner = readOwner(path);
+      if (!owner) {
+        // A directory without owner.json is another acquire caught between
+        // mkdir and its owner publish. Give it staleAfterMs to finish before
+        // treating it as abandoned — reclaiming mid-publish strands both
+        // sessions: this one deletes the directory the other is writing into.
+        const age = leaseDirAgeMs(path);
+        incompleteWaitDeadline ??= Date.now() + staleAfterMs;
+        if (
+          age !== undefined &&
+          age < staleAfterMs &&
+          Date.now() < incompleteWaitDeadline
+        ) {
+          await new Promise<void>((resolve) =>
+            setTimeout(resolve, Math.min(50, heartbeatIntervalMs)),
+          );
+          continue;
+        }
+      }
+      // Newest session wins: reclaim whatever is there, keeping the previous
+      // owner as an audit trail. The previous session's heartbeat notices the
+      // foreign token within one interval and stops itself through the
+      // lease-lost handler.
+      reclaimRounds += 1;
+      const heartbeatAgeMs = ownerHeartbeatAgeMs(path, owner);
+      if (reclaim(path) && owner) {
+        takenOverFrom = {
+          ...(heartbeatAgeMs === undefined ? {} : { heartbeatAgeMs }),
+          pid: owner.pid,
+          threadId: owner.threadId,
+          token: owner.token,
+        };
       }
       continue;
     }
@@ -88,7 +143,9 @@ export async function acquireTaskSpaceLease(
         JSON.stringify({
           heartbeatIntervalMs,
           pid: process.pid,
+          since: new Date().toISOString(),
           staleAfterMs,
+          ...(takenOverFrom ? { takenOverFrom } : {}),
           threadId,
           token,
         }),
@@ -108,10 +165,27 @@ export async function acquireTaskSpaceLease(
       releaseHeldLease();
       heldLease = { heartbeatPath, id, path, timer, token };
     } catch (error) {
-      rmSync(path, { recursive: true, force: true });
+      // Clean up only if our own owner file made it in: a failed publish must
+      // not delete a lease directory another session owns by now.
+      if (readOwner(path)?.token === token) {
+        rmSync(path, { recursive: true, force: true });
+      }
       throw error;
     }
 
+    if (takenOverFrom) {
+      const age =
+        takenOverFrom.heartbeatAgeMs === undefined
+          ? ""
+          : ` (heartbeat ${Math.round(takenOverFrom.heartbeatAgeMs / 1000)}s old)`;
+      // console.log, not console.error: in SDK mode only console.log is routed
+      // to the agent-visible output channel; stderr never leaves the runtime.
+      console.log(
+        `[ego-browser] TaskSpace ${id}: took over the lease from session ` +
+          `${takenOverFrom.token.slice(0, 8)}${age}; if that session is still ` +
+          "running it will stop shortly.",
+      );
+    }
     installExitHook();
     return true;
   }
@@ -148,40 +222,21 @@ function readOwner(path: string): LeaseOwner | undefined {
   return undefined;
 }
 
-async function isStale(path: string, owner: LeaseOwner | undefined) {
-  if (owner) {
-    if (!isProcessAlive(owner.pid)) return true;
-    if (
-      owner.heartbeatIntervalMs === undefined ||
-      owner.staleAfterMs === undefined
-    ) {
-      return false;
-    }
-    const staleAfterMs = owner.staleAfterMs ?? DEFAULT_STALE_AFTER_MS;
-    try {
-      const heartbeat = statSync(join(path, `heartbeat-${owner.token}`));
-      return Date.now() - heartbeat.mtimeMs > staleAfterMs;
-    } catch {
-      try {
-        return Date.now() - statSync(path).mtimeMs > staleAfterMs;
-      } catch {
-        return true;
-      }
-    }
-  }
+function ownerHeartbeatAgeMs(path: string, owner: LeaseOwner | undefined) {
+  if (!owner) return undefined;
   try {
-    return Date.now() - statSync(path).mtimeMs > INCOMPLETE_LEASE_GRACE_MS;
+    const heartbeat = statSync(join(path, `heartbeat-${owner.token}`));
+    return Math.max(0, Date.now() - heartbeat.mtimeMs);
   } catch {
-    return true;
+    return undefined;
   }
 }
 
-function isProcessAlive(pid: number) {
+function leaseDirAgeMs(path: string) {
   try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return error?.code !== "ESRCH";
+    return Math.max(0, Date.now() - statSync(path).mtimeMs);
+  } catch {
+    return undefined;
   }
 }
 
@@ -206,16 +261,25 @@ function releaseHeldLease() {
   rmSync(lease.path, { recursive: true, force: true });
 }
 
+function loseHeldLease(token: string) {
+  if (heldLease?.token !== token) return;
+  const { id } = heldLease;
+  releaseHeldLease();
+  try {
+    leaseLostHandler?.({ id });
+  } catch {}
+}
+
 function refreshHeartbeat(path: string, heartbeatPath: string, token: string) {
   if (readOwner(path)?.token !== token) {
-    if (heldLease?.token === token) releaseHeldLease();
+    loseHeldLease(token);
     return;
   }
   try {
     const now = new Date();
     utimesSync(heartbeatPath, now, now);
   } catch {
-    if (heldLease?.token === token) releaseHeldLease();
+    loseHeldLease(token);
   }
 }
 

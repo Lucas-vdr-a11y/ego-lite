@@ -21,7 +21,10 @@ import {
   setNoticeTrailer,
 } from "./output-sink.js";
 import { runMain } from "./run.js";
-import { releaseTaskSpaceLease } from "./taskspace-lease.js";
+import {
+  onTaskSpaceLeaseLost,
+  releaseTaskSpaceLease,
+} from "./taskspace-lease.js";
 import { emitUpdateNotice, type VersionSource } from "./update-notice.js";
 
 type HelperFunction = (...args: unknown[]) => unknown;
@@ -190,6 +193,24 @@ function wrapReady(
   }
   return wrapped;
 }
+// Losing the TaskSpace lease to a newer session is a hard stop: this session
+// must not race the new owner for the same TaskSpace, so disconnect (with a
+// cap, in case the transport is wedged) and exit through the normal process
+// teardown, which releases every remaining native resource. The notice goes
+// through console.log — the only channel bridged back to the agent in SDK
+// mode — and the exit-event flush delivers it even on process.exit(1).
+onTaskSpaceLeaseLost(({ id }) => {
+  console.log(
+    `TaskSpace ${id} was taken over by a newer ego-browser session; stopping ` +
+      "this session. No action is needed: do not kill any process and do not " +
+      "create a replacement TaskSpace.",
+  );
+  setTimeout(() => process.exit(1), 2000);
+  void disconnectPlaywrightTaskSpace()
+    .catch(() => {})
+    .finally(() => process.exit(1));
+});
+
 if (isDirectCli()) {
   const restoreConnector = enablePlaywrightTaskSpaces();
   try {

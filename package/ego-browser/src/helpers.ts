@@ -309,8 +309,25 @@ export async function completeTaskSpace(
       throw new Error("completeTaskSpace requires ego.closeTaskSpace");
     }
     assertNoEgoError(await ego.closeTaskSpace(), "completeTaskSpace");
+    await waitForTaskSpaceRemoval(match.id);
   }
   return { done: true };
+}
+
+// The native close resolves before the space finishes tearing down, so a
+// listing taken right afterwards can still include it (the window widens when
+// a Playwright connection was attached). Wait for the removal so a resolved
+// close means the space is actually gone.
+async function waitForTaskSpaceRemoval(
+  id: string | number,
+  timeoutMs = 5_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  do {
+    const spaces = await listTaskSpaces().catch(() => undefined);
+    if (spaces && !spaces.some((space) => space.id === id)) return;
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
+  } while (Date.now() < deadline);
 }
 
 /**

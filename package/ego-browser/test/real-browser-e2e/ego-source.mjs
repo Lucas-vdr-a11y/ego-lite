@@ -19,6 +19,7 @@ export function egoSource(body, context) {
     ffprobePath,
     metadataPath,
     xmlParserUrl,
+    pixelToolsUrl,
     keepTaskSpace,
     caseResultPath,
     commandCancelPath,
@@ -42,6 +43,7 @@ export function egoSource(body, context) {
     const ffprobePath = ${JSON.stringify(ffprobePath)};
     const metadataPath = ${JSON.stringify(metadataPath)};
     const xmlParserUrl = ${JSON.stringify(xmlParserUrl)};
+    const pixelToolsUrl = ${JSON.stringify(pixelToolsUrl)};
     const keepTaskSpace = ${JSON.stringify(keepTaskSpace)};
     const caseResultPath = ${JSON.stringify(caseResultPath)};
     const commandCancelPath = ${JSON.stringify(commandCancelPath)};

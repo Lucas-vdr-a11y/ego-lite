@@ -15,6 +15,7 @@ import { reviewWorkflowScenarioCase } from "./review-workflow.mjs";
 import { collaborativeDocsScenarioCase } from "./collaborative-docs.mjs";
 import { spreadsheetScenarioCase } from "./spreadsheet.mjs";
 import { richTextScenarioCase } from "./rich-text.mjs";
+import { visualPathScenarioCase } from "./visual-path.mjs";
 
 export const scenarioCases = [
   clicksScenarioCase,
@@ -34,4 +35,5 @@ export const scenarioCases = [
   collaborativeDocsScenarioCase,
   spreadsheetScenarioCase,
   richTextScenarioCase,
+  visualPathScenarioCase,
 ];
