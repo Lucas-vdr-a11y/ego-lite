@@ -43,9 +43,12 @@ type NavigationTransition = {
   nativeTargetId: string;
   clientFrameId: string;
   // networkIds whose Network.requestWillBeSent the bridge has synthesized:
-  // the replacement session attaches after the document request starts, so
-  // Chromium never sends the real one to it. Also consulted at commit so the
-  // navigation-response synthesis does not announce the request twice.
+  // while interception holds the document request paused, Chromium withholds
+  // the request's real Network.requestWillBeSent, so the bridge announces it
+  // from the pause payload. The real event arrives once the pause resolves
+  // (deferred until the swap) and is dropped there, and the commit-time
+  // navigation-response synthesis consults this set so the request is never
+  // announced twice.
   announcedRequests: Set<string>;
 };
 
@@ -56,6 +59,12 @@ type PageRoute = {
   nativeSessionId: string;
   clientMainFrameId?: string;
   nativeMainFrameId?: string;
+  // The route's current committed main-frame URL: seeded from the attach-time
+  // targetInfo, updated on every observed main-frame Page.frameNavigated, and
+  // set to the committed URL when a navigation replacement swaps the route.
+  // While it is blank ("", about:blank, chrome://newtab) a client navigation
+  // runs natively in place instead of through the tab-replacement flow.
+  currentMainFrameUrl?: string;
   generation: number;
   state: "attached" | "navigating" | "rebinding" | "closed";
   replayCommands: Map<string, ReplayCommand>;
@@ -234,6 +243,21 @@ export class EgoCdpTransport {
         route &&
         (typeof navigateFrameId !== "string" || navigateFrameId === mainFrameId)
       ) {
+        // A blank page needs no replacement tab: the route's session already
+        // has the client's enables armed, so a native Page.navigate on it is
+        // fully interceptable and all real events flow through the normal
+        // delivery path. Skipping createTab here also avoids the app-level
+        // race where a createTab issued while another fresh tab's
+        // initialization is still in flight returns a tab whose CDP
+        // passthrough never answers. The route stays "attached" throughout —
+        // no holds, no synthetic events.
+        if (
+          route.state === "attached" &&
+          isBlankPageUrl(route.currentMainFrameUrl)
+        ) {
+          this.#runInPlaceNavigation(message, route);
+          return;
+        }
         const run = () => this.#runNavigationReplacement(message, route);
         const previous = route.pendingTransition ?? Promise.resolve();
         route.pendingTransition = previous.then(run, run);
@@ -614,10 +638,11 @@ export class EgoCdpTransport {
       typeof networkId === "string" &&
       !transition.announcedRequests.has(networkId)
     ) {
-      // The replacement session attached after the document request started,
-      // so Chromium never sends it the request's Network.requestWillBeSent —
-      // yet Playwright dispatches interception only for paused requests it can
-      // pair with one. Announce the request from the pause's own payload.
+      // Chromium withholds the request's Network.requestWillBeSent until the
+      // pause is resolved — yet Playwright dispatches interception only for
+      // paused requests it can pair with one. Announce the request from the
+      // pause's own payload; the real event arrives after the client resolves
+      // the pause and is dropped at the swap so it is not delivered twice.
       transition.announcedRequests.add(networkId);
       const timestamp = Date.now() / 1_000;
       const isDocument = message.params?.resourceType === "Document";
@@ -783,11 +808,11 @@ export class EgoCdpTransport {
   #observeRouteEvent(message: any, route: PageRoute) {
     if (message.method === "Page.frameNavigated") {
       const frame = message.params?.frame;
-      if (
-        frame?.parentId === undefined &&
-        typeof frame?.id === "string" &&
-        route.state === "attached"
-      ) {
+      if (frame?.parentId === undefined && typeof frame?.id === "string") {
+        if (typeof frame.url === "string") {
+          route.currentMainFrameUrl = frame.url;
+        }
+        if (route.state !== "attached") return;
         route.nativeMainFrameId = frame.id;
         route.clientMainFrameId ||= frame.id;
         const key = `${frame.id}\0${frame.loaderId || ""}\0${frame.url || ""}`;
@@ -1155,6 +1180,8 @@ export class EgoCdpTransport {
       nativeTargetId: targetId,
       clientSessionId: sessionId,
       nativeSessionId: sessionId,
+      currentMainFrameUrl:
+        typeof targetInfo.url === "string" ? targetInfo.url : "",
       generation: 0,
       state: "attached",
       replayCommands: new Map(),
@@ -1244,6 +1271,59 @@ export class EgoCdpTransport {
     this.#targetsBySession.set(nativeSessionId, nativeTargetId);
   }
 
+  // Navigate the route's existing tab natively. Only reached while the
+  // current page is blank (see send()): the tab keeps its target and session,
+  // so the response is simply relayed to the client with the frame id mapped
+  // back, and errorText / isDownload get the same client-visible semantics as
+  // the replacement flow.
+  #runInPlaceNavigation(message: any, route: PageRoute) {
+    const url = message.params?.url;
+    if (typeof url !== "string") {
+      this.#emit({
+        id: message.id,
+        error: { code: -32_000, message: "Page.navigate requires a url" },
+        sessionId: route.clientSessionId,
+      });
+      return;
+    }
+    void this.#sendNativeCommand(
+      "Page.navigate",
+      rewriteOutgoingProtocolParams(message.params || {}, route),
+      route.nativeSessionId,
+      this.#navigationCommitTimeoutMs,
+    )
+      .then((result) => {
+        if (typeof result?.errorText === "string" && result.errorText !== "") {
+          throw new Error(result.errorText);
+        }
+        if (result?.isDownload === true) {
+          // A download never commits a document; failing here mirrors
+          // Playwright's own abort for download navigations.
+          throw new Error("net::ERR_ABORTED; maybe frame was detached?");
+        }
+        const rewritten = { ...(result || {}) };
+        rewriteIncomingProtocolMessage({ params: rewritten }, route);
+        this.#emit({
+          id: message.id,
+          result: rewritten,
+          sessionId: route.clientSessionId,
+        });
+      })
+      .catch((error) => {
+        const description = (error as Error)?.message || String(error);
+        this.#emit({
+          id: message.id,
+          error: {
+            code: -32_000,
+            message: description.includes("timed out")
+              ? `navigation did not commit within ${this.#navigationCommitTimeoutMs}ms (requested ${JSON.stringify(url)})`
+              : description,
+          },
+          sessionId: route.clientSessionId,
+        });
+      });
+  }
+
   async #runNavigationReplacement(message: any, route: PageRoute) {
     const clientFrameId = message.params?.frameId;
     const url = message.params?.url;
@@ -1269,7 +1349,6 @@ export class EgoCdpTransport {
       });
       return;
     }
-
     route.state = "navigating";
     this.#activeOperations += 1;
     this.#updatePendingWork();
@@ -1280,14 +1359,12 @@ export class EgoCdpTransport {
     let replacementSessionId: string | undefined;
 
     await (async () => {
-      const previousFrameTree = await this.#sendNativeCommand(
-        "Page.getFrameTree",
-        {},
-        route.nativeSessionId,
-        1_000,
-      ).catch(() => undefined);
-      const previousFrame = previousFrameTree?.frameTree?.frame;
-      const created: any = await this.#runtime.createTab!(url);
+      // The replacement tab is created blank on purpose: the enable commands
+      // replayed below must exist on the session before the document request
+      // starts, otherwise the request is structurally un-interceptable (a
+      // navigation begun by createTab(url) is already in flight by the time
+      // Fetch.enable reaches the new session).
+      const created: any = await this.#runtime.createTab!("about:blank");
       const newTargetId = created?.targetId || created?.result?.targetId;
       if (created?.error || typeof newTargetId !== "string") {
         throw new Error(
@@ -1331,10 +1408,46 @@ export class EgoCdpTransport {
         {},
         newSessionId,
       );
+      // Only now start the real navigation, natively on the armed session.
+      // Page.navigate responds when the navigation commits (or fails), which
+      // can hinge on the client: a replayed Fetch.enable pauses the document
+      // request, and the transition bridge above keeps interception traffic
+      // flowing so the client can resume it while this await is pending.
+      let navigateResult: any;
+      try {
+        navigateResult = await this.#sendNativeCommand(
+          "Page.navigate",
+          { url },
+          newSessionId,
+          this.#navigationCommitTimeoutMs,
+        );
+      } catch (error) {
+        const message = (error as Error)?.message || String(error);
+        if (message.includes("timed out")) {
+          throw new Error(
+            `navigation did not commit within ${this.#navigationCommitTimeoutMs}ms (requested ${JSON.stringify(url)})`,
+          );
+        }
+        throw error;
+      }
+      if (
+        typeof navigateResult?.errorText === "string" &&
+        navigateResult.errorText !== ""
+      ) {
+        throw new Error(navigateResult.errorText);
+      }
+      if (navigateResult?.isDownload === true) {
+        // A download never commits a document; failing here mirrors
+        // Playwright's own abort for download navigations so goto rejects
+        // promptly instead of burning the whole commit timeout.
+        throw new Error("net::ERR_ABORTED; maybe frame was detached?");
+      }
       const { frame, documentState } = await this.#waitForNavigationCommit(
         newSessionId,
         url,
-        previousFrame,
+        typeof navigateResult?.loaderId === "string"
+          ? navigateResult.loaderId
+          : undefined,
         this.#navigationCommitTimeoutMs,
       );
       const replacementFrameId =
@@ -1344,6 +1457,12 @@ export class EgoCdpTransport {
       const transition = route.transition;
       route.transition = undefined;
       route.clientMainFrameId = clientFrameId;
+      route.currentMainFrameUrl =
+        typeof documentState?.url === "string"
+          ? documentState.url
+          : typeof frame.url === "string" && frame.url !== ""
+            ? frame.url
+            : url;
       this.#replaceNativeRoute(
         route,
         newTargetId,
@@ -1358,6 +1477,35 @@ export class EgoCdpTransport {
         params: {},
         sessionId: route.clientSessionId,
       });
+      if (transition) {
+        // The transition bridge already announced paused requests to the
+        // client from their pause payloads; the real Network.requestWillBeSent
+        // for those requests arrived afterwards (deferred until this swap) and
+        // must not reach the client a second time. Redirect hops (they carry
+        // redirectResponse) are new information and pass through.
+        for (let index = this.#deferredEvents.length - 1; index >= 0; index--) {
+          const event = this.#deferredEvents[index];
+          if (
+            event.sessionId === newSessionId &&
+            event.method === "Network.requestWillBeSent" &&
+            typeof event.params?.requestId === "string" &&
+            transition.announcedRequests.has(event.params.requestId) &&
+            !event.params.redirectResponse
+          ) {
+            this.#deferredEvents.splice(index, 1);
+          }
+        }
+      }
+      // With Page enabled before the navigation starts, the real committed
+      // Page.frameNavigated is usually sitting in the deferred queue; the
+      // synthetic one below is only the fallback for when it is not.
+      const realFrameNavigated = this.#deferredEvents.some(
+        (event) =>
+          event.sessionId === newSessionId &&
+          event.method === "Page.frameNavigated" &&
+          event.params?.frame?.parentId === undefined &&
+          event.params?.frame?.loaderId === frame.loaderId,
+      );
       const requestFinished = this.#emitNavigationResponse(
         route,
         url,
@@ -1382,18 +1530,20 @@ export class EgoCdpTransport {
         },
         sessionId: route.clientSessionId,
       });
-      this.#emit({
-        method: "Page.frameNavigated",
-        params: {
-          frame: {
-            ...frame,
-            id: clientFrameId,
-            name: frame.name || "",
-            url,
+      if (!realFrameNavigated) {
+        this.#emit({
+          method: "Page.frameNavigated",
+          params: {
+            frame: {
+              ...frame,
+              id: clientFrameId,
+              name: frame.name || "",
+              url,
+            },
           },
-        },
-        sessionId: route.clientSessionId,
-      });
+          sessionId: route.clientSessionId,
+        });
+      }
 
       for (const command of route.replayCommands.values()) {
         if (!Object.hasOwn(command.params, "frameId")) continue;
@@ -1579,18 +1729,22 @@ export class EgoCdpTransport {
       });
   }
 
+  // Page.navigate has already committed natively when this runs; it only
+  // waits for the frame tree to reflect that commit. The navigate response's
+  // loaderId is the authoritative marker. A frame still on its initial blank
+  // state ("" or about:blank) is never mistaken for the committed page — the
+  // replacement tab (new or reused) starts on about:blank — but any other
+  // document is accepted: after a successful navigate response a non-blank
+  // frame is the committed document or its successor (e.g. an instant
+  // client-side redirect that already replaced the expected loader).
   async #waitForNavigationCommit(
     sessionId: string,
     requestedUrl: string,
-    previousFrame?: { loaderId?: string; url?: string },
-    timeoutMs = 30_000,
+    expectedLoaderId: string | undefined,
+    timeoutMs: number,
   ) {
     const deadline = Date.now() + timeoutMs;
-    const stableForMs = 50;
     let lastFrame: any;
-    let lastDocumentState: any;
-    let commitCandidateKey: string | undefined;
-    let commitCandidateSince = 0;
     do {
       if (this.closed) throw new Error("Ego CDP transport is closed");
       const frameTree = await this.#sendNativeCommand(
@@ -1602,40 +1756,28 @@ export class EgoCdpTransport {
       const frame = frameTree?.frameTree?.frame;
       if (frame) lastFrame = frame;
       const frameUrl = typeof frame?.url === "string" ? frame.url : "";
-      const documentResult = await this.#sendNativeCommand(
-        "Runtime.evaluate",
-        {
-          expression:
-            "(() => { const entry = performance.getEntriesByType('navigation')[0]; return { url: location.href, readyState: document.readyState, contentType: document.contentType, responseStatus: entry?.responseStatus }; })()",
-          returnByValue: true,
-        },
-        sessionId,
-        1_000,
-      ).catch(() => undefined);
-      const documentState = documentResult?.result?.value;
-      if (documentState && typeof documentState === "object") {
-        lastDocumentState = documentState;
-      }
-      const frameCommitted =
-        frameUrl === requestedUrl ||
-        (frameUrl !== "" &&
-          frameUrl !== "about:blank" &&
-          (frameUrl !== previousFrame?.url ||
-            frame?.loaderId !== previousFrame?.loaderId));
-      const documentCommitted =
-        !lastDocumentState ||
-        lastDocumentState.url === frameUrl ||
-        lastDocumentState.url === requestedUrl;
-      if (frameCommitted && documentCommitted) {
-        const candidateKey = `${frame.loaderId || ""}\0${frameUrl}`;
-        if (candidateKey !== commitCandidateKey) {
-          commitCandidateKey = candidateKey;
-          commitCandidateSince = Date.now();
-        } else if (Date.now() - commitCandidateSince >= stableForMs) {
-          return { frame, documentState: lastDocumentState };
-        }
-      } else {
-        commitCandidateKey = undefined;
+      const committed =
+        frame !== undefined &&
+        ((expectedLoaderId !== undefined &&
+          frame.loaderId === expectedLoaderId) ||
+          frameUrl === requestedUrl ||
+          (frameUrl !== "" && frameUrl !== "about:blank"));
+      if (committed) {
+        const documentResult = await this.#sendNativeCommand(
+          "Runtime.evaluate",
+          {
+            expression:
+              "(() => { const entry = performance.getEntriesByType('navigation')[0]; return { url: location.href, readyState: document.readyState, contentType: document.contentType, responseStatus: entry?.responseStatus }; })()",
+            returnByValue: true,
+          },
+          sessionId,
+          1_000,
+        ).catch(() => undefined);
+        const value = documentResult?.result?.value;
+        return {
+          frame,
+          documentState: value && typeof value === "object" ? value : undefined,
+        };
       }
       await new Promise<void>((resolve) => setTimeout(resolve, 10));
     } while (Date.now() < deadline);
@@ -1858,6 +2000,17 @@ function rewriteIncomingProtocolMessage(message: any, route: PageRoute) {
   replaceFrameId(params.frame, "id");
   replaceFrameId(params.frame, "parentId");
   replaceFrameId(params.context?.auxData, "frameId");
+}
+
+// The blank states a route's tab can sit on before its first real document:
+// a fresh tab ("" or about:blank) or the task space's initial chrome://newtab.
+// Navigating away from any of them works natively in place.
+function isBlankPageUrl(url: string | undefined): boolean {
+  return (
+    url === "" ||
+    url === "about:blank" ||
+    (typeof url === "string" && url.startsWith("chrome://newtab"))
+  );
 }
 
 function isReplayableSessionCommand(method: unknown): method is string {

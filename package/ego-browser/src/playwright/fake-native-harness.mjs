@@ -5,16 +5,22 @@
 // Modeled native invariants (matched against the real browser):
 // - the main frame id equals the target id
 // - Target.getTargetInfo returns a browserContextId
-// - Page.navigate commits natively and emits frameNavigated + lifecycle events
+// - Page.navigate commits natively, responds {frameId, loaderId} (errorText on
+//   failure, isDownload for downloads) and emits frameNavigated + lifecycle
+//   events
 // - the document request id equals the committed loader id
 //
-// `interceptNavigations` models the Fetch-interception race on a created tab:
-// the document request stays in flight, and the first Fetch.enable on a
-// session attached to that tab pauses it (Fetch.requestPaused only — the
-// session attached after the request started, so it never sees the request's
-// Network.requestWillBeSent, matching real Chromium). Only
-// Fetch.continueRequest / fulfillRequest lets the navigation commit — a test
-// using this flag must answer the pause.
+// `interceptNavigations` models Fetch interception of the document request:
+// a session-level Page.navigate on a fetch-enabled session pauses the request
+// (Fetch.requestPaused only — Chromium withholds the request's
+// Network.requestWillBeSent while the pause is unresolved) and holds the
+// Page.navigate response. Only Fetch.continueRequest / fulfillRequest lets
+// the navigation commit — a test using this flag must answer the pause. The
+// commit then emits the withheld Network events (matching the real browser)
+// before the navigate response.
+//
+// `navigationErrors` (url -> errorText) and `downloadUrls` make Page.navigate
+// respond with errorText / isDownload without navigating the frame.
 
 export class FakeNativeBrowser {
   constructor({ interceptNavigations = false } = {}) {
@@ -25,15 +31,19 @@ export class FakeNativeBrowser {
     this.closedTargets = [];
     this.createdUrls = [];
     this.continuedRequests = [];
+    this.fetchEnabledSessions = new Set();
+    this.navigationErrors = new Map(); // url -> errorText
+    this.downloadUrls = new Set();
     this.nextSession = 1;
     this.nextContext = 100;
     this.nextLoader = 1;
     this.nextTab = 1;
     this.nextInterception = 1;
     this.interceptNavigations = interceptNavigations;
-    this.pendingNavigations = new Map(); // targetId -> { url, requestId, interceptionId, paused }
-    // Per-target override: report this URL from getFrameTree/evaluate until
-    // cleared, regardless of the tab's real URL (gates navigation commits).
+    this.pendingNavigations = new Map(); // targetId -> { url, requestId, interceptionId, navigateRequest, frame, frameId }
+    // Per-target override: report this URL (and a held loaderId) from
+    // getFrameTree/evaluate until cleared, regardless of the tab's real state
+    // (gates navigation commit confirmation).
     this.frameUrlOverride = new Map();
 
     const fake = this;
@@ -50,15 +60,6 @@ export class FakeNativeBrowser {
         fake.createdUrls.push(url);
         const targetId = `tab-${fake.nextTab++}`;
         fake.addTab(targetId, url);
-        if (fake.interceptNavigations) {
-          fake.frameUrlOverride.set(targetId, "about:blank");
-          fake.pendingNavigations.set(targetId, {
-            url,
-            requestId: fake.tabs.get(targetId).frames[0].loaderId,
-            interceptionId: `int-${fake.nextInterception++}`,
-            paused: false,
-          });
-        }
         return { targetId };
       },
       sendCDPMessage(payload) {
@@ -188,7 +189,10 @@ export class FakeNativeBrowser {
         frameTree: {
           frame: {
             id: main.id,
-            loaderId: main.loaderId,
+            // While the override gates a commit, the committed loaderId must
+            // stay hidden too, or a loaderId-based commit check bypasses it.
+            loaderId:
+              override === undefined ? main.loaderId : `${main.loaderId}-held`,
             url: override ?? main.url,
             name: "",
           },
@@ -283,35 +287,8 @@ export class FakeNativeBrowser {
       return this.reply(request, { cookies: [] });
     }
     if (method === "Fetch.enable") {
-      this.reply(request, {});
-      const targetId = this.sessions.get(request.sessionId);
-      const pending = targetId
-        ? this.pendingNavigations.get(targetId)
-        : undefined;
-      if (pending && !pending.paused) {
-        pending.paused = true;
-        // No Network.requestWillBeSent here: the session attached after the
-        // document request started, and real Chromium never re-sends it to a
-        // late-attached session. Only the pause reaches this session.
-        this.emit({
-          method: "Fetch.requestPaused",
-          params: {
-            requestId: pending.interceptionId,
-            request: {
-              url: pending.url,
-              method: "GET",
-              headers: {},
-              initialPriority: "VeryHigh",
-              referrerPolicy: "strict-origin-when-cross-origin",
-            },
-            frameId: targetId,
-            resourceType: "Document",
-            networkId: pending.requestId,
-          },
-          sessionId: request.sessionId,
-        });
-      }
-      return;
+      this.fetchEnabledSessions.add(request.sessionId);
+      return this.reply(request, {});
     }
     if (
       method === "Fetch.continueRequest" ||
@@ -327,8 +304,26 @@ export class FakeNativeBrowser {
       const [targetId, pending] = entry;
       this.continuedRequests.push(interceptionId);
       this.pendingNavigations.delete(targetId);
-      this.frameUrlOverride.delete(targetId);
       this.reply(request, {});
+      // The pause is resolved: the withheld real Network events for the
+      // document request now reach the session (matching real Chromium),
+      // followed by the commit and the held Page.navigate response.
+      this.emit({
+        method: "Network.requestWillBeSent",
+        params: {
+          requestId: pending.requestId,
+          loaderId: pending.requestId,
+          documentURL: pending.url,
+          request: { url: pending.url, method: "GET", headers: {} },
+          timestamp: 2,
+          wallTime: 2,
+          initiator: { type: "other" },
+          type: "Document",
+          frameId: targetId,
+          hasUserGesture: false,
+        },
+        sessionId: request.sessionId,
+      });
       this.emit({
         method: "Network.responseReceived",
         params: {
@@ -361,6 +356,13 @@ export class FakeNativeBrowser {
         },
         sessionId: request.sessionId,
       });
+      this.commitNavigation(
+        pending.navigateRequest,
+        pending.frame,
+        pending.frameId,
+        pending.url,
+        pending.requestId,
+      );
       return;
     }
     if (method === "Page.navigate") {
@@ -371,34 +373,83 @@ export class FakeNativeBrowser {
       if (!frame) {
         return this.replyError(request, `No frame with id ${frameId}`);
       }
+      const url = request.params.url;
+      const errorText = this.navigationErrors.get(url);
+      if (errorText !== undefined) {
+        return this.reply(request, { frameId, errorText });
+      }
       const loaderId = `loader-${this.nextLoader++}`;
-      frame.url = request.params.url;
-      frame.loaderId = loaderId;
-      if (frame === tab.frames[0]) tab.url = request.params.url;
-      this.reply(request, { frameId, loaderId });
-      this.emit({
-        method: "Page.frameNavigated",
-        params: {
-          frame: {
-            id: frameId,
-            ...(frame.parentId ? { parentId: frame.parentId } : {}),
-            loaderId,
-            url: frame.url,
-            name: "",
-          },
-        },
-        sessionId: request.sessionId,
-      });
-      for (const name of ["DOMContentLoaded", "load"]) {
+      if (this.downloadUrls.has(url)) {
+        // A download never navigates the frame; only the response reports it.
+        return this.reply(request, { frameId, loaderId, isDownload: true });
+      }
+      const targetId = this.sessions.get(request.sessionId);
+      if (
+        this.interceptNavigations &&
+        frame === tab.frames[0] &&
+        this.fetchEnabledSessions.has(request.sessionId)
+      ) {
+        // The document request pauses and the navigate response is held until
+        // Fetch.continueRequest / fulfillRequest resolves the pause.
+        this.pendingNavigations.set(targetId, {
+          url,
+          requestId: loaderId,
+          interceptionId: `int-${this.nextInterception++}`,
+          navigateRequest: request,
+          frame,
+          frameId,
+        });
         this.emit({
-          method: "Page.lifecycleEvent",
-          params: { frameId, loaderId, name, timestamp: 1 },
+          method: "Fetch.requestPaused",
+          params: {
+            requestId: this.pendingNavigations.get(targetId).interceptionId,
+            request: {
+              url,
+              method: "GET",
+              headers: {},
+              initialPriority: "VeryHigh",
+              referrerPolicy: "strict-origin-when-cross-origin",
+            },
+            frameId: targetId,
+            resourceType: "Document",
+            networkId: loaderId,
+          },
           sessionId: request.sessionId,
         });
+        return;
       }
-      return;
+      return this.commitNavigation(request, frame, frameId, url, loaderId);
     }
     return this.reply(request, {});
+  }
+
+  commitNavigation(request, frame, frameId, url, loaderId) {
+    const targetId = this.sessions.get(request.sessionId);
+    const tab = targetId ? this.tabs.get(targetId) : undefined;
+    frame.url = url;
+    frame.loaderId = loaderId;
+    if (tab && frame === tab.frames[0]) tab.url = url;
+    this.reply(request, { frameId, loaderId });
+    this.emit({
+      method: "Page.frameNavigated",
+      params: {
+        frame: {
+          id: frameId,
+          ...(frame.parentId ? { parentId: frame.parentId } : {}),
+          loaderId,
+          url: frame.url,
+          name: "",
+        },
+      },
+      sessionId: request.sessionId,
+    });
+    for (const name of ["DOMContentLoaded", "load"]) {
+      this.emit({
+        method: "Page.lifecycleEvent",
+        params: { frameId, loaderId, name, timestamp: 1 },
+        sessionId: request.sessionId,
+      });
+    }
   }
 }
 

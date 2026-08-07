@@ -846,20 +846,26 @@ test("the Ego Playwright transport keeps the Playwright Page identity while repl
     sendCDPMessage(payload) {
       const request = JSON.parse(payload);
       sent.push(request);
-      if (request.method === "Page.navigate") return;
 
       let result = {};
-      if (request.method === "Target.getTargetInfo") {
+      if (request.method === "Page.navigate") {
+        result = {
+          frameId: "replacement-frame",
+          loaderId: "replacement-loader",
+        };
+      } else if (request.method === "Target.getTargetInfo") {
         const targetId = request.params.targetId;
         result = {
           targetInfo: {
             targetId,
             type: "page",
             title: targetId === "replacement-target" ? "After" : "Before",
+            // A non-blank starting page: navigations from a blank page take
+            // the in-place path and never reach the replacement flow.
             url:
               targetId === "replacement-target"
                 ? "https://example.test/after"
-                : "chrome://newtab/",
+                : "https://example.test/before",
           },
         };
       } else if (request.method === "Target.attachToTarget") {
@@ -870,6 +876,10 @@ test("the Ego Playwright transport keeps the Playwright Page identity while repl
               : "client-session",
         };
       } else if (request.method === "Page.getFrameTree") {
+        // The frame tree lags the native commit: it first reports the initial
+        // blank document, then a transient pre-reflection state whose loader
+        // does not yet match the navigate response; neither may be mistaken
+        // for the committed navigation.
         const replacementFrameTreeCall =
           request.sessionId === "replacement-session"
             ? replacementFrameTreeCalls++
@@ -888,9 +898,10 @@ test("the Ego Playwright transport keeps the Playwright Page identity while repl
                   ? "transient-loader"
                   : "replacement-loader",
               name: "",
-              url: beforeReplacementCommit
-                ? "about:blank"
-                : "https://example.test/after",
+              url:
+                beforeReplacementCommit || transientReplacementCommit
+                  ? "about:blank"
+                  : "https://example.test/after",
             },
           },
         };
@@ -976,10 +987,21 @@ test("the Ego Playwright transport keeps the Playwright Page identity while repl
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
 
-  assert.deepEqual(createdUrls, ["https://example.test/after"]);
-  assert.equal(
-    sent.some((request) => request.method === "Page.navigate"),
-    false,
+  assert.deepEqual(createdUrls, ["about:blank"]);
+  const nativeNavigate = sent.find(
+    (request) => request.method === "Page.navigate",
+  );
+  assert.equal(nativeNavigate?.sessionId, "replacement-session");
+  assert.equal(nativeNavigate?.params.url, "https://example.test/after");
+  const replacementFetchEnableIndex = sent.findIndex(
+    (request) =>
+      request.method === "Runtime.enable" &&
+      request.sessionId === "replacement-session",
+  );
+  assert.ok(
+    replacementFetchEnableIndex !== -1 &&
+      replacementFetchEnableIndex < sent.indexOf(nativeNavigate),
+    "enable commands are replayed before the native navigation starts",
   );
   assert.ok(
     sent.some(
@@ -1065,10 +1087,12 @@ async function createNavigatedCdpSessionTransport({
             targetId: request.params.targetId,
             type: "page",
             title: "Selected",
+            // A non-blank starting page: navigations from a blank page take
+            // the in-place path and never reach the replacement flow.
             url:
               request.params.targetId === "replacement-target"
                 ? "https://example.test/after"
-                : "about:blank",
+                : "https://example.test/before",
           },
         };
       } else if (request.method === "Target.attachToTarget") {
@@ -1400,10 +1424,12 @@ test("the Ego Playwright transport reports the committed redirect URL for Page.n
           targetInfo: {
             targetId: request.params.targetId,
             type: "page",
+            // A non-blank starting page: navigations from a blank page take
+            // the in-place path and never reach the replacement flow.
             url:
               request.params.targetId === "replacement-target"
                 ? "https://example.test/redirect-target"
-                : "about:blank",
+                : "https://example.test/before",
           },
         };
       } else if (request.method === "Target.attachToTarget") {
@@ -2787,6 +2813,174 @@ test("a document request paused by replayed interception reaches the client befo
   await transport.closeAndWait();
 });
 
+test("a client Fetch.fulfillRequest mocks the document of a TaskSpace navigation", async () => {
+  const harness = await createTaskSpaceTransportHarness({
+    tabs: [["tab-main", "https://main.test/"]],
+    harnessOptions: { interceptNavigations: true },
+    transportOptions: { navigationCommitTimeoutMs: 2_000 },
+  });
+  const { fake, transport, received } = harness;
+  const mainSession = [...fake.sessions.keys()][0];
+
+  transport.send({
+    id: 83,
+    method: "Fetch.enable",
+    params: { patterns: [{ urlPattern: "*", requestStage: "Request" }] },
+    sessionId: mainSession,
+  });
+  await waitForMessage(received, (message) => message.id === 83);
+
+  transport.send({
+    id: 84,
+    method: "Page.navigate",
+    params: { frameId: "tab-main", url: "https://main.test/mocked" },
+    sessionId: mainSession,
+  });
+
+  const paused = await waitForMessage(
+    received,
+    (message) => message.method === "Fetch.requestPaused",
+  );
+  assert.ok(paused, "the document request pauses after the native navigate");
+  assert.equal(
+    received.some((message) => message.id === 84),
+    false,
+    "the pause is bridged to the client before the navigation resolves",
+  );
+
+  transport.send({
+    id: 85,
+    method: "Fetch.fulfillRequest",
+    params: {
+      requestId: paused.params.requestId,
+      responseCode: 200,
+      body: Buffer.from("<html>mocked</html>").toString("base64"),
+    },
+    sessionId: mainSession,
+  });
+
+  const navigated = await waitForMessage(
+    received,
+    (message) => message.id === 84,
+    5_000,
+  );
+  assert.ok(navigated, "the navigation settles once the request is fulfilled");
+  assert.equal(
+    navigated.error,
+    undefined,
+    `the navigation must commit, got: ${JSON.stringify(navigated?.error)}`,
+  );
+  assert.equal(navigated.result.frameId, "tab-main");
+  assert.deepEqual(fake.continuedRequests, [paused.params.requestId]);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  const documentAnnouncements = received.filter(
+    (message) =>
+      message.method === "Network.requestWillBeSent" &&
+      message.params?.requestId === paused.params.networkId,
+  );
+  assert.equal(
+    documentAnnouncements.length,
+    1,
+    "the bridged announcement and the real deferred event must not both reach the client",
+  );
+  assert.equal(
+    received.filter(
+      (message) =>
+        message.method === "Network.responseReceived" &&
+        message.params?.requestId === paused.params.networkId,
+    ).length,
+    1,
+    "the real document response reaches the client exactly once",
+  );
+  await transport.closeAndWait();
+});
+
+test("a native Page.navigate errorText fails the client navigation and closes the replacement tab", async () => {
+  const harness = await createTaskSpaceTransportHarness({
+    tabs: [["tab-main", "https://main.test/"]],
+  });
+  const { fake, transport, received } = harness;
+  const mainSession = [...fake.sessions.keys()][0];
+  fake.navigationErrors.set(
+    "https://nowhere.invalid/",
+    "net::ERR_NAME_NOT_RESOLVED",
+  );
+
+  transport.send({
+    id: 86,
+    method: "Page.navigate",
+    params: { frameId: "tab-main", url: "https://nowhere.invalid/" },
+    sessionId: mainSession,
+  });
+  const failed = await waitForMessage(received, (message) => message.id === 86);
+  assert.ok(failed, "the client navigation settles");
+  assert.match(failed.error?.message || "", /net::ERR_NAME_NOT_RESOLVED/);
+
+  const closeDeadline = Date.now() + 2_000;
+  while (fake.closedTargets.length === 0 && Date.now() < closeDeadline) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.equal(fake.closedTargets.length, 1, "the replacement tab is closed");
+  assert.deepEqual(
+    [...fake.tabs.keys()],
+    ["tab-main"],
+    "only the original tab remains",
+  );
+
+  transport.send({
+    id: 87,
+    method: "Runtime.evaluate",
+    params: { expression: "1 + 1", returnByValue: true },
+    sessionId: mainSession,
+  });
+  const evaluated = await waitForMessage(
+    received,
+    (message) => message.id === 87,
+  );
+  assert.ok(evaluated, "the page still answers commands");
+  assert.equal(evaluated.error, undefined);
+  await transport.closeAndWait();
+});
+
+test("a download navigation fails the client Page.navigate promptly", async () => {
+  const harness = await createTaskSpaceTransportHarness({
+    tabs: [["tab-main", "https://main.test/"]],
+    transportOptions: { navigationCommitTimeoutMs: 10_000 },
+  });
+  const { fake, transport, received } = harness;
+  const mainSession = [...fake.sessions.keys()][0];
+  fake.downloadUrls.add("https://main.test/report.xlsx");
+
+  const startedAt = Date.now();
+  transport.send({
+    id: 88,
+    method: "Page.navigate",
+    params: { frameId: "tab-main", url: "https://main.test/report.xlsx" },
+    sessionId: mainSession,
+  });
+  const failed = await waitForMessage(received, (message) => message.id === 88);
+  assert.ok(failed, "the client navigation settles");
+  assert.match(
+    failed.error?.message || "",
+    /net::ERR_ABORTED; maybe frame was detached\?/,
+  );
+  assert.ok(
+    Date.now() - startedAt < 5_000,
+    "a download must fail well before the commit timeout",
+  );
+
+  const closeDeadline = Date.now() + 2_000;
+  while (fake.closedTargets.length === 0 && Date.now() < closeDeadline) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.deepEqual(
+    [...fake.tabs.keys()],
+    ["tab-main"],
+    "the replacement tab does not leak after the failed download navigation",
+  );
+  await transport.closeAndWait();
+});
+
 test("a held command whose replay throws synchronously still gets an error reply", async () => {
   const harness = await createTaskSpaceTransportHarness({
     tabs: [["tab-main", "https://main.test/"]],
@@ -2833,5 +3027,232 @@ test("a held command whose replay throws synchronously still gets an error reply
   assert.equal(reply.sessionId, oldSession);
 
   fake.runtime.sendCDPMessage = originalSend;
+  await transport.closeAndWait();
+});
+
+async function assertInPlaceNavigation(initialUrl) {
+  const harness = await createTaskSpaceTransportHarness({
+    tabs: [["tab-main", initialUrl]],
+  });
+  const { fake, transport, received } = harness;
+  const mainSession = [...fake.sessions.keys()][0];
+
+  transport.send({
+    id: 130,
+    method: "Page.navigate",
+    params: { frameId: "tab-main", url: "https://main.test/landing" },
+    sessionId: mainSession,
+  });
+  const navigated = await waitForMessage(
+    received,
+    (message) => message.id === 130,
+  );
+  assert.ok(navigated, "the client navigation settles");
+  assert.equal(
+    navigated.error,
+    undefined,
+    `the navigation must commit, got: ${JSON.stringify(navigated?.error)}`,
+  );
+  assert.equal(navigated.result.frameId, "tab-main");
+  assert.equal(typeof navigated.result.loaderId, "string");
+  assert.equal(navigated.sessionId, mainSession);
+
+  assert.deepEqual(fake.createdUrls, [], "no replacement tab is created");
+  assert.deepEqual(fake.closedTargets, [], "no tab is closed");
+  const nativeNavigate = fake.log.find(
+    (request) => request.method === "Page.navigate",
+  );
+  assert.equal(
+    nativeNavigate?.sessionId,
+    mainSession,
+    "the native navigate runs on the route's existing session",
+  );
+  assert.equal(nativeNavigate?.params.url, "https://main.test/landing");
+  assert.deepEqual(
+    [...fake.tabs.keys()],
+    ["tab-main"],
+    "the route keeps its native target",
+  );
+  assert.equal(fake.tabs.get("tab-main").url, "https://main.test/landing");
+  assert.equal(
+    fake.log.filter((request) => request.method === "Target.attachToTarget")
+      .length,
+    1,
+    "no replacement session is attached",
+  );
+  const frameNavigated = await waitForMessage(
+    received,
+    (message) =>
+      message.method === "Page.frameNavigated" &&
+      message.params?.frame?.url === "https://main.test/landing",
+  );
+  assert.ok(frameNavigated, "the real frameNavigated reaches the client");
+  assert.equal(frameNavigated.sessionId, mainSession);
+  await transport.closeAndWait();
+}
+
+test("a navigation from a blank page navigates in place", async () => {
+  await assertInPlaceNavigation("about:blank");
+});
+
+test("an in-place navigation from chrome://newtab", async () => {
+  await assertInPlaceNavigation("chrome://newtab/");
+});
+
+test("in-place navigation propagates errorText", async () => {
+  const harness = await createTaskSpaceTransportHarness({
+    tabs: [["tab-main", "about:blank"]],
+  });
+  const { fake, transport, received } = harness;
+  const mainSession = [...fake.sessions.keys()][0];
+  fake.navigationErrors.set(
+    "https://nowhere.invalid/",
+    "net::ERR_NAME_NOT_RESOLVED",
+  );
+
+  transport.send({
+    id: 132,
+    method: "Page.navigate",
+    params: { frameId: "tab-main", url: "https://nowhere.invalid/" },
+    sessionId: mainSession,
+  });
+  const failed = await waitForMessage(
+    received,
+    (message) => message.id === 132,
+  );
+  assert.ok(failed, "the client navigation settles");
+  assert.match(failed.error?.message || "", /net::ERR_NAME_NOT_RESOLVED/);
+  assert.deepEqual(fake.createdUrls, [], "no replacement tab is created");
+  assert.equal(fake.tabs.get("tab-main").url, "about:blank");
+
+  transport.send({
+    id: 133,
+    method: "Runtime.evaluate",
+    params: { expression: "1 + 1", returnByValue: true },
+    sessionId: mainSession,
+  });
+  const evaluated = await waitForMessage(
+    received,
+    (message) => message.id === 133,
+  );
+  assert.ok(evaluated, "the page still answers commands");
+  assert.equal(evaluated.error, undefined);
+  await transport.closeAndWait();
+});
+
+test("in-place navigation reports a download as an aborted navigation", async () => {
+  const harness = await createTaskSpaceTransportHarness({
+    tabs: [["tab-main", "about:blank"]],
+    transportOptions: { navigationCommitTimeoutMs: 10_000 },
+  });
+  const { fake, transport, received } = harness;
+  const mainSession = [...fake.sessions.keys()][0];
+  fake.downloadUrls.add("https://main.test/report.xlsx");
+
+  const startedAt = Date.now();
+  transport.send({
+    id: 134,
+    method: "Page.navigate",
+    params: { frameId: "tab-main", url: "https://main.test/report.xlsx" },
+    sessionId: mainSession,
+  });
+  const failed = await waitForMessage(
+    received,
+    (message) => message.id === 134,
+  );
+  assert.ok(failed, "the client navigation settles");
+  assert.match(
+    failed.error?.message || "",
+    /net::ERR_ABORTED; maybe frame was detached\?/,
+  );
+  assert.ok(
+    Date.now() - startedAt < 5_000,
+    "a download must fail well before the commit timeout",
+  );
+  assert.deepEqual(fake.createdUrls, [], "no replacement tab is created");
+  await transport.closeAndWait();
+});
+
+test("commands during an in-place navigation are not held", async () => {
+  const harness = await createTaskSpaceTransportHarness({
+    tabs: [["tab-main", "about:blank"]],
+    harnessOptions: { interceptNavigations: true },
+    transportOptions: { navigationCommitTimeoutMs: 5_000 },
+  });
+  const { fake, transport, received } = harness;
+  const mainSession = [...fake.sessions.keys()][0];
+
+  transport.send({
+    id: 135,
+    method: "Fetch.enable",
+    params: { patterns: [{ urlPattern: "*", requestStage: "Request" }] },
+    sessionId: mainSession,
+  });
+  await waitForMessage(received, (message) => message.id === 135);
+
+  transport.send({
+    id: 136,
+    method: "Page.navigate",
+    params: { frameId: "tab-main", url: "https://main.test/gated" },
+    sessionId: mainSession,
+  });
+  const paused = await waitForMessage(
+    received,
+    (message) => message.method === "Fetch.requestPaused",
+  );
+  assert.ok(paused, "the gated document request holds the navigation open");
+  assert.equal(paused.sessionId, mainSession);
+
+  transport.send({
+    id: 137,
+    method: "Runtime.evaluate",
+    params: { expression: "1 + 1", returnByValue: true },
+    sessionId: mainSession,
+  });
+  const evaluated = await waitForMessage(
+    received,
+    (message) => message.id === 137,
+    1_000,
+  );
+  assert.ok(
+    evaluated,
+    "the command is answered while the in-place navigation is pending",
+  );
+  assert.equal(evaluated.error, undefined);
+  assert.equal(
+    received.some((message) => message.id === 136),
+    false,
+    "the navigation has not committed when the command is answered",
+  );
+  const evaluateRequest = fake.log.find(
+    (request) =>
+      request.method === "Runtime.evaluate" &&
+      request.params?.expression === "1 + 1",
+  );
+  assert.equal(
+    evaluateRequest?.sessionId,
+    mainSession,
+    "the command is served by the route's own session",
+  );
+
+  transport.send({
+    id: 138,
+    method: "Fetch.continueRequest",
+    params: { requestId: paused.params.requestId },
+    sessionId: mainSession,
+  });
+  const navigated = await waitForMessage(
+    received,
+    (message) => message.id === 136,
+    5_000,
+  );
+  assert.ok(navigated, "the navigation settles once the gate opens");
+  assert.equal(
+    navigated.error,
+    undefined,
+    `the navigation must commit, got: ${JSON.stringify(navigated?.error)}`,
+  );
+  assert.equal(navigated.result.frameId, "tab-main");
+  assert.deepEqual(fake.createdUrls, [], "no replacement tab is created");
   await transport.closeAndWait();
 });
