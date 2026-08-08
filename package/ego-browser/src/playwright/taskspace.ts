@@ -276,6 +276,15 @@ export async function connectPlaywrightTaskSpace(
   return session;
 }
 
+export function activePlaywrightTaskSpace() {
+  if (!activeSession) {
+    throw new Error(
+      "site tools require an active TaskSpace; call egoBrowser.newTaskSpace() or egoBrowser.switchTaskSpace() first",
+    );
+  }
+  return activeSession;
+}
+
 export async function disconnectPlaywrightTaskSpace() {
   const session = activeSession;
   activeSession = undefined;

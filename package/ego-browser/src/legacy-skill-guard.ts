@@ -1,5 +1,3 @@
-import { markHardStop } from "./output-sink.js";
-
 type InstallTarget = Record<string, unknown>;
 
 /**
@@ -123,9 +121,7 @@ export function installLegacySkillGuards(target: InstallTarget): void {
   ) as [LegacyTaskSpaceHelper, string][]) {
     Object.defineProperty(target, legacyHelper, {
       value: function legacyTaskSpaceSkillGuard(): never {
-        const error = new EgoBrowserSkillStaleError(legacyHelper, replacement);
-        markHardStop(error.message);
-        throw error;
+        throw new EgoBrowserSkillStaleError(legacyHelper, replacement);
       },
       writable: true,
       configurable: true,

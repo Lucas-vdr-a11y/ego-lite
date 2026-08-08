@@ -94,6 +94,12 @@ type PageRoute = {
   };
 };
 
+// A function boundary defeats control-flow narrowing: callers that assigned a
+// specific state earlier in the flow can still observe a concurrent close.
+function routeClosed(route: PageRoute): boolean {
+  return route.state === "closed";
+}
+
 export class EgoCdpTransport {
   onmessage?: (message: any) => void;
   onclose?: (reason?: string) => void;
@@ -412,6 +418,7 @@ export class EgoCdpTransport {
     this.#pendingIds.clear();
     for (const route of this.#routesByClientSession.values()) {
       route.state = "closed";
+      route.abortNavigation?.(reason || "Ego CDP transport closed");
     }
     this.#routesByClientSession.clear();
     this.#routesByNativeSession.clear();
@@ -1310,6 +1317,11 @@ export class EgoCdpTransport {
 
   #removeRoute(route: PageRoute) {
     route.state = "closed";
+    // A navigation in flight for this route must not complete its swap — the
+    // page is gone. Aborting rejects the transition's pending awaits; its
+    // catch path then cleans up the replacement tab instead of re-registering
+    // the removed route.
+    route.abortNavigation?.("the page has been closed");
     this.#routesByClientSession.delete(route.clientSessionId);
     this.#routesByNativeSession.delete(route.nativeSessionId);
     this.#routesByClientTarget.delete(route.clientTargetId);
@@ -1576,6 +1588,15 @@ export class EgoCdpTransport {
           },
         ),
       );
+      // Read through a function boundary: the "rebinding" assignment above
+      // narrows route.state, but the awaited commit wait may have closed the
+      // route.
+      if (routeClosed(route)) {
+        // The page was closed while the commit confirmation was in flight;
+        // the route is already removed from the tables, so the swap below
+        // must not resurrect it.
+        throw new Error("the page has been closed");
+      }
       const replacementFrameId =
         typeof frame.id === "string" ? frame.id : newTargetId;
       // From here on the swapped route handles the session's events itself;
@@ -1698,7 +1719,10 @@ export class EgoCdpTransport {
     })()
       .catch((error) => {
         route.transition = undefined;
-        if (route.nativeSessionId === previousNativeSessionId) {
+        if (
+          route.state !== "closed" &&
+          route.nativeSessionId === previousNativeSessionId
+        ) {
           this.#retiredNativeSessions.delete(previousNativeSessionId);
         }
         // The replacement tab never became the route's target; close it so a
@@ -1717,7 +1741,9 @@ export class EgoCdpTransport {
             targetId: replacementTargetId,
           });
         }
-        route.state = "attached";
+        // A closed route stays closed — restoring "attached" here would
+        // resurrect a page the client already closed.
+        if (route.state !== "closed") route.state = "attached";
         this.#emit({
           id: message.id,
           error: { code: -32_000, message: error?.message || String(error) },

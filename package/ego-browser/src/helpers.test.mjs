@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import * as helperExports from "../dist/src/helpers.js";
 import { PUBLIC_API_DOCS } from "../dist/src/format.js";
@@ -10,6 +13,10 @@ import {
   invalidateSession,
 } from "../dist/src/browser-runtime.js";
 import { runWithTarget } from "../dist/src/target-context.js";
+import {
+  connectPlaywrightTaskSpace,
+  disconnectPlaywrightTaskSpace,
+} from "../dist/src/playwright/taskspace.js";
 import {
   claimTaskSpace,
   completeTaskSpace,
@@ -219,6 +226,178 @@ test("egoBrowser.site is the canonical site-learning facade", () => {
     context.egoBrowser.helper("egoBrowser.site"),
     /egoBrowser\.site\.discover\(url\?\)/,
   );
+});
+
+test("egoBrowser.site exposes the approved Google Docs and Sheets presets", () => {
+  const context = helperContext();
+
+  assert.deepEqual(Object.keys(context.egoBrowser.site.google.docs).sort(), [
+    "appendText",
+    "open",
+    "readText",
+    "replaceAll",
+    "setTitle",
+  ]);
+  assert.deepEqual(Object.keys(context.egoBrowser.site.google.sheets).sort(), [
+    "appendRows",
+    "getSheetNames",
+    "open",
+    "readRange",
+    "writeRange",
+  ]);
+  assert.equal(context.egoBrowser.site, context.site);
+});
+
+test("egoBrowser.helper documents every approved Google Docs and Sheets preset", () => {
+  const helper = helperContext().egoBrowser.helper;
+  const docs = helper("egoBrowser.site.google.docs");
+  const sheets = helper("egoBrowser.site.google.sheets");
+
+  for (const signature of [
+    "docs.open({ url })",
+    "docs.readText()",
+    "docs.setTitle({ title })",
+    "docs.appendText({ text, separator? })",
+    "docs.replaceAll({ find, replace, matchCase? })",
+  ]) {
+    assert.match(docs, new RegExp(signature.replace(/[.?{}()[\]]/g, "\\$&")));
+  }
+  for (const signature of [
+    "sheets.open({ url })",
+    "sheets.getSheetNames()",
+    "sheets.readRange({ range })",
+    "sheets.writeRange({ range, values })",
+    "sheets.appendRows({ sheet, values })",
+  ]) {
+    assert.match(sheets, new RegExp(signature.replace(/[.?{}()[\]]/g, "\\$&")));
+  }
+  assert.match(
+    helper("egoBrowser.site.google.sheets.writeRange"),
+    /range dimensions must match values/i,
+  );
+});
+
+test("egoBrowser.site exposes the approved Gmail, Notion, and Outlook presets", () => {
+  const site = helperContext().egoBrowser.site;
+
+  assert.deepEqual(Object.keys(site.google.gmail).sort(), [
+    "createDraft",
+    "listThreads",
+    "openInbox",
+    "readThread",
+    "search",
+  ]);
+  assert.deepEqual(Object.keys(site.notion.pages).sort(), [
+    "appendText",
+    "create",
+    "open",
+    "read",
+    "search",
+    "setTitle",
+  ]);
+  assert.deepEqual(Object.keys(site.microsoft.outlook).sort(), [
+    "createDraft",
+    "listMessages",
+    "openInbox",
+    "readMessage",
+    "search",
+  ]);
+  assert.equal(site.microsoft.word, undefined);
+  assert.equal(site.microsoft.excel, undefined);
+});
+
+test("egoBrowser.helper documents every newly approved preset function", () => {
+  const helper = helperContext().egoBrowser.helper;
+  const namespaces = {
+    "egoBrowser.site.google.gmail": [
+      "gmail.openInbox()",
+      "gmail.listThreads({ limit? })",
+      "gmail.search({ query, limit? })",
+      "gmail.readThread({ id })",
+      "gmail.createDraft({ to, cc?, bcc?, subject, body })",
+    ],
+    "egoBrowser.site.notion.pages": [
+      "pages.search({ query, limit? })",
+      "pages.open({ url })",
+      "pages.read()",
+      "pages.create({ title, text?, parentUrl? })",
+      "pages.setTitle({ title })",
+      "pages.appendText({ text })",
+    ],
+    "egoBrowser.site.microsoft.outlook": [
+      "outlook.openInbox()",
+      "outlook.listMessages({ limit? })",
+      "outlook.search({ query, limit? })",
+      "outlook.readMessage({ id })",
+      "outlook.createDraft({ to, cc?, bcc?, subject, body })",
+    ],
+  };
+
+  for (const [namespace, signatures] of Object.entries(namespaces)) {
+    const docs = helper(namespace);
+    for (const signature of signatures) {
+      assert.match(docs, new RegExp(signature.replace(/[.?{}()[\]]/g, "\\$&")));
+    }
+  }
+  assert.match(
+    helper("egoBrowser.site.google.gmail.createDraft"),
+    /save.*draft|draft.*save/i,
+  );
+  assert.doesNotMatch(helper("egoBrowser.site.google.gmail"), /sendEmail/);
+  assert.doesNotMatch(helper("egoBrowser.site.microsoft.outlook"), /sendEmail/);
+});
+
+test("site Node tools receive the active Playwright page and context", async () => {
+  const workspace = await mkdtemp(join(tmpdir(), "ego-site-context-"));
+  const siteDir = join(workspace, "learnings", "example");
+  await mkdir(join(siteDir, "tools"), { recursive: true });
+  await writeFile(
+    join(siteDir, "manifest.json"),
+    JSON.stringify({
+      id: "example",
+      name: "Example",
+      domains: ["example.com"],
+      notes: [],
+      nodeTools: {
+        inspect_context: {
+          description: "Inspect the active Playwright context.",
+          path: "tools/inspect-context.js",
+          callable: "inspectContext",
+          args: {},
+          returns: {
+            type: "object",
+            description: "Active page and context markers.",
+          },
+        },
+      },
+    }),
+  );
+  await writeFile(
+    join(siteDir, "tools", "inspect-context.js"),
+    "export async function inspectContext(ctx) { return { page: ctx.page?.marker, context: ctx.context?.marker }; }\n",
+  );
+
+  const restoreWorkspace = setOverrides({
+    agentWorkspace: () => workspace,
+  });
+  const restoreConnector =
+    helperExports.__testing.setPlaywrightTaskSpaceConnector(async () => ({
+      page: { marker: "page" },
+      context: { marker: "context" },
+      close: async () => {},
+    }));
+
+  try {
+    await connectPlaywrightTaskSpace({ id: 41 });
+    assert.deepEqual(
+      await helperContext().site.runTool("example", "inspect_context"),
+      { page: "page", context: "context" },
+    );
+  } finally {
+    await disconnectPlaywrightTaskSpace();
+    restoreConnector();
+    restoreWorkspace();
+  }
 });
 
 test("egoBrowser.helper lists the egoBrowser facade by default", () => {

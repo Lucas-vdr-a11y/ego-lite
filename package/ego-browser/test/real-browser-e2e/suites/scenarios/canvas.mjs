@@ -28,9 +28,17 @@ export const canvasScenarioCase = scenarioCase(
       );
       const reviewDocumentBox = await page.locator(".review-document").boundingBox();
       const exportActionsBox = toolbarSections.at(-1);
+      const toolbarFit = await page.locator(".canvas-toolbar").evaluate((element) => ({
+        viewportWidth: window.innerWidth,
+        clientWidth: element.clientWidth,
+        scrollWidth: element.scrollWidth,
+      }));
       assert(
         exportActionsBox.x + exportActionsBox.width <= reviewDocumentBox.x + reviewDocumentBox.width,
-        "the complete single-row toolbar is visible without horizontal scrolling",
+        "the complete single-row toolbar is visible without horizontal scrolling" +
+          " (this needs a viewport of at least 1220 CSS px; the browser window is " +
+          toolbarFit.viewportWidth + " px wide, so the toolbar track is " +
+          toolbarFit.clientWidth + " px for " + toolbarFit.scrollWidth + " px of controls)",
       );
 
       const box = await canvas.boundingBox();

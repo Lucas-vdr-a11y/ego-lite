@@ -122,8 +122,9 @@ function isLearningNotePath(siteDir: string, notePath: string) {
   const parts = relativePath.split(/[\\/]/);
   return (
     parts.length === 2 &&
-    parts[0] === "notes" &&
-    parts[1].endsWith(".md") &&
+    ((parts[0] === "notes" && parts[1].endsWith(".md")) ||
+      (!new Set(["notes", "tools", "browser-tools"]).has(parts[0]) &&
+        parts[1] === "prompt.md")) &&
     parts.every((part) => part && part !== "." && part !== "..")
   );
 }

@@ -445,6 +445,10 @@ export async function runRealBrowserE2e() {
   }
 
   async function maybeRunEgoCase(testCase, timeoutMs = 45000, options = {}) {
+    if (testCase.nativeCallbackContainment === true) {
+      await runNativeCallbackContainmentCase(testCase, timeoutMs, options);
+      return;
+    }
     if (testCase.processContention === true) {
       await runProcessContentionCase(testCase, timeoutMs, options);
       return;
@@ -503,6 +507,171 @@ export async function runRealBrowserE2e() {
       console.log(
         `-- ${testCase.name} passed (${formatDuration(durationMs)}, ${assertionCount} assertions)`,
       );
+    }
+  }
+
+  async function runNativeCallbackContainmentCase(
+    testCase,
+    timeoutMs = 45000,
+    options = {},
+  ) {
+    if (!shouldRunE2eCase(testCase, onlyCases)) {
+      console.log(`-- ${testCase.name} (skipped)`);
+      recordResult(testCase.name, "skip", 0, 0);
+      return;
+    }
+
+    console.log(`-- ${testCase.name}`);
+    const startedAt = Date.now();
+    const rounds = e2eCaseRounds(testCase);
+    const caseTimeoutMs = testCase.timeoutMs ?? timeoutMs;
+    const holderReadyPath = join(tempDir, "native-callback-holder-ready.json");
+    const holderSummaryPath = join(
+      tempDir,
+      "native-callback-holder-summary.json",
+    );
+    const culpritSummaryPath = join(
+      tempDir,
+      "native-callback-culprit-summary.json",
+    );
+    const culpritDonePath = join(tempDir, "native-callback-culprit-done.json");
+    const holderResultPath = join(
+      tempDir,
+      `case-result-${nextCaseResultId++}.json`,
+    );
+    let assertionCount = 0;
+    let holderCommand;
+    let holderOutput = "";
+    let holderSessionId;
+    const codexTools = createCodexCommandTools();
+
+    await Promise.all(
+      [
+        holderReadyPath,
+        holderSummaryPath,
+        culpritSummaryPath,
+        culpritDonePath,
+        holderResultPath,
+      ].map((path) => rm(path, { force: true })),
+    );
+
+    try {
+      const holderSource = egoSource(
+        rounds[0](),
+        createCaseContext(
+          {
+            ...context,
+            ...options.context,
+            caseResultPath: holderResultPath,
+          },
+          keepTaskSpace,
+        ),
+      );
+      holderCommand = await codexTools.exec_command({
+        cmd: "ego-browser",
+        args: egoBrowserArgs,
+        cwd: packageDir,
+        egoBrowserSdkPath,
+        echo: verboseCaseOutput,
+        input: holderSource,
+        timeout_ms: testCase.holderTimeoutMs,
+        yield_time_ms: 250,
+      });
+      holderOutput += holderCommand.output || "";
+      holderSessionId = holderCommand.session_id;
+      if (!holderSessionId) {
+        throw new Error(
+          `native callback holder exited before signalling ready (exit ${holderCommand.exit_code})`,
+        );
+      }
+      const holderReady = await waitForJsonFile(
+        holderReadyPath,
+        Math.min(testCase.holderTimeoutMs, 15_000),
+      );
+
+      const culprit = await runEgoCase(
+        `${testCase.name} culprit`,
+        rounds[1](),
+        caseTimeoutMs,
+        { visible: false, record: false, context: options.context },
+      );
+      assertionCount += culprit.assertionCount;
+      if (culprit.status === "fail") {
+        throw new Error(`culprit: ${culprit.message}`);
+      }
+
+      while (holderCommand.session_id) {
+        holderCommand = await codexTools.write_stdin({
+          session_id: holderCommand.session_id,
+          yield_time_ms: 1_000,
+        });
+        holderOutput += holderCommand.output || "";
+      }
+      if (holderCommand.timed_out === true) {
+        throw new Error(
+          "native callback holder timed out instead of observing culprit completion",
+        );
+      }
+      if (holderCommand.exit_code !== 0) {
+        throw new Error(
+          `native callback holder exited with ${holderCommand.exit_code}; output: ${JSON.stringify(holderOutput.slice(-2000))}`,
+        );
+      }
+      if (
+        /NodeRuntime disconnected|disconnected unexpectedly/.test(holderOutput)
+      ) {
+        throw new Error(
+          `native callback holder disconnected; output: ${JSON.stringify(holderOutput.slice(-2000))}`,
+        );
+      }
+
+      const holderCase = await readCaseResult(holderResultPath, holderOutput);
+      if (!holderCase.ok) {
+        throw new Error(`holder: ${holderCase.error}`);
+      }
+      assertionCount += holderCase.assertions;
+      const [holderSummary, culpritSummary] = await Promise.all([
+        waitForJsonFile(holderSummaryPath),
+        waitForJsonFile(culpritSummaryPath),
+      ]);
+      if (holderReady.pid !== culpritSummary.pid) {
+        throw new Error(
+          `holder and culprit did not share NodeService (${holderReady.pid} != ${culpritSummary.pid})`,
+        );
+      }
+      if (holderSummary.pid !== holderReady.pid) {
+        throw new Error(
+          `holder NodeService pid changed (${holderReady.pid} -> ${holderSummary.pid})`,
+        );
+      }
+      if (!(holderSummary.ticks > 0)) {
+        throw new Error("holder completed no browser commands");
+      }
+      assertionCount += 4;
+
+      const durationMs = Date.now() - startedAt;
+      recordResult(testCase.name, "pass", durationMs, assertionCount);
+      console.log(
+        `-- ${testCase.name} passed (${formatDuration(durationMs)}, ${assertionCount} assertions)`,
+      );
+    } catch (error) {
+      const durationMs = Date.now() - startedAt;
+      const message = error?.message || String(error);
+      recordResult(testCase.name, "fail", durationMs, assertionCount, message);
+      console.error(
+        `[FAIL] ${testCase.name} (${formatDuration(durationMs)}): ${message}`,
+      );
+    } finally {
+      if (holderCommand?.session_id && holderSessionId) {
+        cancelCommandSession(holderSessionId);
+        do {
+          holderCommand = await codexTools.write_stdin({
+            session_id: holderSessionId,
+            yield_time_ms: 1_000,
+          });
+        } while (holderCommand.session_id);
+      }
+      await waitForNodeRoundToSettle();
     }
   }
 

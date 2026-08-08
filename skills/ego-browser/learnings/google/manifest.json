@@ -1,40 +1,285 @@
 {
   "id": "google",
-  "name": "Google Search",
+  "name": "Google",
   "domains": ["google.com", "*.google.com", "www.google.com"],
-  "notes": ["notes/overview.md"],
+  "notes": [
+    "docs/prompt.md",
+    "sheets/prompt.md",
+    "gmail/prompt.md"
+  ],
   "nodeTools": {
-    "search_and_extract": {
-      "description": "Perform a Google search and extract top organic results.",
-      "path": "tools/search-extract.js",
-      "callable": "searchAndExtract",
+    "docs_open": {
+      "description": "Open an existing Google Docs document and wait for its editor.",
+      "path": "docs/functions.js",
+      "callable": "openDocument",
       "args": {
-        "query": {
+        "url": {
           "type": "string",
           "required": true,
-          "description": "Search query string."
+          "description": "Google Docs document URL."
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Opened document URL and title."
+      }
+    },
+    "docs_read_text": {
+      "description": "Read the active Google document as plain text.",
+      "path": "docs/functions.js",
+      "callable": "readDocumentText",
+      "args": {},
+      "returns": {
+        "type": "object",
+        "description": "Document title and plain text."
+      }
+    },
+    "docs_set_title": {
+      "description": "Set the active Google document title and wait for save.",
+      "path": "docs/functions.js",
+      "callable": "setDocumentTitle",
+      "args": {
+        "title": {
+          "type": "string",
+          "required": true,
+          "description": "New non-empty document title."
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Previous and current title with change and save status."
+      }
+    },
+    "docs_append_text": {
+      "description": "Append plain text to the active Google document and verify it.",
+      "path": "docs/functions.js",
+      "callable": "appendDocumentText",
+      "args": {
+        "text": {
+          "type": "string",
+          "required": true,
+          "description": "Non-empty text to append."
         },
-        "maxResults": {
-          "type": "integer",
+        "separator": {
+          "type": "string",
           "required": false,
-          "description": "Maximum number of results to extract."
+          "description": "Separator inserted before text in a non-empty document; defaults to a newline."
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Verified document text with change and save status."
+      }
+    },
+    "docs_replace_all": {
+      "description": "Replace every plain-text match in the active Google document.",
+      "path": "docs/functions.js",
+      "callable": "replaceDocumentText",
+      "args": {
+        "find": {
+          "type": "string",
+          "required": true,
+          "description": "Non-empty plain text to find."
+        },
+        "replace": {
+          "type": "string",
+          "required": true,
+          "description": "Replacement text; may be empty."
+        },
+        "matchCase": {
+          "type": "boolean",
+          "required": false,
+          "description": "Whether matching is case-sensitive; defaults to false."
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Verified text, replacement count, and save status."
+      }
+    },
+    "sheets_open": {
+      "description": "Open an existing Google Sheets spreadsheet and wait for its grid.",
+      "path": "sheets/functions.js",
+      "callable": "openSpreadsheet",
+      "args": {
+        "url": {
+          "type": "string",
+          "required": true,
+          "description": "Google Sheets spreadsheet URL."
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Opened spreadsheet URL and title."
+      }
+    },
+    "sheets_get_sheet_names": {
+      "description": "List the visible sheet names in the active spreadsheet.",
+      "path": "sheets/functions.js",
+      "callable": "getSpreadsheetSheetNames",
+      "args": {},
+      "returns": {
+        "type": "array",
+        "description": "Visible non-empty sheet names."
+      }
+    },
+    "sheets_read_range": {
+      "description": "Read a Google Sheets A1 range as a two-dimensional array.",
+      "path": "sheets/functions.js",
+      "callable": "readSpreadsheetRange",
+      "args": {
+        "range": {
+          "type": "string",
+          "required": true,
+          "description": "A1 range, optionally qualified by a sheet name."
         }
       },
       "returns": {
         "type": "array",
-        "description": "Array of {title, url, snippet} objects."
+        "description": "Displayed cell values as rows and columns."
+      }
+    },
+    "sheets_write_range": {
+      "description": "Write and verify a rectangular matrix in a Google Sheets A1 range.",
+      "path": "sheets/functions.js",
+      "callable": "writeSpreadsheetRange",
+      "args": {
+        "range": {
+          "type": "string",
+          "required": true,
+          "description": "A1 range whose dimensions match values."
+        },
+        "values": {
+          "type": "array",
+          "required": true,
+          "description": "Non-empty rectangular matrix."
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Range, verified displayed values, and save status."
+      }
+    },
+    "sheets_append_rows": {
+      "description": "Append rows after the last non-empty cell in column A of a named sheet.",
+      "path": "sheets/functions.js",
+      "callable": "appendSpreadsheetRows",
+      "args": {
+        "sheet": {
+          "type": "string",
+          "required": true,
+          "description": "Target sheet name."
+        },
+        "values": {
+          "type": "array",
+          "required": true,
+          "description": "Non-empty rectangular matrix of rows to append."
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Written range, verified displayed values, and save status."
+      }
+    },
+    "gmail_open_inbox": {
+      "description": "Open the inbox for the active logged-in Gmail account.",
+      "path": "gmail/functions.js",
+      "callable": "openGmailInbox",
+      "args": {},
+      "returns": {
+        "type": "object",
+        "description": "Opened Gmail inbox URL."
+      }
+    },
+    "gmail_list_threads": {
+      "description": "List structured summaries from the current Gmail thread list.",
+      "path": "gmail/functions.js",
+      "callable": "listGmailThreads",
+      "args": {
+        "limit": {
+          "type": "integer",
+          "required": false,
+          "description": "Maximum number of threads from 1 to 100; defaults to 20."
+        }
+      },
+      "returns": {
+        "type": "array",
+        "description": "Thread summaries with id, sender, subject, snippet, date, and unread state."
+      }
+    },
+    "gmail_search": {
+      "description": "Search Gmail and return structured thread summaries.",
+      "path": "gmail/functions.js",
+      "callable": "searchGmail",
+      "args": {
+        "query": {
+          "type": "string",
+          "required": true,
+          "description": "Non-empty Gmail search query."
+        },
+        "limit": {
+          "type": "integer",
+          "required": false,
+          "description": "Maximum number of threads from 1 to 100; defaults to 20."
+        }
+      },
+      "returns": {
+        "type": "array",
+        "description": "Matching Gmail thread summaries."
+      }
+    },
+    "gmail_read_thread": {
+      "description": "Open and read a Gmail thread from the current list.",
+      "path": "gmail/functions.js",
+      "callable": "readGmailThread",
+      "args": {
+        "id": {
+          "type": "string",
+          "required": true,
+          "description": "Thread id returned by listGmailThreads or searchGmail."
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Thread subject and individual sender, date, and text messages."
+      }
+    },
+    "gmail_create_draft": {
+      "description": "Create and save a Gmail draft without sending it.",
+      "path": "gmail/functions.js",
+      "callable": "createGmailDraft",
+      "args": {
+        "to": {
+          "type": "array",
+          "required": true,
+          "description": "Recipient email string or array of email strings."
+        },
+        "cc": {
+          "type": "array",
+          "required": false,
+          "description": "Optional Cc email string or array."
+        },
+        "bcc": {
+          "type": "array",
+          "required": false,
+          "description": "Optional Bcc email string or array."
+        },
+        "subject": {
+          "type": "string",
+          "required": true,
+          "description": "Draft subject; may be empty."
+        },
+        "body": {
+          "type": "string",
+          "required": true,
+          "description": "Plain-text draft body; may be empty."
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Verified draft fields and drafted status; no message is sent."
       }
     }
   },
-  "browserTools": {
-    "get_autocomplete_suggestions": {
-      "description": "Get autocomplete suggestions for the current search query.",
-      "path": "browser-tools/autocomplete.js",
-      "args": {},
-      "returns": {
-        "type": "array",
-        "description": "Array of suggestion strings."
-      }
-    }
-  }
+  "browserTools": {}
 }

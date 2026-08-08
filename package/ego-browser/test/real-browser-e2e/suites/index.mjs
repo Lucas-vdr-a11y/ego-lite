@@ -3,6 +3,7 @@ import { nativeCloseRegressionCase } from "./platform/close-regression.mjs";
 import { contextLifecycleCase } from "./platform/context-lifecycle.mjs";
 import { crossRoundPersistenceCase } from "./platform/cross-round-persistence.mjs";
 import { duplicateTaskSpaceNameCase } from "./platform/duplicate-name.mjs";
+import { nativeCallbackContainmentCase } from "./platform/native-callback-containment.mjs";
 import { nativePlaywrightCase } from "./platform/native-playwright.mjs";
 import { networkRoutingCase } from "./platform/network-routing.mjs";
 import { ownershipLifecycleCase } from "./platform/ownership-lifecycle.mjs";
@@ -52,4 +53,5 @@ export const e2eCases = [
   playwrightCdpSessionCase,
   networkRoutingCase,
   nativeCloseRegressionCase,
+  nativeCallbackContainmentCase,
 ];

@@ -10,11 +10,22 @@ ego-browser (Chromium) -> globalThis.ego -> TaskSpace -> native Playwright -> ag
 
 ```bash
 npm ci
-npm run build     # bundle to dist/out/index.js
-npm test          # build + tsc --noEmit + node --test
+npm run build                 # release bundle; diagnostic tracing is compiled out
+npm run build:diagnostic      # diagnostic bundle at dist/out/index.diagnostic.js
+npm test                      # release build + tsc --noEmit + node --test
+npm run test:diagnostic-trace # diagnostic build + trace checks
 ```
 
 The build emits a standalone, minified `dist/out/index.js` with the required Chromium/CDP subset of `playwright-core` embedded; the release payload does not need `node_modules`. The ego-browser browser dispatches `ego-browser nodejs <<'EOF' ... EOF` heredocs to that bundle. TaskSpace creation and selection return the active native Playwright `page` and `context`.
+
+Diagnostic tracing requires both an explicit diagnostic build and an explicit
+`EGO_BROWSER_TRACE_FILE` path. The default release build rejects any trace
+writer left in the final bundle, and setting the variable against a release
+bundle cannot create a file. Diagnostic and release builds use different output
+paths, so the diagnostic artifact cannot replace the `dist/out/index.js` release
+entrypoint. For hosted runs, point `--sdk-path` to
+`dist/out/index.diagnostic.js` and put the variable only in the local diagnostic
+runtime's `.env`; never include that file in a release.
 
 An embedding host must await the SDK module import and bridge readiness before it evaluates any user source. It must not start evaluation from a fire-and-forget import. After startup, verify that `globalThis.egoBrowser`, `globalThis.site`, and the other required globals exist; if they do not, fail the invocation as a host startup error without evaluating the heredoc. The `installEgoSdk(..., { ready })` gate delays asynchronous helper calls until a host-provided bridge promise settles, but it cannot protect code that the host evaluates before the SDK module itself has loaded.
 

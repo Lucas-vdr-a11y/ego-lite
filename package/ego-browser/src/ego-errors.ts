@@ -15,8 +15,6 @@
  * helpers.ts and browser-runtime.ts.
  */
 
-import { markHardStop } from "./output-sink.js";
-
 /** Stable error codes emitted by the native ego bindings. */
 export const EGO_ERROR_CODES = [
   "EGO_BROWSER_UNAVAILABLE",
@@ -145,14 +143,6 @@ export function buildEgoError(
   op?: string,
 ): Error & { error_code?: string } {
   const { code, message } = resolveEgoError(err);
-  if (isEgoHardStopCode(code)) {
-    // buildEgoError is the single birthplace of every ego error — assertNoEgoError and
-    // the CDP-send failure path both route through it — so recording the hard stop here
-    // catches it even when the agent's own try/catch later swallows the thrown Error.
-    // The op-less owned message is the one the agent should see, regardless of which
-    // operation surfaced it.
-    markHardStop(message);
-  }
   const error: Error & { error_code?: string } = new Error(
     op ? `${op}: ${message}` : message,
   );

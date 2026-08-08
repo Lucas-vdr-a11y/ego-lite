@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import { egoSource } from "./ego-source.mjs";
 import { TEST_CASES } from "./site/test-cases.mjs";
@@ -11,6 +13,18 @@ import { visualPathScenarioCase } from "./suites/scenarios/visual-path.mjs";
 import * as runner from "./runner.mjs";
 
 const expectedWebTestRoutes = TEST_CASES.map((testCase) => testCase.route);
+
+const learningsDir = fileURLToPath(
+  new URL("../../../../skills/ego-browser/learnings/", import.meta.url),
+);
+
+// Read every learned site skill instead of naming individual files, so adding
+// or removing a learning pack cannot silently drop coverage or break this test.
+function readLearningSources() {
+  return readdirSync(learningsDir, { recursive: true })
+    .filter((entry) => /\.(?:js|json|md)$/u.test(entry))
+    .map((entry) => readFileSync(join(learningsDir, entry), "utf8"));
+}
 
 test("real-browser e2e preserves an explicitly requested task space", () => {
   assert.equal(typeof runner.createCaseContext, "function");
@@ -355,27 +369,7 @@ test("agent-facing sources do not publish the removed browser tab namespace", ()
     ),
     readFileSync(new URL("../../README.md", import.meta.url), "utf8"),
     readFileSync(new URL("./preamble.mjs", import.meta.url), "utf8"),
-    readFileSync(
-      new URL(
-        "../../../../skills/ego-browser/learnings/google/notes/overview.md",
-        import.meta.url,
-      ),
-      "utf8",
-    ),
-    readFileSync(
-      new URL(
-        "../../../../skills/ego-browser/learnings/google/tools/search-extract.js",
-        import.meta.url,
-      ),
-      "utf8",
-    ),
-    readFileSync(
-      new URL(
-        "../../../../skills/ego-browser/learnings/x-com/tools/search-users.js",
-        import.meta.url,
-      ),
-      "utf8",
-    ),
+    ...readLearningSources(),
     ...e2eCases.flatMap((testCase) =>
       runner.e2eCaseRounds(testCase).map((round) => round()),
     ),
@@ -473,6 +467,34 @@ test("TaskSpace process contention follows the Codex exec_command session protoc
   assert.doesNotMatch(source, /queueProbeResult/);
   assert.match(source, /waitForNodeRoundToSettle\(1_000\)/);
   assert.match(source, /NodeRuntime disconnected.*holderOutput/s);
+});
+
+test("native callback containment remains a dedicated opt-in process E2E", () => {
+  const regression = e2eCases.find(
+    (testCase) => testCase.name === "native callback containment",
+  );
+
+  assert.ok(regression);
+  assert.equal(regression.kind, "platform");
+  assert.equal(regression.optIn, true);
+  assert.equal(regression.nativeCallbackContainment, true);
+  assert.equal(regression.rounds.length, 2);
+
+  const [holder, culprit] = regression.rounds.map((round) => round());
+  assert.match(holder, /holder\.page\.title\(\)/);
+  assert.match(holder, /native-callback-culprit-done\.json/);
+  assert.match(culprit, /Map\.prototype\.get/);
+  assert.match(culprit, /Set\.prototype\[Symbol\.iterator\]/);
+  assert.match(culprit, /globalThis\.ego\.sendCDPMessage/);
+  assert.match(culprit, /waitForGuard\("CDP message handling"/);
+  assert.match(culprit, /waitForGuard\("onCDPMessage"/);
+  assert.match(culprit, /await cdp\("Target\.getTargets"/);
+
+  const source = readFileSync(new URL("./runner.mjs", import.meta.url), "utf8");
+  assert.match(source, /runNativeCallbackContainmentCase/);
+  assert.match(source, /holderReady\.pid !== culpritSummary\.pid/);
+  assert.match(source, /holderSummary\.pid !== holderReady\.pid/);
+  assert.match(source, /NodeRuntime disconnected\|disconnected unexpectedly/);
 });
 
 test("real-browser e2e exercises native Playwright by default", () => {
@@ -749,6 +771,16 @@ test("native task-space close regression has a dedicated npm entry point", () =>
   assert.match(
     packageJson.scripts["e2e:native-close"],
     /EGO_BROWSER_REAL_E2E_ONLY=.*native task space close regression/,
+  );
+});
+
+test("native callback containment has a dedicated npm entry point", () => {
+  const packageJson = JSON.parse(
+    readFileSync(new URL("../../package.json", import.meta.url), "utf8"),
+  );
+  assert.match(
+    packageJson.scripts["e2e:native-callback"],
+    /EGO_BROWSER_REAL_E2E_ONLY=.*native callback containment/,
   );
 });
 

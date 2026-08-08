@@ -240,7 +240,7 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
     ],
     returns: "Promise<object[]>",
     example:
-      "console.log(await egoBrowser.site.skillsForUrl('https://x.com/home'))",
+      "console.log(await egoBrowser.site.skillsForUrl('https://www.google.com/search?q=ego'))",
   },
   "egoBrowser.site.runTool": {
     signature:
@@ -252,7 +252,7 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
         name: "siteId",
         type: "string",
         required: true,
-        description: "Learning pack id, such as google or x-com.",
+        description: "Learning pack id, such as google or notion.",
       },
       {
         name: "toolName",
@@ -298,7 +298,7 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
     returns:
       "Promise<tool result declared by manifest.json returns; inspect egoBrowser.site.learnContext(url).tools[].returns>",
     example:
-      "const ctx = await egoBrowser.site.learnContext('https://x.com/home'); console.log(ctx.tools); const post = await egoBrowser.site.runBrowserTool('x-com', 'post_from_active_element')",
+      "const ctx = await egoBrowser.site.learnContext(); const tool = ctx.tools.find((item) => item.toolType === 'browser'); if (tool) console.log(await egoBrowser.site.runBrowserTool(tool.siteId, tool.toolName))",
   },
   "egoBrowser.site.learnContext": {
     signature: "egoBrowser.site.learnContext(url?) => Promise<object>",
@@ -315,6 +315,293 @@ export const PUBLIC_API_DOCS: Record<string, FunctionDoc> = {
       "Promise<{ exists, siteId, siteName, knowledge, tools: Array<{ siteId, toolName, toolType, description, args, returns, example }> }>",
     example:
       "console.log(await egoBrowser.site.learnContext('https://www.google.com/search?q=test'))",
+  },
+  "egoBrowser.site.google.docs.open": {
+    signature:
+      "egoBrowser.site.google.docs.open({ url }) => Promise<{ url, title }>",
+    description:
+      "Open an existing Google document in the active logged-in TaskSpace and wait for its editor.",
+    params: [
+      {
+        name: "options",
+        type: "{ url: string }",
+        required: true,
+        description: "Google Docs document URL.",
+      },
+    ],
+    returns: "Promise<{ url: string, title: string }>",
+    example:
+      "await egoBrowser.site.google.docs.open({ url: 'https://docs.google.com/document/d/DOCUMENT_ID/edit' })",
+  },
+  "egoBrowser.site.google.docs.readText": {
+    signature:
+      "egoBrowser.site.google.docs.readText() => Promise<{ title, text }>",
+    description:
+      "Read the active Google document as plain text and restore the previous clipboard contents.",
+    returns: "Promise<{ title: string, text: string }>",
+    example: "const doc = await egoBrowser.site.google.docs.readText()",
+  },
+  "egoBrowser.site.google.docs.setTitle": {
+    signature:
+      "egoBrowser.site.google.docs.setTitle({ title }) => Promise<object>",
+    description:
+      "Set the active Google document title, wait for save, and skip an identical title.",
+    params: [
+      {
+        name: "options",
+        type: "{ title: string }",
+        required: true,
+        description: "Non-empty document title.",
+      },
+    ],
+    returns: "Promise<{ previousTitle, title, changed, saved }>",
+    example:
+      "await egoBrowser.site.google.docs.setTitle({ title: 'Weekly report' })",
+  },
+  "egoBrowser.site.google.docs.appendText": {
+    signature:
+      "egoBrowser.site.google.docs.appendText({ text, separator? }) => Promise<object>",
+    description:
+      "Append plain text to the active Google document, wait for save, and verify the full text. An identical existing suffix is not appended twice.",
+    params: [
+      {
+        name: "options",
+        type: "{ text: string, separator?: string }",
+        required: true,
+        description:
+          "Non-empty text and an optional separator; newline by default.",
+      },
+    ],
+    returns: "Promise<{ title, text, appendedText, changed, saved }>",
+    example:
+      "await egoBrowser.site.google.docs.appendText({ text: 'Next action' })",
+  },
+  "egoBrowser.site.google.docs.replaceAll": {
+    signature:
+      "egoBrowser.site.google.docs.replaceAll({ find, replace, matchCase? }) => Promise<object>",
+    description:
+      "Replace every plain-text match in the active Google document and verify the resulting text.",
+    params: [
+      {
+        name: "options",
+        type: "{ find: string, replace: string, matchCase?: boolean }",
+        required: true,
+        description:
+          "Non-empty find text, replacement text, and optional case sensitivity.",
+      },
+    ],
+    returns: "Promise<{ title, text, find, replace, count, changed, saved }>",
+    example:
+      "await egoBrowser.site.google.docs.replaceAll({ find: 'old', replace: 'new' })",
+  },
+  "egoBrowser.site.google.sheets.open": {
+    signature:
+      "egoBrowser.site.google.sheets.open({ url }) => Promise<{ url, title }>",
+    description:
+      "Open an existing Google spreadsheet in the active logged-in TaskSpace and wait for its grid.",
+    params: [
+      {
+        name: "options",
+        type: "{ url: string }",
+        required: true,
+        description: "Google Sheets spreadsheet URL.",
+      },
+    ],
+    returns: "Promise<{ url: string, title: string }>",
+    example:
+      "await egoBrowser.site.google.sheets.open({ url: 'https://docs.google.com/spreadsheets/d/SPREADSHEET_ID/edit' })",
+  },
+  "egoBrowser.site.google.sheets.getSheetNames": {
+    signature:
+      "egoBrowser.site.google.sheets.getSheetNames() => Promise<string[]>",
+    description:
+      "Return the visible non-empty sheet names in the active spreadsheet.",
+    returns: "Promise<string[]>",
+    example:
+      "const names = await egoBrowser.site.google.sheets.getSheetNames()",
+  },
+  "egoBrowser.site.google.sheets.readRange": {
+    signature:
+      "egoBrowser.site.google.sheets.readRange({ range }) => Promise<string[][]>",
+    description:
+      "Read displayed values from an A1 range as rows and columns, then restore the previous clipboard contents.",
+    params: [
+      {
+        name: "options",
+        type: "{ range: string }",
+        required: true,
+        description: "A1 range, optionally qualified by a sheet name.",
+      },
+    ],
+    returns: "Promise<string[][]>",
+    example:
+      "const rows = await egoBrowser.site.google.sheets.readRange({ range: \"'Sales'!A1:C20\" })",
+  },
+  "egoBrowser.site.google.sheets.writeRange": {
+    signature:
+      "egoBrowser.site.google.sheets.writeRange({ range, values }) => Promise<object>",
+    description:
+      "Write a rectangular matrix to an A1 range and read it back; range dimensions must match values.",
+    params: [
+      {
+        name: "options",
+        type: "{ range: string, values: unknown[][] }",
+        required: true,
+        description: "A1 range and a non-empty rectangular value matrix.",
+      },
+    ],
+    returns: "Promise<{ range, values, saved }>",
+    example:
+      "await egoBrowser.site.google.sheets.writeRange({ range: 'A1:B2', values: [['Name', 'Count'], ['Alpha', 2]] })",
+  },
+  "egoBrowser.site.google.sheets.appendRows": {
+    signature:
+      "egoBrowser.site.google.sheets.appendRows({ sheet, values }) => Promise<object>",
+    description:
+      "Append rows after the last non-empty cell in column A of a named sheet, then read the written range back.",
+    params: [
+      {
+        name: "options",
+        type: "{ sheet: string, values: unknown[][] }",
+        required: true,
+        description:
+          "Target sheet name and a non-empty rectangular row matrix.",
+      },
+    ],
+    returns: "Promise<{ sheet, range, values, saved }>",
+    example:
+      "await egoBrowser.site.google.sheets.appendRows({ sheet: 'Sales', values: [['Beta', 3]] })",
+  },
+  "egoBrowser.site.google.gmail.openInbox": {
+    signature: "egoBrowser.site.google.gmail.openInbox() => Promise<{ url }>",
+    description: "Open the active logged-in Gmail inbox.",
+    returns: "Promise<{ url: string }>",
+    example: "await egoBrowser.site.google.gmail.openInbox()",
+  },
+  "egoBrowser.site.google.gmail.listThreads": {
+    signature:
+      "egoBrowser.site.google.gmail.listThreads({ limit? }) => Promise<object[]>",
+    description:
+      "List structured summaries from the current Gmail thread list; limit defaults to 20 and accepts 1-100.",
+    returns: "Promise<Array<{ id, sender, subject, snippet, date, unread }>>",
+    example:
+      "const threads = await egoBrowser.site.google.gmail.listThreads({ limit: 10 })",
+  },
+  "egoBrowser.site.google.gmail.search": {
+    signature:
+      "egoBrowser.site.google.gmail.search({ query, limit? }) => Promise<object[]>",
+    description: "Run a Gmail search and return matching thread summaries.",
+    returns: "Promise<Array<{ id, sender, subject, snippet, date, unread }>>",
+    example:
+      "const threads = await egoBrowser.site.google.gmail.search({ query: 'newer_than:7d', limit: 10 })",
+  },
+  "egoBrowser.site.google.gmail.readThread": {
+    signature:
+      "egoBrowser.site.google.gmail.readThread({ id }) => Promise<object>",
+    description:
+      "Open and read a thread id returned by the current listThreads or search result.",
+    returns: "Promise<{ id, subject, messages }>",
+    example:
+      "const thread = await egoBrowser.site.google.gmail.readThread({ id: threads[0].id })",
+  },
+  "egoBrowser.site.google.gmail.createDraft": {
+    signature:
+      "egoBrowser.site.google.gmail.createDraft({ to, cc?, bcc?, subject, body }) => Promise<object>",
+    description: "Save a Gmail draft and close its editor without sending it.",
+    returns: "Promise<{ to, cc, bcc, subject, body, drafted }>",
+    example:
+      "await egoBrowser.site.google.gmail.createDraft({ to: 'owner@example.com', subject: 'Draft', body: 'Review me' })",
+  },
+  "egoBrowser.site.notion.pages.search": {
+    signature:
+      "egoBrowser.site.notion.pages.search({ query, limit? }) => Promise<object[]>",
+    description: "Search the active Notion workspace for pages.",
+    returns: "Promise<Array<{ title, url }>>",
+    example:
+      "const pages = await egoBrowser.site.notion.pages.search({ query: 'Weekly', limit: 10 })",
+  },
+  "egoBrowser.site.notion.pages.open": {
+    signature:
+      "egoBrowser.site.notion.pages.open({ url }) => Promise<{ url, title }>",
+    description: "Open an existing Notion page and wait for its editor.",
+    returns: "Promise<{ url: string, title: string }>",
+    example:
+      "await egoBrowser.site.notion.pages.open({ url: 'https://app.notion.com/p/PAGE_ID' })",
+  },
+  "egoBrowser.site.notion.pages.read": {
+    signature:
+      "egoBrowser.site.notion.pages.read() => Promise<{ url, title, text }>",
+    description: "Read the active Notion page as plain text blocks.",
+    returns: "Promise<{ url: string, title: string, text: string }>",
+    example: "const page = await egoBrowser.site.notion.pages.read()",
+  },
+  "egoBrowser.site.notion.pages.create": {
+    signature:
+      "egoBrowser.site.notion.pages.create({ title, text?, parentUrl? }) => Promise<object>",
+    description:
+      "Create a Notion page with optional plain text and optional parent page URL.",
+    returns: "Promise<{ url, title, text, parentUrl?, created }>",
+    example:
+      "await egoBrowser.site.notion.pages.create({ title: 'Weekly report', text: 'Draft' })",
+  },
+  "egoBrowser.site.notion.pages.setTitle": {
+    signature:
+      "egoBrowser.site.notion.pages.setTitle({ title }) => Promise<object>",
+    description: "Set and verify the active Notion page title.",
+    returns: "Promise<{ previousTitle, title, changed, saved }>",
+    example:
+      "await egoBrowser.site.notion.pages.setTitle({ title: 'Weekly report' })",
+  },
+  "egoBrowser.site.notion.pages.appendText": {
+    signature:
+      "egoBrowser.site.notion.pages.appendText({ text }) => Promise<object>",
+    description:
+      "Append one or more plain-text blocks to the active Notion page.",
+    returns: "Promise<{ url, title, text, appendedText, changed, saved }>",
+    example:
+      "await egoBrowser.site.notion.pages.appendText({ text: 'Next action' })",
+  },
+  "egoBrowser.site.microsoft.outlook.openInbox": {
+    signature:
+      "egoBrowser.site.microsoft.outlook.openInbox() => Promise<{ url }>",
+    description: "Open the active logged-in personal Outlook inbox.",
+    returns: "Promise<{ url: string }>",
+    example: "await egoBrowser.site.microsoft.outlook.openInbox()",
+  },
+  "egoBrowser.site.microsoft.outlook.listMessages": {
+    signature:
+      "egoBrowser.site.microsoft.outlook.listMessages({ limit? }) => Promise<object[]>",
+    description:
+      "List structured summaries from the current Outlook message list.",
+    returns: "Promise<Array<{ id, sender, subject, preview, date, unread }>>",
+    example:
+      "const messages = await egoBrowser.site.microsoft.outlook.listMessages({ limit: 10 })",
+  },
+  "egoBrowser.site.microsoft.outlook.search": {
+    signature:
+      "egoBrowser.site.microsoft.outlook.search({ query, limit? }) => Promise<object[]>",
+    description: "Search personal Outlook and return matching summaries.",
+    returns: "Promise<Array<{ id, sender, subject, preview, date, unread }>>",
+    example:
+      "const messages = await egoBrowser.site.microsoft.outlook.search({ query: 'Weekly', limit: 10 })",
+  },
+  "egoBrowser.site.microsoft.outlook.readMessage": {
+    signature:
+      "egoBrowser.site.microsoft.outlook.readMessage({ id }) => Promise<object>",
+    description:
+      "Open and read a message id returned by the current Outlook list or search.",
+    returns: "Promise<{ id, sender, subject, date, text }>",
+    example:
+      "const message = await egoBrowser.site.microsoft.outlook.readMessage({ id: messages[0].id })",
+  },
+  "egoBrowser.site.microsoft.outlook.createDraft": {
+    signature:
+      "egoBrowser.site.microsoft.outlook.createDraft({ to, cc?, bcc?, subject, body }) => Promise<object>",
+    description:
+      "Create and auto-save a personal Outlook draft without sending it.",
+    returns: "Promise<{ to, cc, bcc, subject, body, drafted }>",
+    example:
+      "await egoBrowser.site.microsoft.outlook.createDraft({ to: 'owner@example.com', subject: 'Draft', body: 'Review me' })",
   },
   "fetch.server": {
     signature: "fetch.server(url, options?) => Promise<string>",

@@ -7,9 +7,9 @@ import {
 import { formatCliLogValue } from "./format.js";
 import * as helpers from "./helpers.js";
 import { installLegacySkillGuards } from "./legacy-skill-guard.js";
-import { bufferOutput, flushSink, resetSink } from "./output-sink.js";
 import { disconnectPlaywrightTaskSpace } from "./playwright/taskspace.js";
 import { releaseTaskSpaceLease } from "./taskspace-lease.js";
+import { startTrace, traceOutput } from "./trace-file.js";
 
 type WritableLike = {
   write(chunk: string): unknown;
@@ -106,13 +106,13 @@ export async function runMain(options: RunMainOptions = {}) {
   }
 
   services.printUpdateBanner(stderr);
+  startTrace(env);
   await execute(code, stdout);
   return 0;
 }
 
 async function execute(code: string, stdout: WritableLike) {
-  resetSink();
-  const context = await executionContext();
+  const context = await executionContext(stdout);
   Object.assign(globalThis, context);
   installLegacySkillGuards(globalThis as Record<string, unknown>);
   const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
@@ -132,9 +132,6 @@ async function execute(code: string, stdout: WritableLike) {
   }
   releaseTaskSpaceLease();
   thrown = addExecutionHint(thrown);
-  // A thrown Error surfaces a hard-stop message on its own, so flush as a thrown
-  // completion (drop the buffer, stay silent) and let it propagate.
-  flushSink(stdout, Boolean(thrown));
   if (thrown) throw thrown;
 }
 
@@ -158,27 +155,27 @@ function addExecutionHint(error: unknown) {
   return error;
 }
 
-export async function executionContext() {
+export async function executionContext(stdout: WritableLike = processStdout) {
   const agentHelpers = await helpers.loadAgentHelpers();
   // Single source of truth for the agent-facing surface: the same helperContext()
   // that installEgoSdk() exposes in the browser runtime, so the CLI and SDK paths
   // cannot drift apart (and egoBrowser.helper exists in both).
   const context: Record<string, any> = helpers.helperContext(agentHelpers);
-  // Route the agent's primary output channel (console.log) through the output sink:
-  // execute() flushes (or discards on hard stop) once the script settles, keeping the
-  // CLI path identical to the SDK path. console.error/warn are left untouched. Each
-  // heredoc runs in its own short-lived process, so overriding the global is per-run.
+  // Write the agent's primary output channel (console.log) straight through, keeping
+  // the CLI path identical to the SDK path. Nothing is held back, so output already
+  // produced survives a run that never reaches its own teardown.
+  // console.error/warn are left untouched.
   console.log = (...args: unknown[]) => {
     const nativeEgo = (globalThis as Record<string, unknown>).ego;
-    bufferOutput(
-      `${args
-        .map((value) =>
-          formatCliLogValue(value, {
-            nativeInspect: value === nativeEgo || value === context.egoBrowser,
-          }),
-        )
-        .join(" ")}\n`,
-    );
+    const chunk = `${args
+      .map((value) =>
+        formatCliLogValue(value, {
+          nativeInspect: value === nativeEgo || value === context.egoBrowser,
+        }),
+      )
+      .join(" ")}\n`;
+    traceOutput(chunk);
+    stdout.write(chunk);
   };
   return context;
 }
