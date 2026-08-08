@@ -1114,7 +1114,10 @@ test("a throwing CDP message handler cannot escape into the native callback", as
     assert.doesNotThrow(
       () =>
         globalThis.ego.onCDPMessage(
-          JSON.stringify({ method: "Page.javascriptDialogOpening", params: {} }),
+          JSON.stringify({
+            method: "Page.javascriptDialogOpening",
+            params: {},
+          }),
         ),
       "a handler failure must not propagate into the host callback",
     );

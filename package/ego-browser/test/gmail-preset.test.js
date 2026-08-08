@@ -314,7 +314,10 @@ test("openGmailInbox does not reload an inbox that is already open", async () =>
 
   await openGmailInbox({ page });
 
-  assert.equal(page.calls.some((call) => call[0] === "goto"), false);
+  assert.equal(
+    page.calls.some((call) => call[0] === "goto"),
+    false,
+  );
   assert.ok(page.calls.some((call) => call[0] === "search.waitFor"));
   assert.ok(page.calls.some((call) => call[0] === "compose.waitFor"));
 });
@@ -439,27 +442,22 @@ test("createGmailDraft verifies the draft is persisted before returning", async 
   );
 
   assert.ok(
-    page.calls.some(
-      (call) => call[0] === "waitForTimeout" && call[1] === 2000,
-    ),
+    page.calls.some((call) => call[0] === "waitForTimeout" && call[1] === 2000),
   );
   assert.ok(
     page.calls.some(
-      (call) =>
-        call[0] === "draft.waitFor" && call[1]?.state === "hidden",
+      (call) => call[0] === "draft.waitFor" && call[1]?.state === "hidden",
     ),
   );
   assert.ok(page.calls.some((call) => call[0] === "drafts.click"));
   assert.ok(
     page.calls.some(
-      (call) =>
-        call[0] === "draftRows.filter" && call[1] === "Persisted draft",
+      (call) => call[0] === "draftRows.filter" && call[1] === "Persisted draft",
     ),
   );
   assert.ok(
     page.calls.some(
-      (call) =>
-        call[0] === "draftRows.waitFor" && call[1]?.state === "visible",
+      (call) => call[0] === "draftRows.waitFor" && call[1]?.state === "visible",
     ),
   );
   assert.deepEqual(states, [

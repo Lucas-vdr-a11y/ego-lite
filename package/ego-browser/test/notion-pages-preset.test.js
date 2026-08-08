@@ -464,10 +464,7 @@ test("createNotionPage restores a title reset during new-page initialization", a
 
   assert.equal(result.title, "Stable title");
   assert.equal(result.text, "First line");
-  assert.equal(
-    page.calls.filter((call) => call[0] === "title.fill").length,
-    2,
-  );
+  assert.equal(page.calls.filter((call) => call[0] === "title.fill").length, 2);
 });
 
 test("Notion manifest and prompt declare the six approved page tools", async () => {
