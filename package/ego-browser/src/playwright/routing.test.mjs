@@ -2,6 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { setImmediate as waitForImmediate } from "node:timers/promises";
 
+import { waitForCondition } from "./fake-native-harness.mjs";
+
 const routing = await import("../../dist/src/playwright/routing.js").catch(
   () => ({}),
 );
@@ -3821,6 +3823,105 @@ test("a navigation stuck confirming its commit is superseded without waiting out
   assert.ok(
     fake.closedTargets.includes(gatedTargetId),
     "the aborted navigation's replacement tab is closed",
+  );
+  await transport.closeAndWait();
+});
+
+test("closing the page while its navigation awaits commit fails the navigation and leaks no tab", async () => {
+  const harness = await createTaskSpaceTransportHarness({
+    tabs: [["tab-main", "https://main.test/"]],
+    transportOptions: { navigationCommitTimeoutMs: 10_000 },
+  });
+  const { fake, transport, received } = harness;
+  const mainSession = [...fake.sessions.keys()][0];
+
+  // Gate the replacement tab in commit confirmation: its frame keeps
+  // reporting the blank staging URL, so the navigation sits in its poll
+  // while the close arrives.
+  const originalCreateTab = fake.runtime.createTab;
+  let replacementTargetId;
+  fake.runtime.createTab = async (url) => {
+    fake.runtime.createTab = originalCreateTab;
+    const created = await originalCreateTab(url);
+    replacementTargetId = created.targetId;
+    fake.frameUrlOverride.set(created.targetId, "about:blank");
+    return created;
+  };
+
+  transport.send({
+    id: 150,
+    method: "Page.navigate",
+    params: { frameId: "tab-main", url: "https://main.test/late" },
+    sessionId: mainSession,
+  });
+  const pollDeadline = Date.now() + 2_000;
+  while (
+    !fake.log.some((request) => request.method === "Page.getFrameTree") &&
+    Date.now() < pollDeadline
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.ok(
+    fake.log.some((request) => request.method === "Page.getFrameTree"),
+    "the navigation reaches its commit-confirmation poll",
+  );
+
+  // What page.close() sends: close the client target mid-navigation.
+  transport.send({
+    id: 151,
+    method: "Target.closeTarget",
+    params: { targetId: "tab-main" },
+  });
+  const closed = await waitForMessage(
+    received,
+    (message) => message.id === 151,
+  );
+  assert.equal(closed?.result?.success, true, "the close itself succeeds");
+  const ghostStart = received.length;
+
+  // Release the commit gate only after the close settled: nothing observed
+  // from here on may resurrect the removed route.
+  fake.frameUrlOverride.delete(replacementTargetId);
+
+  const navigated = await waitForMessage(
+    received,
+    (message) => message.id === 150,
+    5_000,
+  );
+  assert.ok(navigated, "the pending navigation settles");
+  assert.ok(
+    navigated.error,
+    `the navigation must fail once its page was closed, got: ${JSON.stringify(navigated?.result)}`,
+  );
+
+  // The replacement tab never became a live route target; it must be closed
+  // natively instead of lingering in the task space.
+  await waitForCondition(
+    () => fake.closedTargets.includes(replacementTargetId),
+    2_000,
+  );
+  assert.ok(
+    fake.closedTargets.includes(replacementTargetId),
+    "the replacement tab is closed, not leaked",
+  );
+  assert.equal(fake.tabs.size, 0, "no native tab survives the close");
+
+  // The closed client session must stay silent: no navigation events may be
+  // emitted for a page the client already closed.
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  const ghostEvents = received
+    .slice(ghostStart)
+    .filter(
+      (message) =>
+        message.sessionId === mainSession &&
+        (message.method === "Page.frameNavigated" ||
+          message.method === "Page.lifecycleEvent" ||
+          message.method === "Network.requestWillBeSent"),
+    );
+  assert.deepEqual(
+    ghostEvents,
+    [],
+    "no events reach the closed client session",
   );
   await transport.closeAndWait();
 });

@@ -229,6 +229,51 @@ test("concurrent navigations settle on a single native tab", async () => {
   }
 });
 
+test("closing the page during a pending navigation fails goto and leaks no tab", async () => {
+  const { fake, session } = await connectFakeTaskSpace({
+    transportOptions: { navigationCommitTimeoutMs: 10_000 },
+  });
+  try {
+    const { page } = session;
+    const originalCreateTab = fake.runtime.createTab;
+    let replacementTargetId;
+    fake.runtime.createTab = async (url) => {
+      const created = await originalCreateTab(url);
+      replacementTargetId = created.targetId;
+      fake.frameUrlOverride.set(created.targetId, "about:blank");
+      return created;
+    };
+
+    const gotoPromise = page.goto("https://start.test/second", {
+      waitUntil: "commit",
+      timeout: 8_000,
+    });
+    gotoPromise.catch(() => {});
+    await waitForCondition(() => replacementTargetId !== undefined, 5_000);
+
+    await page.close({ runBeforeUnload: false });
+    fake.frameUrlOverride.delete(replacementTargetId);
+
+    await assert.rejects(gotoPromise, (error) => {
+      assert.match(String(error?.message || error), /closed/i);
+      return true;
+    });
+
+    await waitForCondition(() => fake.tabs.size === 0, 3_000);
+    assert.equal(
+      fake.tabs.size,
+      0,
+      `no native tab may survive the close, saw: ${JSON.stringify([...fake.tabs.keys()])}`,
+    );
+    assert.ok(
+      fake.closedTargets.includes(replacementTargetId),
+      "the replacement tab is closed, not leaked",
+    );
+  } finally {
+    await session.close().catch(() => {});
+  }
+});
+
 test("an init script issued during navigation reaches the replacement target", async () => {
   const { fake, session } = await connectFakeTaskSpace({});
   try {
