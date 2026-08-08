@@ -50,26 +50,53 @@ function bindRuntimeCallbacks(runtime: EgoCdpCallbackRuntime) {
   runtime.onSendCDPMessageError = dispatchCdpSendError;
 }
 
-function dispatchCdpMessage(payload: string) {
-  handleMessage(payload);
-  for (const subscriber of transportSubscribers) {
+/**
+ * Runs a native callback body so no exception can escape into the host.
+ *
+ * The host invokes these callbacks through `v8::Function::Call` and unwraps the
+ * result with `ToLocalChecked()`. A synchronous throw leaves that `MaybeLocal`
+ * empty, which aborts the whole shared NodeService process rather than failing
+ * this script — every other agent script running concurrently dies with
+ * "NodeRuntime disconnected" and loses output it had already printed.
+ */
+function guardNativeCallback(label: string, body: () => void) {
+  try {
+    body();
+  } catch (error) {
     try {
-      subscriber.message(payload);
+      console.error(`${label} failed:`, error);
     } catch {
-      // A disconnected auxiliary transport must not break the native callback.
+      // Reporting must never re-enter the failure it is reporting.
     }
   }
 }
 
-function dispatchCdpSendError(message: unknown, errorCode?: string) {
-  handleSendError(message, errorCode);
-  for (const subscriber of transportSubscribers) {
-    try {
-      subscriber.error?.(message, errorCode);
-    } catch {
-      // Keep error delivery isolated between auxiliary transports.
+function dispatchCdpMessage(payload: string) {
+  guardNativeCallback("onCDPMessage", () => {
+    guardNativeCallback("CDP message handling", () => handleMessage(payload));
+    for (const subscriber of transportSubscribers) {
+      try {
+        subscriber.message(payload);
+      } catch {
+        // A disconnected auxiliary transport must not break the native callback.
+      }
     }
-  }
+  });
+}
+
+function dispatchCdpSendError(message: unknown, errorCode?: string) {
+  guardNativeCallback("onSendCDPMessageError", () => {
+    guardNativeCallback("CDP send-error handling", () =>
+      handleSendError(message, errorCode),
+    );
+    for (const subscriber of transportSubscribers) {
+      try {
+        subscriber.error?.(message, errorCode);
+      } catch {
+        // Keep error delivery isolated between auxiliary transports.
+      }
+    }
+  });
 }
 
 export function subscribeEgoCdpTransport(

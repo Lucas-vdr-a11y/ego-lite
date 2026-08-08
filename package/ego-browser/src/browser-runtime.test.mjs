@@ -12,6 +12,7 @@ import {
   ensureSession,
   browserSnapshotRefsToRefMap,
   waitForBrowserEvent,
+  subscribeEgoCdpTransport,
 } from "../dist/src/browser-runtime.js";
 import { state } from "../dist/src/state.js";
 import { runWithTarget } from "../dist/src/target-context.js";
@@ -1086,4 +1087,92 @@ test("browserSnapshotRefsToRefMap skips null, non-object, and missing backendNod
   ]);
   assert.equal(refMap._data.size, 1, "only the valid ref is added");
   assert.ok(refMap._data.has("7"));
+});
+
+// A throw escaping onCDPMessage does not fail just this script: the host
+// unwraps the callback result with ToLocalChecked(), so an empty MaybeLocal
+// aborts the shared NodeService process and kills every concurrent agent
+// script with "NodeRuntime disconnected", losing output they already printed.
+test("a throwing CDP message handler cannot escape into the native callback", async () => {
+  const calls = installManualEgo();
+  const sessionIdDescriptor = Object.getOwnPropertyDescriptor(
+    state,
+    "sessionId",
+  );
+  const originalConsoleError = console.error;
+  const reported = [];
+  console.error = (...args) => reported.push(args);
+  try {
+    const p = browserCdp("Target.getVersion", {}, undefined, 5000);
+    Object.defineProperty(state, "sessionId", {
+      configurable: true,
+      get() {
+        throw new Error("handler boom");
+      },
+    });
+
+    assert.doesNotThrow(
+      () =>
+        globalThis.ego.onCDPMessage(
+          JSON.stringify({ method: "Page.javascriptDialogOpening", params: {} }),
+        ),
+      "a handler failure must not propagate into the host callback",
+    );
+    assert.ok(
+      reported.some((args) =>
+        args.some(
+          (arg) => arg instanceof Error && arg.message === "handler boom",
+        ),
+      ),
+      "the contained failure is reported so it stays attributable",
+    );
+
+    Object.defineProperty(state, "sessionId", sessionIdDescriptor);
+    globalThis.ego.onCDPMessage(
+      JSON.stringify({ id: calls[0].id, result: {} }),
+    );
+    await p;
+  } finally {
+    console.error = originalConsoleError;
+    Object.defineProperty(state, "sessionId", sessionIdDescriptor);
+    cleanup();
+  }
+});
+
+test("a throwing transport subscriber cannot escape into the native callback", async () => {
+  const calls = installManualEgo();
+  const originalConsoleError = console.error;
+  console.error = () => {};
+  try {
+    const p = browserCdp("Target.getVersion", {}, undefined, 5000);
+    const unsubscribe = subscribeEgoCdpTransport(globalThis.ego, {
+      message() {
+        throw new Error("subscriber boom");
+      },
+      error() {
+        throw new Error("subscriber error boom");
+      },
+    });
+
+    assert.doesNotThrow(
+      () =>
+        globalThis.ego.onCDPMessage(
+          JSON.stringify({ method: "Page.loadEventFired", params: {} }),
+        ),
+      "a subscriber failure must not propagate into the host callback",
+    );
+    assert.doesNotThrow(
+      () => globalThis.ego.onSendCDPMessageError("send failed", "EGO_TEST"),
+      "a send-error subscriber failure must not propagate either",
+    );
+
+    unsubscribe();
+    globalThis.ego.onCDPMessage(
+      JSON.stringify({ id: calls[0].id, result: {} }),
+    );
+    await p.catch(() => {});
+  } finally {
+    console.error = originalConsoleError;
+    cleanup();
+  }
 });
