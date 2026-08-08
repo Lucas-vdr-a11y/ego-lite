@@ -112,7 +112,12 @@ function setDirty(dirty = true) {
 }
 
 function updatePressedStates() {
-  const formats = editor.getFormat();
+  // Quill's no-argument getFormat() defaults to getSelection(true), which
+  // focuses the editor. Since render() runs on selection-change, that would
+  // steal focus back from the link tooltip and make Quill hide it again.
+  const range = editor.getSelection();
+  if (!range) return;
+  const formats = editor.getFormat(range);
   document
     .querySelectorAll("#rich-text-toolbar button[aria-pressed]")
     .forEach((button) => {
