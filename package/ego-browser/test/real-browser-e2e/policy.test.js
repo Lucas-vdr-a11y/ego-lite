@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import { egoSource } from "./ego-source.mjs";
 import { TEST_CASES } from "./site/test-cases.mjs";
@@ -11,6 +13,18 @@ import { visualPathScenarioCase } from "./suites/scenarios/visual-path.mjs";
 import * as runner from "./runner.mjs";
 
 const expectedWebTestRoutes = TEST_CASES.map((testCase) => testCase.route);
+
+const learningsDir = fileURLToPath(
+  new URL("../../../../skills/ego-browser/learnings/", import.meta.url),
+);
+
+// Read every learned site skill instead of naming individual files, so adding
+// or removing a learning pack cannot silently drop coverage or break this test.
+function readLearningSources() {
+  return readdirSync(learningsDir, { recursive: true })
+    .filter((entry) => /\.(?:js|json|md)$/u.test(entry))
+    .map((entry) => readFileSync(join(learningsDir, entry), "utf8"));
+}
 
 test("real-browser e2e preserves an explicitly requested task space", () => {
   assert.equal(typeof runner.createCaseContext, "function");
@@ -355,27 +369,7 @@ test("agent-facing sources do not publish the removed browser tab namespace", ()
     ),
     readFileSync(new URL("../../README.md", import.meta.url), "utf8"),
     readFileSync(new URL("./preamble.mjs", import.meta.url), "utf8"),
-    readFileSync(
-      new URL(
-        "../../../../skills/ego-browser/learnings/google/notes/overview.md",
-        import.meta.url,
-      ),
-      "utf8",
-    ),
-    readFileSync(
-      new URL(
-        "../../../../skills/ego-browser/learnings/google/tools/search-extract.js",
-        import.meta.url,
-      ),
-      "utf8",
-    ),
-    readFileSync(
-      new URL(
-        "../../../../skills/ego-browser/learnings/x-com/tools/search-users.js",
-        import.meta.url,
-      ),
-      "utf8",
-    ),
+    ...readLearningSources(),
     ...e2eCases.flatMap((testCase) =>
       runner.e2eCaseRounds(testCase).map((round) => round()),
     ),

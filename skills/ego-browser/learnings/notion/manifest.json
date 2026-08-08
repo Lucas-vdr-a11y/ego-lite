@@ -1,0 +1,114 @@
+{
+  "id": "notion",
+  "name": "Notion",
+  "domains": ["notion.com", "*.notion.com", "notion.so", "*.notion.so"],
+  "notes": ["pages/prompt.md"],
+  "nodeTools": {
+    "pages_search": {
+      "description": "Search the active Notion workspace for pages.",
+      "path": "pages/functions.js",
+      "callable": "searchNotionPages",
+      "args": {
+        "query": {
+          "type": "string",
+          "required": true,
+          "description": "Non-empty page search query."
+        },
+        "limit": {
+          "type": "integer",
+          "required": false,
+          "description": "Maximum results from 1 to 100; defaults to 20."
+        }
+      },
+      "returns": {
+        "type": "array",
+        "description": "Matching page titles and URLs."
+      }
+    },
+    "pages_open": {
+      "description": "Open an existing Notion page and wait for its editor.",
+      "path": "pages/functions.js",
+      "callable": "openNotionPage",
+      "args": {
+        "url": {
+          "type": "string",
+          "required": true,
+          "description": "Notion page URL."
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Opened page URL and title."
+      }
+    },
+    "pages_read": {
+      "description": "Read the active Notion page as plain text blocks.",
+      "path": "pages/functions.js",
+      "callable": "readNotionPage",
+      "args": {},
+      "returns": {
+        "type": "object",
+        "description": "Page URL, title, and plain text."
+      }
+    },
+    "pages_create": {
+      "description": "Create a Notion page, optionally under a parent page.",
+      "path": "pages/functions.js",
+      "callable": "createNotionPage",
+      "args": {
+        "title": {
+          "type": "string",
+          "required": true,
+          "description": "New non-empty page title."
+        },
+        "text": {
+          "type": "string",
+          "required": false,
+          "description": "Optional plain-text page body."
+        },
+        "parentUrl": {
+          "type": "string",
+          "required": false,
+          "description": "Optional parent Notion page URL."
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Created page data, optional parent URL, and created status."
+      }
+    },
+    "pages_set_title": {
+      "description": "Set and verify the active Notion page title.",
+      "path": "pages/functions.js",
+      "callable": "setNotionPageTitle",
+      "args": {
+        "title": {
+          "type": "string",
+          "required": true,
+          "description": "New non-empty page title."
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Previous and current title with change and save status."
+      }
+    },
+    "pages_append_text": {
+      "description": "Append plain-text blocks to the active Notion page.",
+      "path": "pages/functions.js",
+      "callable": "appendNotionPageText",
+      "args": {
+        "text": {
+          "type": "string",
+          "required": true,
+          "description": "Non-empty plain text to append."
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Verified page text with change and save status."
+      }
+    }
+  },
+  "browserTools": {}
+}

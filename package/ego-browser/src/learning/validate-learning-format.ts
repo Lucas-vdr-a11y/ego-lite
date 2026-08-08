@@ -52,7 +52,7 @@ export async function validateLearning(siteDir: string) {
   for (const note of asStringList(manifest, "notes", errors, siteId)) {
     if (!isNotePath(note)) {
       errors.push(
-        `${siteId}: notes must point to notes/*.md: ${JSON.stringify(note)}`,
+        `${siteId}: notes must point to notes/*.md or <product>/prompt.md: ${JSON.stringify(note)}`,
       );
       continue;
     }
@@ -205,7 +205,9 @@ function validateToolSchema(
   }
   if (key === "nodeTools") {
     if (!isNodeToolPath(schema.path)) {
-      errors.push(`${prefix}: path must be a relative tools/*.js path`);
+      errors.push(
+        `${prefix}: path must be tools/*.js or <product>/functions.js`,
+      );
     }
     if (typeof schema.callable !== "string" || !schema.callable.trim()) {
       errors.push(`${prefix}: callable must be a non-empty string`);
@@ -326,12 +328,21 @@ function isSafeRelativePath(path) {
 
 function isNotePath(path) {
   const parts = isSafeRelativePath(path) ? path.split("/") : [];
-  return parts.length === 2 && parts[0] === "notes" && parts[1].endsWith(".md");
+  return (
+    parts.length === 2 &&
+    ((parts[0] === "notes" && parts[1].endsWith(".md")) ||
+      (!new Set(["notes", "tools", "browser-tools"]).has(parts[0]) &&
+        parts[1] === "prompt.md"))
+  );
 }
 
 function isNodeToolPath(path) {
   const parts = isSafeRelativePath(path) ? path.split("/") : [];
-  return parts.length === 2 && parts[0] === "tools" && parts[1].endsWith(".js");
+  return (
+    parts.length === 2 &&
+    ((parts[0] === "tools" && parts[1].endsWith(".js")) ||
+      (parts[0] !== "tools" && parts[1] === "functions.js"))
+  );
 }
 
 function isBrowserToolPath(path) {

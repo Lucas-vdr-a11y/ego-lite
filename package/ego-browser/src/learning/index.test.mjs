@@ -4,7 +4,10 @@ import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { loadLearnedContext } from "../../dist/src/learning/index.js";
+import {
+  loadLearnedContext,
+  validateLearning,
+} from "../../dist/src/learning/index.js";
 
 test("loadLearnedContext includes declared tool return schemas", async () => {
   const root = await mkdtemp(join(tmpdir(), "ego-learning-"));
@@ -71,4 +74,66 @@ test("loadLearnedContext includes declared tool return schemas", async () => {
     context.tools.find((tool) => tool.toolName === "active_item").returns,
     { type: "object", description: "Active item object." },
   );
+});
+
+test("validateLearning accepts product-scoped preset function modules", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ego-learning-"));
+  const siteDir = join(root, "example");
+  await mkdir(join(siteDir, "docs"), { recursive: true });
+  await writeFile(
+    join(siteDir, "manifest.json"),
+    JSON.stringify({
+      id: "example",
+      name: "Example",
+      domains: ["example.com"],
+      notes: [],
+      nodeTools: {
+        read_document: {
+          description: "Read the active document.",
+          path: "docs/functions.js",
+          callable: "readDocument",
+          args: {},
+          returns: {
+            type: "object",
+            description: "Document title and text.",
+          },
+        },
+      },
+    }),
+  );
+  await writeFile(
+    join(siteDir, "docs/functions.js"),
+    "export async function readDocument() { return { title: '', text: '' }; }\n",
+  );
+
+  assert.deepEqual(await validateLearning(siteDir), []);
+});
+
+test("product-scoped prompt.md files validate and load as learned knowledge", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ego-learning-"));
+  const siteDir = join(root, "example");
+  await mkdir(join(siteDir, "docs"), { recursive: true });
+  await writeFile(
+    join(siteDir, "manifest.json"),
+    JSON.stringify({
+      id: "example",
+      name: "Example",
+      domains: ["example.com"],
+      notes: ["docs/prompt.md"],
+    }),
+  );
+  await writeFile(
+    join(siteDir, "docs/prompt.md"),
+    "# Docs preset\n\nUse the document helpers.\n",
+  );
+
+  assert.deepEqual(await validateLearning(siteDir), []);
+  const context = await loadLearnedContext("https://example.com", { root });
+  assert.deepEqual(context.knowledge, [
+    {
+      siteId: "example",
+      fileName: "prompt.md",
+      content: "# Docs preset\n\nUse the document helpers.\n",
+    },
+  ]);
 });

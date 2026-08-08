@@ -1,0 +1,108 @@
+{
+  "id": "microsoft",
+  "name": "Microsoft",
+  "domains": ["outlook.live.com"],
+  "notes": ["outlook/prompt.md"],
+  "nodeTools": {
+    "outlook_open_inbox": {
+      "description": "Open the inbox for the active personal Outlook account.",
+      "path": "outlook/functions.js",
+      "callable": "openOutlookInbox",
+      "args": {},
+      "returns": {
+        "type": "object",
+        "description": "Opened Outlook inbox URL."
+      }
+    },
+    "outlook_list_messages": {
+      "description": "List structured summaries from the current Outlook message list.",
+      "path": "outlook/functions.js",
+      "callable": "listOutlookMessages",
+      "args": {
+        "limit": {
+          "type": "integer",
+          "required": false,
+          "description": "Maximum messages from 1 to 100; defaults to 20."
+        }
+      },
+      "returns": {
+        "type": "array",
+        "description": "Message summaries with id, sender, subject, preview, date, and unread state."
+      }
+    },
+    "outlook_search": {
+      "description": "Search personal Outlook and return message summaries.",
+      "path": "outlook/functions.js",
+      "callable": "searchOutlook",
+      "args": {
+        "query": {
+          "type": "string",
+          "required": true,
+          "description": "Non-empty Outlook search query."
+        },
+        "limit": {
+          "type": "integer",
+          "required": false,
+          "description": "Maximum messages from 1 to 100; defaults to 20."
+        }
+      },
+      "returns": {
+        "type": "array",
+        "description": "Matching Outlook message summaries."
+      }
+    },
+    "outlook_read_message": {
+      "description": "Open and read an Outlook message from the current list.",
+      "path": "outlook/functions.js",
+      "callable": "readOutlookMessage",
+      "args": {
+        "id": {
+          "type": "string",
+          "required": true,
+          "description": "Message id returned by listOutlookMessages or searchOutlook."
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Message sender, subject, date, and plain text."
+      }
+    },
+    "outlook_create_draft": {
+      "description": "Create and auto-save a personal Outlook draft without sending it.",
+      "path": "outlook/functions.js",
+      "callable": "createOutlookDraft",
+      "args": {
+        "to": {
+          "type": "array",
+          "required": true,
+          "description": "Recipient email string or array of email strings."
+        },
+        "cc": {
+          "type": "array",
+          "required": false,
+          "description": "Optional Cc contact email string or array."
+        },
+        "bcc": {
+          "type": "array",
+          "required": false,
+          "description": "Optional Bcc contact email string or array."
+        },
+        "subject": {
+          "type": "string",
+          "required": true,
+          "description": "Draft subject; may be empty."
+        },
+        "body": {
+          "type": "string",
+          "required": true,
+          "description": "Plain-text draft body; may be empty."
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Verified draft fields and drafted status; no message is sent."
+      }
+    }
+  },
+  "browserTools": {}
+}

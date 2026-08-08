@@ -8,6 +8,7 @@ import { help as helpRuntime, formatHelp } from "./help-runtime.js";
 import { cdp, decodeUnserializableJsValue, evaluate } from "./cdp-eval.js";
 import { browserFetch, serverFetch } from "./http.js";
 import {
+  activePlaywrightTaskSpace,
   connectPlaywrightTaskSpace,
   disconnectPlaywrightTaskSpace,
   disconnectPlaywrightTaskSpaceForSelection,
@@ -503,9 +504,20 @@ export async function siteSkills(url = undefined) {
  * @returns {Promise<any>} Tool result.
  */
 export async function runSiteTool(siteId, toolName, args: any = {}) {
-  return runNodeSiteTool(siteId, toolName, args, helperContext(), {
-    agentWorkspace: state.agentWorkspace(),
-  });
+  const playwright = activePlaywrightTaskSpace();
+  return runNodeSiteTool(
+    siteId,
+    toolName,
+    args,
+    {
+      ...helperContext(),
+      page: playwright.page,
+      context: playwright.context,
+    },
+    {
+      agentWorkspace: state.agentWorkspace(),
+    },
+  );
 }
 
 /**
@@ -607,7 +619,58 @@ function createSiteFacade() {
     runTool: runSiteTool,
     runBrowserTool: runSiteBrowserTool,
     learnContext,
+    google: {
+      gmail: createSiteToolFacade("google", {
+        openInbox: "gmail_open_inbox",
+        listThreads: "gmail_list_threads",
+        search: "gmail_search",
+        readThread: "gmail_read_thread",
+        createDraft: "gmail_create_draft",
+      }),
+      docs: createSiteToolFacade("google", {
+        open: "docs_open",
+        readText: "docs_read_text",
+        setTitle: "docs_set_title",
+        appendText: "docs_append_text",
+        replaceAll: "docs_replace_all",
+      }),
+      sheets: createSiteToolFacade("google", {
+        open: "sheets_open",
+        getSheetNames: "sheets_get_sheet_names",
+        readRange: "sheets_read_range",
+        writeRange: "sheets_write_range",
+        appendRows: "sheets_append_rows",
+      }),
+    },
+    notion: {
+      pages: createSiteToolFacade("notion", {
+        search: "pages_search",
+        open: "pages_open",
+        read: "pages_read",
+        create: "pages_create",
+        setTitle: "pages_set_title",
+        appendText: "pages_append_text",
+      }),
+    },
+    microsoft: {
+      outlook: createSiteToolFacade("microsoft", {
+        openInbox: "outlook_open_inbox",
+        listMessages: "outlook_list_messages",
+        search: "outlook_search",
+        readMessage: "outlook_read_message",
+        createDraft: "outlook_create_draft",
+      }),
+    },
   };
+}
+
+function createSiteToolFacade(siteId: string, tools: Record<string, string>) {
+  return Object.fromEntries(
+    Object.entries(tools).map(([name, toolName]) => [
+      name,
+      (args: any = {}) => runSiteTool(siteId, toolName, args),
+    ]),
+  );
 }
 
 function egoBrowserHelper(name = "egoBrowser") {
