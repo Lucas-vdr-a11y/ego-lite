@@ -25,13 +25,27 @@ import {
 } from "./playwright-core-bundle-plugin.mjs";
 
 const HELP_DOCS_PLACEHOLDER = '"__EGO_EMBEDDED_HELP_DOCS__"';
+const DIAGNOSTIC_BUILD_FLAG = "--diagnostic";
+const buildArguments = process.argv.slice(2);
+const unknownBuildArguments = buildArguments.filter(
+  (argument) => argument !== DIAGNOSTIC_BUILD_FLAG,
+);
+if (unknownBuildArguments.length > 0) {
+  throw new Error(
+    `unknown build argument(s): ${unknownBuildArguments.join(", ")}`,
+  );
+}
+const diagnosticBuild = buildArguments.includes(DIAGNOSTIC_BUILD_FLAG);
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const repoRoot = dirname(dirname(root));
 const distDir = join(root, "dist");
 const outDir = join(distDir, "out");
 const bundledCliDir = outDir;
-const bundledCli = join(bundledCliDir, "index.js");
+const bundledCli = join(
+  bundledCliDir,
+  diagnosticBuild ? "index.diagnostic.js" : "index.js",
+);
 const skillSourceDir = join(repoRoot, "skills", "ego-browser");
 const bundledSkillDir = join(outDir, "ego-browser");
 const buildLock = join(root, ".build.lock");
@@ -58,6 +72,11 @@ try {
     format: "esm",
     target: "node22",
     logLevel: "info",
+    define: {
+      "process.env.EGO_BROWSER_DIAGNOSTIC_BUILD": JSON.stringify(
+        diagnosticBuild ? "1" : "0",
+      ),
+    },
   };
 
   await build({
@@ -80,6 +99,7 @@ try {
       "playwright-core",
     ],
     plugins: [
+      diagnosticTracePlugin(diagnosticBuild),
       resolve(),
       typescript({
         tsconfig: join(root, "tsconfig.json"),
@@ -115,6 +135,7 @@ try {
   });
   assertPlaywrightBundleInputs(bundleResult.metafile);
   await rename(minifiedBundle, bundledCli);
+  await assertDiagnosticBuild(bundledCli, diagnosticBuild);
 
   const playwrightPackageDir = join(root, "node_modules", "playwright-core");
   const noticeFiles = ["LICENSE", "NOTICE", "ThirdPartyNotices.txt"];
@@ -147,6 +168,7 @@ async function embedHelpDocs(...files) {
   if (docs.length === 0) {
     throw new Error("embedHelpDocs: extracted 0 helper docs from the bundle");
   }
+
   const injected = JSON.stringify(JSON.stringify(docs));
   for (const file of files) {
     const source = await readFile(file, "utf-8");
@@ -159,6 +181,50 @@ async function embedHelpDocs(...files) {
       source.replace(HELP_DOCS_PLACEHOLDER, () => injected),
     );
   }
+}
+
+async function assertDiagnosticBuild(bundlePath, enabled) {
+  const source = await readFile(bundlePath, "utf8");
+  const traceTokens = [
+    "EGO_BROWSER_DIAGNOSTIC_BUILD",
+    "EGO_BROWSER_TRACE_FILE",
+    "appendFileSync",
+  ];
+  const unexpected = traceTokens.filter((token) => source.includes(token));
+  if (!enabled && unexpected.length > 0) {
+    throw new Error(
+      `release bundle contains diagnostic trace code: ${unexpected.join(", ")}`,
+    );
+  }
+
+  const missing = traceTokens
+    .slice(1)
+    .filter((token) => !source.includes(token));
+  if (enabled && missing.length > 0) {
+    throw new Error(
+      `diagnostic bundle is missing trace code: ${missing.join(", ")}`,
+    );
+  }
+}
+
+function diagnosticTracePlugin(enabled) {
+  const disabledModuleId = "\0ego-browser-disabled-trace";
+  return {
+    name: "ego-browser-diagnostic-trace",
+    resolveId(source) {
+      if (!enabled && source === "./trace-file.js") {
+        return disabledModuleId;
+      }
+      return null;
+    },
+    load(id) {
+      if (id !== disabledModuleId) return null;
+      return [
+        "export function startTrace() {}",
+        "export function traceOutput() {}",
+      ].join("\n");
+    },
+  };
 }
 
 async function tsEntryPoints(dirs) {

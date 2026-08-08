@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 
 import * as sdk from "../dist/src/index.js";
-import { resetSink } from "../dist/src/output-sink.js";
 import {
   connectPlaywrightTaskSpace,
   disconnectPlaywrightTaskSpace,
@@ -193,7 +192,6 @@ test("installEgoSdk keeps raw task-space bridge methods behind stale-skill guard
       },
     );
   } finally {
-    resetSink();
     console.log = originalLog;
   }
 });

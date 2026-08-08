@@ -6,7 +6,7 @@ import { runMain } from "../dist/src/run.js";
 // A minimal native ego whose only method reports a hard stop, the same shape the real
 // bindings return when the user holds (or has not handed over) the task space. The
 // `listTaskSpaces` helper lifts it through assertNoEgoError -> buildEgoError, which is
-// where the sink is told a hard stop occurred.
+// where the owned message is resolved.
 function hardStopEgo(error_code) {
   return {
     calls: 0,
@@ -63,7 +63,7 @@ async function runScript(code, ego) {
   return { exitCode, error, stdout: stdout.text(), stderr: stderr.text() };
 }
 
-test("a clean run flushes buffered console.log output in order", async () => {
+test("a clean run writes console.log output through in order", async () => {
   const result = await runScript(`console.log("one"); console.log("two");`);
   assert.equal(result.exitCode, 0);
   assert.equal(result.stdout, "one\ntwo\n");
@@ -98,7 +98,7 @@ test("console.log prints the egoBrowser facade with its public methods", async (
   assert.notEqual(result.stdout.trim(), "{}");
 });
 
-test("a swallowed user-control hard stop discards all output and prints the guidance once", async () => {
+test("a swallowed user-control hard stop keeps the run's own output", async () => {
   const ego = hardStopEgo("EGO_TASK_SPACE_USER_IN_CONTROL");
   const result = await runScript(
     `
@@ -117,14 +117,21 @@ test("a swallowed user-control hard stop discards all output and prints the guid
   );
 
   assert.equal(result.exitCode, 0);
-  // Only the owned guidance survives — none of the script's own logging.
+  // Output is written through, so the guidance and the script's own logging both
+  // survive, in the order the script produced them.
   assert.match(result.stdout, /taken control of this task space/);
   assert.match(result.stdout, /egoBrowser\.takeOverTaskSpace\(\)/);
-  assert.doesNotMatch(result.stdout, /visiting|failed|ok |summary/);
-  // Printed exactly once, even though every loop iteration re-reported the hard stop.
+  assert.match(result.stdout, /visiting a/);
+  assert.match(result.stdout, /summary: done/);
+  assert.ok(
+    result.stdout.indexOf("visiting a") <
+      result.stdout.indexOf("summary: done"),
+    "output should keep the script's own ordering",
+  );
+  // Every iteration re-reports the hard stop, and nothing collapses that any more.
   assert.equal(
     result.stdout.match(/egoBrowser\.takeOverTaskSpace\(\)/g).length,
-    1,
+    3,
   );
   assert.ok(ego.calls >= 3, "every iteration should have hit the hard stop");
 });
@@ -146,10 +153,11 @@ test("an inactive / unassigned task space is also a hard stop", async () => {
   assert.equal(result.exitCode, 0);
   assert.match(result.stdout, /no longer assigned to the agent/);
   assert.match(result.stdout, /egoBrowser\.claimTaskSpace\(id\)/);
-  assert.doesNotMatch(result.stdout, /swallowed|business/);
+  assert.match(result.stdout, /swallowed:/);
+  assert.match(result.stdout, /more business output/);
 });
 
-test("an uncaught hard stop discards output without double-printing the message", async () => {
+test("an uncaught hard stop keeps what ran before it and does not echo the message", async () => {
   const ego = hardStopEgo("EGO_TASK_SPACE_USER_IN_CONTROL");
   const result = await runScript(
     `
@@ -160,11 +168,11 @@ test("an uncaught hard stop discards output without double-printing the message"
     ego,
   );
 
-  // The thrown Error already surfaces the message (the host prints it), so the sink
-  // discards the buffer and stays silent rather than printing the guidance a second time.
+  // The propagating Error surfaces the message (the host prints it), so stdout carries
+  // only what the script itself logged before the hard stop stopped it.
   assert.ok(result.error, "expected runMain to reject");
   assert.match(result.error.message, /taken control of this task space/);
-  assert.equal(result.stdout, "");
+  assert.equal(result.stdout, "before\n");
 });
 
 test("an ordinary uncaught error still flushes the output logged before it", async () => {
@@ -202,7 +210,7 @@ test("an uncaught legacy task-space helper reports a stale skill instead of a Re
   assert.equal(result.stdout, "");
 });
 
-test("a swallowed legacy task-space helper collapses output to one stale-skill message", async () => {
+test("a swallowed legacy task-space helper keeps the run's own output", async () => {
   const result = await runScript(`
     console.log("before");
     try {
@@ -215,8 +223,9 @@ test("a swallowed legacy task-space helper collapses output to one stale-skill m
 
   assert.equal(result.exitCode, 0);
   assert.equal(result.error, null);
-  assert.match(result.stdout, /^\[ego-browser:skill-stale\]/);
+  assert.match(result.stdout, /\[ego-browser:skill-stale\]/);
   assert.match(result.stdout, /egoBrowser\.newTaskSpace/);
-  assert.doesNotMatch(result.stdout, /before|swallowed|after/);
-  assert.equal(result.stdout.match(/\[ego-browser:skill-stale\]/g)?.length, 1);
+  assert.match(result.stdout, /before/);
+  assert.match(result.stdout, /swallowed:/);
+  assert.match(result.stdout, /after/);
 });

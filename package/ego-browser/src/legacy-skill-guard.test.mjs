@@ -6,7 +6,6 @@ import {
   STALE_SKILL_PREFIX,
   installLegacySkillGuards,
 } from "../dist/src/legacy-skill-guard.js";
-import { resetSink } from "../dist/src/output-sink.js";
 
 const EXPECTED_TASK_SPACE_REPLACEMENTS = {
   listTaskSpaces: "egoBrowser.listTaskSpace()",
@@ -47,7 +46,6 @@ test("legacy skill guards cover only the removed task-space global surface", () 
       Object.prototype.propertyIsEnumerable.call(target, legacyHelper),
       false,
     );
-    resetSink();
     assert.throws(
       () => target[legacyHelper](),
       (error) => {
@@ -64,5 +62,4 @@ test("legacy skill guards cover only the removed task-space global surface", () 
       },
     );
   }
-  resetSink();
 });

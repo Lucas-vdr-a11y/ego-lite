@@ -14,17 +14,12 @@ import {
   disconnectPlaywrightTaskSpace,
   setPlaywrightTaskSpaceConnector,
 } from "./playwright/taskspace.js";
-import {
-  bufferOutput,
-  installLifecycleFlush,
-  resetSink,
-  setNoticeTrailer,
-} from "./output-sink.js";
 import { runMain } from "./run.js";
 import {
   onTaskSpaceLeaseLost,
   releaseTaskSpaceLease,
 } from "./taskspace-lease.js";
+import { startTrace, traceOutput } from "./trace-file.js";
 import { emitUpdateNotice, type VersionSource } from "./update-notice.js";
 
 type HelperFunction = (...args: unknown[]) => unknown;
@@ -36,7 +31,7 @@ type InstallEgoSdkOptions = {
   context?: Record<string, unknown>;
   ready?: unknown;
   // Host-provided output sink, bound to console.log (the agent's output channel).
-  // When omitted, the buffered default is used and flushed on process teardown.
+  // When omitted, output is written directly to stdout.
   cliLog?: HelperFunction;
 };
 
@@ -83,28 +78,28 @@ export function installEgoSdk(
   }
   installLegacySkillGuards(target);
   const usingDefaultLog = !options.cliLog;
+  if (usingDefaultLog) startTrace();
   // The agent's primary output channel is console.log. Route it through the host's
-  // sink (options.cliLog) when provided, otherwise the buffered default. There is no
-  // dedicated cliLog global anymore; console.error/warn are left untouched. Each
-  // heredoc runs in its own short-lived process, so overriding the global is per-run.
+  // sink (options.cliLog) when provided, otherwise write straight to stdout. There is
+  // no dedicated cliLog global anymore; console.error/warn are left untouched. Each
+  // heredoc gets its own script scope, so overriding the global is per-run.
   console.log =
-    options.cliLog || createBufferedLog(target.ego, target.egoBrowser);
-  if (usingDefaultLog) {
-    // SDK path: the host runs each heredoc in a fresh short-lived process and never
-    // calls execute(), so reset the per-run sink and flush it on process teardown.
-    resetSink();
-    installLifecycleFlush(process.stdout);
-  }
+    options.cliLog || createDirectLog(target.ego, target.egoBrowser);
   if (target.ego && typeof target.ego === "object") {
     Reflect.deleteProperty(target.ego, "helpers");
     Reflect.deleteProperty(target.ego, "learnings");
     // Fire-and-forget update hint. Route the resolved line to the same channel the
-    // command's own output uses: the buffered-sink path registers it as a trailer the
-    // sink appends after that output (so it reads as a footer, not a prefix), while a
-    // host-provided cliLog gets the line directly. Never touches process.stdout blindly.
+    // command's own output uses: the default path writes it straight to stdout when it
+    // resolves, while a host-provided cliLog gets the line directly. Because output is
+    // written through, the hint lands wherever the run happens to be — it is an
+    // out-of-band notice, not a footer. Never touches process.stdout blindly.
     emitUpdateNotice(
       target.ego as { getBrowserVersion?: VersionSource },
-      usingDefaultLog ? setNoticeTrailer : (line) => options.cliLog?.(line),
+      usingDefaultLog
+        ? (line) => {
+            process.stdout.write(line.endsWith("\n") ? line : `${line}\n`);
+          }
+        : (line) => options.cliLog?.(line),
     );
     if (!(target.ego as Record<symbol, unknown>)[EGO_WRAPPED]) {
       wrapCreateTab(target.ego);
@@ -198,7 +193,7 @@ function wrapReady(
 // cap, in case the transport is wedged) and exit through the normal process
 // teardown, which releases every remaining native resource. The notice goes
 // through console.log — the only channel bridged back to the agent in SDK
-// mode — and the exit-event flush delivers it even on process.exit(1).
+// mode.
 onTaskSpaceLeaseLost(({ id }) => {
   console.log(
     `TaskSpace ${id} was taken over by a newer ego-browser session; stopping ` +
@@ -228,19 +223,22 @@ if (isDirectCli()) {
   installEgoSdk(globalThis, { context });
 }
 
-function createBufferedLog(nativeEgo: unknown, egoBrowser: unknown) {
+function createDirectLog(nativeEgo: unknown, egoBrowser: unknown) {
   return (...args: unknown[]) => {
-    // Buffer instead of writing through: a hard stop later in the run must be able to
-    // discard everything logged so far. The buffer is flushed on process teardown.
-    bufferOutput(
-      `${args
-        .map((value) =>
-          formatCliLogValue(value, {
-            nativeInspect: value === nativeEgo || value === egoBrowser,
-          }),
-        )
-        .join(" ")}\n`,
-    );
+    // Write through so output survives abnormal termination. The host shares one OS
+    // process across concurrent scripts, so a fatal error in any of them aborts the
+    // process without running teardown hooks — anything held back would be lost.
+    const chunk = `${args
+      .map((value) =>
+        formatCliLogValue(value, {
+          nativeInspect: value === nativeEgo || value === egoBrowser,
+        }),
+      )
+      .join(" ")}\n`;
+    // The host still batches stdout until the run finishes, so mirror the chunk into the
+    // trace file first: that copy is on disk even if this run never delivers stdout.
+    traceOutput(chunk);
+    process.stdout.write(chunk);
   };
 }
 

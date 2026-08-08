@@ -18,10 +18,11 @@
  * a shell command.
  *
  * `emitUpdateNotice` never writes output itself: it hands the resolved line to a
- * caller-supplied `emit`, so the caller owns the channel and timing. The SDK path
- * registers it as an output-sink trailer, so the hint is appended after the command's
- * own output instead of racing ahead of it. The whole module is pure given an injected
- * version source, so it is exercised without a real browser.
+ * caller-supplied `emit`, so the caller owns the channel and timing. Output is written
+ * through rather than held back, so the hint lands wherever the run happens to be when
+ * the version check resolves — it reads as an out-of-band notice, not a footer. The
+ * whole module is pure given an injected version source, so it is exercised without a
+ * real browser.
  */
 
 /** Raw shape the client `ego.getBrowserVersion()` is expected to return. */
