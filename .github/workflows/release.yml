@@ -76,7 +76,7 @@ jobs:
           cd dist/out
           zip -r "../ego-browser-${version_tag}.zip" .
 
-      - name: Create draft release
+      - name: Create release
         if: steps.release.outputs.supported == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -92,6 +92,7 @@ jobs:
           artifact="package/ego-browser/dist/ego-browser-${version_tag}.zip"
           notes_file="$(mktemp)"
           release_args=()
+          create_args=()
           notes_args=()
 
           if [ "$prerelease" = "false" ] && ! git merge-base --is-ancestor "$commit_sha" origin/main; then
@@ -100,7 +101,13 @@ jobs:
           fi
 
           if [ "$prerelease" = "true" ]; then
+            # Betas stay unlisted until a maintainer reviews and publishes them.
+            # --draft only goes on the create path, so re-running a tag never
+            # unpublishes a beta someone already published.
             release_args+=(--prerelease)
+            create_args+=(--draft)
+          else
+            release_args+=(--latest)
           fi
 
           if [ -n "$previous_tag" ]; then
@@ -114,8 +121,6 @@ jobs:
             --jq .body > "$notes_file"
 
           if gh release view "$release_tag" >/dev/null 2>&1; then
-            # Refresh an existing release without touching its draft state, so a
-            # re-run never unpublishes what a maintainer already published.
             gh release edit "$release_tag" \
               --title "$title" \
               --notes-file "$notes_file" \
@@ -125,18 +130,24 @@ jobs:
             gh release create "$release_tag" \
               --title "$title" \
               --notes-file "$notes_file" \
-              --draft \
               --verify-tag \
               "${release_args[@]}" \
+              "${create_args[@]}" \
               "$artifact"
           fi
 
           release_url="$(gh release view "$release_tag" --json url --jq .url)"
 
+          if [ "$prerelease" = "true" ]; then
+            state="staged as a draft — publish it manually to make it public"
+          else
+            state="published"
+          fi
+
           {
-            echo "### Release staged as a draft"
+            echo "### $title"
             echo
-            echo "Tag \`$release_tag\` is ready for review. Publish it manually to make it public."
+            echo "Tag \`$release_tag\` is $state."
             echo
             echo "$release_url"
           } >> "$GITHUB_STEP_SUMMARY"
