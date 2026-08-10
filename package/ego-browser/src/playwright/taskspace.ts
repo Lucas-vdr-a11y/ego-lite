@@ -1,6 +1,7 @@
 import { chromium } from "#playwright-runtime";
 import type { Browser, BrowserContext, Page } from "playwright-core";
 
+import { syncCssPixelScreenshots } from "./device-scale.js";
 import { createEgoPlaywrightTransport } from "./transport.js";
 
 export type PlaywrightTaskSpaceSession = {
@@ -51,6 +52,7 @@ export type PlaywrightConnectorDependencies = {
     space: Record<string, unknown>,
   ) => Promise<PlaywrightTransportLease>;
   connectOverCDP: (connectToken: string) => Promise<Browser>;
+  prepareSession?: (session: PlaywrightTaskSpaceSession) => Promise<void>;
 };
 
 export type PlaywrightTransportLease = {
@@ -117,11 +119,13 @@ export function createPlaywrightTaskSpaceConnector(
         activeTab,
         nativeTabs,
       );
-      return {
+      const session = {
         page: located.page,
         context: located.context,
         close: closeSession,
       };
+      await dependencies.prepareSession?.(session);
+      return session;
     } catch (error) {
       await closeSession();
       throw error;
@@ -143,6 +147,11 @@ export function createNativePlaywrightTaskSpaceConnector() {
         restoreTimerPatch();
         throw error;
       }
+    },
+    // Read on every connect rather than once per process: the ratio changes
+    // when the user drags the browser window to a display with a different one.
+    prepareSession: async (session) => {
+      await syncCssPixelScreenshots(session);
     },
   });
 }

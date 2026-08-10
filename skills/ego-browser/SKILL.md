@@ -28,7 +28,11 @@ console.log(egoBrowser.helper("egoBrowser.completeTaskSpace"));
 
 All public time parameters and options use milliseconds, including `timeout`, `interval`, `delay`, and `polling`.
 
-When the Bash tool applies an outer timeout, set it longer than the sum of all sequential in-script locator, navigation, and event timeouts after converting units, including Playwright's 30-second default for operations without an explicit timeout, and leave time for process startup and output. Use a shorter in-script timeout only for optional probes whose absence is an expected result; do not shorten the outer Bash timeout.
+An outer timeout on the tool that runs the command is not interchangeable with an in-script timeout. When the outer timeout fires, the process is killed and everything `console.log` has written is discarded, so the round returns a bare timeout line and no evidence to act on; an in-script timeout instead returns an error naming the operation and the locator it waited for. Size the outer timeout so an in-script timeout always fires first.
+
+Size it from the longest single in-script timeout it has to cover, not from their sum: the first timeout to fire ends the script. Count Playwright's 30-second default for any operation without an explicit timeout, and leave room for process startup and output.
+
+That rule assumes the first failing operation ends the script. A `try`/`catch`, a `.catch(...)`, or a loop breaks the assumption: the script runs past the failure and starts the next timeout, so what it can reach is the sum of the timeouts along that path, not the longest one. Size those scripts against the sum.
 
 Run it with the `Bash` tool:
 
@@ -40,7 +44,7 @@ EOF
 
 Run automation scripts only through `ego-browser nodejs` and write them directly in the heredoc. Do not create temporary `.js` files, import Playwright, or launch another browser; the browser-provided runtime already supplies the automation surface.
 
-### Execution model
+### Make every browser round a bounded total function
 
 `ego-browser nodejs` deliberately uses a heredoc as a programmable interface instead of splitting every browser action into a separate CLI command. One JavaScript block can retain intermediate results and compose multiple steps. To improve fault tolerance, it can read a few likely page states, handle them with branches instead of failing immediately, and verify the result before returning.
 
@@ -96,13 +100,13 @@ Within one heredoc, base subsequent decisions on locators, URLs, or other state 
 ### 3.3 Choose an interaction path
 
 1. **Semantic: snapshot + locator.** Use this by default for normal DOM pages. Prefer semantic locators or `aria-ref=sNeN` values from the latest `locator.ariaSnapshot({ ref: true })`.
-2. **Visual: screenshot + mouse/keyboard.** Use this for canvas, virtualized editors, spreadsheets, maps, or other interfaces whose semantic or accessibility surface is incomplete or unreliable. Before substantial editing, make one small reversible test change when safe, then verify it with a screenshot, export, or authoritative readback.
+2. **Visual: screenshot + mouse/keyboard.** Use this for canvas, virtualized editors, spreadsheets, maps, or other interfaces whose semantic or accessibility surface is incomplete or unreliable. Always pass `{ scale: "css" }` to `page.screenshot(...)` and `locator.screenshot(...)`: `page.mouse` and element boxes are in CSS pixels, and only `scale: "css"` returns an image in that same unit, so a pixel located in the image is directly usable as a coordinate. The default `scale: "device"` returns an image magnified by the display's pixel ratio, and every coordinate read from it lands off target by that ratio without raising anything. Before substantial editing, make one small reversible test change when safe, then verify it with a screenshot, export, or authoritative readback.
 3. **Direct: locator evaluate, page evaluate, CDP.** Use `locator.evaluate(fn, arg)` for one matched element, `locator.evaluateAll(fn, arg)` for collection reads, and `page.evaluate(fn, arg)` for page-level state. Prefer evaluation for direct state reads rather than replacing normal UI actions with DOM mutation. Use raw CDP only for capabilities the public facade does not cover.
 
 ### 3.4 Act and verify
 
 - **Check the final state first.** Before a setting, selection, or other potentially mutating action, read the minimum authoritative state needed to decide. If the requested final state already holds and there is no contradictory evidence, treat that item as complete and do not repeat the action.
-- **Wait before triggering.** When an action will trigger a request, response, popup, dialog, download, or a URL change that must be matched, create the corresponding wait before clicking or typing. `locator.click()` already waits for navigation it starts; use `page.waitForURL(...)` when the destination must be verified. Use `page.waitForTimeout(...)` only for brief visual settling of no more than 2000 ms, not as a readiness check.
+- **Bind the wait to the transition, not to a duration.** When an action will trigger a request, response, popup, dialog, download, or a URL change that must be matched, register the corresponding wait before clicking or typing. Prefer a signal bound to the expected transition — `page.waitForURL(...)`, `locator.waitFor(...)`, `page.waitForFunction(...)`, `page.waitForResponse(...)`: it returns the moment the state is real, and when the state never arrives it throws naming the condition it waited for, which is directly actionable. A fixed `page.waitForTimeout(...)` gives neither guarantee and fails quietly in both directions: too short and the next action runs against the old page and reports a locator error that points away from the real cause, too long and every round pays the full duration. `locator.click()` already waits for navigation it starts. Keep `page.waitForTimeout(...)` for brief visual settling of no more than 2000 ms, never as a readiness check.
 - **Make the locator unambiguous.** When uniqueness is not obvious, inspect `count()` or relevant text, then narrow the locator with stronger semantics or `filter(...)`. Use `first()` / `nth()` only after confirming that position has stable meaning or that all repeated matches are equivalent for the requested action.
 - **Observe again based on dependency.** Take a fresh snapshot when the next step depends on changed page structure, requires a new ARIA ref, or needs the model to choose a target from the current page. When the next step is a direct state read or uses an already established stable locator, continue without an unnecessary snapshot, including after resuming the TaskSpace in a later Bash round.
 - **Verify with an authoritative signal.** Prefer the final URL, selected or checked state, persisted value, success message, generated result, or another direct page state tied to the requested outcome. One sufficiently specific signal with no contradictory evidence is usually enough; use stronger or additional confirmation for irreversible or high-impact actions.
@@ -142,17 +146,16 @@ The `done` result from `handOffTaskSpace`, `completeTaskSpace`, and `closeTaskSp
 
 1. **Produce evidence:** in the working round, print the final URL, values, state, or other direct evidence.
 2. **Review evidence:** outside the script, confirm that every requirement and necessary scope is proven. Partial results, a stalled page, exhausted retries, or having run a fallback do not count as completion.
-3. **Commit completion:** after everything is confirmed, use the original `task.id` in a new round to call `egoBrowser.closeTaskSpace(task.id)` once by default, or `egoBrowser.completeTaskSpace(task.id)` when the page should be retained. Both return a structured result; check `done`.
+3. **Commit completion:** after everything is confirmed, use the original `task.id` in a new round to call `egoBrowser.closeTaskSpace(task.id)` once by default; call `egoBrowser.completeTaskSpace(task.id)` instead when the user asks to retain the page, needs to continue manually, or the result cannot be delivered as a URL, file, artifact, or summary, which preserves the final page for the user. Both return a structured result; check `done`.
 
 When anything remains unmet or unproven, return to the original task space and continue. If the user cancels or no viable recovery path remains, call `egoBrowser.closeTaskSpace(task.id)` and clearly report that the task was not completed.
-
-`keep` is no longer an option. Use `egoBrowser.closeTaskSpace(task.id)` by default. Use `egoBrowser.completeTaskSpace(task.id)` when the user asks to retain the page, needs to continue manually, or the result cannot be delivered as a URL, file, artifact, or summary. `egoBrowser.completeTaskSpace(task.id)` preserves the final page for the user. Temporary tabs may be closed during the task.
 
 ## 7. Runtime notices
 
 - `[ego-browser:skill-stale]` means the skill in the current conversation does not match the installed runtime. Stop the failed script, reread the current skill, and retry with the replacement name shown in the error. This is not an app-update notice; do not run `ego-browser upgrade` for this reason alone.
 - A trailing `[ego-browser:notice]` means an ego lite update is available or required. It is not an error or task result; first complete or stop the current browser task.
 - After the task ends, tell the user about the notice and the current version it reports, and proactively offer to upgrade. If the user agrees, run `ego-browser upgrade`; after upgrading, reread the ego-browser skill.
+- Time units are not uniform across the script boundary. Every in-script parameter is milliseconds, but the outer timeout belongs to whichever tool runs the command and may use seconds or another unit. Read that tool's unit before sizing the outer timeout against an in-script value; a unit mismatch silently makes the budget orders of magnitude too small or too large.
 
 ## 8. References
 

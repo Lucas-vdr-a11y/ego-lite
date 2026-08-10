@@ -1,10 +1,10 @@
-# Gmail 预置函数
+# Gmail preset functions
 
-先进入已登录 Gmail 的 TaskSpace。函数只读取邮件或创建草稿，不会发送邮件；`listThreads` 返回的 `id` 应直接交给当前列表中的 `readThread`。
+Enter a TaskSpace already logged in to Gmail first. These functions only read mail or create drafts, never send it; the `id` returned by `listThreads` should be passed straight to `readThread` while that list is still current.
 
 ## `egoBrowser.site.google.gmail.openInbox()`
 
-用例：打开当前登录账号的收件箱。
+Use case: open the inbox of the currently logged-in account.
 
 ```js
 await egoBrowser.site.google.gmail.openInbox();
@@ -12,7 +12,7 @@ await egoBrowser.site.google.gmail.openInbox();
 
 ## `egoBrowser.site.google.gmail.listThreads({ limit? })`
 
-用例：读取前 20 个会话摘要，也可以用 `limit` 限制为 1～100 条。
+Use case: read the first 20 thread summaries, or use `limit` to ask for 1–100 of them.
 
 ```js
 const threads = await egoBrowser.site.google.gmail.listThreads({ limit: 10 });
@@ -20,7 +20,7 @@ const threads = await egoBrowser.site.google.gmail.listThreads({ limit: 10 });
 
 ## `egoBrowser.site.google.gmail.search({ query, limit? })`
 
-用例：使用 Gmail 搜索语法查找会话并返回摘要。
+Use case: find threads with Gmail search syntax and return their summaries.
 
 ```js
 const threads = await egoBrowser.site.google.gmail.search({
@@ -31,7 +31,7 @@ const threads = await egoBrowser.site.google.gmail.search({
 
 ## `egoBrowser.site.google.gmail.readThread({ id })`
 
-用例：读取刚由 `listThreads` 或 `search` 返回的某个会话。
+Use case: read a thread just returned by `listThreads` or `search`.
 
 ```js
 const thread = await egoBrowser.site.google.gmail.readThread({
@@ -41,13 +41,13 @@ const thread = await egoBrowser.site.google.gmail.readThread({
 
 ## `egoBrowser.site.google.gmail.createDraft({ to, cc?, bcc?, subject, body })`
 
-用例：填写并保存一封草稿；收件人可以是邮箱字符串或邮箱数组。此函数会关闭编辑框以确认进入草稿，但不会发送。
+Use case: fill in and save a draft; recipients may be an email string or an array of email strings. This function closes the compose box to confirm the draft was stored, but never sends it.
 
 ```js
 await egoBrowser.site.google.gmail.createDraft({
   to: ["owner@example.com"],
   cc: "reviewer@example.com",
-  subject: "周报草稿",
-  body: "这是尚未发送的草稿。",
+  subject: "Weekly report draft",
+  body: "This is an unsent draft.",
 });
 ```

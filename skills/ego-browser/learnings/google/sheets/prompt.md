@@ -1,10 +1,10 @@
-# Google Sheets 预置函数
+# Google Sheets preset functions
 
-先用 `egoBrowser.newTaskSpace(...)` 或 `egoBrowser.switchTaskSpace(...)` 进入已登录的 TaskSpace。范围采用 A1 写法；读写值都是二维数组。
+Enter a logged-in TaskSpace with `egoBrowser.newTaskSpace(...)` or `egoBrowser.switchTaskSpace(...)` first. Ranges use A1 notation; values are two-dimensional arrays on both read and write.
 
 ## `egoBrowser.site.google.sheets.open({ url })`
 
-用例：打开一个已有表格，取得实际 URL 与标题。
+Use case: open an existing spreadsheet and get its actual URL and title.
 
 ```js
 const sheet = await egoBrowser.site.google.sheets.open({
@@ -14,7 +14,7 @@ const sheet = await egoBrowser.site.google.sheets.open({
 
 ## `egoBrowser.site.google.sheets.getSheetNames()`
 
-用例：列出当前表格中可见且非空的工作表名称。
+Use case: list the visible, non-empty sheet names in the active spreadsheet.
 
 ```js
 const names = await egoBrowser.site.google.sheets.getSheetNames();
@@ -22,38 +22,38 @@ const names = await egoBrowser.site.google.sheets.getSheetNames();
 
 ## `egoBrowser.site.google.sheets.readRange({ range })`
 
-用例：读取指定范围的显示值，返回行列二维数组；原剪贴板内容会恢复。
+Use case: read the displayed values of a range as a two-dimensional array of rows and columns; the original clipboard content is restored.
 
 ```js
 const rows = await egoBrowser.site.google.sheets.readRange({
-  range: "'销售'!A1:C20",
+  range: "'Sales'!A1:C20",
 });
 ```
 
 ## `egoBrowser.site.google.sheets.writeRange({ range, values })`
 
-用例：写入一个矩形区域并回读验证。范围大小必须与二维数组完全一致。
+Use case: write a rectangular area and read it back to verify. The range dimensions must match the two-dimensional array exactly.
 
 ```js
 await egoBrowser.site.google.sheets.writeRange({
-  range: "'销售'!A1:C2",
+  range: "'Sales'!A1:C2",
   values: [
-    ["名称", "数量", "金额"],
-    ["示例", 2, "=B2*10"],
+    ["Name", "Quantity", "Amount"],
+    ["Example", 2, "=B2*10"],
   ],
 });
 ```
 
 ## `egoBrowser.site.google.sheets.appendRows({ sheet, values })`
 
-用例：从指定工作表 A 列最后一个非空单元格的下一行开始追加，并回读验证。
+Use case: append starting at the row after the last non-empty cell in column A of the named sheet, then read it back to verify.
 
 ```js
 await egoBrowser.site.google.sheets.appendRows({
-  sheet: "销售",
+  sheet: "Sales",
   values: [
-    ["产品 A", 3, 99],
-    ["产品 B", 1, 49],
+    ["Product A", 3, 99],
+    ["Product B", 1, 49],
   ],
 });
 ```

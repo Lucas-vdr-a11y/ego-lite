@@ -42,8 +42,10 @@ console.log(JSON.stringify(info, null, 2))
 ```
 
 Also take a screenshot to confirm visually:
-`await page.screenshot({ fullPage: true, path: '/tmp/captcha.png' })`, or
-clip a region with `locator.screenshot({ path })`.
+`await page.screenshot({ scale: 'css', fullPage: true, path: '/tmp/captcha.png' })`,
+or clip a region with `locator.screenshot({ scale: 'css', path })`. Keep
+`scale: 'css'` on any shot a coordinate is read from: sliders and image grids
+are solved with `page.mouse`, which takes CSS pixels.
 
 ## Recipes
 
@@ -96,7 +98,7 @@ try {
     await page.waitForURL((url) => !String(url).includes('challenge'), { timeout: 10000 })
     console.log({ resolved: true, url: page.url() })
   } catch {
-    await page.screenshot({ path: '/tmp/verification.png' })
+    await page.screenshot({ scale: 'css', path: '/tmp/verification.png' })
     console.log({ resolved: false, screenshot: '/tmp/verification.png' })
   }
 }

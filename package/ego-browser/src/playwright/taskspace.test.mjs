@@ -453,3 +453,100 @@ test("preparing the same TaskSpace selection also closes the current transport",
     await playwrightTaskSpace.disconnectPlaywrightTaskSpace();
   }
 });
+
+test("the Playwright connector runs prepareSession once with the located Page and BrowserContext", async () => {
+  const page = { targetId: "target-1" };
+  const context = {
+    pages() {
+      return [page];
+    },
+  };
+  const prepared = [];
+  const connector = playwrightTaskSpace.createPlaywrightTaskSpaceConnector({
+    runtime: () => ({
+      async listTabs() {
+        return { tabs: [{ targetId: page.targetId, active: true }] };
+      },
+    }),
+    transport: async () => ({ connectToken: "ws+ego://transport/test" }),
+    connectOverCDP: async () => ({
+      contexts() {
+        return [context];
+      },
+      async close() {},
+    }),
+    prepareSession: async (session) => {
+      prepared.push(session);
+    },
+  });
+
+  const session = await connector({ id: 7 });
+
+  assert.equal(prepared.length, 1);
+  assert.equal(prepared[0].page, page);
+  assert.equal(prepared[0].context, context);
+  assert.equal(prepared[0].page, session.page);
+  assert.equal(prepared[0].context, session.context);
+  assert.equal(typeof prepared[0].close, "function");
+  await session.close();
+});
+
+test("a rejected prepareSession closes the Browser instead of leaking the connection", async () => {
+  const calls = [];
+  const page = { targetId: "target-1" };
+  const connector = playwrightTaskSpace.createPlaywrightTaskSpaceConnector({
+    runtime: () => ({
+      async listTabs() {
+        return { tabs: [{ targetId: page.targetId, active: true }] };
+      },
+    }),
+    transport: async () => ({ connectToken: "ws+ego://transport/test" }),
+    connectOverCDP: async () => ({
+      contexts() {
+        return [{ pages: () => [page] }];
+      },
+      async close() {
+        calls.push("browser.close");
+      },
+    }),
+    prepareSession: async () => {
+      throw new Error("prepareSession failed");
+    },
+  });
+
+  await assert.rejects(() => connector({ id: 7 }), /prepareSession failed/);
+  assert.deepEqual(calls, ["browser.close"]);
+});
+
+test("the Playwright connector connects normally when no prepareSession hook is supplied", async () => {
+  const calls = [];
+  const page = { targetId: "target-1" };
+  const context = {
+    pages() {
+      return [page];
+    },
+  };
+  const connector = playwrightTaskSpace.createPlaywrightTaskSpaceConnector({
+    runtime: () => ({
+      async listTabs() {
+        return { tabs: [{ targetId: page.targetId, active: true }] };
+      },
+    }),
+    transport: async () => ({ connectToken: "ws+ego://transport/test" }),
+    connectOverCDP: async () => ({
+      contexts() {
+        return [context];
+      },
+      async close() {
+        calls.push("browser.close");
+      },
+    }),
+  });
+
+  const session = await connector({ id: 7 });
+
+  assert.equal(session.page, page);
+  assert.equal(session.context, context);
+  await session.close();
+  assert.deepEqual(calls, ["browser.close"]);
+});
