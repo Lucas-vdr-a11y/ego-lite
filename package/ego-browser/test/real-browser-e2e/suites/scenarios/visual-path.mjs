@@ -124,9 +124,9 @@ export const visualPathScenarioCase = scenarioCase(
         "a viewport screenshot is as tall as the CSS viewport scaled by the device pixel ratio",
       );
 
-      // Records today's behaviour: Playwright would return CSS pixels here, and
-      // the visual path would need no conversion at all. Once scale is honoured
-      // this assertion fails and should be rewritten to expect CSS pixels.
+      // scale:'css' hands back the picture in CSS pixels, which is the unit
+      // page.mouse takes: a coordinate read out of this image is aimed with, so
+      // the visual path needs no device pixel ratio conversion at all.
       const cssScaled = decodePng(
         await page.screenshot({
           animations: "disabled",
@@ -136,8 +136,54 @@ export const visualPathScenarioCase = scenarioCase(
       );
       assertEqual(
         cssScaled.width,
+        environment.innerWidth,
+        "a scale:'css' screenshot spans the CSS viewport, so an x read from it is already a page.mouse x",
+      );
+      assertEqual(
+        cssScaled.height,
+        environment.innerHeight,
+        "a scale:'css' screenshot is as tall as the CSS viewport, so a y read from it is already a page.mouse y",
+      );
+      assertEqual(
+        Math.round(cssScaled.width * ratio),
         board.width,
-        "scale:'css' still returns device pixels, so callers convert by the device pixel ratio themselves",
+        "the css screenshot is the device pixel screenshot divided by the device pixel ratio",
+      );
+      assert(
+        ratio === 1 || cssScaled.width < board.width,
+        "a screenshot taken with no scale still returns device pixels: Playwright defaults to scale:'device' and honouring scale:'css' must not flip that default",
+      );
+
+      // The css scale reaches every screenshot surface, not just the viewport
+      // one. An element screenshot comes back as that element's CSS box, grown
+      // outward to whole pixels when the box sits on a fraction, so each axis is
+      // the rendered size or one pixel more.
+      const alphaImage = decodePng(
+        await page.locator("#swatch-" + PRIMARY[0].id).screenshot({
+          animations: "disabled",
+          scale: "css",
+          timeout: 60_000,
+        }),
+      );
+      assert(
+        alphaImage.width === PRIMARY[0].width ||
+          alphaImage.width === PRIMARY[0].width + 1,
+        "a scale:'css' element screenshot is as wide as the element's CSS box: measured " +
+          alphaImage.width +
+          " against a rendered width of " +
+          PRIMARY[0].width +
+          " and a device pixel width of " +
+          Math.round(PRIMARY[0].width * ratio),
+      );
+      assert(
+        alphaImage.height === PRIMARY[0].height ||
+          alphaImage.height === PRIMARY[0].height + 1,
+        "a scale:'css' element screenshot is as tall as the element's CSS box: measured " +
+          alphaImage.height +
+          " against a rendered height of " +
+          PRIMARY[0].height +
+          " and a device pixel height of " +
+          Math.round(PRIMARY[0].height * ratio),
       );
 
       const clipped = decodePng(
@@ -210,6 +256,33 @@ export const visualPathScenarioCase = scenarioCase(
         "a full-page screenshot drops only the scrollbar column, measured " +
           scrollbar +
           "px",
+      );
+
+      const cssWholePage = decodePng(
+        await page.screenshot({
+          animations: "disabled",
+          fullPage: true,
+          scale: "css",
+          timeout: 60_000,
+        }),
+      );
+      assert(
+        Math.abs(cssWholePage.width * ratio - wholePage.width) <= 1 &&
+          Math.abs(cssWholePage.height * ratio - wholePage.height) <= 1,
+        "a full-page scale:'css' screenshot is the full-page device pixel screenshot in CSS pixels, measured " +
+          cssWholePage.width +
+          "x" +
+          cssWholePage.height +
+          " against " +
+          wholePage.width +
+          "x" +
+          wholePage.height +
+          " at ratio " +
+          ratio,
+      );
+      assert(
+        cssWholePage.height > cssScaled.height,
+        "a full-page scale:'css' screenshot still spans the whole document rather than one viewport",
       );
       const chipOnPage = locateSwatch(wholePage, CHIPS[0].pendingRgb);
       assert(chipOnPage, "the first chip is visible in the full-page screenshot");
