@@ -30,7 +30,9 @@ All public time parameters and options use milliseconds, including `timeout`, `i
 
 An outer timeout on the tool that runs the command is not interchangeable with an in-script timeout. When the outer timeout fires, the process is killed and everything `console.log` has written is discarded, so the round returns a bare timeout line and no evidence to act on; an in-script timeout instead returns an error naming the operation and the locator it waited for. Size the outer timeout so an in-script timeout always fires first.
 
-Size it from the longest single in-script timeout it has to cover, not from their sum: the first timeout to fire ends the script, so the sum is only reachable across operations the script catches and continues past. Count Playwright's 30-second default for any operation without an explicit timeout, and leave room for process startup and output.
+Size it from the longest single in-script timeout it has to cover, not from their sum: the first timeout to fire ends the script. Count Playwright's 30-second default for any operation without an explicit timeout, and leave room for process startup and output.
+
+That rule assumes the first failing operation ends the script. A `try`/`catch`, a `.catch(...)`, or a loop breaks the assumption: the script runs past the failure and starts the next timeout, so what it can reach is the sum of the timeouts along that path, not the longest one. Size those scripts against the sum.
 
 Run it with the `Bash` tool:
 
