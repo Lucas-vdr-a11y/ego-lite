@@ -48,14 +48,12 @@ jobs:
             version_tag="$ref_name"
             title="Beta $ref_name"
             prerelease="true"
-            latest="false"
             previous_tag="$(git tag --merged HEAD --sort=-creatordate --list 'v*.*.*-beta.*' | grep -v "^$release_tag$" | head -1 || true)"
           elif [[ "$ref_name" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             release_tag="$ref_name"
             version_tag="$ref_name"
             title="ego lite $ref_name"
             prerelease="false"
-            latest="true"
             previous_tag="$(git tag --merged HEAD --sort=-creatordate --list 'v*.*.*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | grep -v "^$release_tag$" | head -1 || true)"
           else
             echo "Unsupported release ref: $ref_name"
@@ -68,7 +66,6 @@ jobs:
             echo "version_tag=$version_tag"
             echo "title=$title"
             echo "prerelease=$prerelease"
-            echo "latest=$latest"
             echo "previous_tag=$previous_tag"
           } >> "$GITHUB_OUTPUT"
 
@@ -79,7 +76,7 @@ jobs:
           cd dist/out
           zip -r "../ego-browser-${version_tag}.zip" .
 
-      - name: Create release
+      - name: Create draft release
         if: steps.release.outputs.supported == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -90,7 +87,6 @@ jobs:
           version_tag="${{ steps.release.outputs.version_tag }}"
           title="${{ steps.release.outputs.title }}"
           prerelease="${{ steps.release.outputs.prerelease }}"
-          latest="${{ steps.release.outputs.latest }}"
           previous_tag="${{ steps.release.outputs.previous_tag }}"
           commit_sha="$(git rev-parse HEAD)"
           artifact="package/ego-browser/dist/ego-browser-${version_tag}.zip"
@@ -107,12 +103,6 @@ jobs:
             release_args+=(--prerelease)
           fi
 
-          if [ "$latest" = "true" ]; then
-            release_args+=(--latest)
-          else
-            release_args+=(--latest=false)
-          fi
-
           if [ -n "$previous_tag" ]; then
             notes_args+=(-f "previous_tag_name=$previous_tag")
           fi
@@ -124,6 +114,8 @@ jobs:
             --jq .body > "$notes_file"
 
           if gh release view "$release_tag" >/dev/null 2>&1; then
+            # Refresh an existing release without touching its draft state, so a
+            # re-run never unpublishes what a maintainer already published.
             gh release edit "$release_tag" \
               --title "$title" \
               --notes-file "$notes_file" \
@@ -133,7 +125,18 @@ jobs:
             gh release create "$release_tag" \
               --title "$title" \
               --notes-file "$notes_file" \
+              --draft \
               --verify-tag \
               "${release_args[@]}" \
               "$artifact"
           fi
+
+          release_url="$(gh release view "$release_tag" --json url --jq .url)"
+
+          {
+            echo "### Release staged as a draft"
+            echo
+            echo "Tag \`$release_tag\` is ready for review. Publish it manually to make it public."
+            echo
+            echo "$release_url"
+          } >> "$GITHUB_STEP_SUMMARY"
