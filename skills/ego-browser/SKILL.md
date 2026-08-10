@@ -28,7 +28,9 @@ console.log(egoBrowser.helper("egoBrowser.completeTaskSpace"));
 
 All public time parameters and options use milliseconds, including `timeout`, `interval`, `delay`, and `polling`.
 
-When the Bash tool applies an outer timeout, set it longer than the sum of the in-script timeouts it has to cover, including Playwright's 30-second default for operations without an explicit timeout.
+An outer timeout on the tool that runs the command is not interchangeable with an in-script timeout. When the outer timeout fires, the process is killed and everything `console.log` has written is discarded, so the round returns a bare timeout line and no evidence to act on; an in-script timeout instead returns an error naming the operation and the locator it waited for. Size the outer timeout so an in-script timeout always fires first.
+
+Size it from the longest single in-script timeout it has to cover, not from their sum: the first timeout to fire ends the script, so the sum is only reachable across operations the script catches and continues past. Count Playwright's 30-second default for any operation without an explicit timeout, and leave room for process startup and output.
 
 Run it with the `Bash` tool:
 
@@ -102,7 +104,7 @@ Within one heredoc, base subsequent decisions on locators, URLs, or other state 
 ### 3.4 Act and verify
 
 - **Check the final state first.** Before a setting, selection, or other potentially mutating action, read the minimum authoritative state needed to decide. If the requested final state already holds and there is no contradictory evidence, treat that item as complete and do not repeat the action.
-- **Register the event wait before the action that triggers it.** When an action will trigger a request, response, popup, dialog, download, or a URL change that must be matched, create the corresponding wait before clicking or typing. Prefer a signal bound to the expected transition — `page.waitForURL(...)`, `locator.waitFor(...)`, `page.waitForFunction(...)`, `page.waitForResponse(...)` — over waiting a fixed duration or letting an action run into its timeout. `locator.click()` already waits for navigation it starts. Use `page.waitForTimeout(...)` only for brief visual settling of no more than 2000 ms, never as a readiness check.
+- **Bind the wait to the transition, not to a duration.** When an action will trigger a request, response, popup, dialog, download, or a URL change that must be matched, register the corresponding wait before clicking or typing. Prefer a signal bound to the expected transition — `page.waitForURL(...)`, `locator.waitFor(...)`, `page.waitForFunction(...)`, `page.waitForResponse(...)`: it returns the moment the state is real, and when the state never arrives it throws naming the condition it waited for, which is directly actionable. A fixed `page.waitForTimeout(...)` gives neither guarantee and fails quietly in both directions: too short and the next action runs against the old page and reports a locator error that points away from the real cause, too long and every round pays the full duration. `locator.click()` already waits for navigation it starts. Keep `page.waitForTimeout(...)` for brief visual settling of no more than 2000 ms, never as a readiness check.
 - **Make the locator unambiguous.** When uniqueness is not obvious, inspect `count()` or relevant text, then narrow the locator with stronger semantics or `filter(...)`. Use `first()` / `nth()` only after confirming that position has stable meaning or that all repeated matches are equivalent for the requested action.
 - **Observe again based on dependency.** Take a fresh snapshot when the next step depends on changed page structure, requires a new ARIA ref, or needs the model to choose a target from the current page. When the next step is a direct state read or uses an already established stable locator, continue without an unnecessary snapshot, including after resuming the TaskSpace in a later Bash round.
 - **Verify with an authoritative signal.** Prefer the final URL, selected or checked state, persisted value, success message, generated result, or another direct page state tied to the requested outcome. One sufficiently specific signal with no contradictory evidence is usually enough; use stronger or additional confirmation for irreversible or high-impact actions.
@@ -151,6 +153,7 @@ When anything remains unmet or unproven, return to the original task space and c
 - `[ego-browser:skill-stale]` means the skill in the current conversation does not match the installed runtime. Stop the failed script, reread the current skill, and retry with the replacement name shown in the error. This is not an app-update notice; do not run `ego-browser upgrade` for this reason alone.
 - A trailing `[ego-browser:notice]` means an ego lite update is available or required. It is not an error or task result; first complete or stop the current browser task.
 - After the task ends, tell the user about the notice and the current version it reports, and proactively offer to upgrade. If the user agrees, run `ego-browser upgrade`; after upgrading, reread the ego-browser skill.
+- Time units are not uniform across the script boundary. Every in-script parameter is milliseconds, but the outer timeout belongs to whichever tool runs the command and may use seconds or another unit. Read that tool's unit before sizing the outer timeout against an in-script value; a unit mismatch silently makes the budget orders of magnitude too small or too large.
 
 ## 8. References
 
