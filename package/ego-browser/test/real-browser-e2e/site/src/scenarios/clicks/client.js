@@ -92,6 +92,9 @@ eventProbe.addEventListener("click", () => {
 eventProbe.addEventListener("dblclick", () => {
   doubleClickCount.textContent = String(++doubles);
 });
+eventProbe.addEventListener("contextmenu", (event) => {
+  event.preventDefault();
+});
 clickTarget.addEventListener("click", () => {
   const row = selectedRow();
   if (row.dataset.orderStatus !== "Ready") return;
