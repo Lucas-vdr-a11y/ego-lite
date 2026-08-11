@@ -28,14 +28,13 @@ test("skill uses the TaskSpace object model without documenting the removed Brow
   assert.doesNotMatch(skill, /`Browser\.(?:grantPermissions|setPermission)`/);
 });
 
-test("skill keeps outer Bash timeouts above aggregate in-script operation timeouts", () => {
+test("skill keeps outer Bash timeouts above the longest in-script operation timeout", () => {
   assert.match(
     skill,
-    /longer than the sum of all sequential in-script locator, navigation, and event timeouts/,
+    /Size the outer timeout so an in-script timeout always fires first/,
   );
+  assert.match(skill, /longest single in-script timeout/);
   assert.match(skill, /Playwright's 30-second default/);
-  assert.match(skill, /shorter in-script timeout only for optional probes/);
-  assert.match(skill, /do not shorten the outer Bash timeout/);
 });
 
 test("skill keeps compatibility fetch and cdp helpers out of primary guidance", () => {
