@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { setOverrides, state } from "./state.js";
-import { assertNoEgoError, isEgoUserControlError } from "./ego-errors.js";
+import { callEgo, isEgoUserControlError } from "./ego-errors.js";
 import { help as helpRuntime, formatHelp } from "./help-runtime.js";
 import { cdp, decodeUnserializableJsValue, evaluate } from "./cdp-eval.js";
 import { browserFetch, serverFetch } from "./http.js";
@@ -42,7 +42,7 @@ export async function listTaskSpaces() {
     throw new Error("listTaskSpaces requires ego.listTaskSpaces");
   }
   return normalizeTaskSpaces(
-    assertNoEgoError(await ego.listTaskSpaces(), "listTaskSpaces"),
+    await callEgo(ego.listTaskSpaces(), "listTaskSpaces"),
   );
 }
 
@@ -55,7 +55,7 @@ export async function listProfiles() {
   if (!ego || typeof ego.listProfiles !== "function") {
     throw new Error("listProfiles requires ego.listProfiles");
   }
-  const result = assertNoEgoError(await ego.listProfiles(), "listProfiles");
+  const result = await callEgo(ego.listProfiles(), "listProfiles");
   if (!Array.isArray(result?.profiles)) {
     throw new Error("listProfiles expected { profiles: [...] }");
   }
@@ -72,7 +72,7 @@ export async function showTaskState(state: string) {
   if (!ego || typeof ego.setAgentTaskState !== "function") {
     throw new Error("showTaskState requires ego.setAgentTaskState");
   }
-  return assertNoEgoError(await ego.setAgentTaskState(state), "showTaskState");
+  return await callEgo(ego.setAgentTaskState(state), "showTaskState");
 }
 
 export type SnapshotOptions = {
@@ -105,9 +105,10 @@ export async function snapshot(
   if (!ego || typeof ego.snapshot !== "function") {
     throw new Error("snapshot requires ego.snapshot");
   }
-  const result =
-    options === undefined ? await ego.snapshot() : await ego.snapshot(options);
-  return assertNoEgoError(result, "snapshot");
+  return await callEgo(
+    options === undefined ? ego.snapshot() : ego.snapshot(options),
+    "snapshot",
+  );
 }
 
 /*
@@ -192,11 +193,13 @@ export async function newTaskSpace(name, profileId?: string) {
       `newTaskSpace cannot create ${JSON.stringify(name)}: TaskSpace ${id} already uses this name with ownership ${JSON.stringify(existing.ownership)}`,
     );
   }
-  const result =
+  const result = await callEgo(
     profileId === undefined
-      ? await ego.createTaskSpace(name)
-      : await ego.createTaskSpace(name, profileId);
-  const created = normalizeTaskSpace(assertNoEgoError(result, "newTaskSpace"));
+      ? ego.createTaskSpace(name)
+      : ego.createTaskSpace(name, profileId),
+    "newTaskSpace",
+  );
+  const created = normalizeTaskSpace(result);
   if (!created) {
     throw new Error("newTaskSpace returned an invalid task space");
   }
@@ -223,7 +226,7 @@ async function claimResolvedTaskSpace(space, op = "claimTaskSpace") {
   }
   const id = taskSpaceNumericId(space, op);
   const claimed = normalizeTaskSpace(
-    assertNoEgoError(await ego.claimTaskSpace(id, space.name), op),
+    await callEgo(ego.claimTaskSpace(id, space.name), op),
   );
   if (!claimed) {
     throw new Error(`${op} returned an invalid task space`);
@@ -240,7 +243,7 @@ async function selectTaskSpace(ego, space, op: string) {
   await disconnectPlaywrightTaskSpaceForSelection(space);
   await acquireTaskSpaceLease(id);
   try {
-    assertNoEgoError(await ego.useTaskSpace(id), op);
+    await callEgo(ego.useTaskSpace(id), op);
   } catch (error) {
     releaseTaskSpaceLease(id);
     throw error;
@@ -299,7 +302,7 @@ export async function completeTaskSpace(
     if (typeof ego.completeTaskSpace !== "function") {
       throw new Error("completeTaskSpace requires ego.completeTaskSpace");
     }
-    assertNoEgoError(await ego.completeTaskSpace(), "completeTaskSpace");
+    await callEgo(ego.completeTaskSpace(), "completeTaskSpace");
   } else {
     if (match.ownership === "user") {
       await claimResolvedTaskSpace(match, "completeTaskSpace");
@@ -309,7 +312,7 @@ export async function completeTaskSpace(
     if (typeof ego.closeTaskSpace !== "function") {
       throw new Error("completeTaskSpace requires ego.closeTaskSpace");
     }
-    assertNoEgoError(await ego.closeTaskSpace(), "completeTaskSpace");
+    await callEgo(ego.closeTaskSpace(), "completeTaskSpace");
     await waitForTaskSpaceRemoval(match.id);
   }
   return { done: true };
@@ -352,7 +355,7 @@ export async function handOffTaskSpace(
     }
     await selectTaskSpace(ego, match, "handOffTaskSpace");
   }
-  assertNoEgoError(await ego.handOffTaskSpace(), "handOffTaskSpace");
+  await callEgo(ego.handOffTaskSpace(), "handOffTaskSpace");
   return { done: true };
 }
 
@@ -367,7 +370,7 @@ export async function takeOverTaskSpace(nameOrId?: string | number) {
     throw new Error("takeOverTaskSpace requires ego.takeOverTaskSpace");
   }
   await selectTaskSpaceIfProvided(ego, nameOrId, "takeOverTaskSpace");
-  assertNoEgoError(await ego.takeOverTaskSpace(), "takeOverTaskSpace");
+  await callEgo(ego.takeOverTaskSpace(), "takeOverTaskSpace");
 }
 
 /**
@@ -550,7 +553,7 @@ export async function learnContext(url = undefined) {
 async function currentTaskSpaceUrl() {
   const ego = globalThis.ego;
   if (!ego || typeof ego.listTabs !== "function") return "";
-  const result = assertNoEgoError(await ego.listTabs(), "listTabs");
+  const result = await callEgo(ego.listTabs(), "listTabs");
   const tabs = result?.tabs || result?.targetInfos || [];
   return tabs.find((tab) => tab.active)?.url || tabs.at(-1)?.url || "";
 }

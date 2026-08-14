@@ -5,6 +5,7 @@ import * as helpers from "./helpers.js";
 import {
   clearPreferredTarget,
   invalidateSession,
+  onUserControlHardStop,
   setPreferredTarget,
 } from "./browser-runtime.js";
 import { formatCliLogValue } from "./format.js";
@@ -200,6 +201,18 @@ onTaskSpaceLeaseLost(({ id }) => {
       "this session. No action is needed: do not kill any process and do not " +
       "create a replacement TaskSpace.",
   );
+  setTimeout(() => process.exit(1), 2000);
+  void disconnectPlaywrightTaskSpace()
+    .catch(() => {})
+    .finally(() => process.exit(1));
+});
+
+// Control of the task space moved to the user mid-run: a hard stop, handled
+// like a lost lease. The wording resolved from the task space's
+// user_action_reason is the run's final output; exiting here is what actually
+// interrupts Playwright calls that are only waiting for events.
+onUserControlHardStop(({ code, message }) => {
+  console.log(`${code}: ${message}`);
   setTimeout(() => process.exit(1), 2000);
   void disconnectPlaywrightTaskSpace()
     .catch(() => {})

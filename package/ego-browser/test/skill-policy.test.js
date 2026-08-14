@@ -23,19 +23,20 @@ test("skill uses the TaskSpace object model without documenting the removed Brow
     /await task\.page\.goto\('https:\/\/example\.com', \{ waitUntil: 'load', timeout: 20000 \}\)/,
   );
   assert.match(quickStart, /task\.page\.(?:title|url)\(/);
+  assert.match(quickStart, /task\.page\.locator\('body'\)\.ariaSnapshot\(\)/);
   assert.doesNotMatch(quickStart, /task\.tabs|openOrReuse/);
   assert.doesNotMatch(skill, /Playwright `Browser`/);
   assert.doesNotMatch(skill, /`Browser\.(?:grantPermissions|setPermission)`/);
 });
 
-test("skill keeps outer Bash timeouts above aggregate in-script operation timeouts", () => {
+test("skill leaves the outer Bash timeout to the caller", () => {
+  assert.doesNotMatch(skill, /outer timeout/i);
+  assert.doesNotMatch(skill, /longest single in-script timeout/);
+  assert.doesNotMatch(skill, /Playwright's 30-second default/);
   assert.match(
     skill,
-    /longer than the sum of all sequential in-script locator, navigation, and event timeouts/,
+    /All public time parameters and options use milliseconds/,
   );
-  assert.match(skill, /Playwright's 30-second default/);
-  assert.match(skill, /shorter in-script timeout only for optional probes/);
-  assert.match(skill, /do not shorten the outer Bash timeout/);
 });
 
 test("skill keeps compatibility fetch and cdp helpers out of primary guidance", () => {
@@ -64,17 +65,22 @@ test("skill avoids mutating controls that already match the requested state", ()
   assert.match(actAndVerify, /do not (?:repeat|change|mutate)/i);
 });
 
-test("skill scopes ARIA snapshots to the smallest sufficient locator", () => {
+test("skill makes the full-page snapshot the primary observation surface", () => {
   const snapshots = skill.match(
     /### 3\.2 Generate snapshots proactively([\s\S]*?)(?=\n### )/,
   )?.[1];
 
   assert.ok(snapshots);
-  assert.match(snapshots, /smallest sufficient scope/);
-  assert.match(snapshots, /relevant local locator/);
-  assert.match(snapshots, /use `body` only when/);
-  assert.match(snapshots, /locator\.ariaSnapshot/);
-  assert.doesNotMatch(snapshots, /egoBrowser\.snapshot\(\)/);
+  assert.match(snapshots, /primary observation surface/);
+  // The default surface carries no references; refs are a scoped second step.
+  assert.match(snapshots, /locator\('body'\)\.ariaSnapshot\(\)/);
+  assert.match(snapshots, /A plain snapshot carries no references/);
+  assert.match(snapshots, /ariaSnapshot\(\{ ref: true \}\)/);
+  assert.match(snapshots, /proactively/);
+  assert.doesNotMatch(snapshots, /smallest sufficient scope/);
+  assert.doesNotMatch(snapshots, /only when the next decision requires/);
+  assert.match(snapshots, /aria-ref=/);
+  assert.doesNotMatch(skill, /egoBrowser\.snapshot/);
 });
 
 test("skill documents concise user-visible state for pointer actions", () => {

@@ -12,6 +12,8 @@ export const clicksScenarioCase = scenarioCase(
       assertEqual(await page.getByTestId("order-menu").isVisible(), false, "Escape closes contextual actions");
       await observedAction(page, eventProbe, "click");
       assertEqual(await page.getByTestId("click-count").textContent(), "1", "single click updates the dispatch activity");
+      await observedAction(page, eventProbe, "click", { button: "right" });
+      assertEqual(await page.getByTestId("click-count").textContent(), "1", "a secondary click dispatches no primary-button click");
       await observedAction(page, eventProbe, "dblclick");
       assertEqual(await page.getByTestId("click-count").textContent(), "3", "double click dispatches two additional click events");
       assertEqual(await page.getByTestId("double-click-count").textContent(), "1", "double click emits a dblclick event");

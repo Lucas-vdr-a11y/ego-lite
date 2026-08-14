@@ -266,6 +266,18 @@ test("taskspace e2e exposes only the egoBrowser TaskSpace facade", async () => {
     `
     console.log(JSON.stringify({
       taskSpacesType: typeof taskSpaces,
+      taskSpacesEnumerable: Object.prototype.propertyIsEnumerable.call(
+        globalThis,
+        "taskSpaces"
+      ),
+      taskSpacesGuarded: (() => {
+        try {
+          taskSpaces.useOrCreate;
+          return false;
+        } catch (error) {
+          return error.name === "EgoBrowserSkillStaleError";
+        }
+      })(),
       newType: typeof egoBrowser.newTaskSpace,
       switchType: typeof egoBrowser.switchTaskSpace,
       claimType: typeof egoBrowser.claimTaskSpace,
@@ -281,7 +293,10 @@ test("taskspace e2e exposes only the egoBrowser TaskSpace facade", async () => {
 
   assert.equal(result.exitCode, 0);
   assert.deepEqual(firstJsonLine(result.stdout), {
-    taskSpacesType: "undefined",
+    // A tombstone, not a second usable API: it resolves, but every read hard-stops.
+    taskSpacesType: "object",
+    taskSpacesEnumerable: false,
+    taskSpacesGuarded: true,
     newType: "function",
     switchType: "function",
     claimType: "function",
