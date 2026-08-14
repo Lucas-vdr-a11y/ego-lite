@@ -23,6 +23,7 @@ test("skill uses the TaskSpace object model without documenting the removed Brow
     /await task\.page\.goto\('https:\/\/example\.com', \{ waitUntil: 'load', timeout: 20000 \}\)/,
   );
   assert.match(quickStart, /task\.page\.(?:title|url)\(/);
+  assert.match(quickStart, /task\.page\.locator\('body'\)\.ariaSnapshot\(\)/);
   assert.doesNotMatch(quickStart, /task\.tabs|openOrReuse/);
   assert.doesNotMatch(skill, /Playwright `Browser`/);
   assert.doesNotMatch(skill, /`Browser\.(?:grantPermissions|setPermission)`/);
@@ -71,13 +72,15 @@ test("skill makes the full-page snapshot the primary observation surface", () =>
 
   assert.ok(snapshots);
   assert.match(snapshots, /primary observation surface/);
-  assert.match(snapshots, /egoBrowser\.snapshot\(\)/);
+  // The default surface carries no references; refs are a scoped second step.
+  assert.match(snapshots, /locator\('body'\)\.ariaSnapshot\(\)/);
+  assert.match(snapshots, /A plain snapshot carries no references/);
+  assert.match(snapshots, /ariaSnapshot\(\{ ref: true \}\)/);
   assert.match(snapshots, /proactively/);
   assert.doesNotMatch(snapshots, /smallest sufficient scope/);
   assert.doesNotMatch(snapshots, /only when the next decision requires/);
-  assert.match(snapshots, /not a locator source/);
-  assert.match(snapshots, /locator\.ariaSnapshot/);
   assert.match(snapshots, /aria-ref=/);
+  assert.doesNotMatch(skill, /egoBrowser\.snapshot/);
 });
 
 test("skill documents concise user-visible state for pointer actions", () => {
