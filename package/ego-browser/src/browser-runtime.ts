@@ -1,5 +1,5 @@
 import { state } from "./state.js";
-import { buildEgoError, callEgo } from "./ego-errors.js";
+import { buildEgoError, callEgo, resolveEgoError } from "./ego-errors.js";
 import { currentTargetContext } from "./target-context.js";
 
 const RESPONSE_TIMEOUT_MS = 15000;
@@ -96,7 +96,73 @@ function dispatchCdpSendError(message: unknown, errorCode?: string) {
         // Keep error delivery isolated between auxiliary transports.
       }
     }
+    maybeStartUserControlHardStop(errorCode);
   });
+}
+
+type UserControlHardStopHandler = (details: {
+  code: string;
+  message: string;
+}) => void;
+
+let userControlHardStopHandler: UserControlHardStopHandler | undefined;
+let userControlStopState: "idle" | "probing" | "stopped" = "idle";
+
+export function onUserControlHardStop(handler?: UserControlHardStopHandler) {
+  userControlHardStopHandler = handler;
+  userControlStopState = "idle";
+}
+
+// A user-control send failure arrives only as a per-send error receipt: the
+// native guard reports nothing at the handoff itself, so a Playwright call
+// that is passively waiting for events never fails from rejections alone, and
+// wording routed through Playwright gets rewritten into its own errors. The
+// hard-stop handler is the out-of-band exit that ends the run with the
+// user-control wording. Receipts repeat for every rejected send, so the probe
+// is single-flight and fires the handler once.
+function maybeStartUserControlHardStop(errorCode?: string) {
+  if (errorCode !== "EGO_TASK_SPACE_USER_IN_CONTROL") return;
+  if (!userControlHardStopHandler || userControlStopState !== "idle") return;
+  userControlStopState = "probing";
+  void probeUserControlReason().then((details) => {
+    if (userControlStopState !== "probing") return;
+    if (!details) {
+      // Control already returned to the agent between the receipt and the
+      // probe; stand down so a later handoff can trigger again.
+      userControlStopState = "idle";
+      return;
+    }
+    userControlStopState = "stopped";
+    userControlHardStopHandler?.(details);
+  });
+}
+
+// Resolve why control moved, or null when the space is back under agent
+// control. setAgentTaskState is the probe because its user-control rejection
+// carries the user_action_reason key and, while delegated, it has no side
+// effect. The state string must stay harmless: if the user takes control back
+// before the probe lands, it is really written to the task space UI.
+async function probeUserControlReason() {
+  const fallback = () => ({
+    code: "EGO_TASK_SPACE_USER_IN_CONTROL",
+    message: resolveEgoError({
+      error_code: "EGO_TASK_SPACE_USER_IN_CONTROL",
+    }).message,
+  });
+  try {
+    const runtime = browserEgo();
+    if (typeof runtime.setAgentTaskState !== "function") return fallback();
+    const result = await runtime.setAgentTaskState("Waiting for the user");
+    if (!(result && typeof result === "object" && result.error != null)) {
+      return null;
+    }
+    const { code, message } = resolveEgoError(result);
+    return { code: code ?? "EGO_TASK_SPACE_USER_IN_CONTROL", message };
+  } catch {
+    // The receipt already established user-in-control; a failing probe only
+    // loses the reason, not the stop.
+    return fallback();
+  }
 }
 
 export function subscribeEgoCdpTransport(

@@ -11,6 +11,7 @@ import {
   clearPreferredTarget,
   ensureSession,
   browserSnapshotRefsToRefMap,
+  onUserControlHardStop,
   waitForBrowserEvent,
   subscribeEgoCdpTransport,
 } from "../dist/src/browser-runtime.js";
@@ -1023,6 +1024,156 @@ test("handleSendError rejects all pending requests with ego error", async () => 
       return true;
     });
   } finally {
+    cleanup();
+  }
+});
+
+/* ------------------------------------------------------------------ */
+/*  onUserControlHardStop                                             */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Install a mock ego for hard-stop tests and bind the native callbacks.
+ * Returns the transport unsubscribe function.
+ */
+function installHardStopEgo(setAgentTaskState) {
+  globalThis.ego = {
+    sendCDPMessage() {},
+    ...(setAgentTaskState ? { setAgentTaskState } : {}),
+  };
+  return subscribeEgoCdpTransport(globalThis.ego, { message() {} });
+}
+
+const settle = () => new Promise((resolve) => setImmediate(resolve));
+
+test("user-control receipts trigger one hard stop with the reason wording", async () => {
+  let probes = 0;
+  const stops = [];
+  const unsubscribe = installHardStopEgo(async () => {
+    probes += 1;
+    return {
+      error: "microphone",
+      error_code: "EGO_TASK_SPACE_USER_IN_CONTROL",
+    };
+  });
+  onUserControlHardStop((details) => stops.push(details));
+  try {
+    // Receipts repeat for every rejected send; the probe and handler must not.
+    for (let i = 0; i < 3; i += 1) {
+      globalThis.ego.onSendCDPMessageError(
+        "The task is under user control.",
+        "EGO_TASK_SPACE_USER_IN_CONTROL",
+      );
+    }
+    await settle();
+    globalThis.ego.onSendCDPMessageError(
+      "The task is under user control.",
+      "EGO_TASK_SPACE_USER_IN_CONTROL",
+    );
+    await settle();
+    assert.equal(probes, 1);
+    assert.equal(stops.length, 1);
+    assert.equal(stops[0].code, "EGO_TASK_SPACE_USER_IN_CONTROL");
+    assert.match(stops[0].message, /microphone access/);
+  } finally {
+    onUserControlHardStop(undefined);
+    unsubscribe();
+    cleanup();
+  }
+});
+
+test("a probe that resolves normally stands down and re-arms", async () => {
+  let delegated = false;
+  const stops = [];
+  const unsubscribe = installHardStopEgo(async () =>
+    delegated
+      ? { error: "camera", error_code: "EGO_TASK_SPACE_USER_IN_CONTROL" }
+      : "7 state updated.",
+  );
+  onUserControlHardStop((details) => stops.push(details));
+  try {
+    globalThis.ego.onSendCDPMessageError(
+      "The task is under user control.",
+      "EGO_TASK_SPACE_USER_IN_CONTROL",
+    );
+    await settle();
+    assert.equal(stops.length, 0);
+
+    delegated = true;
+    globalThis.ego.onSendCDPMessageError(
+      "The task is under user control.",
+      "EGO_TASK_SPACE_USER_IN_CONTROL",
+    );
+    await settle();
+    assert.equal(stops.length, 1);
+    assert.match(stops[0].message, /camera access/);
+  } finally {
+    onUserControlHardStop(undefined);
+    unsubscribe();
+    cleanup();
+  }
+});
+
+test("a failing probe still stops with the user-control guidance", async () => {
+  const stops = [];
+  const unsubscribe = installHardStopEgo(async () => {
+    throw new Error("bridge gone");
+  });
+  onUserControlHardStop((details) => stops.push(details));
+  try {
+    globalThis.ego.onSendCDPMessageError(
+      "The task is under user control.",
+      "EGO_TASK_SPACE_USER_IN_CONTROL",
+    );
+    await settle();
+    assert.equal(stops.length, 1);
+    assert.equal(stops[0].code, "EGO_TASK_SPACE_USER_IN_CONTROL");
+    assert.match(stops[0].message, /taken control of this task space/);
+  } finally {
+    onUserControlHardStop(undefined);
+    unsubscribe();
+    cleanup();
+  }
+});
+
+test("a runtime without setAgentTaskState still stops with the guidance", async () => {
+  const stops = [];
+  const unsubscribe = installHardStopEgo(undefined);
+  onUserControlHardStop((details) => stops.push(details));
+  try {
+    globalThis.ego.onSendCDPMessageError(
+      "The task is under user control.",
+      "EGO_TASK_SPACE_USER_IN_CONTROL",
+    );
+    await settle();
+    assert.equal(stops.length, 1);
+    assert.match(stops[0].message, /taken control of this task space/);
+  } finally {
+    onUserControlHardStop(undefined);
+    unsubscribe();
+    cleanup();
+  }
+});
+
+test("non-user-control send errors do not trigger the hard stop", async () => {
+  let probes = 0;
+  const stops = [];
+  const unsubscribe = installHardStopEgo(async () => {
+    probes += 1;
+    return "7 state updated.";
+  });
+  onUserControlHardStop((details) => stops.push(details));
+  try {
+    globalThis.ego.onSendCDPMessageError(
+      "Task space is not assigned to an agent.",
+      "EGO_TASK_SPACE_INACTIVE",
+    );
+    await settle();
+    assert.equal(probes, 0);
+    assert.equal(stops.length, 0);
+  } finally {
+    onUserControlHardStop(undefined);
+    unsubscribe();
     cleanup();
   }
 });
