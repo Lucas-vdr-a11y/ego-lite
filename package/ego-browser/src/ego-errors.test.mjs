@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   assertNoEgoError,
+  callEgo,
   egoErrorCode,
   isEgoErrorCode,
   isEgoUserControlError,
@@ -98,6 +99,66 @@ test("resolveEgoError uses the id-less guidance block for a bare user-control co
   assert.doesNotMatch(message, /<id>/);
 });
 
+// Native reports why control moved as the error text itself — a bare
+// user_action_reason key, not a sentence. Each key maps to its own wording; the raw
+// key must never reach the agent.
+test("resolveEgoError maps a user-control reason key to its own wording", () => {
+  for (const [reason, expected] of [
+    ["location", /permission prompt for location, precise or approximate/],
+    ["camera", /permission prompt for camera access/],
+    ["pan_tilt_zoom_microphone", /camera control and microphone access/],
+    ["bluetooth", /device chooser for Bluetooth/],
+    ["serial", /port chooser for serial access/],
+    ["protocol_handler", /protocol handler registration/],
+    ["fallback_site_dialog_required_notice", /dialog that requires review/],
+  ]) {
+    for (const err of [
+      { error: reason, error_code: "EGO_TASK_SPACE_USER_IN_CONTROL" },
+      // ego.snapshot rejects instead of resolving, so the key arrives as .message
+      Object.assign(new Error(reason), {
+        error_code: "EGO_TASK_SPACE_USER_IN_CONTROL",
+      }),
+    ]) {
+      const { message } = resolveEgoError(err);
+      assert.match(message, expected, `reason ${reason}`);
+      assert.match(
+        message,
+        /Control of this browser space has been handed over/,
+      );
+      assert.notEqual(message, reason);
+    }
+  }
+});
+
+test("resolveEgoError keeps the existing hard-stop wording for manual_takeover", () => {
+  const { message } = resolveEgoError({
+    error: "manual_takeover",
+    error_code: "EGO_TASK_SPACE_USER_IN_CONTROL",
+  });
+  // Same block a bare user-control code resolves to — unchanged by the reason table.
+  assert.equal(
+    message,
+    resolveEgoError("EGO_TASK_SPACE_USER_IN_CONTROL").message,
+  );
+  assert.match(message, /egoBrowser\.takeOverTaskSpace\(\)/);
+});
+
+test("resolveEgoError falls back to the guidance block for an unmapped user-control reason", () => {
+  const guidance = resolveEgoError("EGO_TASK_SPACE_USER_IN_CONTROL").message;
+  for (const text of [
+    "some_future_reason", // a reason key this build predates
+    "The task is under user control.", // the CDP send channel, which sends no key
+    "constructor", // must not reach through to Object.prototype
+    "",
+  ]) {
+    const { message } = resolveEgoError({
+      error: text,
+      error_code: "EGO_TASK_SPACE_USER_IN_CONTROL",
+    });
+    assert.equal(message, guidance, `text ${JSON.stringify(text)}`);
+  }
+});
+
 test("resolveEgoError falls back to the raw code, then a generic message", () => {
   assert.deepEqual(resolveEgoError({ error_code: "EGO_FUTURE_CODE" }), {
     code: "EGO_FUTURE_CODE",
@@ -164,4 +225,55 @@ test("assertNoEgoError omits the prefix when no op is given", () => {
 test("assertNoEgoError passes through results with no error", () => {
   const ok = { tabs: [] };
   assert.equal(assertNoEgoError(ok, "listTabs"), ok);
+});
+
+// Native picks per method whether a failure resolves as { error, error_code } or
+// rejects as an Error. callEgo covers both so the resolved wording reaches the agent
+// either way.
+test("callEgo resolves the message for a rejected native call", async () => {
+  await assert.rejects(
+    () =>
+      callEgo(
+        Promise.reject(
+          Object.assign(new Error("location"), {
+            error_code: "EGO_TASK_SPACE_USER_IN_CONTROL",
+          }),
+        ),
+        "snapshot",
+      ),
+    (err) => {
+      assert.match(
+        err.message,
+        /^snapshot: A browser permission prompt for location/,
+      );
+      assert.equal(err.error_code, "EGO_TASK_SPACE_USER_IN_CONTROL");
+      return true;
+    },
+  );
+});
+
+test("callEgo resolves the message for a resolved native error payload", async () => {
+  await assert.rejects(
+    () =>
+      callEgo(
+        Promise.resolve({
+          error: "camera",
+          error_code: "EGO_TASK_SPACE_USER_IN_CONTROL",
+        }),
+        "listTabs",
+      ),
+    (err) => {
+      assert.match(
+        err.message,
+        /^listTabs: A browser permission prompt for camera/,
+      );
+      assert.equal(err.error_code, "EGO_TASK_SPACE_USER_IN_CONTROL");
+      return true;
+    },
+  );
+});
+
+test("callEgo passes through a successful result", async () => {
+  const ok = { tabs: [] };
+  assert.equal(await callEgo(Promise.resolve(ok), "listTabs"), ok);
 });

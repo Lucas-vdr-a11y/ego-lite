@@ -2,6 +2,7 @@ import {
   allocateCdpMessageId,
   subscribeEgoCdpTransport,
 } from "../browser-runtime.js";
+import { resolveEgoError } from "../ego-errors.js";
 
 export type EgoCdpRuntime = {
   sendCDPMessage: (payload: string) => unknown;
@@ -98,6 +99,26 @@ type PageRoute = {
 // specific state earlier in the flow can still observe a concurrent close.
 function routeClosed(route: PageRoute): boolean {
   return route.state === "closed";
+}
+
+// What the agent reads when a native send fails: every Playwright page operation
+// funnels through this transport, so this is the wording for the whole
+// task.page.* surface. Resolve it through ego-errors rather than pasting the
+// native text in — for EGO_TASK_SPACE_USER_IN_CONTROL that text is a
+// user_action_reason key (or, on this channel, a bare static sentence), neither of
+// which tells the agent what to do. The stable code stays in front of the message
+// for diagnosis; it is the only place a code can ride along, since this failure
+// leaves as a CDP error object with no room for error_code.
+function nativeSendErrorText(message: unknown, errorCode?: string): string {
+  if (typeof message !== "string" && !errorCode)
+    return "native CDP send failed";
+  const resolved = resolveEgoError({
+    ...(typeof message === "string" ? { error: message } : {}),
+    ...(errorCode ? { error_code: errorCode } : {}),
+  });
+  return resolved.code && resolved.code !== resolved.message
+    ? `${resolved.code}: ${resolved.message}`
+    : resolved.message;
 }
 
 export class EgoCdpTransport {
@@ -452,10 +473,7 @@ export class EgoCdpTransport {
   // the task space is handed back.
   #handleNativeSendError(message: unknown, errorCode?: string) {
     if (this.closed) return;
-    const description =
-      [errorCode, typeof message === "string" ? message : undefined]
-        .filter(Boolean)
-        .join(": ") || "native CDP send failed";
+    const description = nativeSendErrorText(message, errorCode);
     for (const pending of this.#internalRequests.values()) {
       clearTimeout(pending.timer);
       pending.reject(new Error(description));

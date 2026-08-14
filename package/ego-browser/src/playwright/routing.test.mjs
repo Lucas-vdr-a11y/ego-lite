@@ -2651,6 +2651,38 @@ test("a native send error rejects in-flight commands without closing the transpo
   await transport.closeAndWait();
 });
 
+// Every task.page.* operation funnels through this transport, so a native send
+// error is what the agent reads for the whole Playwright surface. It must carry the
+// resolved wording, not the raw native text (a user_action_reason key, or the static
+// sentence this channel still sends).
+test("a native send error surfaces the resolved user-control wording", async () => {
+  const harness = await createTaskSpaceTransportHarness({
+    tabs: [["tab-main", "https://main.test/"]],
+  });
+  const { fake, transport, received } = harness;
+  const mainSession = [...fake.sessions.keys()][0];
+
+  fake.runtime.sendCDPMessage = () => {};
+  transport.send({
+    id: 93,
+    method: "Runtime.evaluate",
+    params: { expression: "1" },
+    sessionId: mainSession,
+  });
+  await waitForImmediate();
+  fake.runtime.onSendCDPMessageError?.(
+    "The task is under user control.",
+    "EGO_TASK_SPACE_USER_IN_CONTROL",
+  );
+
+  const failed = await waitForMessage(received, (message) => message.id === 93);
+  const failureText = failed.error?.message || "";
+  assert.match(failureText, /^EGO_TASK_SPACE_USER_IN_CONTROL: /);
+  assert.match(failureText, /egoBrowser\.takeOverTaskSpace\(\)/);
+  assert.doesNotMatch(failureText, /The task is under user control\./);
+  await transport.closeAndWait();
+});
+
 test("popups opened concurrently with different URLs are both attached", async () => {
   const harness = await createTaskSpaceTransportHarness({
     tabs: [["tab-main", "https://main.test/"]],

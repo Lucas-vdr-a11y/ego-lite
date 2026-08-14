@@ -487,6 +487,34 @@ test("egoBrowser.snapshot passes native snapshot options unchanged", async () =>
   assert.deepEqual(calls, [[options]]);
 });
 
+// ego.snapshot rejects rather than resolving { error, error_code }, so the failure
+// skips assertNoEgoError entirely unless the helper normalizes it. Without that, a
+// user-control rejection reaches the agent as the bare reason key "location".
+test("egoBrowser.snapshot resolves the wording for a rejected user-control failure", async () => {
+  await withEgo(
+    {
+      async snapshot() {
+        throw Object.assign(new Error("location"), {
+          error_code: "EGO_TASK_SPACE_USER_IN_CONTROL",
+        });
+      },
+    },
+    async () => {
+      await assert.rejects(
+        () => helperContext().egoBrowser.snapshot(),
+        (err) => {
+          assert.match(
+            err.message,
+            /^snapshot: A browser permission prompt for location/,
+          );
+          assert.equal(err.error_code, "EGO_TASK_SPACE_USER_IN_CONTROL");
+          return true;
+        },
+      );
+    },
+  );
+});
+
 test("egoBrowser.snapshot requires the native snapshot bridge", async () => {
   await withEgo({}, async () => {
     await assert.rejects(

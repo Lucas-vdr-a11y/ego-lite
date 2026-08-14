@@ -1,5 +1,5 @@
 import { state } from "./state.js";
-import { assertNoEgoError, buildEgoError } from "./ego-errors.js";
+import { buildEgoError, callEgo } from "./ego-errors.js";
 import { currentTargetContext } from "./target-context.js";
 
 const RESPONSE_TIMEOUT_MS = 15000;
@@ -242,7 +242,7 @@ export async function ensureSession() {
   }
   state.sessionInflight = (async () => {
     try {
-      const result = assertNoEgoError(await browserEgo().listTabs());
+      const result = await callEgo(browserEgo().listTabs());
       const tabs = result?.tabs || result?.targetInfos || [];
       const preferred = state.preferredTargetId
         ? tabs.find((t) => t.targetId === state.preferredTargetId)
@@ -282,7 +282,7 @@ async function ensureTargetSession(targetContext) {
   if (targetContext.sessionId) return targetContext.sessionId;
   if (targetContext.sessionPromise) return targetContext.sessionPromise;
   targetContext.sessionPromise = (async () => {
-    const result = assertNoEgoError(await browserEgo().listTabs());
+    const result = await callEgo(browserEgo().listTabs());
     const tabs = result?.tabs || result?.targetInfos || [];
     if (!tabs.some((tab) => tab.targetId === targetContext.targetId)) {
       throw targetClosedError(targetContext.targetId);
