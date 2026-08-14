@@ -28,13 +28,14 @@ test("skill uses the TaskSpace object model without documenting the removed Brow
   assert.doesNotMatch(skill, /`Browser\.(?:grantPermissions|setPermission)`/);
 });
 
-test("skill keeps outer Bash timeouts above the longest in-script operation timeout", () => {
+test("skill leaves the outer Bash timeout to the caller", () => {
+  assert.doesNotMatch(skill, /outer timeout/i);
+  assert.doesNotMatch(skill, /longest single in-script timeout/);
+  assert.doesNotMatch(skill, /Playwright's 30-second default/);
   assert.match(
     skill,
-    /Size the outer timeout so an in-script timeout always fires first/,
+    /All public time parameters and options use milliseconds/,
   );
-  assert.match(skill, /longest single in-script timeout/);
-  assert.match(skill, /Playwright's 30-second default/);
 });
 
 test("skill keeps compatibility fetch and cdp helpers out of primary guidance", () => {
@@ -63,17 +64,20 @@ test("skill avoids mutating controls that already match the requested state", ()
   assert.match(actAndVerify, /do not (?:repeat|change|mutate)/i);
 });
 
-test("skill scopes ARIA snapshots to the smallest sufficient locator", () => {
+test("skill makes the full-page snapshot the primary observation surface", () => {
   const snapshots = skill.match(
     /### 3\.2 Generate snapshots proactively([\s\S]*?)(?=\n### )/,
   )?.[1];
 
   assert.ok(snapshots);
-  assert.match(snapshots, /smallest sufficient scope/);
-  assert.match(snapshots, /relevant local locator/);
-  assert.match(snapshots, /use `body` only when/);
+  assert.match(snapshots, /primary observation surface/);
+  assert.match(snapshots, /egoBrowser\.snapshot\(\)/);
+  assert.match(snapshots, /proactively/);
+  assert.doesNotMatch(snapshots, /smallest sufficient scope/);
+  assert.doesNotMatch(snapshots, /only when the next decision requires/);
+  assert.match(snapshots, /not a locator source/);
   assert.match(snapshots, /locator\.ariaSnapshot/);
-  assert.doesNotMatch(snapshots, /egoBrowser\.snapshot\(\)/);
+  assert.match(snapshots, /aria-ref=/);
 });
 
 test("skill documents concise user-visible state for pointer actions", () => {
