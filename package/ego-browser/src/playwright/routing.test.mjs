@@ -941,7 +941,11 @@ test("a session detach answers the auto-attach held behind Page.getFrameTree", a
     transport.send({
       id: 1,
       method: "Target.setAutoAttach",
-      params: { autoAttach: true, waitForDebuggerOnStart: false, flatten: true },
+      params: {
+        autoAttach: true,
+        waitForDebuggerOnStart: false,
+        flatten: true,
+      },
     });
     await waitForCondition(() =>
       received.some((message) => message.method === "Target.attachedToTarget"),
@@ -959,7 +963,11 @@ test("a session detach answers the auto-attach held behind Page.getFrameTree", a
     transport.send({
       id: 3,
       method: "Target.setAutoAttach",
-      params: { autoAttach: true, waitForDebuggerOnStart: false, flatten: true },
+      params: {
+        autoAttach: true,
+        waitForDebuggerOnStart: false,
+        flatten: true,
+      },
       sessionId: clientSessionId,
     });
     await waitForImmediate();
@@ -1171,7 +1179,11 @@ test("a closed page does not leave frame ids behind for the next page", async ()
       } else if (request.method === "Page.getFrameTree") {
         result = {
           frameTree: {
-            frame: { id: request.sessionId, loaderId: "loader-1", url: "https://example.test/" },
+            frame: {
+              id: request.sessionId,
+              loaderId: "loader-1",
+              url: "https://example.test/",
+            },
           },
         };
       }
@@ -1192,7 +1204,11 @@ test("a closed page does not leave frame ids behind for the next page", async ()
     transport.send({
       id: 1,
       method: "Target.setAutoAttach",
-      params: { autoAttach: true, waitForDebuggerOnStart: false, flatten: true },
+      params: {
+        autoAttach: true,
+        waitForDebuggerOnStart: false,
+        flatten: true,
+      },
     });
     await waitForCondition(
       () =>
