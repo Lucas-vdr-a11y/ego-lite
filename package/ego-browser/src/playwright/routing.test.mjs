@@ -999,6 +999,149 @@ test("a session detach answers the auto-attach held behind Page.getFrameTree", a
   }
 });
 
+test("closing a page answers the commands its OOPIF children left in flight", async () => {
+  let nextNativeId = 1_000_000_970;
+  let attachCount = 0;
+  const openTabs = new Set(["selected-target"]);
+  const pendingWork = [];
+  const runtime = {
+    async listTabs() {
+      return { tabs: [...openTabs].map((targetId) => ({ targetId })) };
+    },
+    sendCDPMessage(payload) {
+      const request = JSON.parse(payload);
+      // The child's frame tree never answers: its page is closing underneath it.
+      if (request.method === "Page.getFrameTree") return;
+      let result = {};
+      if (request.method === "Target.getTargetInfo") {
+        result = {
+          targetInfo: {
+            targetId: "selected-target",
+            type: "page",
+            title: "Selected",
+            url: "https://example.test/",
+          },
+        };
+      } else if (request.method === "Target.attachToTarget") {
+        attachCount += 1;
+        result = { sessionId: `page-session-${attachCount}` };
+      } else if (request.method === "Target.closeTarget") {
+        openTabs.delete(request.params.targetId);
+        result = { success: true };
+      }
+      queueMicrotask(() =>
+        runtime.onCDPMessage(JSON.stringify({ id: request.id, result })),
+      );
+    },
+  };
+
+  const transport = egoTransport.createEgoCdpTransport(runtime, {
+    allocateMessageId: () => nextNativeId++,
+    targetIds: ["selected-target"],
+    onPendingWorkChange: (count) => pendingWork.push(count),
+  });
+  const received = [];
+  transport.onmessage = (message) => received.push(message);
+  transport.releaseConnectionKeepAlive();
+  try {
+    transport.send({
+      id: 1,
+      method: "Target.setAutoAttach",
+      params: {
+        autoAttach: true,
+        waitForDebuggerOnStart: false,
+        flatten: true,
+      },
+    });
+    await waitForCondition(() =>
+      received.some((message) => message.method === "Target.attachedToTarget"),
+    );
+    const pageAttach = received.find(
+      (message) => message.method === "Target.attachedToTarget",
+    );
+    const pageTargetId = pageAttach.params.targetInfo.targetId;
+
+    // A cross-origin child attaches under the page's native session.
+    runtime.onCDPMessage(
+      JSON.stringify({
+        method: "Target.attachedToTarget",
+        sessionId: "page-session-1",
+        params: {
+          sessionId: "oopif-session",
+          targetInfo: {
+            targetId: "oopif-target",
+            type: "iframe",
+            url: "https://checkout.test/",
+          },
+          waitingForDebugger: false,
+        },
+      }),
+    );
+    await waitForCondition(() =>
+      received.some(
+        (message) =>
+          message.method === "Target.attachedToTarget" &&
+          message.params.sessionId === "oopif-session",
+      ),
+    );
+
+    // Playwright initialises the child: the auto-attach waits behind the frame
+    // tree, and neither will ever be answered natively.
+    transport.send({
+      id: 2,
+      method: "Page.getFrameTree",
+      params: {},
+      sessionId: "oopif-session",
+    });
+    transport.send({
+      id: 3,
+      method: "Target.setAutoAttach",
+      params: {
+        autoAttach: true,
+        waitForDebuggerOnStart: false,
+        flatten: true,
+      },
+      sessionId: "oopif-session",
+    });
+    await waitForImmediate();
+
+    transport.send({
+      id: 4,
+      method: "Target.closeTarget",
+      params: { targetId: pageTargetId },
+    });
+    await waitForCondition(() =>
+      received.some((message) => message.id === 4 && message.result),
+    );
+
+    // The child's detach arrives on the page session the close just retired.
+    runtime.onCDPMessage(
+      JSON.stringify({
+        method: "Target.detachedFromTarget",
+        sessionId: "page-session-1",
+        params: { sessionId: "oopif-session", targetId: "oopif-target" },
+      }),
+    );
+
+    await waitForCondition(() =>
+      received.some((message) => message.id === 2 && message.error),
+    );
+    await waitForCondition(() => received.some((message) => message.id === 3));
+    assert.ok(
+      received.find((message) => message.id === 3).error,
+      "the child's held auto-attach fails instead of waiting forever",
+    );
+    await waitForCondition(() => pendingWork.at(-1) === 0);
+    assert.equal(
+      pendingWork.at(-1),
+      0,
+      "the closed page's children stop keeping Node alive",
+    );
+  } finally {
+    await transport.closeAndWait();
+  }
+});
+
 test("a closed page does not leave frame ids behind for the next page", async () => {
   let nextNativeId = 1_000_000_980;
   let attachCount = 0;

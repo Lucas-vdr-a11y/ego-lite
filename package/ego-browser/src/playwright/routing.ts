@@ -676,7 +676,10 @@ export class EgoCdpTransport {
       return;
     }
     if (this.#discardAttachmentWhileClosing(message)) return;
-    if (this.#isRetiredSessionEvent(message)) return;
+    if (this.#isRetiredSessionEvent(message)) {
+      this.#reapDetachedChildSession(message);
+      return;
+    }
     if (this.#isInternalTargetCloseEvent(message)) {
       // The tombstone has served its purpose once the close event arrives.
       this.#internallyClosedTargets.delete(message.params.targetId);
@@ -887,22 +890,33 @@ export class EgoCdpTransport {
     nativeSessionId: string,
     clientSessionId: string,
   ) {
+    this.#rejectPendingCommands(
+      (pending) => pending.nativeSessionId === nativeSessionId,
+      clientSessionId,
+      "native CDP session detached during the command",
+    );
+  }
+
+  #rejectPendingCommands(
+    matches: (pending: any) => boolean,
+    clientSessionId: string,
+    description: string,
+  ) {
     let changed = false;
     for (const [nativeId, pending] of this.#pendingIds) {
-      if (pending.nativeSessionId !== nativeSessionId) continue;
+      if (!matches(pending)) continue;
       this.#pendingIds.delete(nativeId);
       changed = true;
-      const detachedMessage = "native CDP session detached during the command";
       this.#failFrameTreeBarrier(
         pending.method,
         pending.clientSessionId || clientSessionId,
-        detachedMessage,
+        description,
       );
       this.#emit({
         id: pending.clientId,
         error: {
           code: -32_000,
-          message: detachedMessage,
+          message: description,
         },
         sessionId: pending.clientSessionId || clientSessionId,
       });
@@ -1240,6 +1254,46 @@ export class EgoCdpTransport {
     return (
       typeof message.sessionId === "string" &&
       this.#retiredNativeSessions.has(message.sessionId)
+    );
+  }
+
+  // A retired session's own events are noise, but a detach arriving on it still
+  // reports news the transport must act on: the child session named in params
+  // is gone. Closing a page retires that page's native session, and its OOPIF
+  // children detach afterwards on exactly that session — so without this the
+  // whole subtree is never reclaimed. Nothing is forwarded: Playwright disposed
+  // those child sessions itself when it disposed the parent frame session, so a
+  // detach for them would name a session it no longer knows.
+  #reapDetachedChildSession(message: any) {
+    if (message.method !== "Target.detachedFromTarget") return;
+    const sessionId = message.params?.sessionId;
+    if (typeof sessionId !== "string") return;
+    const targetId =
+      typeof message.params?.targetId === "string"
+        ? message.params.targetId
+        : this.#targetsBySession.get(sessionId);
+    // Only drop the target mapping if it still names this session; a rebind may
+    // already have pointed the target at a live replacement.
+    if (
+      typeof targetId === "string" &&
+      this.#sessionsByTarget.get(targetId) === sessionId
+    ) {
+      this.#sessionsByTarget.delete(targetId);
+    }
+    this.#targetsBySession.delete(sessionId);
+    this.#nativeParentSessions.delete(sessionId);
+    this.#retiredNativeSessions.delete(sessionId);
+    this.#internallyDetachedSessions.delete(sessionId);
+    this.#passthroughSessions.delete(sessionId);
+    const description = "the session detached with its page";
+    this.#dropFrameTreeBarrier(sessionId, description);
+    // Commands still in flight on that session can never be answered natively.
+    this.#rejectPendingCommands(
+      (pending) =>
+        pending.nativeSessionId === sessionId ||
+        (!pending.nativeSessionId && pending.clientSessionId === sessionId),
+      sessionId,
+      description,
     );
   }
 
