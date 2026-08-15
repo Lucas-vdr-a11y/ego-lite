@@ -174,7 +174,12 @@ export class EgoCdpTransport {
   readonly #internallyClosedTargets = new Set<string>();
   readonly #retiredNativeSessions = new Set<string>();
   readonly #frameTreeBarriers = new Map<string, FrameTreeBarrier>();
-  readonly #knownFrameIds = new Set<string>();
+  // frame id -> the client target id whose page owns it, so a closed page
+  // releases its frames. Chromium reports no per-frame Page.frameDetached when
+  // a target goes away, and a frame outlives the OOPIF session that reported
+  // it (a cross-site frame that returns in-process keeps its node), so the
+  // page is the only safe release point.
+  readonly #knownFrameTargets = new Map<string, string | undefined>();
   readonly #nativeParentSessions = new Map<string, string>();
   readonly #unsubscribe: () => void;
   #closePromise?: Promise<void>;
@@ -482,7 +487,7 @@ export class EgoCdpTransport {
     this.#internallyClosedTargets.clear();
     this.#retiredNativeSessions.clear();
     this.#frameTreeBarriers.clear();
-    this.#knownFrameIds.clear();
+    this.#knownFrameTargets.clear();
     this.#nativeParentSessions.clear();
     this.#updatePendingWork();
     const onclose = this.onclose;
@@ -887,11 +892,17 @@ export class EgoCdpTransport {
       if (pending.nativeSessionId !== nativeSessionId) continue;
       this.#pendingIds.delete(nativeId);
       changed = true;
+      const detachedMessage = "native CDP session detached during the command";
+      this.#failFrameTreeBarrier(
+        pending.method,
+        pending.clientSessionId || clientSessionId,
+        detachedMessage,
+      );
       this.#emit({
         id: pending.clientId,
         error: {
           code: -32_000,
-          message: "native CDP session detached during the command",
+          message: detachedMessage,
         },
         sessionId: pending.clientSessionId || clientSessionId,
       });
@@ -1100,7 +1111,12 @@ export class EgoCdpTransport {
       }
     } else if (message.method === "Target.targetDestroyed") {
       const targetId = message.params?.targetId;
-      if (typeof targetId === "string") this.#targetIds?.delete(targetId);
+      if (typeof targetId === "string") {
+        this.#targetIds?.delete(targetId);
+        this.#forgetTargetFrames(
+          this.#routesByNativeTarget.get(targetId)?.clientTargetId || targetId,
+        );
+      }
     }
     this.#emit(message);
   }
@@ -1283,8 +1299,8 @@ export class EgoCdpTransport {
     const visit = (tree: any, restore: boolean) => {
       const frame = tree?.frame;
       if (!frame || typeof frame.id !== "string") return;
-      const known = this.#knownFrameIds.has(frame.id);
-      this.#knownFrameIds.add(frame.id);
+      const known = this.#knownFrameTargets.has(frame.id);
+      this.#rememberFrameId(frame.id, sessionId);
       if (restore && !known) {
         restored.push({
           method: "Page.frameAttached",
@@ -1345,6 +1361,14 @@ export class EgoCdpTransport {
     description: string,
   ) {
     if (method !== "Page.getFrameTree" || !sessionId) return;
+    this.#dropFrameTreeBarrier(sessionId, description);
+  }
+
+  // Playwright awaits Page.getFrameTree and the held Target.setAutoAttach in
+  // one Promise.all, so a barrier that outlives its Page.getFrameTree hangs
+  // page initialization forever. Every path that drops the command must answer
+  // what the barrier holds.
+  #dropFrameTreeBarrier(sessionId: string, description: string) {
     const barrier = this.#frameTreeBarriers.get(sessionId);
     if (!barrier) return;
     this.#frameTreeBarriers.delete(sessionId);
@@ -1359,20 +1383,53 @@ export class EgoCdpTransport {
   }
 
   #observeKnownFrameEvent(message: any) {
+    const sessionId =
+      typeof message.sessionId === "string" ? message.sessionId : undefined;
     if (message.method === "Page.frameAttached") {
       if (typeof message.params?.frameId === "string") {
-        this.#knownFrameIds.add(message.params.frameId);
+        this.#rememberFrameId(message.params.frameId, sessionId);
       }
     } else if (message.method === "Page.frameNavigated") {
       if (typeof message.params?.frame?.id === "string") {
-        this.#knownFrameIds.add(message.params.frame.id);
+        this.#rememberFrameId(message.params.frame.id, sessionId);
       }
     } else if (
       message.method === "Page.frameDetached" &&
       message.params?.reason !== "swap" &&
       typeof message.params?.frameId === "string"
     ) {
-      this.#knownFrameIds.delete(message.params.frameId);
+      this.#knownFrameTargets.delete(message.params.frameId);
+    }
+  }
+
+  #rememberFrameId(frameId: string, sessionId: string | undefined) {
+    this.#knownFrameTargets.set(frameId, this.#pageTargetForSession(sessionId));
+  }
+
+  // Frames are owned by the page, not by the session that reported them: an
+  // OOPIF reports its own subtree from its own session, and both live and die
+  // with the client target. Client and native session ids are both accepted —
+  // a passthrough session uses one id for each.
+  #pageTargetForSession(sessionId: string | undefined) {
+    const seen = new Set<string>();
+    let current = sessionId;
+    while (typeof current === "string" && !seen.has(current)) {
+      seen.add(current);
+      const route =
+        this.#routesByNativeSession.get(current) ||
+        this.#routesByClientSession.get(current);
+      if (route) return route.clientTargetId;
+      const passthrough = this.#passthroughSessions.get(current);
+      if (passthrough) return passthrough.clientTargetId;
+      current = this.#nativeParentSessions.get(current);
+    }
+    return undefined;
+  }
+
+  #forgetTargetFrames(clientTargetId: string | undefined) {
+    if (!clientTargetId) return;
+    for (const [frameId, owner] of this.#knownFrameTargets) {
+      if (owner === clientTargetId) this.#knownFrameTargets.delete(frameId);
     }
   }
 
@@ -1386,12 +1443,12 @@ export class EgoCdpTransport {
       typeof message.sessionId !== "string" ||
       typeof targetId !== "string" ||
       typeof parentFrameId !== "string" ||
-      this.#knownFrameIds.has(targetId) ||
-      !this.#knownFrameIds.has(parentFrameId)
+      this.#knownFrameTargets.has(targetId) ||
+      !this.#knownFrameTargets.has(parentFrameId)
     ) {
       return [];
     }
-    this.#knownFrameIds.add(targetId);
+    this.#rememberFrameId(targetId, message.sessionId);
     const frame = {
       id: targetId,
       parentId: parentFrameId,
@@ -1654,6 +1711,11 @@ export class EgoCdpTransport {
     this.#routesByNativeTarget.delete(route.nativeTargetId);
     this.#sessionsByTarget.delete(route.nativeTargetId);
     this.#targetsBySession.delete(route.nativeSessionId);
+    this.#dropFrameTreeBarrier(
+      route.clientSessionId,
+      "the page has been closed",
+    );
+    this.#forgetTargetFrames(route.clientTargetId);
   }
 
   #replaceNativeRoute(

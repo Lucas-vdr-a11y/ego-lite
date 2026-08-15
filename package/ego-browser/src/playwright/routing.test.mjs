@@ -892,6 +892,233 @@ test("the direct Playwright transport re-adopts a nested OOPIF tree that predate
   }
 });
 
+test("a session detach answers the auto-attach held behind Page.getFrameTree", async () => {
+  let nextNativeId = 1_000_000_960;
+  let attachCount = 0;
+  const sent = [];
+  const pendingWork = [];
+  const runtime = {
+    async listTabs() {
+      return { tabs: [{ targetId: "selected-target" }] };
+    },
+    sendCDPMessage(payload) {
+      const request = JSON.parse(payload);
+      sent.push(request);
+      // Playwright's FrameSession init awaits Page.getFrameTree and
+      // Target.setAutoAttach in one Promise.all; this frame tree never answers.
+      if (request.method === "Page.getFrameTree") return;
+      let result = {};
+      if (request.method === "Target.getTargetInfo") {
+        result = {
+          targetInfo: {
+            targetId: "selected-target",
+            type: "page",
+            title: "Selected",
+            url: "https://example.test/",
+          },
+        };
+      } else if (request.method === "Target.attachToTarget") {
+        attachCount += 1;
+        result = {
+          sessionId: attachCount === 1 ? "initial-session" : "rebound-session",
+        };
+      }
+      queueMicrotask(() =>
+        runtime.onCDPMessage(JSON.stringify({ id: request.id, result })),
+      );
+    },
+  };
+
+  const transport = egoTransport.createEgoCdpTransport(runtime, {
+    allocateMessageId: () => nextNativeId++,
+    targetIds: ["selected-target"],
+    onPendingWorkChange: (count) => pendingWork.push(count),
+  });
+  const received = [];
+  transport.onmessage = (message) => received.push(message);
+  transport.releaseConnectionKeepAlive();
+  try {
+    transport.send({
+      id: 1,
+      method: "Target.setAutoAttach",
+      params: { autoAttach: true, waitForDebuggerOnStart: false, flatten: true },
+    });
+    await waitForCondition(() =>
+      received.some((message) => message.method === "Target.attachedToTarget"),
+    );
+    const clientSessionId = received.find(
+      (message) => message.method === "Target.attachedToTarget",
+    ).params.sessionId;
+
+    transport.send({
+      id: 2,
+      method: "Page.getFrameTree",
+      params: {},
+      sessionId: clientSessionId,
+    });
+    transport.send({
+      id: 3,
+      method: "Target.setAutoAttach",
+      params: { autoAttach: true, waitForDebuggerOnStart: false, flatten: true },
+      sessionId: clientSessionId,
+    });
+    await waitForImmediate();
+    assert.equal(
+      sent.some(
+        (request) =>
+          request.method === "Target.setAutoAttach" &&
+          request.sessionId === "initial-session",
+      ),
+      false,
+      "the frame-session auto-attach waits behind the frame tree",
+    );
+
+    runtime.onCDPMessage(
+      JSON.stringify({
+        method: "Target.detachedFromTarget",
+        params: { sessionId: "initial-session", targetId: "selected-target" },
+      }),
+    );
+    await waitForCondition(() =>
+      received.some((message) => message.id === 2 && message.error),
+    );
+    await waitForCondition(() => received.some((message) => message.id === 3));
+
+    assert.ok(
+      received.find((message) => message.id === 3).error,
+      "the held auto-attach fails with its frame tree instead of hanging page init",
+    );
+    await waitForCondition(() => pendingWork.at(-1) === 0);
+    assert.equal(
+      pendingWork.at(-1),
+      0,
+      "the released barrier stops keeping Node alive",
+    );
+  } finally {
+    await transport.closeAndWait();
+  }
+});
+
+test("a closed page does not leave frame ids behind for the next page", async () => {
+  let nextNativeId = 1_000_000_980;
+  let attachCount = 0;
+  const openTabs = new Set(["first-target", "second-target"]);
+  const runtime = {
+    async listTabs() {
+      return { tabs: [...openTabs].map((targetId) => ({ targetId })) };
+    },
+    sendCDPMessage(payload) {
+      const request = JSON.parse(payload);
+      let result = {};
+      if (request.method === "Target.getTargetInfo") {
+        result = {
+          targetInfo: {
+            targetId: request.params.targetId,
+            type: "page",
+            title: "Selected",
+            url: "https://example.test/",
+          },
+        };
+      } else if (request.method === "Target.attachToTarget") {
+        attachCount += 1;
+        result = { sessionId: `native-session-${attachCount}` };
+      } else if (request.method === "Target.closeTarget") {
+        openTabs.delete(request.params.targetId);
+        result = { success: true };
+      } else if (request.method === "Page.getFrameTree") {
+        result = {
+          frameTree: {
+            frame: { id: request.sessionId, loaderId: "loader-1", url: "https://example.test/" },
+          },
+        };
+      }
+      queueMicrotask(() =>
+        runtime.onCDPMessage(JSON.stringify({ id: request.id, result })),
+      );
+    },
+  };
+
+  const transport = egoTransport.createEgoCdpTransport(runtime, {
+    allocateMessageId: () => nextNativeId++,
+    targetIds: ["first-target", "second-target"],
+  });
+  const received = [];
+  transport.onmessage = (message) => received.push(message);
+  transport.releaseConnectionKeepAlive();
+  try {
+    transport.send({
+      id: 1,
+      method: "Target.setAutoAttach",
+      params: { autoAttach: true, waitForDebuggerOnStart: false, flatten: true },
+    });
+    await waitForCondition(
+      () =>
+        received.filter(
+          (message) => message.method === "Target.attachedToTarget",
+        ).length === 2,
+    );
+    const firstTarget = received.find(
+      (message) =>
+        message.method === "Target.attachedToTarget" &&
+        message.params.targetInfo.targetId === "first-target",
+    );
+
+    // The first page learns a frame; an OOPIF of that frame would be restored.
+    runtime.onCDPMessage(
+      JSON.stringify({
+        method: "Page.frameAttached",
+        sessionId: "native-session-1",
+        params: { frameId: "shared-frame", parentFrameId: "first-target" },
+      }),
+    );
+    await waitForImmediate();
+
+    transport.send({
+      id: 2,
+      method: "Target.closeTarget",
+      params: { targetId: firstTarget.params.targetInfo.targetId },
+    });
+    await waitForCondition(() =>
+      received.some((message) => message.id === 2 && message.result),
+    );
+    runtime.onCDPMessage(
+      JSON.stringify({
+        method: "Target.detachedFromTarget",
+        params: { sessionId: "native-session-1", targetId: "first-target" },
+      }),
+    );
+    await waitForImmediate();
+
+    // A late OOPIF of the closed page must not resurrect its frame tree on the
+    // surviving page's session.
+    received.length = 0;
+    runtime.onCDPMessage(
+      JSON.stringify({
+        method: "Target.attachedToTarget",
+        sessionId: "native-session-2",
+        params: {
+          sessionId: "late-oopif-session",
+          targetInfo: {
+            targetId: "late-oopif",
+            type: "iframe",
+            url: "https://checkout.test/",
+            parentFrameId: "shared-frame",
+          },
+          waitingForDebugger: false,
+        },
+      }),
+    );
+    await waitForImmediate();
+    assert.equal(
+      received.some((message) => message.method === "Page.frameAttached"),
+      false,
+      "the closed page's frame ids no longer make a stale parent look live",
+    );
+  } finally {
+    await transport.closeAndWait();
+  }
+});
+
 test("the Ego Playwright transport supplies Browser metadata and accepts unsupported download behavior", async () => {
   assert.equal(typeof egoTransport.createEgoCdpTransport, "function");
 
