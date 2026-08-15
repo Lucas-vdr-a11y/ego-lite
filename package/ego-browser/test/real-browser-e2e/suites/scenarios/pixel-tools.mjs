@@ -147,8 +147,10 @@ export function locateSwatch(image, rgb, region) {
   };
 }
 
-// Screenshots are device pixels; page.mouse takes CSS pixels. This is the whole
-// conversion the visual path depends on.
+// A screenshot taken at the default scale is device pixels; page.mouse takes
+// CSS pixels. The visual path reads its coordinates from a scale:'css'
+// screenshot instead, so this conversion is what that reading is checked
+// against rather than how it is produced.
 export function toCssPoint(box, ratio) {
   return { x: box.centerX / ratio, y: box.centerY / ratio };
 }
