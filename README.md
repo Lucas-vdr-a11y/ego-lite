@@ -40,7 +40,7 @@ Pick whichever fits your flow.
 
 Click to download, then open it to install. Either way, ego lite adds the `ego-browser` skill to every agent's skills directory on your machine.
 
-**1.2 Add the skill with npx**
+**1.2 Add the standalone skill with npx**
 
 Install just the `ego-browser` skill:
 
@@ -50,7 +50,20 @@ npx skills add citrolabs/ego-lite
 
 The first time your agent runs a browser task, it walks you through installing the ego lite app.
 
-**1.3 Let your agent set it up**
+This mode works across agent CLIs and executes each JavaScript round through the documented `ego-browser nodejs` heredoc interface.
+
+**1.3 Install the agent plugin**
+
+The portable plugin supports Claude Code, Codex, Cursor, GitHub Copilot, Grok Build, OpenCode, and DeepSeek Harness, plus WorkBuddy and QwenWork Desktop. It packages the same `ego-browser` Skill for each host, and every JavaScript round uses the documented `ego-browser nodejs` heredoc interface.
+
+```bash
+claude plugin marketplace add citrolabs/ego-lite
+claude plugin install ego@ego-agent-skills
+```
+
+Those commands install it in Claude Code. See the [portable plugin installation guide](plugins/ego/README.md) for the other supported hosts. The plugin and standalone installation methods are independent, but both provide the same heredoc Skill.
+
+**1.4 Let your agent set it up**
 
 Paste this into your agent:
 
@@ -64,11 +77,19 @@ On first launch, ego lite asks one question, whether to migrate your Chrome data
 
 ### 2. Run your first task
 
-In your agent CLI, type `/ego-browser` followed by a space, then describe what you want in plain language:
+With the standalone Skill, type `/ego-browser` followed by a space, then describe what you want in plain language:
 
 ```text
-ego-browser follow @ego_agent on x.com for me
+/ego-browser follow @ego_agent on x.com for me
 ```
+
+With the plugin, use the Skill entry exposed by the host. Claude Code uses the namespaced form:
+
+```text
+/ego:ego-browser follow @ego_agent on x.com for me
+```
+
+Cursor, GitHub Copilot, Grok Build, OpenCode, and DeepSeek Harness use `/ego-browser`; in Codex, ask it to use `$ego-browser`.
 
 The agent picks up the `ego-browser` skill, opens the page in its own Space, reads a Snapshot, acts on the page, and reports back, all while your own tabs stay untouched.
 
