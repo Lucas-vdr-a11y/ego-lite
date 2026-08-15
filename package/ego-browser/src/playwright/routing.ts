@@ -3,9 +3,11 @@ import {
   subscribeEgoCdpTransport,
 } from "../browser-runtime.js";
 import { resolveEgoError } from "../ego-errors.js";
+import { highlightAgentMouse } from "./mouse-highlight.js";
 
 export type EgoCdpRuntime = {
   sendCDPMessage: (payload: string) => unknown;
+  animationHighlightMouseToPosition?: (x: number, y: number) => unknown;
   createTab?: (url?: string) => Promise<unknown> | unknown;
   listTabs?: () => Promise<{
     tabs?: Array<{ targetId?: string; active?: boolean; url?: string }>;
@@ -197,6 +199,7 @@ export class EgoCdpTransport {
 
   send(message: any) {
     if (this.closed) throw new Error("Ego CDP transport is closed");
+    highlightAgentMouse(this.#runtime, message);
     const compatibilityResult = playwrightCompatibilityResult(message.method);
     if (compatibilityResult !== undefined) {
       this.#emit({
