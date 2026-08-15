@@ -34,6 +34,15 @@ type PassthroughSession = {
   nativeTargetId: string;
 };
 
+type FrameTreeBarrier = {
+  heldAutoAttach: any[];
+};
+
+// On reconnect, Chromium keeps existing OOPIF targets but Page.getFrameTree
+// omits them. Let Playwright consume the local frame tree before native
+// auto-attach enumerates those targets, then restore any missing frame node
+// immediately before forwarding its Target.attachedToTarget event.
+
 // While a navigation replacement waits for its commit, interception traffic
 // must keep flowing: a replayed Fetch.enable pauses the replacement's document
 // request, and only the client can continue it. The bridge exposes the
@@ -164,7 +173,12 @@ export class EgoCdpTransport {
   readonly #internallyDetachedSessions = new Set<string>();
   readonly #internallyClosedTargets = new Set<string>();
   readonly #retiredNativeSessions = new Set<string>();
+  readonly #frameTreeBarriers = new Map<string, FrameTreeBarrier>();
+  readonly #knownFrameIds = new Set<string>();
+  readonly #nativeParentSessions = new Map<string, string>();
   readonly #unsubscribe: () => void;
+  #closePromise?: Promise<void>;
+  #closing = false;
   #connecting = true;
   #discoveringOpenedTargets = false;
   readonly #popupDiscoveryQueue: Array<{
@@ -226,6 +240,7 @@ export class EgoCdpTransport {
       this.#replaceRootAutoAttach(message);
       return;
     }
+    if (this.#holdAutoAttachUntilFrameTree(message)) return;
     if (
       message.method === "Target.createTarget" &&
       typeof this.#runtime.createTab === "function"
@@ -413,6 +428,11 @@ export class EgoCdpTransport {
       );
       void Promise.resolve(result).catch((error) => {
         if (!this.#pendingIds.delete(nativeId)) return;
+        this.#failFrameTreeBarrier(
+          message.method,
+          clientSessionId,
+          (error as Error)?.message || String(error),
+        );
         this.#updatePendingWork();
         this.#emit({
           id: message.id,
@@ -425,6 +445,11 @@ export class EgoCdpTransport {
       });
     } catch (error) {
       this.#pendingIds.delete(nativeId);
+      this.#failFrameTreeBarrier(
+        message.method,
+        clientSessionId,
+        (error as Error)?.message || String(error),
+      );
       this.#updatePendingWork();
       throw error;
     }
@@ -456,6 +481,9 @@ export class EgoCdpTransport {
     this.#internallyDetachedSessions.clear();
     this.#internallyClosedTargets.clear();
     this.#retiredNativeSessions.clear();
+    this.#frameTreeBarriers.clear();
+    this.#knownFrameIds.clear();
+    this.#nativeParentSessions.clear();
     this.#updatePendingWork();
     const onclose = this.onclose;
     this.onmessage = undefined;
@@ -485,6 +513,11 @@ export class EgoCdpTransport {
     const pendingEntries = [...this.#pendingIds.values()];
     this.#pendingIds.clear();
     for (const pending of pendingEntries) {
+      this.#failFrameTreeBarrier(
+        pending.method,
+        pending.clientSessionId,
+        description,
+      );
       this.#emit({
         id: pending.clientId,
         error: { code: -32_000, message: description },
@@ -528,28 +561,49 @@ export class EgoCdpTransport {
     }
   }
 
-  async closeAndWait() {
+  closeAndWait() {
+    if (!this.#closePromise) {
+      this.#closing = true;
+      this.#closePromise = this.#closeAndWaitOnce();
+    }
+    return this.#closePromise;
+  }
+
+  async #closeAndWaitOnce() {
     if (!this.closed && this.#targetIds) {
-      const sessionIds = new Set([
-        ...this.#targetsBySession.keys(),
-        ...this.#passthroughSessions.keys(),
-      ]);
+      const childFirstSessionIds = [
+        ...new Set([
+          ...this.#targetsBySession.keys(),
+          ...this.#passthroughSessions.keys(),
+        ]),
+      ].reverse();
+      for (const sessionId of childFirstSessionIds) {
+        this.#internallyDetachedSessions.add(sessionId);
+      }
+      const autoAttachParams = {
+        autoAttach: false,
+        waitForDebuggerOnStart: false,
+        flatten: true,
+      };
+      for (const sessionId of childFirstSessionIds) {
+        await this.#sendNativeCommand(
+          "Target.setAutoAttach",
+          autoAttachParams,
+          sessionId,
+          500,
+        ).catch(() => undefined);
+      }
       await this.#sendNativeCommand(
         "Target.setAutoAttach",
-        {
-          autoAttach: false,
-          waitForDebuggerOnStart: false,
-          flatten: true,
-        },
+        autoAttachParams,
         undefined,
         500,
       ).catch(() => undefined);
-      for (const sessionId of sessionIds) {
-        this.#internallyDetachedSessions.add(sessionId);
+      for (const sessionId of childFirstSessionIds) {
         await this.#sendNativeCommand(
           "Target.detachFromTarget",
           { sessionId },
-          undefined,
+          this.#nativeParentSessions.get(sessionId),
           500,
         ).catch(() => undefined);
       }
@@ -609,10 +663,14 @@ export class EgoCdpTransport {
       if (!message.error && pending.detachedSessionId) {
         this.#passthroughSessions.delete(pending.detachedSessionId);
       }
+      const restoredFrames = this.#prepareFrameTreeResponse(pending, message);
       this.#filterResponse(pending.method, message);
       this.#emit(message);
+      for (const event of restoredFrames) this.#deliverEvent(event);
+      this.#releaseFrameTreeBarrier(pending, message);
       return;
     }
+    if (this.#discardAttachmentWhileClosing(message)) return;
     if (this.#isRetiredSessionEvent(message)) return;
     if (this.#isInternalTargetCloseEvent(message)) {
       // The tombstone has served its purpose once the close event arrives.
@@ -645,6 +703,9 @@ export class EgoCdpTransport {
     }
     const nativeSessionId =
       typeof message.sessionId === "string" ? message.sessionId : undefined;
+    this.#observeKnownFrameEvent(message);
+    const restoredFrames = this.#restoreFrameBeforeOopifAttach(message);
+    this.#recordNativeParentSession(message);
     const route =
       typeof message.sessionId === "string"
         ? this.#routesByNativeSession.get(message.sessionId)
@@ -658,6 +719,13 @@ export class EgoCdpTransport {
       this.#observeRouteEvent(message, route);
       message.sessionId = route.clientSessionId;
       rewriteIncomingProtocolMessage(message, route);
+    }
+    for (const event of restoredFrames) {
+      if (route) {
+        event.sessionId = route.clientSessionId;
+        rewriteIncomingProtocolMessage(event, route);
+      }
+      this.#deliverEvent(event);
     }
     this.#deliverEvent(message);
     if (message.method === "Page.windowOpen") {
@@ -1016,11 +1084,20 @@ export class EgoCdpTransport {
         this.#targetsBySession.set(sessionId, targetId);
       }
     } else if (message.method === "Target.detachedFromTarget") {
-      const targetId = message.params?.targetId;
       const sessionId = message.params?.sessionId;
+      const targetId =
+        message.params?.targetId ||
+        (typeof sessionId === "string"
+          ? this.#targetsBySession.get(sessionId)
+          : undefined);
+      if (typeof targetId === "string" && !message.params?.targetId) {
+        message.params = { ...(message.params || {}), targetId };
+      }
       if (typeof targetId === "string") this.#sessionsByTarget.delete(targetId);
-      if (typeof sessionId === "string")
+      if (typeof sessionId === "string") {
         this.#targetsBySession.delete(sessionId);
+        this.#nativeParentSessions.delete(sessionId);
+      }
     } else if (message.method === "Target.targetDestroyed") {
       const targetId = message.params?.targetId;
       if (typeof targetId === "string") this.#targetIds?.delete(targetId);
@@ -1035,6 +1112,9 @@ export class EgoCdpTransport {
         this.#deferredEvents.push(message);
         continue;
       }
+      this.#observeKnownFrameEvent(message);
+      const restoredFrames = this.#restoreFrameBeforeOopifAttach(message);
+      this.#recordNativeParentSession(message);
       const route =
         typeof message.sessionId === "string"
           ? this.#routesByNativeSession.get(message.sessionId)
@@ -1042,6 +1122,13 @@ export class EgoCdpTransport {
       if (route) {
         message.sessionId = route.clientSessionId;
         rewriteIncomingProtocolMessage(message, route);
+      }
+      for (const event of restoredFrames) {
+        if (route) {
+          event.sessionId = route.clientSessionId;
+          rewriteIncomingProtocolMessage(event, route);
+        }
+        this.#deliverEvent(event);
       }
       this.#deliverEvent(message);
     }
@@ -1150,6 +1237,224 @@ export class EgoCdpTransport {
     ) {
       this.#targetIds.add(targetId);
     }
+  }
+
+  #holdAutoAttachUntilFrameTree(message: any) {
+    const sessionId =
+      typeof message.sessionId === "string" ? message.sessionId : undefined;
+    if (!sessionId) return false;
+    if (
+      message.method === "Page.getFrameTree" &&
+      (this.#routesByClientSession.has(sessionId) ||
+        this.#targetsBySession.has(sessionId))
+    ) {
+      if (!this.#frameTreeBarriers.has(sessionId)) {
+        this.#frameTreeBarriers.set(sessionId, { heldAutoAttach: [] });
+      }
+      return false;
+    }
+    const barrier = this.#frameTreeBarriers.get(sessionId);
+    if (
+      message.method !== "Target.setAutoAttach" ||
+      !message.params?.autoAttach ||
+      !barrier
+    ) {
+      return false;
+    }
+    barrier.heldAutoAttach.push(message);
+    this.#updatePendingWork();
+    return true;
+  }
+
+  #prepareFrameTreeResponse(pending: any, message: any) {
+    const sessionId = pending.clientSessionId;
+    if (
+      pending.method !== "Page.getFrameTree" ||
+      typeof sessionId !== "string" ||
+      !this.#frameTreeBarriers.has(sessionId) ||
+      message.error ||
+      !message.result?.frameTree?.frame
+    ) {
+      return [];
+    }
+    const frameTree = message.result.frameTree;
+    const restored: any[] = [];
+    const mainSession = this.#routesByClientSession.has(sessionId);
+    const visit = (tree: any, restore: boolean) => {
+      const frame = tree?.frame;
+      if (!frame || typeof frame.id !== "string") return;
+      const known = this.#knownFrameIds.has(frame.id);
+      this.#knownFrameIds.add(frame.id);
+      if (restore && !known) {
+        restored.push({
+          method: "Page.frameAttached",
+          sessionId,
+          params: {
+            frameId: frame.id,
+            parentFrameId: frame.parentId,
+          },
+        });
+        restored.push({
+          method: "Page.frameNavigated",
+          sessionId,
+          params: { frame },
+        });
+      }
+      for (const child of tree.childFrames || []) {
+        if (child?.frame && !child.frame.parentId) {
+          child.frame = { ...child.frame, parentId: frame.id };
+        }
+        visit(child, !mainSession);
+      }
+    };
+    visit(frameTree, false);
+    return restored;
+  }
+
+  #releaseFrameTreeBarrier(pending: any, message: any) {
+    const sessionId = pending.clientSessionId;
+    if (
+      pending.method !== "Page.getFrameTree" ||
+      typeof sessionId !== "string"
+    ) {
+      return;
+    }
+    const barrier = this.#frameTreeBarriers.get(sessionId);
+    if (!barrier) return;
+    if (message.error) {
+      this.#failFrameTreeBarrier(
+        pending.method,
+        sessionId,
+        message.error.message || "Page.getFrameTree failed",
+      );
+      return;
+    }
+    setImmediate(() => {
+      if (this.#frameTreeBarriers.get(sessionId) !== barrier) return;
+      this.#frameTreeBarriers.delete(sessionId);
+      const held = barrier.heldAutoAttach.splice(0);
+      this.#updatePendingWork();
+      if (this.closed || this.#closing) return;
+      for (const heldMessage of held) this.send(heldMessage);
+    });
+  }
+
+  #failFrameTreeBarrier(
+    method: unknown,
+    sessionId: string | undefined,
+    description: string,
+  ) {
+    if (method !== "Page.getFrameTree" || !sessionId) return;
+    const barrier = this.#frameTreeBarriers.get(sessionId);
+    if (!barrier) return;
+    this.#frameTreeBarriers.delete(sessionId);
+    for (const held of barrier.heldAutoAttach) {
+      this.#emit({
+        id: held.id,
+        error: { code: -32_000, message: description },
+        sessionId,
+      });
+    }
+    this.#updatePendingWork();
+  }
+
+  #observeKnownFrameEvent(message: any) {
+    if (message.method === "Page.frameAttached") {
+      if (typeof message.params?.frameId === "string") {
+        this.#knownFrameIds.add(message.params.frameId);
+      }
+    } else if (message.method === "Page.frameNavigated") {
+      if (typeof message.params?.frame?.id === "string") {
+        this.#knownFrameIds.add(message.params.frame.id);
+      }
+    } else if (
+      message.method === "Page.frameDetached" &&
+      message.params?.reason !== "swap" &&
+      typeof message.params?.frameId === "string"
+    ) {
+      this.#knownFrameIds.delete(message.params.frameId);
+    }
+  }
+
+  #restoreFrameBeforeOopifAttach(message: any) {
+    const targetInfo = message.params?.targetInfo;
+    const targetId = targetInfo?.targetId;
+    const parentFrameId = targetInfo?.parentFrameId;
+    if (
+      message.method !== "Target.attachedToTarget" ||
+      targetInfo?.type !== "iframe" ||
+      typeof message.sessionId !== "string" ||
+      typeof targetId !== "string" ||
+      typeof parentFrameId !== "string" ||
+      this.#knownFrameIds.has(targetId) ||
+      !this.#knownFrameIds.has(parentFrameId)
+    ) {
+      return [];
+    }
+    this.#knownFrameIds.add(targetId);
+    const frame = {
+      id: targetId,
+      parentId: parentFrameId,
+      loaderId: targetId,
+      name: "",
+      url: typeof targetInfo.url === "string" ? targetInfo.url : "",
+    };
+    return [
+      {
+        method: "Page.frameAttached",
+        sessionId: message.sessionId,
+        params: { frameId: targetId, parentFrameId },
+      },
+      {
+        method: "Page.frameNavigated",
+        sessionId: message.sessionId,
+        params: { frame },
+      },
+    ];
+  }
+
+  #recordNativeParentSession(message: any) {
+    if (
+      message.method === "Target.attachedToTarget" &&
+      typeof message.params?.sessionId === "string" &&
+      typeof message.sessionId === "string"
+    ) {
+      this.#nativeParentSessions.set(
+        message.params.sessionId,
+        message.sessionId,
+      );
+    }
+  }
+
+  #discardAttachmentWhileClosing(message: any) {
+    if (!this.#closing || message.method !== "Target.attachedToTarget") {
+      return false;
+    }
+    const outerSessionId = message.sessionId;
+    const targetId = message.params?.targetInfo?.targetId;
+    const owned =
+      typeof outerSessionId === "string"
+        ? this.#routesByNativeSession.has(outerSessionId) ||
+          this.#targetsBySession.has(outerSessionId) ||
+          this.#passthroughSessions.has(outerSessionId)
+        : typeof targetId === "string" &&
+          (this.#targetIds?.has(targetId) ||
+            this.#routesByNativeTarget.has(targetId));
+    if (!owned) return false;
+    const sessionId = message.params?.sessionId;
+    if (typeof sessionId !== "string") return true;
+    this.#internallyDetachedSessions.add(sessionId);
+    this.#sendNativeFireAndForget(
+      "Runtime.runIfWaitingForDebugger",
+      {},
+      sessionId,
+    );
+    this.#sendNativeFireAndForget(
+      "Target.detachFromTarget",
+      { sessionId },
+      typeof message.sessionId === "string" ? message.sessionId : undefined,
+    );
+    return true;
   }
 
   #filterResponse(method: unknown, message: any) {
@@ -2129,6 +2434,10 @@ export class EgoCdpTransport {
       : Number(this.#connecting) +
         this.#pendingIds.size +
         this.#internalRequests.size +
+        [...this.#frameTreeBarriers.values()].reduce(
+          (total, barrier) => total + barrier.heldAutoAttach.length,
+          0,
+        ) +
         this.#activeOperations;
     if (count === this.#lastPendingWork) return;
     this.#lastPendingWork = count;

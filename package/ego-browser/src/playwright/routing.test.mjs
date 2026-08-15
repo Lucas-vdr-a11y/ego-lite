@@ -579,6 +579,319 @@ test("the direct Playwright transport disables global auto-attach and manually a
   await lease.close();
 });
 
+test("the direct Playwright transport re-adopts a nested OOPIF tree that predates the connection", async () => {
+  let nextNativeId = 1_000_000_180;
+  const sent = [];
+  const timeline = [];
+  const pendingFrameTrees = new Map();
+  let mainTreeConsumed = false;
+  const targetInfos = [
+    {
+      targetId: "existing-oopif",
+      type: "iframe",
+      title: "Checkout",
+      url: "https://checkout.test/",
+      parentId: "selected-target",
+      parentFrameId: "selected-target",
+    },
+    {
+      targetId: "nested-oopif",
+      type: "iframe",
+      title: "Map",
+      url: "https://map.test/",
+      parentId: "existing-oopif",
+      parentFrameId: "local-frame",
+    },
+  ];
+  const runtime = {
+    sendCDPMessage(payload) {
+      const request = JSON.parse(payload);
+      sent.push(request);
+      let result = {};
+      if (request.method === "Target.getTargetInfo") {
+        result = {
+          targetInfo: {
+            targetId: "selected-target",
+            type: "page",
+            title: "Selected",
+            url: "https://main.test/",
+          },
+        };
+      } else if (request.method === "Target.attachToTarget") {
+        assert.equal(request.params.targetId, "selected-target");
+        result = { sessionId: "selected-session" };
+      } else if (request.method === "Page.getFrameTree") {
+        pendingFrameTrees.set(request.sessionId, request);
+        return;
+      } else if (
+        request.method === "Target.setAutoAttach" &&
+        request.params?.autoAttach &&
+        request.sessionId === "selected-session"
+      ) {
+        timeline.push(`native:main-auto-attach:${mainTreeConsumed}`);
+        queueMicrotask(() => {
+          runtime.onCDPMessage(
+            JSON.stringify({
+              method: "Target.attachedToTarget",
+              sessionId: "selected-session",
+              params: {
+                sessionId: "oopif-session",
+                targetInfo: targetInfos[0],
+                waitingForDebugger: false,
+              },
+            }),
+          );
+        });
+      } else if (
+        request.method === "Target.setAutoAttach" &&
+        request.params?.autoAttach &&
+        request.sessionId === "oopif-session"
+      ) {
+        timeline.push("native:child-auto-attach");
+        queueMicrotask(() => {
+          runtime.onCDPMessage(
+            JSON.stringify({
+              method: "Target.attachedToTarget",
+              sessionId: "oopif-session",
+              params: {
+                sessionId: "nested-session",
+                targetInfo: targetInfos[1],
+                waitingForDebugger: false,
+              },
+            }),
+          );
+        });
+      }
+      queueMicrotask(() => {
+        runtime.onCDPMessage(JSON.stringify({ id: request.id, result }));
+      });
+    },
+  };
+  const transport = egoTransport.createEgoCdpTransport(runtime, {
+    allocateMessageId: () => nextNativeId++,
+    targetIds: ["selected-target"],
+  });
+  const received = [];
+  transport.onmessage = (message) => {
+    received.push(message);
+    if (message.id === 25) {
+      timeline.push("client:main-frame-tree");
+      queueMicrotask(() => {
+        mainTreeConsumed = true;
+        timeline.push("client:main-frame-tree-consumed");
+      });
+    } else if (message.id === 27) {
+      timeline.push("client:child-frame-tree");
+    } else if (
+      message.method === "Page.frameAttached" ||
+      message.method === "Page.frameNavigated" ||
+      message.method === "Target.attachedToTarget"
+    ) {
+      const targetId =
+        message.params?.targetInfo?.targetId ||
+        message.params?.frameId ||
+        message.params?.frame?.id;
+      timeline.push(`client:${message.method}:${targetId}`);
+    }
+  };
+
+  try {
+    transport.send({
+      id: 24,
+      method: "Target.setAutoAttach",
+      params: {
+        autoAttach: true,
+        waitForDebuggerOnStart: true,
+        flatten: true,
+      },
+    });
+    for (let index = 0; index < 6; index += 1) await waitForImmediate();
+
+    assert.deepEqual(
+      sent
+        .filter((request) => request.method === "Target.attachToTarget")
+        .map((request) => request.params.targetId),
+      ["selected-target"],
+      "bootstrap manually attaches only the selected top-level target",
+    );
+
+    transport.send({
+      id: 25,
+      method: "Page.getFrameTree",
+      params: {},
+      sessionId: "selected-session",
+    });
+    transport.send({
+      id: 26,
+      method: "Target.setAutoAttach",
+      params: {
+        autoAttach: true,
+        waitForDebuggerOnStart: true,
+        flatten: true,
+      },
+      sessionId: "selected-session",
+    });
+    await waitForImmediate();
+    assert.equal(
+      sent.some(
+        (request) =>
+          request.method === "Target.setAutoAttach" &&
+          request.params?.autoAttach &&
+          request.sessionId === "selected-session",
+      ),
+      false,
+      "the parent auto-attach waits for its frame tree response",
+    );
+
+    const mainTreeRequest = pendingFrameTrees.get("selected-session");
+    runtime.onCDPMessage(
+      JSON.stringify({
+        id: mainTreeRequest.id,
+        result: {
+          frameTree: {
+            frame: {
+              id: "selected-target",
+              loaderId: "loader-selected",
+              url: "https://main.test/",
+              name: "",
+            },
+          },
+        },
+      }),
+    );
+    const firstChild = await waitForMessage(
+      received,
+      (message) =>
+        message.method === "Target.attachedToTarget" &&
+        message.params?.targetInfo?.targetId === "existing-oopif",
+    );
+    const mainTree = received.find((message) => message.id === 25);
+    assert.equal(
+      mainTree.result.frameTree.childFrames,
+      undefined,
+      "the bridge leaves the native frame tree unchanged",
+    );
+    assert.equal(firstChild.sessionId, "selected-session");
+    assert.equal(firstChild.params.sessionId, "oopif-session");
+    assert.ok(
+      timeline.indexOf("client:main-frame-tree-consumed") <
+        timeline.indexOf("native:main-auto-attach:true"),
+      "Playwright consumes the parent frame tree before native auto-attach runs",
+    );
+    assert.ok(
+      timeline.indexOf("client:main-frame-tree") <
+        timeline.indexOf("client:Page.frameAttached:existing-oopif"),
+      "the parent frame tree response precedes the restored OOPIF frame",
+    );
+    assert.ok(
+      timeline.indexOf("client:Page.frameAttached:existing-oopif") <
+        timeline.indexOf("client:Page.frameNavigated:existing-oopif"),
+      "the restored OOPIF is attached before it is navigated",
+    );
+    assert.ok(
+      timeline.indexOf("client:Page.frameNavigated:existing-oopif") <
+        timeline.indexOf("client:Target.attachedToTarget:existing-oopif"),
+      "the restored OOPIF frame exists before Chromium delivers its session",
+    );
+
+    transport.send({
+      id: 27,
+      method: "Page.getFrameTree",
+      params: {},
+      sessionId: "oopif-session",
+    });
+    transport.send({
+      id: 28,
+      method: "Target.setAutoAttach",
+      params: {
+        autoAttach: true,
+        waitForDebuggerOnStart: true,
+        flatten: true,
+      },
+      sessionId: "oopif-session",
+    });
+    await waitForImmediate();
+    assert.equal(
+      sent.some(
+        (request) =>
+          request.method === "Target.setAutoAttach" &&
+          request.params?.autoAttach &&
+          request.sessionId === "oopif-session",
+      ),
+      false,
+      "the nested auto-attach also waits for its parent OOPIF tree",
+    );
+
+    const childTreeRequest = pendingFrameTrees.get("oopif-session");
+    runtime.onCDPMessage(
+      JSON.stringify({
+        id: childTreeRequest.id,
+        result: {
+          frameTree: {
+            frame: {
+              id: "existing-oopif",
+              parentId: "selected-target",
+              loaderId: "loader-oopif",
+              url: "https://checkout.test/",
+              name: "",
+            },
+            childFrames: [
+              {
+                frame: {
+                  id: "local-frame",
+                  parentId: "existing-oopif",
+                  loaderId: "loader-local",
+                  url: "https://checkout.test/local-frame",
+                  name: "",
+                },
+              },
+            ],
+          },
+        },
+      }),
+    );
+    const nestedChild = await waitForMessage(
+      received,
+      (message) =>
+        message.method === "Target.attachedToTarget" &&
+        message.params?.targetInfo?.targetId === "nested-oopif",
+    );
+    assert.equal(nestedChild.sessionId, "oopif-session");
+    assert.equal(nestedChild.params.sessionId, "nested-session");
+    assert.ok(
+      timeline.indexOf("client:child-frame-tree") <
+        timeline.indexOf("client:Page.frameAttached:local-frame"),
+      "an OOPIF's existing local child is restored from its ignored frame tree",
+    );
+    assert.ok(
+      timeline.indexOf("client:Page.frameNavigated:local-frame") <
+        timeline.indexOf("client:Page.frameAttached:nested-oopif"),
+      "the nested OOPIF is attached after its local parent frame exists",
+    );
+    assert.ok(
+      timeline.indexOf("client:Page.frameAttached:nested-oopif") <
+        timeline.indexOf("client:Page.frameNavigated:nested-oopif"),
+      "the nested frame is attached before it is navigated",
+    );
+    assert.ok(
+      timeline.indexOf("client:Page.frameNavigated:nested-oopif") <
+        timeline.indexOf("client:Target.attachedToTarget:nested-oopif"),
+      "the nested frame exists before Chromium delivers its child session",
+    );
+    assert.equal(
+      sent.some(
+        (request) =>
+          request.method === "Target.autoAttachRelated" ||
+          request.method === "Target.getTargets",
+      ),
+      false,
+      "bootstrap neither watches nor snapshots iframe targets",
+    );
+  } finally {
+    await transport.closeAndWait();
+  }
+});
+
 test("the Ego Playwright transport supplies Browser metadata and accepts unsupported download behavior", async () => {
   assert.equal(typeof egoTransport.createEgoCdpTransport, "function");
 
@@ -2413,8 +2726,21 @@ test("the direct Playwright transport disables auto-attach and detaches sessions
   await transport.closeAndWait();
 
   assert.deepEqual(
-    sent.map(({ method, params }) => ({ method, params })),
+    sent.map(({ method, params, sessionId }) => ({
+      method,
+      params,
+      ...(sessionId ? { sessionId } : {}),
+    })),
     [
+      {
+        method: "Target.setAutoAttach",
+        params: {
+          autoAttach: false,
+          waitForDebuggerOnStart: false,
+          flatten: true,
+        },
+        sessionId: "selected-session",
+      },
       {
         method: "Target.setAutoAttach",
         params: {
@@ -2428,6 +2754,151 @@ test("the direct Playwright transport disables auto-attach and detaches sessions
         params: { sessionId: "selected-session" },
       },
     ],
+  );
+  assert.equal(transport.closed, true);
+});
+
+test("the direct Playwright transport disables frame-session auto-attach before detaching OOPIFs", async () => {
+  let nextNativeId = 1_000_000_350;
+  const sent = [];
+  const runtime = {
+    sendCDPMessage(payload) {
+      const request = JSON.parse(payload);
+      sent.push(request);
+      queueMicrotask(() => {
+        if (
+          request.method === "Target.setAutoAttach" &&
+          request.sessionId === "selected-session"
+        ) {
+          runtime.onCDPMessage(
+            JSON.stringify({
+              method: "Target.detachedFromTarget",
+              params: {
+                targetId: "oopif-target",
+                sessionId: "oopif-session",
+              },
+            }),
+          );
+        }
+        if (
+          request.method === "Target.setAutoAttach" &&
+          request.sessionId === undefined
+        ) {
+          runtime.onCDPMessage(
+            JSON.stringify({
+              method: "Target.attachedToTarget",
+              sessionId: "foreign-session",
+              params: {
+                sessionId: "foreign-oopif-session",
+                targetInfo: { targetId: "foreign-oopif", type: "iframe" },
+                waitingForDebugger: true,
+              },
+            }),
+          );
+          runtime.onCDPMessage(
+            JSON.stringify({
+              method: "Target.attachedToTarget",
+              sessionId: "selected-session",
+              params: {
+                sessionId: "late-oopif-session",
+                targetInfo: { targetId: "late-oopif", type: "iframe" },
+                waitingForDebugger: true,
+              },
+            }),
+          );
+        }
+        runtime.onCDPMessage(JSON.stringify({ id: request.id, result: {} }));
+      });
+    },
+  };
+  const transport = egoTransport.createEgoCdpTransport(runtime, {
+    targetIds: ["selected-target"],
+    allocateMessageId: () => nextNativeId++,
+  });
+  runtime.onCDPMessage(
+    JSON.stringify({
+      method: "Target.attachedToTarget",
+      params: {
+        sessionId: "selected-session",
+        targetInfo: { targetId: "selected-target", type: "page" },
+      },
+    }),
+  );
+  runtime.onCDPMessage(
+    JSON.stringify({
+      method: "Target.attachedToTarget",
+      sessionId: "selected-session",
+      params: {
+        sessionId: "oopif-session",
+        targetInfo: { targetId: "oopif-target", type: "iframe" },
+        waitingForDebugger: false,
+      },
+    }),
+  );
+  await waitForImmediate();
+  const received = [];
+  transport.onmessage = (message) => received.push(message);
+
+  await transport.closeAndWait();
+
+  assert.deepEqual(
+    sent.map(({ method, params, sessionId }) => ({
+      method,
+      params,
+      ...(sessionId ? { sessionId } : {}),
+    })),
+    [
+      {
+        method: "Target.setAutoAttach",
+        params: {
+          autoAttach: false,
+          waitForDebuggerOnStart: false,
+          flatten: true,
+        },
+        sessionId: "oopif-session",
+      },
+      {
+        method: "Target.setAutoAttach",
+        params: {
+          autoAttach: false,
+          waitForDebuggerOnStart: false,
+          flatten: true,
+        },
+        sessionId: "selected-session",
+      },
+      {
+        method: "Target.setAutoAttach",
+        params: {
+          autoAttach: false,
+          waitForDebuggerOnStart: false,
+          flatten: true,
+        },
+      },
+      {
+        method: "Runtime.runIfWaitingForDebugger",
+        params: {},
+        sessionId: "late-oopif-session",
+      },
+      {
+        method: "Target.detachFromTarget",
+        params: { sessionId: "late-oopif-session" },
+        sessionId: "selected-session",
+      },
+      {
+        method: "Target.detachFromTarget",
+        params: { sessionId: "oopif-session" },
+        sessionId: "selected-session",
+      },
+      {
+        method: "Target.detachFromTarget",
+        params: { sessionId: "selected-session" },
+      },
+    ],
+  );
+  assert.deepEqual(
+    received,
+    [],
+    "shutdown ignores foreign attachments and does not leak child detaches",
   );
   assert.equal(transport.closed, true);
 });

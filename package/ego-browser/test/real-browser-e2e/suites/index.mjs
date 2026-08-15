@@ -2,7 +2,10 @@ import { agentMouseOverlayCase } from "./platform/agent-mouse-overlay.mjs";
 import { ariaSnapshotCase } from "./platform/aria-snapshot.mjs";
 import { nativeCloseRegressionCase } from "./platform/close-regression.mjs";
 import { contextLifecycleCase } from "./platform/context-lifecycle.mjs";
-import { crossRoundPersistenceCase } from "./platform/cross-round-persistence.mjs";
+import {
+  crossRoundOopifPersistenceCase,
+  crossRoundPersistenceCase,
+} from "./platform/cross-round-persistence.mjs";
 import { duplicateTaskSpaceNameCase } from "./platform/duplicate-name.mjs";
 import { nativeCallbackContainmentCase } from "./platform/native-callback-containment.mjs";
 import { nativePlaywrightCase } from "./platform/native-playwright.mjs";
@@ -30,6 +33,7 @@ export const e2eCases = [
   },
   taskSpaceProfileCase,
   crossRoundPersistenceCase,
+  crossRoundOopifPersistenceCase,
   duplicateTaskSpaceNameCase,
   taskSpaceProcessContentionCase,
   ownershipLifecycleCase,
