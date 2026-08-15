@@ -50,6 +50,25 @@ export const visualPathScenarioCase = scenarioCase(
         return decodePng(await observedScreenshot(page, label));
       }
 
+      // Every coordinate this case aims with is read out of a scale:'css'
+      // screenshot and handed to page.mouse unconverted, because page.mouse
+      // speaks CSS pixels. That binds the clicks below to CSS pixel
+      // screenshots: should they ever stop being honoured, the image comes
+      // back in device pixels, every coordinate read out of it is one device
+      // pixel ratio too large, and the aiming fails instead of passing on a
+      // conversion this case did itself. A 1x display cannot tell the two
+      // units apart; the ratio the fixture reports is asserted on below.
+      async function shootCss(label, options) {
+        const image = await page.screenshot({
+          animations: "disabled",
+          scale: "css",
+          timeout: 60_000,
+          ...options,
+        });
+        assert(image.length > 0, label + " screenshot contains image bytes");
+        return decodePng(image);
+      }
+
       async function shootWholePage() {
         const image = await page.screenshot({
           animations: "disabled",
@@ -65,26 +84,43 @@ export const visualPathScenarioCase = scenarioCase(
         return page.evaluate(() => window.scrollY);
       }
 
-      // Reads a target straight out of the image. Nothing here asks the DOM
-      // where anything is: that is the whole point of the visual path.
+      // Reads a target straight out of a CSS pixel image. Nothing here asks the
+      // DOM where anything is: that is the whole point of the visual path. The
+      // measured size is compared against the CSS box rather than the device
+      // pixel one, so an image that came back in device pixels is caught here
+      // before its centre is ever aimed at. A swatch edge that lands on a
+      // fractional CSS pixel is antialiased away from its own colour, which
+      // costs at most one row or column of the match.
       function sight(image, target) {
         const box = locateSwatch(image, target.pendingRgb);
         assert(box, target.id + " is visible in the screenshot");
-        assertEqual(
-          box.width,
-          Math.round(target.width * ratio),
-          target.id + " keeps its rendered width in the image",
+        assert(
+          Math.abs(box.width - target.width) <= 1,
+          target.id +
+            " keeps its CSS width in the image: measured " +
+            box.width +
+            " against a CSS width of " +
+            target.width +
+            " and a device pixel width of " +
+            Math.round(target.width * ratio),
         );
-        assertEqual(
-          box.height,
-          Math.round(target.height * ratio),
-          target.id + " keeps its rendered height in the image",
+        assert(
+          Math.abs(box.height - target.height) <= 1,
+          target.id +
+            " keeps its CSS height in the image: measured " +
+            box.height +
+            " against a CSS height of " +
+            target.height +
+            " and a device pixel height of " +
+            Math.round(target.height * ratio),
         );
         assert(
           box.fill > 0.98,
           target.id + " reads back as one solid block of its own colour",
         );
-        return toCssPoint(box, ratio);
+        // No division by the device pixel ratio: a centre read out of a CSS
+        // pixel image is already the coordinate page.mouse takes.
+        return { x: box.centerX, y: box.centerY };
       }
 
       async function aim(target, point) {
@@ -125,33 +161,56 @@ export const visualPathScenarioCase = scenarioCase(
       );
 
       // scale:'css' hands back the picture in CSS pixels, which is the unit
-      // page.mouse takes: a coordinate read out of this image is aimed with, so
-      // the visual path needs no device pixel ratio conversion at all.
-      const cssScaled = decodePng(
-        await page.screenshot({
-          animations: "disabled",
-          scale: "css",
-          timeout: 60_000,
-        }),
-      );
+      // page.mouse takes: this is the image every coordinate below is read out
+      // of, so the visual path needs no device pixel ratio conversion at all.
+      const cssBoard = await shootCss("alignment board at rest in css pixels");
       assertEqual(
-        cssScaled.width,
+        cssBoard.width,
         environment.innerWidth,
         "a scale:'css' screenshot spans the CSS viewport, so an x read from it is already a page.mouse x",
       );
       assertEqual(
-        cssScaled.height,
+        cssBoard.height,
         environment.innerHeight,
         "a scale:'css' screenshot is as tall as the CSS viewport, so a y read from it is already a page.mouse y",
       );
       assertEqual(
-        Math.round(cssScaled.width * ratio),
+        Math.round(cssBoard.width * ratio),
         board.width,
         "the css screenshot is the device pixel screenshot divided by the device pixel ratio",
       );
       assert(
-        ratio === 1 || cssScaled.width < board.width,
+        ratio === 1 || cssBoard.width < board.width,
         "a screenshot taken with no scale still returns device pixels: Playwright defaults to scale:'device' and honouring scale:'css' must not flip that default",
+      );
+
+      // The same swatch located in both images: aiming straight off the css
+      // image is the same aim as the device pixel reading converted by hand,
+      // which is what this case used to do for every click.
+      const deviceAlpha = locateSwatch(board, PRIMARY[0].pendingRgb);
+      const cssAlpha = locateSwatch(cssBoard, PRIMARY[0].pendingRgb);
+      assert(
+        deviceAlpha && cssAlpha,
+        PRIMARY[0].id + " is visible in both the device pixel and css images",
+      );
+      const convertedAlpha = toCssPoint(deviceAlpha, ratio);
+      assert(
+        Math.abs(convertedAlpha.x - cssAlpha.centerX) <= 1 &&
+          Math.abs(convertedAlpha.y - cssAlpha.centerY) <= 1,
+        "a centre read off the css image needs no conversion: css reads " +
+          cssAlpha.centerX +
+          "," +
+          cssAlpha.centerY +
+          " against a device pixel reading of " +
+          deviceAlpha.centerX +
+          "," +
+          deviceAlpha.centerY +
+          " converted to " +
+          convertedAlpha.x +
+          "," +
+          convertedAlpha.y +
+          " at ratio " +
+          ratio,
       );
 
       // The css scale reaches every screenshot surface, not just the viewport
@@ -207,7 +266,7 @@ export const visualPathScenarioCase = scenarioCase(
       // One clean image supplies every primary coordinate: click markers land on
       // the targets already hit, and re-reading between clicks would let a
       // marker eat into the neighbour that is measured next.
-      const primaryPoints = PRIMARY.map((target) => sight(board, target));
+      const primaryPoints = PRIMARY.map((target) => sight(cssBoard, target));
       for (const [index, target] of PRIMARY.entries()) {
         await aim(target, primaryPoints[index]);
       }
@@ -258,14 +317,9 @@ export const visualPathScenarioCase = scenarioCase(
           "px",
       );
 
-      const cssWholePage = decodePng(
-        await page.screenshot({
-          animations: "disabled",
-          fullPage: true,
-          scale: "css",
-          timeout: 60_000,
-        }),
-      );
+      const cssWholePage = await shootCss("the whole page in css pixels", {
+        fullPage: true,
+      });
       assert(
         Math.abs(cssWholePage.width * ratio - wholePage.width) <= 1 &&
           Math.abs(cssWholePage.height * ratio - wholePage.height) <= 1,
@@ -281,24 +335,30 @@ export const visualPathScenarioCase = scenarioCase(
           ratio,
       );
       assert(
-        cssWholePage.height > cssScaled.height,
+        cssWholePage.height > cssBoard.height,
         "a full-page scale:'css' screenshot still spans the whole document rather than one viewport",
       );
-      const chipOnPage = locateSwatch(wholePage, CHIPS[0].pendingRgb);
+      // The scroll target is a page coordinate, and window.scrollTo takes CSS
+      // pixels too, so it is read off the css full-page image directly.
+      const chipOnPage = locateSwatch(cssWholePage, CHIPS[0].pendingRgb);
       assert(chipOnPage, "the first chip is visible in the full-page screenshot");
-      const chipPageY = chipOnPage.centerY / ratio;
+      const chipPageY = chipOnPage.centerY;
       const scrolled = await scrollPageTo(
         Math.max(0, Math.round(chipPageY - environment.innerHeight / 2)),
       );
       assert(scrolled > 0, "the page scrolled towards the precision chips");
 
-      const chipBoard = await shoot("precision chips in view");
+      const chipBoard = await shootCss("precision chips in view");
       const chipInView = locateSwatch(chipBoard, CHIPS[0].pendingRgb);
       assert(chipInView, "the first chip is visible after scrolling");
-      assertEqual(
-        Math.round(chipInView.centerY / ratio + scrolled),
-        Math.round(chipPageY),
-        "full-page screenshot coordinates are page coordinates, viewport screenshot coordinates are not",
+      assert(
+        Math.abs(chipInView.centerY + scrolled - chipPageY) <= 1,
+        "full-page screenshot coordinates are page coordinates, viewport screenshot coordinates are not: the chip sits at " +
+          chipInView.centerY +
+          " in a viewport scrolled to " +
+          scrolled +
+          " against a page position of " +
+          chipPageY,
       );
 
       const chipPoints = CHIPS.map((chip) => sight(chipBoard, chip));
@@ -323,18 +383,24 @@ export const visualPathScenarioCase = scenarioCase(
           staleReadback,
       );
 
-      const stageBoard = await shoot("canvas stage in view");
+      const stageBoard = await shootCss("canvas stage in view");
       const paper = locateSwatch(stageBoard, STAGE.paperRgb);
       assert(paper, "the canvas surface is visible in the screenshot");
-      assertEqual(
-        paper.width,
-        Math.round(STAGE.width * ratio),
-        "the canvas surface reads back at its rendered width",
+      assert(
+        Math.abs(paper.width - STAGE.width) <= 1,
+        "the canvas surface reads back at its CSS width: measured " +
+          paper.width +
+          " against a CSS width of " +
+          STAGE.width +
+          " and a device pixel width of " +
+          Math.round(STAGE.width * ratio),
       );
-      const stageLeft = paper.minX / ratio;
-      const stageTop = paper.minY / ratio;
-      const stageWidth = paper.width / ratio;
-      const stageHeight = paper.height / ratio;
+      // Every point of the gesture below is a CSS pixel taken straight from the
+      // image, the same unit page.mouse moves in.
+      const stageLeft = paper.minX;
+      const stageTop = paper.minY;
+      const stageWidth = paper.width;
+      const stageHeight = paper.height;
       const from = {
         x: stageLeft + stageWidth * 0.15,
         y: stageTop + stageHeight * 0.25,
@@ -360,19 +426,25 @@ export const visualPathScenarioCase = scenarioCase(
         "a pressed pointer path draws one stroke on a surface with no structure to read",
       );
 
-      const inked = await shoot("canvas after the stroke");
+      const inked = await shootCss("canvas after the stroke");
       const ink = locateSwatch(inked, STAGE.inkRgb);
       assert(ink, "the stroke is visible in the screenshot");
       assert(
-        Math.abs(ink.minX / ratio - from.x) <= 4,
-        "the stroke starts at the pixel the pointer pressed on",
+        Math.abs(ink.minX - from.x) <= 4,
+        "the stroke starts at the pixel the pointer pressed on: the ink begins at " +
+          ink.minX +
+          " against a press at " +
+          from.x,
       );
       assert(
-        Math.abs(ink.maxX / ratio - to.x) <= 4,
-        "the stroke ends at the pixel the pointer released on",
+        Math.abs(ink.maxX - to.x) <= 4,
+        "the stroke ends at the pixel the pointer released on: the ink ends at " +
+          ink.maxX +
+          " against a release at " +
+          to.x,
       );
       assert(
-        ink.height / ratio > stageHeight * 0.3,
+        ink.height > stageHeight * 0.3,
         "the stroke follows the whole dragged path instead of joining two points",
       );
     `,

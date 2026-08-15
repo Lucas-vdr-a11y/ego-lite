@@ -147,6 +147,43 @@ test("the Ego Playwright transport forwards events and ignores another CDP clien
   transport.close();
 });
 
+test("the Ego Playwright transport moves the native agent cursor with each pointer move", () => {
+  const sent = [];
+  const highlighted = [];
+  const runtime = {
+    sendCDPMessage(payload) {
+      sent.push(JSON.parse(payload));
+    },
+    animationHighlightMouseToPosition(x, y) {
+      highlighted.push([x, y]);
+    },
+  };
+  const transport = egoTransport.createEgoCdpTransport(runtime, {
+    allocateMessageId: () => 1_000_000_003,
+  });
+
+  transport.send({
+    id: 1,
+    method: "Input.dispatchMouseEvent",
+    params: { type: "mouseMoved", x: 240, y: 130, button: "none" },
+    sessionId: "session-1",
+  });
+  transport.send({
+    id: 2,
+    method: "Input.dispatchMouseEvent",
+    params: { type: "mousePressed", x: 240, y: 130, button: "left" },
+    sessionId: "session-1",
+  });
+
+  assert.deepEqual(highlighted, [[240, 130]]);
+  assert.deepEqual(
+    sent.map((message) => message.params.type),
+    ["mouseMoved", "mousePressed"],
+    "the overlay observes the pointer stream without consuming it",
+  );
+  transport.close();
+});
+
 test("the direct Playwright transport exposes only targets from the selected TaskSpace", async () => {
   class FakeWebSocketTransport {
     static async connect() {
