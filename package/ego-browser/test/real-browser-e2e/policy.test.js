@@ -1364,3 +1364,42 @@ test("keyboard helpers distinguish explicit focus from natural focus flow", () =
   );
 });
 
+test("new semantic scenarios keep cleanup and raw AX evidence attached to the exact host", () => {
+  const sourceFor = (name) => {
+    const scenario = scenarioCases.find((testCase) => testCase.name === name);
+    assert.ok(scenario, name + " is registered");
+    return scenario.body();
+  };
+
+  const webSource = sourceFor("web test: web-components");
+  assert.match(webSource, /buttonIndex >= 0/);
+  assert.match(webSource, /shadowRootIndex > buttonIndex/);
+  assert.match(webSource, /hostIndex > shadowRootIndex/);
+  assert.match(webSource, /swappedNotesIndex >= 0/);
+  assert.match(webSource, /swappedRouteIndex >= 0/);
+  assert.doesNotMatch(webSource, /button\[(?:review|swap)\] > div > article/);
+
+  const nativeSource = sourceFor("web test: native-form-controls");
+  assert.match(nativeSource, /element\.validity\.valid/);
+  assert.doesNotMatch(nativeSource, /checkValidity\(\)/);
+  assert.match(nativeSource, /classicPickerFailure[\s\S]*finally/);
+  assert.match(nativeSource, /customizablePickerFailure[\s\S]*finally/);
+
+  for (const name of [
+    "web test: media-embeds",
+    "web test: table-semantics",
+    "web test: native-form-controls",
+    "web test: web-components",
+    "web test: contract-amendment",
+    "web test: document-outline",
+    "web test: inline-semantics",
+  ]) {
+    const source = sourceFor(name);
+    assert.match(source, /DOM\.describeNode/);
+    assert.match(source, /candidate\.backendDOMNodeId === backendNodeId/);
+    assert.doesNotMatch(
+      source,
+      /find\(\s*\(candidate\) => candidate\.ignored !== true\s*\)/,
+    );
+  }
+});
