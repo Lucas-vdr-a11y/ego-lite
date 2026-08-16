@@ -233,6 +233,15 @@ export const TEST_CASES = [
     description:
       "Review independent open-shadow shipment cards, then reassign their projected route and notes through a real component control.",
   },
+  {
+    slug: "contract-amendment",
+    route: "/tests/contract-amendment",
+    number: "27",
+    title: "Contract amendment",
+    eyebrow: "Demarcating edits / legal acceptance",
+    description:
+      "Compare the retained terms in change request CR-482, accept the revision, and verify keyboard undo and restore history.",
+  },
 ];
 
 export function findTestCase(slug) {

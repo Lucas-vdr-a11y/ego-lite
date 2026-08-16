@@ -30,6 +30,7 @@ const interactiveScenarios = new Set([
   "table-semantics",
   "native-form-controls",
   "web-components",
+  "contract-amendment",
 ]);
 
 export function scenarioModulePath(slug) {

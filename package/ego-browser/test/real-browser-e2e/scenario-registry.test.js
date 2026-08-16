@@ -924,6 +924,135 @@ test("keeps the SVG and MathML journey on observable user behavior", () => {
   );
 });
 
+test("registers the contract amendment standards scenario", async () => {
+  const scenarioIndex = await readFile(
+    new URL("./site/src/scenarios/index.jsx", import.meta.url),
+    "utf8",
+  );
+  const testCase = TEST_CASES.find(
+    (candidate) => candidate.slug === "contract-amendment",
+  );
+
+  assert.equal(testCase?.route, "/tests/contract-amendment");
+  assert.match(scenarioIndex, /["']contract-amendment["']\s*:/);
+  assert(
+    scenarioCases.some(
+      (candidate) => candidate.name === "web test: contract-amendment",
+    ),
+    "contract-amendment has a real-browser journey",
+  );
+});
+
+test("contract amendment fixture keeps both native edits and the review controls", async () => {
+  const viewSource = await readFile(
+    new URL(
+      "./site/src/scenarios/contract-amendment/view.jsx",
+      import.meta.url,
+    ),
+    "utf8",
+  ).catch(() => "");
+  const clientSource = await readFile(
+    new URL(
+      "./site/src/scenarios/contract-amendment/client.js",
+      import.meta.url,
+    ),
+    "utf8",
+  ).catch(() => "");
+
+  assert.match(viewSource, /CR-482/);
+  assert.match(
+    viewSource,
+    /<del\b(?=[^>]*cite=["']\/change-requests\/CR-482["'])(?=[^>]*dateTime=["']2026-08-15T09:30:00\+08:00["'])[^>]*>/,
+  );
+  assert.match(
+    viewSource,
+    /<ins\b(?=[^>]*cite=["']\/change-requests\/CR-482["'])(?=[^>]*dateTime=["']2026-08-15T09:30:00\+08:00["'])[^>]*>/,
+  );
+  assert.match(viewSource, /within 60 minutes of a severity-one incident/);
+  assert.match(viewSource, /within 30 minutes of a severity-one incident/);
+  assert.match(viewSource, /data-accept-amendment/);
+  assert.match(viewSource, /data-amendment-history/);
+  assert.match(viewSource, /data-testid=["']amendment-review-status["']/);
+  assert.doesNotMatch(
+    viewSource,
+    /<(?:del|ins)\b[^>]*\brole=|\bhidden\b|onClick=|dangerouslySetInnerHTML/,
+  );
+
+  assert.match(clientSource, /addEventListener\(["']click["']/);
+  assert.match(clientSource, /Acceptance recorded for CR-482/);
+  assert.match(clientSource, /Acceptance withdrawn; CR-482 is pending again/);
+  assert.match(clientSource, /acceptAmendment\.disabled\s*=\s*true/);
+  assert.match(clientSource, /acceptAmendment\.disabled\s*=\s*false/);
+  assert.match(
+    clientSource,
+    /historyAction\.textContent\s*=\s*["']Undo acceptance["']/,
+  );
+  assert.match(
+    clientSource,
+    /historyAction\.textContent\s*=\s*["']Restore acceptance["']/,
+  );
+  assert.doesNotMatch(
+    clientSource,
+    /dispatchEvent\(|\.click\(\)|\.focus\(|innerHTML\s*=|remove\(\)/,
+  );
+});
+
+test("contract amendment journey compares native AX and drives trusted review actions", () => {
+  const testCase = scenarioCases.find(
+    (candidate) => candidate.name === "web test: contract-amendment",
+  );
+  const operations = scenarioOperations(testCase?.body() || "");
+
+  assert.match(operations, /ariaSnapshot\(\{ ref: true \}\)/);
+  assert.match(operations, /Accessibility\.getPartialAXTree/);
+  assert.match(operations, /["']deletion["']/);
+  assert.match(operations, /["']insertion["']/);
+  assert.match(operations, /freshDeletionRef/);
+  assert.match(operations, /freshInsertionRef/);
+  assert.match(operations, /locator\("aria-ref=" \+ freshDeletionRef\)/);
+  assert.match(operations, /locator\("aria-ref=" \+ freshInsertionRef\)/);
+  assert.match(operations, /getAttribute\("cite"\)/);
+  assert.match(operations, /getAttribute\("datetime"\)/);
+  assert.match(operations, /textDecorationLine/);
+  assert.match(operations, /boundingBox\(\)/);
+  assert.match(operations, /const historyAction/);
+  assert.match(operations, /observedAction\(page, acceptAmendment, "click"\)/);
+  assert.match(
+    operations,
+    /observedPageKey\(page, 'button "Undo acceptance"', "Tab"\)/,
+  );
+  assert.match(
+    operations,
+    /observedPageKey\(page, 'button "Undo acceptance"', "Enter"\)/,
+  );
+  assert.match(
+    operations,
+    /observedPageKey\(page, 'button "Restore acceptance"', "Enter"\)/,
+  );
+  assert.match(operations, /document\.activeElement/);
+  assert.match(operations, /finalSnapshot/);
+  assert(
+    operations.indexOf('observedAction(page, acceptAmendment, "click")') <
+      operations.indexOf(
+        'observedPageKey(page, \'button "Undo acceptance"\', "Tab")',
+      ),
+    "pointer acceptance happens before keyboard undo navigation",
+  );
+  assert(
+    operations.indexOf(
+      'observedPageKey(page, \'button "Undo acceptance"\', "Enter")',
+    ) <
+      operations.indexOf(
+        'observedPageKey(page, \'button "Restore acceptance"\', "Enter")',
+      ),
+    "keyboard undo happens before keyboard restore",
+  );
+  assert.doesNotMatch(
+    operations,
+    /force\s*:\s*true|dispatchEvent\(|\.evaluate\([^)]*\.click|waitForTimeout/,
+  );
+});
+
 test("registers the four business collaboration scenarios", async () => {
   const scenarioIndex = await readFile(
     new URL("./site/src/scenarios/index.jsx", import.meta.url),

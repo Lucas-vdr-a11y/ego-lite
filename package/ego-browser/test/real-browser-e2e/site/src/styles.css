@@ -4129,6 +4129,93 @@ shipment-card:not(:defined) {
   font-weight: 650;
 }
 
+.contract-amendment {
+  max-width: 70rem;
+  margin: 0 auto;
+  padding: clamp(1.5rem, 4vw, 3rem);
+}
+
+.contract-amendment > article {
+  display: grid;
+  gap: var(--ui-space-4);
+}
+
+.contract-amendment-heading {
+  padding-bottom: var(--ui-space-4);
+  border-bottom: 1px solid var(--ui-border);
+}
+
+.contract-amendment-heading h2 {
+  margin: var(--ui-space-1) 0 var(--ui-space-2);
+}
+
+.contract-amendment-heading > p:last-child,
+.contract-amendment-note {
+  margin-bottom: 0;
+  color: var(--ui-muted);
+}
+
+.contract-amendment-clause,
+.contract-amendment-review {
+  padding: var(--ui-space-4);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-sm);
+  background: var(--ui-surface-muted);
+}
+
+.contract-amendment-clause h3,
+.contract-amendment-review h3 {
+  margin-top: 0;
+}
+
+.contract-amendment-clause [data-testid="amendment-clause"] {
+  font-size: clamp(1rem, 2vw, 1.18rem);
+  line-height: 1.8;
+}
+
+.contract-amendment del {
+  padding: 0.08rem 0.2rem;
+  color: #991b1b;
+  background: #fef2f2;
+  text-decoration-color: #dc2626;
+  text-decoration-thickness: 0.12em;
+}
+
+.contract-amendment ins {
+  padding: 0.08rem 0.2rem;
+  color: #166534;
+  background: #f0fdf4;
+  text-decoration-color: #16a34a;
+  text-decoration-thickness: 0.12em;
+}
+
+.contract-amendment-review output {
+  display: block;
+  min-height: 2.75rem;
+  padding: var(--ui-space-3);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-sm);
+  background: var(--ui-surface);
+  font-weight: 650;
+}
+
+.contract-amendment[data-amendment-state="accepted"] output {
+  color: #166534;
+  border-color: #86efac;
+  background: #f0fdf4;
+}
+
+.contract-amendment-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ui-space-2);
+  margin-top: var(--ui-space-3);
+}
+
+.contract-amendment-actions button {
+  min-height: 2.75rem;
+}
+
 @media (max-width: 64rem) {
   .capacity-model {
     grid-template-columns: 1fr;

@@ -30,6 +30,7 @@ const clientEntries = [
   "table-semantics",
   "native-form-controls",
   "web-components",
+  "contract-amendment",
 ];
 
 export default defineConfig(({ command, mode }) => {

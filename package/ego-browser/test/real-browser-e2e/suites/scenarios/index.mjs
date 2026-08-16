@@ -24,6 +24,7 @@ import { mediaEmbedsScenarioCase } from "./media-embeds.mjs";
 import { tableSemanticsScenarioCase } from "./table-semantics.mjs";
 import { nativeFormControlsScenarioCase } from "./native-form-controls.mjs";
 import { webComponentsScenarioCase } from "./web-components.mjs";
+import { contractAmendmentScenarioCase } from "./contract-amendment.mjs";
 
 export const scenarioCases = [
   clicksScenarioCase,
@@ -52,4 +53,5 @@ export const scenarioCases = [
   tableSemanticsScenarioCase,
   nativeFormControlsScenarioCase,
   webComponentsScenarioCase,
+  contractAmendmentScenarioCase,
 ];

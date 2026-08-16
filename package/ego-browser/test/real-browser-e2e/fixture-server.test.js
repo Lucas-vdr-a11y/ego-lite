@@ -29,6 +29,7 @@ const interactiveRoutes = [
   "table-semantics",
   "native-form-controls",
   "web-components",
+  "contract-amendment",
 ];
 
 test("Hono test site exposes a Vite development command", async () => {
@@ -546,6 +547,33 @@ test("web components fixture authors an inert shipment template and two hosts", 
   assert.match(html, /data-testid=["']shadow-click-path["']/);
   assert.match(html, /data-testid=["']shadow-custom-event-path["']/);
   assert.doesNotMatch(html, /shadowrootmode=/);
+});
+
+test("contract amendment fixture renders both CR-482 revisions and review state", async () => {
+  const response = await createTestSiteApp("contract-amendment-test").request(
+    "/tests/contract-amendment",
+  );
+  const html = await response.text();
+
+  assert.equal(response.status, 200);
+  assert.match(html, /Contract amendment CR-482/);
+  assert.match(
+    html,
+    /<del\b(?=[^>]*cite=["']\/change-requests\/CR-482["'])(?=[^>]*dateTime=["']2026-08-15T09:30:00\+08:00["'])[^>]*>\s*within 60 minutes of a severity-one incident\s*<\/del>/,
+  );
+  assert.match(
+    html,
+    /<ins\b(?=[^>]*cite=["']\/change-requests\/CR-482["'])(?=[^>]*dateTime=["']2026-08-15T09:30:00\+08:00["'])[^>]*>\s*within 30 minutes of a severity-one incident\s*<\/ins>/,
+  );
+  assert.match(html, />\s*Accept amendment\s*</);
+  assert.match(
+    html,
+    /<button\b(?=[^>]*data-amendment-history)(?=[^>]*disabled)[^>]*>\s*Undo acceptance\s*<\/button>/,
+  );
+  assert.doesNotMatch(html, />\s*Restore acceptance\s*</);
+  assert.match(html, /data-testid=["']amendment-review-status["']/);
+  assert.match(html, /Pending legal acceptance for CR-482/);
+  assert.doesNotMatch(html, /<(?:del|ins)\b[^>]*\brole=/);
 });
 
 test("Hono test site links and renders every dedicated browser scenario", async () => {
