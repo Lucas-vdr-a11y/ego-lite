@@ -80,6 +80,34 @@ export function suitePassed(results) {
   return results.every((result) => result.status !== "fail");
 }
 
+export function conciseResultMessage(message) {
+  return String(message || "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 500);
+}
+
+export function classifyExpectedFailureResult(testCase, result) {
+  const expectedFailure = testCase?.expectedFailure;
+  if (typeof expectedFailure !== "string" || expectedFailure.length === 0) {
+    return result;
+  }
+  if (
+    result.status === "fail" &&
+    String(result.message || "").startsWith(expectedFailure)
+  ) {
+    return { ...result, status: "xfail" };
+  }
+  if (result.status === "pass") {
+    return {
+      ...result,
+      status: "fail",
+      message: `unexpected pass for known gap: ${expectedFailure}`,
+    };
+  }
+  return result;
+}
+
 export function groupE2eCasesByKind(testCases) {
   const groups = { platform: [], runtime: [], scenario: [] };
   for (const testCase of testCases) {
@@ -220,34 +248,61 @@ export function webLaneBody(testCases, reportPath) {
   const executions = testCases
     .map(
       (testCase) => `
-        await runWebLaneCase(${JSON.stringify(testCase.name)}, async () => {
+        await runWebLaneCase(
+          ${JSON.stringify(testCase.name)},
+          ${JSON.stringify(testCase.expectedFailure)},
+          async () => {
           ${testCase.body()}
-        });
+          },
+        );
       `,
     )
     .join("\n");
   return `
     const webLaneResults = [];
-    async function runWebLaneCase(name, run) {
+    function classifyWebLaneResult(expectedFailure, result) {
+      if (typeof expectedFailure !== "string" || expectedFailure.length === 0) {
+        return result;
+      }
+      if (
+        result.status === "fail" &&
+        String(result.message || "").startsWith(expectedFailure)
+      ) {
+        return { ...result, status: "xfail" };
+      }
+      if (result.status === "pass") {
+        return {
+          ...result,
+          status: "fail",
+          message: "unexpected pass for known gap: " + expectedFailure,
+        };
+      }
+      return result;
+    }
+    async function runWebLaneCase(name, expectedFailure, run) {
       const startedAt = Date.now();
       const assertionsBefore = __assertionCount;
+      let result;
       try {
         await run();
-        webLaneResults.push({
+        result = {
           name,
           status: "pass",
           durationMs: Date.now() - startedAt,
           assertions: __assertionCount - assertionsBefore,
-        });
+        };
       } catch (error) {
-        webLaneResults.push({
+        result = {
           name,
           status: "fail",
           durationMs: Date.now() - startedAt,
           assertions: __assertionCount - assertionsBefore,
           message: error?.message || String(error),
-        });
+        };
       }
+      webLaneResults.push(
+        classifyWebLaneResult(expectedFailure, result),
+      );
       await writeFile(${JSON.stringify(reportPath)}, JSON.stringify(webLaneResults));
     }
     ${executions}
@@ -394,19 +449,34 @@ export async function runRealBrowserE2e() {
         throw error;
       }
       const assertions = caseResult.assertions;
-      const result = {
-        name,
-        status: "pass",
-        durationMs,
-        assertionCount: assertions,
-      };
+      const result = classifyExpectedFailureResult(
+        { expectedFailure: options.expectedFailure },
+        {
+          name,
+          status: "pass",
+          durationMs,
+          assertionCount: assertions,
+        },
+      );
       if (options.record !== false) {
-        recordResult(name, "pass", durationMs, assertions);
+        recordResult(
+          name,
+          result.status,
+          durationMs,
+          assertions,
+          result.message,
+        );
       }
       if (visible) {
-        console.log(
-          `-- ${name} passed (${formatDuration(durationMs)}, ${assertions} assertions)`,
-        );
+        if (result.status === "pass") {
+          console.log(
+            `-- ${name} passed (${formatDuration(durationMs)}, ${assertions} assertions)`,
+          );
+        } else {
+          console.error(
+            `[FAIL] ${name} (${formatDuration(durationMs)}): ${result.message}`,
+          );
+        }
       }
       return result;
     } catch (error) {
@@ -425,22 +495,37 @@ export async function runRealBrowserE2e() {
           ? caseResult.error
           : error?.message || String(error);
       const assertions = caseResult.assertions;
-      const result = {
-        name,
-        status: "fail",
-        durationMs,
-        assertionCount: assertions,
-        message,
-      };
+      const result = classifyExpectedFailureResult(
+        { expectedFailure: options.expectedFailure },
+        {
+          name,
+          status: "fail",
+          durationMs,
+          assertionCount: assertions,
+          message,
+        },
+      );
       if (options.record !== false) {
-        recordResult(name, "fail", durationMs, assertions, message);
+        recordResult(
+          name,
+          result.status,
+          durationMs,
+          assertions,
+          result.message,
+        );
       }
       if (visible) {
-        console.error(
-          `[FAIL] ${name} (${formatDuration(durationMs)}): ${message}`,
-        );
+        if (result.status === "xfail") {
+          console.log(
+            `-- ${name} expected failure (${formatDuration(durationMs)}, ${assertions} assertions): ${conciseResultMessage(result.message)}`,
+          );
+        } else {
+          console.error(
+            `[FAIL] ${name} (${formatDuration(durationMs)}): ${result.message}`,
+          );
+        }
       } else {
-        console.error(`[${name}] ${message}`);
+        console.error(`[${name}] ${result.message}`);
       }
       return result;
     }
@@ -466,6 +551,7 @@ export async function runRealBrowserE2e() {
       try {
         await runEgoCase(testCase.name, rounds[0](), caseTimeoutMs, {
           crashGraceMs: testCase.crashGraceMs,
+          expectedFailure: testCase.expectedFailure,
           context: options.context,
         });
       } finally {
@@ -893,9 +979,13 @@ export async function runRealBrowserE2e() {
                 completed.assertions,
                 completed.message,
               );
-              const output = `-- ${completed.name} ${completed.status === "pass" ? "passed" : "failed"} (${formatDuration(completed.durationMs)}, ${completed.assertions} assertions)`;
+              const output = `-- ${completed.name} ${completed.status === "pass" ? "passed" : completed.status === "xfail" ? "expected failure" : "failed"} (${formatDuration(completed.durationMs)}, ${completed.assertions} assertions)`;
               if (completed.status === "pass") console.log(output);
-              else console.error(`[FAIL] ${output}: ${completed.message}`);
+              else if (completed.status === "xfail") {
+                console.log(
+                  `${output}: ${conciseResultMessage(completed.message)}`,
+                );
+              } else console.error(`[FAIL] ${output}: ${completed.message}`);
             } else {
               recordResult(
                 testCase.name,
@@ -930,9 +1020,11 @@ export async function runRealBrowserE2e() {
             result.assertions,
             result.message,
           );
-          const output = `-- ${result.name} ${result.status === "pass" ? "passed" : "failed"} (${formatDuration(result.durationMs)}, ${result.assertions} assertions)`;
+          const output = `-- ${result.name} ${result.status === "pass" ? "passed" : result.status === "xfail" ? "expected failure" : "failed"} (${formatDuration(result.durationMs)}, ${result.assertions} assertions)`;
           if (result.status === "pass") console.log(output);
-          else console.error(`[FAIL] ${output}: ${result.message}`);
+          else if (result.status === "xfail") {
+            console.log(`${output}: ${conciseResultMessage(result.message)}`);
+          } else console.error(`[FAIL] ${output}: ${result.message}`);
         }
         await waitForNodeRoundToSettle();
       }),
@@ -1236,9 +1328,10 @@ function printSummary(results, totalMs) {
   );
   const total = results.length;
   const passed = results.filter((r) => r.status === "pass").length;
+  const expectedFailures = results.filter((r) => r.status === "xfail").length;
   const failed = results.filter((r) => r.status === "fail").length;
   const skipped = results.filter((r) => r.status === "skip").length;
-  const executed = passed + failed;
+  const executed = passed + expectedFailures + failed;
   const totalAssertions = results.reduce((sum, r) => sum + r.assertionCount, 0);
 
   console.log("");
@@ -1246,6 +1339,9 @@ function printSummary(results, totalMs) {
   console.log(
     `  Passed:   ${passed}/${executed}${executed > 0 ? `  (${Math.round((passed / executed) * 100)}%)` : ""}`,
   );
+  if (expectedFailures > 0) {
+    console.log(`  Expected failures: ${expectedFailures}/${total}`);
+  }
   if (failed > 0) console.log(`  Failed:   ${failed}/${total}`);
   if (skipped > 0) console.log(`  Skipped:  ${skipped}/${total}`);
   console.log(`  Total time: ${formatDuration(totalMs)}`);
@@ -1261,7 +1357,9 @@ function printSummary(results, totalMs) {
         ? "PASS"
         : result.status === "fail"
           ? "FAIL"
-          : "SKIP";
+          : result.status === "xfail"
+            ? "XFAIL"
+            : "SKIP";
     const timing =
       result.status === "skip"
         ? "       "
@@ -1282,6 +1380,17 @@ function printSummary(results, totalMs) {
     console.log("  Failures:");
     for (const result of failedResults) {
       console.log(`    - ${result.name}: ${result.message}`);
+    }
+  }
+
+  const expectedFailureResults = results.filter((r) => r.status === "xfail");
+  if (expectedFailureResults.length > 0) {
+    console.log("");
+    console.log("  Expected failure diagnostics:");
+    for (const result of expectedFailureResults) {
+      console.log(
+        `    - ${result.name}: ${conciseResultMessage(result.message)}`,
+      );
     }
   }
 
