@@ -23,6 +23,7 @@ const interactiveScenarios = new Set([
   "spreadsheet",
   "rich-text",
   "visual-path",
+  "svg-mathml",
 ]);
 
 export function scenarioModulePath(slug) {

@@ -22,6 +22,7 @@ const interactiveRoutes = [
   "frames",
   "navigation",
   "network",
+  "svg-mathml",
 ];
 
 test("Hono test site exposes a Vite development command", async () => {

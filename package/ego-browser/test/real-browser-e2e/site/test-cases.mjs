@@ -161,6 +161,15 @@ export const TEST_CASES = [
     description:
       "Find calibration targets in the rendered image alone, then confirm every hit lands where it was aimed.",
   },
+  {
+    slug: "svg-mathml",
+    route: "/tests/svg-mathml",
+    number: "19",
+    title: "Capacity model",
+    eyebrow: "SVG + MathML / forecast review",
+    description:
+      "Inspect an accessible shipment forecast, review a chart risk, and recalculate required capacity from a native formula.",
+  },
 ];
 
 export function findTestCase(slug) {

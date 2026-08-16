@@ -3348,7 +3348,180 @@ select:focus-visible,
   gap: var(--ui-space-3);
 }
 
+/* SVG and MathML capacity model */
+.capacity-model {
+  display: grid;
+  grid-template-columns: minmax(0, 1.65fr) minmax(19rem, 0.75fr);
+}
+
+.capacity-chart-panel {
+  min-width: 0;
+}
+
+.capacity-chart-panel .scenario-toolbar output {
+  color: var(--ui-muted);
+  font-size: 0.75rem;
+}
+
+.capacity-chart-frame {
+  padding: var(--ui-space-4);
+}
+
+.capacity-chart-frame svg {
+  display: block;
+  width: 100%;
+  min-height: 20rem;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-sm);
+  color: var(--ui-primary);
+  background: var(--ui-surface-muted);
+}
+
+.chart-grid line {
+  stroke: var(--ui-border);
+  stroke-width: 1;
+}
+
+.chart-axis-labels,
+.capacity-threshold-label {
+  fill: var(--ui-muted);
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+.capacity-threshold {
+  stroke: var(--ui-danger);
+  stroke-dasharray: 6 5;
+  stroke-width: 2;
+}
+
+.forecast-line {
+  stroke: var(--ui-primary);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 4;
+}
+
+.forecast-point {
+  stroke: var(--ui-primary);
+  stroke-width: 4;
+  cursor: pointer;
+}
+
+.forecast-point:hover,
+.forecast-point:focus-visible,
+.forecast-point.is-selected {
+  stroke: var(--ui-success);
+  stroke-width: 6;
+  outline: none;
+}
+
+.capacity-risk-action {
+  display: flex;
+  height: 100%;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 0.5rem;
+}
+
+.capacity-risk-action button {
+  background: var(--ui-surface);
+}
+
+.capacity-model-panel {
+  padding: var(--ui-space-4);
+  border-left: 1px solid var(--ui-border);
+  background: var(--ui-surface-muted);
+}
+
+.capacity-selection {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--ui-space-3);
+  margin: var(--ui-space-4) 0;
+}
+
+.capacity-selection div {
+  padding: var(--ui-space-3);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-sm);
+  background: var(--ui-surface);
+}
+
+.capacity-selection dt {
+  color: var(--ui-muted);
+  font-size: 0.7rem;
+  font-weight: 650;
+  letter-spacing: 0.035em;
+  text-transform: uppercase;
+}
+
+.capacity-selection dd {
+  margin: var(--ui-space-1) 0 0;
+  font-size: 0.9rem;
+  font-weight: 650;
+}
+
+.capacity-formula {
+  padding: var(--ui-space-4);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-sm);
+  background: var(--ui-surface);
+}
+
+.capacity-formula h2 {
+  margin: 0 0 var(--ui-space-3);
+  color: var(--ui-muted);
+  font-size: 0.75rem;
+  font-weight: 650;
+  letter-spacing: 0.035em;
+  text-transform: uppercase;
+}
+
+.capacity-formula math {
+  min-height: 3rem;
+  overflow-x: auto;
+  font-size: 1.05rem;
+}
+
+.capacity-controls {
+  display: grid;
+  gap: var(--ui-space-2);
+  margin-top: var(--ui-space-4);
+}
+
+.capacity-controls label {
+  color: var(--ui-muted);
+  font-size: 0.75rem;
+  font-weight: 650;
+}
+
+.capacity-control-row {
+  display: grid;
+  grid-template-columns: 5rem minmax(0, 1fr);
+  gap: var(--ui-space-2);
+}
+
+.capacity-controls output {
+  min-height: 1.5rem;
+  color: var(--ui-muted);
+  font-size: 0.75rem;
+}
+
+.capacity-reset {
+  margin-top: var(--ui-space-3);
+}
+
 @media (max-width: 64rem) {
+  .capacity-model {
+    grid-template-columns: 1fr;
+  }
+
+  .capacity-model-panel {
+    border-top: 1px solid var(--ui-border);
+    border-left: 0;
+  }
+
   .review-workflow {
     grid-template-columns: 1fr;
   }

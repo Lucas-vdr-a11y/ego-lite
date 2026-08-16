@@ -23,6 +23,7 @@ const clientEntries = [
   "spreadsheet",
   "rich-text",
   "visual-path",
+  "svg-mathml",
 ];
 
 export default defineConfig(({ command, mode }) => {

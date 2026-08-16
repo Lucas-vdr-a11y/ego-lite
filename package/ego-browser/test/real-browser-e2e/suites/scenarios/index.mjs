@@ -16,6 +16,7 @@ import { collaborativeDocsScenarioCase } from "./collaborative-docs.mjs";
 import { spreadsheetScenarioCase } from "./spreadsheet.mjs";
 import { richTextScenarioCase } from "./rich-text.mjs";
 import { visualPathScenarioCase } from "./visual-path.mjs";
+import { svgMathmlScenarioCase } from "./svg-mathml.mjs";
 
 export const scenarioCases = [
   clicksScenarioCase,
@@ -36,4 +37,5 @@ export const scenarioCases = [
   spreadsheetScenarioCase,
   richTextScenarioCase,
   visualPathScenarioCase,
+  svgMathmlScenarioCase,
 ];
