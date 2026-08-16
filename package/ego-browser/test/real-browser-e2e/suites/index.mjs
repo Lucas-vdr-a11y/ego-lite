@@ -1,5 +1,6 @@
 import { agentMouseOverlayCase } from "./platform/agent-mouse-overlay.mjs";
 import { ariaSnapshotCase } from "./platform/aria-snapshot.mjs";
+import { canvasAriaSnapshotCase } from "./platform/canvas-aria-snapshot.mjs";
 import { nativeCloseRegressionCase } from "./platform/close-regression.mjs";
 import { contextLifecycleCase } from "./platform/context-lifecycle.mjs";
 import {
@@ -56,6 +57,7 @@ export const e2eCases = [
     body: nativePlaywrightCase,
   },
   ariaSnapshotCase,
+  canvasAriaSnapshotCase,
   agentMouseOverlayCase,
   playwrightCdpSessionCase,
   networkRoutingCase,

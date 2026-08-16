@@ -341,6 +341,48 @@ test("platform e2e covers ownership preservation, ARIA refs, and network routing
   assert.match(routing.body(), /page\.unroute\(/);
 });
 
+test("native canvas ARIA coverage compares raw AX with its scoped locator ref", () => {
+  const canvasAria = e2eCases.find(
+    (testCase) => testCase.name === "Native canvas ARIA snapshot refs",
+  );
+
+  assert.ok(canvasAria);
+  assert.equal(canvasAria.kind, "platform");
+  const source = canvasAria.body();
+  assert.match(source, /\/tests\/visual-path/);
+  assert.match(source, /locator\("#visual-canvas"\)/);
+  assert.match(source, /newCDPSession\(page\)/);
+  assert.match(source, /DOM\.getDocument/);
+  assert.match(source, /DOM\.querySelector/);
+  assert.match(source, /DOM\.describeNode/);
+  assert.match(source, /Accessibility\.getPartialAXTree/);
+  assert.match(source, /canvasBounds\.width > 0/);
+  assert.match(source, /canvasBounds\.height > 0/);
+  assert.match(source, /role\?\.value,\s*"Canvas"/);
+  assert.match(source, /name\?\.value,\s*"Calibration drawing stage"/);
+
+  const rawAxIndex = source.indexOf("Accessibility.getPartialAXTree");
+  const scopedSnapshotIndex = source.indexOf(
+    "canvas.ariaSnapshot({ ref: true })",
+  );
+  const finalExpectationIndex = source.indexOf(
+    "the scoped native canvas snapshot preserves its accessible name and an actionable ref",
+  );
+  assert(
+    rawAxIndex >= 0 &&
+      scopedSnapshotIndex > rawAxIndex &&
+      finalExpectationIndex > scopedSnapshotIndex,
+    "raw Chromium AX evidence precedes the scoped snapshot assertion",
+  );
+  assert.match(source, /scopedNamePresent/);
+  assert.match(source, /scopedRefCount === 1/);
+  assert.doesNotMatch(source, /bodyNamePresent|bodyRefCount/);
+  assert.doesNotMatch(
+    source,
+    /setAttribute\(|removeAttribute\(|tabIndex|dispatchEvent\(|screenshot|force\s*:/,
+  );
+});
+
 test("frames e2e validates nested frame snapshots and the external map", () => {
   const frames = e2eCases.find(
     (testCase) => testCase.name === "web test: frames",
