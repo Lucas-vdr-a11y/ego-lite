@@ -46,7 +46,7 @@ export const visualPathScenarioCase = scenarioCase(
       const ratio = environment.ratio;
       assert(ratio >= 1, "the fixture reports a usable device pixel ratio");
 
-      async function shoot(label) {
+      async function shootObservedCss(label) {
         return decodePng(await observedScreenshot(page, label));
       }
 
@@ -69,12 +69,14 @@ export const visualPathScenarioCase = scenarioCase(
         return decodePng(image);
       }
 
-      async function shootWholePage() {
+      async function shootDevice(label, options) {
         const image = await page.screenshot({
           animations: "disabled",
-          fullPage: true,
+          scale: "device",
           timeout: 60_000,
+          ...options,
         });
+        assert(image.length > 0, label + " screenshot contains image bytes");
         return decodePng(image);
       }
 
@@ -148,46 +150,51 @@ export const visualPathScenarioCase = scenarioCase(
       }
 
       await scrollPageTo(0);
-      const board = await shoot("alignment board at rest");
-      assertEqual(
-        board.width,
-        Math.round(environment.innerWidth * ratio),
-        "a viewport screenshot spans the CSS viewport scaled by the device pixel ratio",
-      );
-      assertEqual(
-        board.height,
-        Math.round(environment.innerHeight * ratio),
-        "a viewport screenshot is as tall as the CSS viewport scaled by the device pixel ratio",
-      );
-
-      // scale:'css' hands back the picture in CSS pixels, which is the unit
-      // page.mouse takes: this is the image every coordinate below is read out
-      // of, so the visual path needs no device pixel ratio conversion at all.
-      const cssBoard = await shootCss("alignment board at rest in css pixels");
+      // observedScreenshot is the shared pre-gesture observation path. It
+      // explicitly asks Playwright for CSS pixels, so its dimensions and every
+      // coordinate read from it must stay in the same unit page.mouse accepts.
+      const cssBoard = await shootObservedCss("alignment board at rest");
       assertEqual(
         cssBoard.width,
         environment.innerWidth,
-        "a scale:'css' screenshot spans the CSS viewport, so an x read from it is already a page.mouse x",
+        "the shared scale:'css' screenshot spans the CSS viewport, so an x read from it is already a page.mouse x",
       );
       assertEqual(
         cssBoard.height,
         environment.innerHeight,
-        "a scale:'css' screenshot is as tall as the CSS viewport, so a y read from it is already a page.mouse y",
+        "the shared scale:'css' screenshot is as tall as the CSS viewport, so a y read from it is already a page.mouse y",
+      );
+
+      // A separate explicit device-scale capture proves the CSS result was
+      // converted rather than merely compared against another CSS screenshot.
+      // It is comparison evidence only; no aimed coordinate comes from it.
+      const deviceBoard = await shootDevice(
+        "alignment board at rest in device pixels",
+      );
+      assertEqual(
+        deviceBoard.width,
+        Math.round(environment.innerWidth * ratio),
+        "an explicit scale:'device' screenshot spans the CSS viewport scaled by the device pixel ratio",
+      );
+      assertEqual(
+        deviceBoard.height,
+        Math.round(environment.innerHeight * ratio),
+        "an explicit scale:'device' screenshot is as tall as the CSS viewport scaled by the device pixel ratio",
       );
       assertEqual(
         Math.round(cssBoard.width * ratio),
-        board.width,
+        deviceBoard.width,
         "the css screenshot is the device pixel screenshot divided by the device pixel ratio",
       );
       assert(
-        ratio === 1 || cssBoard.width < board.width,
-        "a screenshot taken with no scale still returns device pixels: Playwright defaults to scale:'device' and honouring scale:'css' must not flip that default",
+        ratio === 1 || cssBoard.width < deviceBoard.width,
+        "scale:'css' is observably smaller than scale:'device' on a high-DPI display",
       );
 
       // The same swatch located in both images: aiming straight off the css
       // image is the same aim as the device pixel reading converted by hand,
       // which is what this case used to do for every click.
-      const deviceAlpha = locateSwatch(board, PRIMARY[0].pendingRgb);
+      const deviceAlpha = locateSwatch(deviceBoard, PRIMARY[0].pendingRgb);
       const cssAlpha = locateSwatch(cssBoard, PRIMARY[0].pendingRgb);
       assert(
         deviceAlpha && cssAlpha,
@@ -249,6 +256,7 @@ export const visualPathScenarioCase = scenarioCase(
         await page.screenshot({
           animations: "disabled",
           clip: { x: 0, y: 0, width: 80, height: 80 },
+          scale: "device",
           timeout: 60_000,
         }),
       );
@@ -259,7 +267,11 @@ export const visualPathScenarioCase = scenarioCase(
       );
       assertEqual(
         pixelAt(clipped, Math.round(40 * ratio), Math.round(40 * ratio)).join(),
-        pixelAt(board, Math.round(40 * ratio), Math.round(40 * ratio)).join(),
+        pixelAt(
+          deviceBoard,
+          Math.round(40 * ratio),
+          Math.round(40 * ratio),
+        ).join(),
         "a clipped screenshot carries the same pixels as the matching part of the full screenshot",
       );
 
@@ -276,7 +288,7 @@ export const visualPathScenarioCase = scenarioCase(
         "every primary target reports a hit",
       );
 
-      const repainted = await shoot("primary targets marked");
+      const repainted = await shootObservedCss("primary targets marked");
       assert(
         locateSwatch(repainted, PRIMARY[0].doneRgb),
         "a hit target repaints itself in the very next screenshot",
@@ -304,12 +316,14 @@ export const visualPathScenarioCase = scenarioCase(
         "a coordinate below the viewport is not reported as a miss either",
       );
 
-      const wholePage = await shootWholePage();
+      const deviceWholePage = await shootDevice("the whole page in device pixels", {
+        fullPage: true,
+      });
       assert(
-        wholePage.height > board.height,
+        deviceWholePage.height > deviceBoard.height,
         "the fixture is taller than one viewport, so the page has to be scrolled",
       );
-      const scrollbar = (board.width - wholePage.width) / ratio;
+      const scrollbar = (deviceBoard.width - deviceWholePage.width) / ratio;
       assert(
         scrollbar >= 0 && scrollbar < 24,
         "a full-page screenshot drops only the scrollbar column, measured " +
@@ -321,16 +335,16 @@ export const visualPathScenarioCase = scenarioCase(
         fullPage: true,
       });
       assert(
-        Math.abs(cssWholePage.width * ratio - wholePage.width) <= 1 &&
-          Math.abs(cssWholePage.height * ratio - wholePage.height) <= 1,
+        Math.abs(cssWholePage.width * ratio - deviceWholePage.width) <= 1 &&
+          Math.abs(cssWholePage.height * ratio - deviceWholePage.height) <= 1,
         "a full-page scale:'css' screenshot is the full-page device pixel screenshot in CSS pixels, measured " +
           cssWholePage.width +
           "x" +
           cssWholePage.height +
           " against " +
-          wholePage.width +
+          deviceWholePage.width +
           "x" +
-          wholePage.height +
+          deviceWholePage.height +
           " at ratio " +
           ratio,
       );
