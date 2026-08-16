@@ -25,7 +25,7 @@ export const richTextScenarioCase = scenarioCase(
         await observedAction(page, editor, "click");
         await observedAction(page, editor, "press", "ControlOrMeta+A");
         await observedAction(page, editor, "press", "Backspace");
-        if (text) await observedKeyboard(page, editor, "insertText", text);
+        if (text) await observedFocusedKeyboard(page, editor, "insertText", text);
       }
       await replaceEditorText("");
       await page.waitForFunction(() => document.querySelector('[data-testid="rich-text-word-count"]')?.textContent === "0 words");
@@ -96,7 +96,7 @@ export const richTextScenarioCase = scenarioCase(
 
       await observedAction(page, editor, "press", "ArrowRight");
       await observedAction(page, editor, "press", "Enter");
-      await observedKeyboard(page, editor, "insertText", "Notify regional reviewers");
+      await observedFocusedKeyboard(page, editor, "insertText", "Notify regional reviewers");
       await observedAction(page, page.getByRole("button", { name: "Bullet list" }), "click");
       assertIncludes((await page.getByTestId("article-preview").textContent()).replace(/\\s+/gu, " "), "Notify regional reviewers", "live reader preview mirrors visible article content");
       await observedAction(page, page.getByRole("button", { name: "Undo" }), "click");

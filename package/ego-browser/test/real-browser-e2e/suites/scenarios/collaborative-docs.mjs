@@ -36,8 +36,8 @@ export const collaborativeDocsScenarioCase = scenarioCase(
       await observedAction(collaboratorPage, collaboratorEditor, "click");
       await observedAction(collaboratorPage, collaboratorEditor, "press", "End");
       await Promise.all([
-        observedKeyboard(page, primaryEditor, "insertText", "Recorded by Mei. "),
-        observedKeyboard(collaboratorPage, collaboratorEditor, "insertText", " Reviewed by Aisha."),
+        observedFocusedKeyboard(page, primaryEditor, "insertText", "Recorded by Mei. "),
+        observedFocusedKeyboard(collaboratorPage, collaboratorEditor, "insertText", " Reviewed by Aisha."),
       ]);
       await page.waitForFunction(() => {
         const text = document.querySelector('[aria-label="Collaborative document"]')?.textContent || "";

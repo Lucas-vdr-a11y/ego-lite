@@ -683,10 +683,13 @@ test("collaborative document e2e covers concurrent editing and peer departure", 
     source,
     /observedAction\(collaboratorPage, collaboratorEditor, "press", "End"\)/,
   );
-  assert.match(source, /observedKeyboard\(page, primaryEditor, "insertText"/);
   assert.match(
     source,
-    /observedKeyboard\(collaboratorPage, collaboratorEditor, "insertText"/,
+    /observedFocusedKeyboard\(page, primaryEditor, "insertText"/,
+  );
+  assert.match(
+    source,
+    /observedFocusedKeyboard\(collaboratorPage, collaboratorEditor, "insertText"/,
   );
   assert.doesNotMatch(operations, /keyboard\.type/);
   assert.match(source, /finally/);
@@ -755,6 +758,10 @@ test("spreadsheet e2e covers required text and durable reset", () => {
   const source = spreadsheetCase.body();
   assert.match(source, /Work item is required/);
   assert.match(source, /reset survives a full page reload/);
+  assert.match(
+    source,
+    /sheet-result[\s\S]*Workbook reset to 3 budget lines[\s\S]*waitFor/,
+  );
 });
 
 test("rich text e2e covers validation, history, and destructive cancellation", () => {
@@ -774,7 +781,7 @@ test("rich text e2e covers validation, history, and destructive cancellation", (
     /observedAction\(page, editor, "press", "ControlOrMeta\+A"\)/,
   );
   assert.match(source, /observedAction\(page, editor, "press", "Backspace"\)/);
-  assert.match(source, /observedKeyboard\(page, editor, "insertText"/);
+  assert.match(source, /observedFocusedKeyboard\(page, editor, "insertText"/);
   assert.match(source, /Underline/);
   assert.match(source, /Align center/);
   assert.match(source, /Text color/);
@@ -908,3 +915,32 @@ test("a cleanup crash makes the final e2e result fail", () => {
     false,
   );
 });
+test("keyboard helpers distinguish explicit focus from natural focus flow", () => {
+  const sharedSource = scenarioCases[0].body();
+  assert.match(sharedSource, /async function observedFocusedKeyboard/);
+  assert.match(sharedSource, /async function observedCurrentKeyboard/);
+  assert.doesNotMatch(sharedSource, /async function observedKeyboard\(/);
+  assert.match(
+    sharedSource,
+    /observedFocusedKeyboard[\s\S]*observed\.locator\.focus\(\)/,
+  );
+
+  const sourceFor = (name) =>
+    scenarioCases.find((testCase) => testCase.name === name).body();
+  const tableSource = sourceFor("web test: table-semantics");
+  assert.match(tableSource, /observedPageKey\(page, 'button "ETA"', "Enter"\)/);
+  assert.doesNotMatch(tableSource, /observedFocusedKeyboard\(page, etaSort/);
+
+  const outlineSource = sourceFor("web test: document-outline");
+  assert.match(
+    outlineSource,
+    /observedPageKey\(\s*page,\s*'searchbox "Find a release topic"',\s*"Enter"/,
+  );
+
+  const nativeSource = sourceFor("web test: native-form-controls");
+  assert.doesNotMatch(
+    nativeSource,
+    /observedFocusedKeyboard\(page, (?:releaseReference|primaryMarket)/,
+  );
+});
+

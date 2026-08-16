@@ -5,10 +5,10 @@ export const keyboardScenarioCase = scenarioCase(
   `
       const title = page.getByLabel("Story title");
       await observedAction(page, title, "click");
-      await observedKeyboard(page, title, "press", "ControlOrMeta+a");
-      await observedKeyboard(page, title, "insertText", "Rooms that breathe");
+      await observedFocusedKeyboard(page, title, "press", "ControlOrMeta+a");
+      await observedFocusedKeyboard(page, title, "insertText", "Rooms that breathe");
       assertEqual(await page.getByTestId("keyboard-value").textContent(), "Rooms that breathe", "platform select-all and insertText replace the title");
-      await observedKeyboard(page, title, "press", "Backspace");
+      await observedFocusedKeyboard(page, title, "press", "Backspace");
       assertEqual(await page.getByTestId("keyboard-value").textContent(), "Rooms that breath", "Backspace edits the focused title");
       assertIncludes(await page.getByTestId("key-log").textContent(), "Backspace", "keyboard event log records editing keys");
       const body = page.getByLabel("Story body");
@@ -28,7 +28,7 @@ export const keyboardScenarioCase = scenarioCase(
       await observedAction(page, body, "click");
       await observedAction(page, body, "press", "End");
       await observedAction(page, body, "press", "Enter");
-      await observedKeyboard(page, body, "type", "Material notes");
+      await observedFocusedKeyboard(page, body, "type", "Material notes");
       await observedAction(page, page.getByRole("button", { name: "Bulleted list" }), "click");
       assertEqual(await page.getByTestId("format-status").textContent(), "Bulleted list applied", "list toolbar action reports its result");
       assertEqual(await body.locator("ul li").count(), 1, "keyboard-created line becomes a semantic bulleted list item");

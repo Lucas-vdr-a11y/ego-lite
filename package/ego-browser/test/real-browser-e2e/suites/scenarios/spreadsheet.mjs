@@ -6,6 +6,10 @@ export const spreadsheetScenarioCase = scenarioCase(
       const grid = page.getByRole("grid", { name: "Editable launch budget" });
       assertEqual(await grid.isVisible(), true, "workbook renders an accessible interactive data grid");
       await observedAction(page, page.getByRole("button", { name: "Reset workbook" }), "click");
+      await page
+        .getByTestId("sheet-result")
+        .filter({ hasText: /^Workbook reset to 3 budget lines$/ })
+        .waitFor();
       assertEqual(await page.getByRole("button", { name: "Save workbook" }).isDisabled(), true, "saved workbook starts in a clean state");
 
       const researchRow = page.getByTestId("budget-row-research");

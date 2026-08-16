@@ -43,14 +43,14 @@ export const framesScenarioCase = scenarioCase(
       await observedRoleAction(page, "button", "Load secure checkout", "click");
       const hostSnapshot = await snapshotTarget(page, "iframe");
       assertIncludes(hostSnapshot.content, 'heading "Embedded checkout"', "the host snapshot contains its own page content");
-      assertIncludes(hostSnapshot.content, "iframe [ref=", "the host snapshot exposes the checkout iframe ref");
+      assertIncludes(hostSnapshot.content, 'iframe "Browser test frame" [ref=', "the host snapshot exposes the named checkout iframe ref");
       const crossSiteFrameElement = hostSnapshot.locator;
       const crossSiteCheckout = crossSiteFrameElement.contentFrame();
       const crossSiteFrameUrl = await crossSiteFrameElement.getAttribute("src");
       assertIncludes(crossSiteFrameUrl, "http://checkout.localhost:", "cross-site checkout uses a distinct site from the 127.0.0.1 host");
       const checkoutSnapshot = await snapshotTarget(crossSiteCheckout, "iframe");
       assertIncludes(checkoutSnapshot.content, 'heading "Confirm payment details"', "the checkout snapshot contains its own document content");
-      assertIncludes(checkoutSnapshot.content, "iframe [ref=", "the checkout snapshot exposes the nested map iframe ref");
+      assertIncludes(checkoutSnapshot.content, 'iframe "Pickup location map" [ref=', "the checkout snapshot exposes the named nested map iframe ref");
       const mapFrameUrl = await checkoutSnapshot.locator.getAttribute("src");
       assertIncludes(mapFrameUrl, "https://www.openstreetmap.org/export/embed.html?", "the nested frame uses the OpenStreetMap embed endpoint");
       assertIncludes(mapFrameUrl, "layer=mapnik", "the nested frame requests the OpenStreetMap standard layer");
