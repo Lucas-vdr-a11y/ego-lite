@@ -3,3 +3,4 @@ dist/
 ego-browser.js
 bin/
 .build.lock
+.e2e.lock

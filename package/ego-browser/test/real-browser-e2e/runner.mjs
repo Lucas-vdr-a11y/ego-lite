@@ -16,6 +16,7 @@ import { promisify } from "node:util";
 
 import { egoSource } from "./ego-source.mjs";
 import { closeFixtureServer, startFixtureServer } from "./fixture.mjs";
+import { acquireE2eLock, E2E_LOCK_BUSY_EXIT_CODE } from "./run-lock.mjs";
 import { createCodexCommandTools } from "./codex-command.mjs";
 import { cancelCommandSession, runCommand } from "./run-command.mjs";
 import { e2eCases } from "./suites/index.mjs";
@@ -32,6 +33,7 @@ const egoBrowserSdkPath = join(packageDir, "dist", "out", "index.js");
 const xmlParserUrl = import.meta.resolve("fast-xml-parser");
 const pixelToolsUrl = import.meta.resolve("./suites/scenarios/pixel-tools.mjs");
 const egoBrowserArgs = ["nodejs", "--sdk-path", egoBrowserSdkPath];
+const e2eLockPath = join(packageDir, ".e2e.lock");
 const execFileAsync = promisify(execFile);
 export const WEB_LANE_COUNT = 1;
 const verboseCaseOutput =
@@ -946,6 +948,29 @@ export async function runRealBrowserE2e() {
     );
   }
 
+  const lock = await acquireE2eLock(e2eLockPath);
+  if (!lock.ok) {
+    console.error(lock.message);
+    process.exitCode = E2E_LOCK_BUSY_EXIT_CODE;
+    return;
+  }
+
+  // Ctrl-C and `kill` bypass the finally block, and Node's default handler
+  // exits without running it. Releasing here keeps an interrupted run from
+  // leaving a lock that the next run has to diagnose.
+  const releaseOnSignal = (signal) => async () => {
+    await lock.release().catch(() => {});
+    process.exitCode = 128 + (signal === "SIGINT" ? 2 : 15);
+    process.exit();
+  };
+  const signalHandlers = new Map(
+    ["SIGINT", "SIGTERM", "SIGHUP"].map((signal) => [
+      signal,
+      releaseOnSignal(signal),
+    ]),
+  );
+  for (const [signal, handler] of signalHandlers) process.on(signal, handler);
+
   const totalStartedAt = Date.now();
 
   try {
@@ -1054,6 +1079,10 @@ export async function runRealBrowserE2e() {
       printSummary(caseResults, Date.now() - totalStartedAt);
       if (!suitePassed(caseResults)) process.exitCode = 1;
     }
+    for (const [signal, handler] of signalHandlers) {
+      process.off(signal, handler);
+    }
+    await lock.release();
   }
 }
 
