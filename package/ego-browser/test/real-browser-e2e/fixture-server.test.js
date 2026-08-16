@@ -395,6 +395,95 @@ test("document startup fixture serves real metadata, resources, and a no-script 
   assert.match(await recovery.text(), /<h1>No-script recovery guide<\/h1>/);
 });
 
+test("legacy frameset raw fixture serves frame owners and navigation documents", async () => {
+  const app = createTestSiteApp("legacy-frameset-test");
+  const response = await app.request("/tests/legacy-elements/frameset");
+  const html = await response.text();
+
+  assert.equal(response.status, 200);
+  assert.match(html, /^<!doctype html><html[^>]+lang=["']en-SG["']/);
+  assert.match(html, /<frameset\b[^>]+cols=["']280,\*["']/);
+  assert.equal(html.match(/<frame\b/g)?.length, 2);
+  assert.match(
+    html,
+    /<frame\b(?=[^>]*src=["']\/tests\/legacy-elements\/frameset\/nav["'])(?=[^>]*name=["']release-navigation["'])(?=[^>]*title=["']Release navigation["'])[^>]*>/,
+  );
+  assert.match(
+    html,
+    /<frame\b(?=[^>]*src=["']\/tests\/legacy-elements\/frameset\/waiting["'])(?=[^>]*name=["']release-detail["'])(?=[^>]*title=["']Release detail workspace["'])[^>]*>/,
+  );
+  assert.match(
+    html,
+    /<noframes>[\s\S]*Legacy release console requires frame support\.[\s\S]*<\/noframes>/,
+  );
+  assert.doesNotMatch(html, /<body\b/);
+  assert.doesNotMatch(
+    html,
+    /scenario-test-controls|test-progress-summary|progress\.js|data-test-route/,
+  );
+
+  const navigation = await app.request("/tests/legacy-elements/frameset/nav");
+  const navigationHtml = await navigation.text();
+  assert.equal(navigation.status, 200);
+  assert.match(
+    navigationHtml,
+    /<a\b(?=[^>]*href=["']\/tests\/legacy-elements\/frameset\/waiting["'])(?=[^>]*target=["']release-detail["'])[^>]*>\s*Waiting approvals\s*<\/a>/,
+  );
+  assert.match(
+    navigationHtml,
+    /<a\b(?=[^>]*href=["']\/tests\/legacy-elements\/frameset\/manifest["'])(?=[^>]*target=["']release-detail["'])[^>]*>\s*Release manifest\s*<\/a>/,
+  );
+
+  const waiting = await app.request("/tests/legacy-elements/frameset/waiting");
+  const waitingHtml = await waiting.text();
+  assert.equal(waiting.status, 200);
+  assert.match(waitingHtml, /Review deployment notes/);
+  assert.match(waitingHtml, /Approve release CR-204/);
+
+  const manifest = await app.request(
+    "/tests/legacy-elements/frameset/manifest?decision=approved",
+  );
+  const manifestHtml = await manifest.text();
+  assert.equal(manifest.status, 200);
+  assert.match(manifestHtml, /Release manifest/);
+  assert.match(manifestHtml, /Release CR-204 approved/);
+});
+
+test("plaintext raw fixture places the live check action before parser text mode", async () => {
+  const app = createTestSiteApp("legacy-plaintext-test");
+  const response = await app.request("/tests/legacy-elements/plaintext");
+  const html = await response.text();
+
+  assert.equal(response.status, 200);
+  assert.match(html, /^<!doctype html><html[^>]+lang=["']en-SG["']/);
+  const buttonIndex = html.indexOf("Mark transcript checked");
+  const plaintextIndex = html.indexOf('<plaintext id="incident-transcript">');
+  assert(buttonIndex >= 0);
+  assert(plaintextIndex > buttonIndex);
+  assert.match(
+    html.slice(plaintextIndex),
+    /<button id="plaintext-fake-action">Delete transcript<\/button>/,
+  );
+  assert.match(
+    html.slice(plaintextIndex),
+    /<section id="plaintext-fake-section">This remains transcript text\.<\/section>/,
+  );
+  assert.doesNotMatch(
+    html,
+    /scenario-test-controls|test-progress-summary|progress\.js|data-test-route/,
+  );
+
+  const checked = await app.request(
+    "/tests/legacy-elements/plaintext?checked=release-review",
+  );
+  const checkedHtml = await checked.text();
+  assert.equal(checked.status, 200);
+  assert(
+    checkedHtml.indexOf("Transcript checked by release reviewer") <
+      checkedHtml.indexOf("<plaintext"),
+  );
+});
+
 test("document outline fixture composes one main landmark and every authored heading level", async () => {
   const response = await createTestSiteApp("document-outline-test").request(
     "/tests/document-outline",

@@ -12,6 +12,11 @@ import {
   documentStartupCase,
   javaScriptDisabledNavigationCase,
 } from "./platform/document-startup.mjs";
+import {
+  legacyFrameOwnerAriaSnapshotCase,
+  legacyFramesetTargetNavigationCase,
+  legacyPlaintextRawParsingCase,
+} from "./platform/legacy-raw-documents.mjs";
 import { nativeCallbackContainmentCase } from "./platform/native-callback-containment.mjs";
 import { nativePlaywrightCase } from "./platform/native-playwright.mjs";
 import { networkRoutingCase } from "./platform/network-routing.mjs";
@@ -64,6 +69,9 @@ export const e2eCases = [
   },
   ariaSnapshotCase,
   canvasAriaSnapshotCase,
+  legacyFramesetTargetNavigationCase,
+  legacyFrameOwnerAriaSnapshotCase,
+  legacyPlaintextRawParsingCase,
   agentMouseOverlayCase,
   playwrightCdpSessionCase,
   networkRoutingCase,

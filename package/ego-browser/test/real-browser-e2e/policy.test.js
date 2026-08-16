@@ -383,6 +383,93 @@ test("native canvas ARIA coverage compares raw AX with its scoped locator ref", 
   );
 });
 
+test("legacy raw document coverage keeps navigation, owner AX, and plaintext independent", () => {
+  const targetNavigation = e2eCases.find(
+    (testCase) => testCase.name === "Legacy frameset target navigation",
+  );
+  const frameOwnerSnapshot = e2eCases.find(
+    (testCase) => testCase.name === "Legacy frame owner ARIA snapshot refs",
+  );
+  const plaintextParsing = e2eCases.find(
+    (testCase) => testCase.name === "Legacy plaintext raw parsing",
+  );
+
+  assert.ok(targetNavigation);
+  assert.ok(frameOwnerSnapshot);
+  assert.ok(plaintextParsing);
+  assert.equal(targetNavigation.kind, "platform");
+  assert.equal(frameOwnerSnapshot.kind, "platform");
+  assert.equal(plaintextParsing.kind, "platform");
+
+  const navigationSource = targetNavigation.body();
+  const ownerSource = frameOwnerSnapshot.body();
+  const plaintextSource = plaintextParsing.body();
+  const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+  for (const source of [navigationSource, ownerSource, plaintextSource]) {
+    assert.doesNotThrow(
+      () => new AsyncFunction(source),
+      "each legacy raw document case emits valid asynchronous JavaScript",
+    );
+    assert.doesNotMatch(
+      source,
+      /setAttribute\(|removeAttribute\(|dispatchEvent\(|screenshot|force\s*:/,
+    );
+  }
+
+  assert.match(navigationSource, /\/tests\/legacy-elements\/frameset/);
+  assert.match(navigationSource, /locator\("body"\)\.count\(\)/);
+  assert.match(navigationSource, /locator\("frame"\)/);
+  assert.match(navigationSource, /boundingBox\(\)/);
+  assert.match(navigationSource, /locator\("noframes"\)/);
+  assert.match(navigationSource, /Waiting approvals/);
+  assert.match(navigationSource, /Release manifest/);
+  assert.match(navigationSource, /waitForEvent\("framenavigated"/);
+  assert.match(
+    navigationSource,
+    /activate = \(\) => link\.click\(\{ timeout: 5_000 \}\)/,
+  );
+  assert.match(navigationSource, /Review deployment notes/);
+  assert.match(navigationSource, /Approve release CR-204/);
+  assert.match(navigationSource, /showTaskState/);
+  assert.match(navigationSource, /\.keyboard\.press\("Tab"\)/);
+  assert.match(navigationSource, /\.keyboard\.press\("Enter"\)/);
+  assert.doesNotMatch(
+    navigationSource,
+    /Accessibility\.getPartialAXTree|frameOwnerSnapshot|legacy-elements\/plaintext/,
+  );
+
+  assert.match(ownerSource, /taskName \+ " legacy frame owner snapshot"/);
+  assert.match(ownerSource, /\/tests\/legacy-elements\/frameset/);
+  assert.match(ownerSource, /Accessibility\.getPartialAXTree/);
+  assert.match(ownerSource, /role\?\.value,\s*"Iframe"/);
+  assert.match(ownerSource, /Release detail workspace/);
+  assert.match(ownerSource, /frameOwner\.ariaSnapshot\(\{ ref: true \}\)/);
+  assert.match(ownerSource, /frameOwnerRefCount === 1/);
+  assert.doesNotMatch(
+    ownerSource,
+    /framenavigated|Release manifest|legacy-elements\/plaintext/,
+  );
+
+  assert.match(plaintextSource, /taskName \+ " legacy plaintext parsing"/);
+  assert.match(plaintextSource, /\/tests\/legacy-elements\/plaintext/);
+  assert.match(plaintextSource, /Mark transcript checked/);
+  assert.match(plaintextSource, /Transcript checked by release reviewer/);
+  assert.match(plaintextSource, /waitForURL/);
+  assert.match(plaintextSource, /plaintextParserState/);
+  assert.match(plaintextSource, /plaintext-fake-action/);
+  assert.match(plaintextSource, /plaintext-fake-section/);
+  assert.match(plaintextSource, /fakeButtonCount,\s*0/);
+  assert.match(plaintextSource, /fakeSectionCount,\s*0/);
+  assert.doesNotMatch(
+    plaintextSource,
+    /frameset|Accessibility\.getPartialAXTree|frameOwnerSnapshot/,
+  );
+  assert.doesNotMatch(
+    navigationSource + ownerSource + plaintextSource,
+    /setAttribute\(|removeAttribute\(|dispatchEvent\(|screenshot|force\s*:/,
+  );
+});
+
 test("document startup e2e exercises script and no-script user journeys", () => {
   const documentStartup = e2eCases.find(
     (testCase) =>
@@ -1064,6 +1151,34 @@ test("native form coverage attempts real datalist keys and proves select expansi
   assert.match(source, /Accessibility\.getPartialAXTree/);
   assert.match(source, /property\.name === "expanded"/);
   assert.match(source, /native classic select reports expanded=true/);
+});
+
+test("legacy frame navigation separates activation, request, response, commit, and event evidence", () => {
+  const frameNavigation = e2eCases.find(
+    (testCase) => testCase.name === "Legacy frameset target navigation",
+  );
+  assert.ok(frameNavigation);
+  assert.equal(
+    frameNavigation.expectedFailure,
+    "legacy frame-targeted navigation delivers trusted activation, request, response, target-frame commit, and event delivery",
+  );
+  assert.equal(frameNavigation.expectedFailureKind, "framework");
+  const source = frameNavigation.body();
+  assert.match(source, /waitForRequest/);
+  assert.match(source, /waitForResponse/);
+  assert.match(source, /waitForEvent\("framenavigated"/);
+  assert.match(source, /page\.frame\(\{ name: "release-detail" \}\)/);
+  assert.match(source, /commandResolved: clickResult\.ok/);
+  assert.match(source, /trustedActivation: clickContext\.events\.some/);
+  assert.match(source, /event\.type === "click" && event\.trusted/);
+  assert.match(source, /request: requestResult\.ok/);
+  assert.match(source, /response:\s*responseResult\.ok/);
+  assert.match(
+    source,
+    /commit: expectedUrl\(new URL\(currentDetail\.url\(\)\)\)/,
+  );
+  assert.match(source, /event: eventResult\.ok/);
+  assert.match(source, /JSON\.stringify\(navigationEvidence\)/);
 });
 
 test("JavaScript-disabled navigation preserves replacement and cleanup evidence", () => {
