@@ -1807,6 +1807,7 @@ test("the Ego Playwright transport keeps the Playwright Page identity while repl
 
 async function createNavigatedCdpSessionTransport({
   detachError = false,
+  detachErrorMessage = "Target page, context or browser has been closed",
 } = {}) {
   let nextNativeId = 1_000_000_450;
   let replacementAttachCount = 0;
@@ -1918,7 +1919,7 @@ async function createNavigatedCdpSessionTransport({
               ? {
                   error: {
                     code: -32_000,
-                    message: "Target page, context or browser has been closed",
+                    message: detachErrorMessage,
                   },
                 }
               : { result }),
@@ -2086,6 +2087,180 @@ test("detaching a Playwright CDPSession preserves the primary page route", async
     "client-session",
   );
   harness.transport.close();
+});
+
+test("detaching an already-gone Playwright CDPSession is idempotent", async () => {
+  const harness = await createNavigatedCdpSessionTransport({
+    detachError: true,
+    detachErrorMessage: "No session with given id",
+  });
+  await attachPlaywrightCdpSession(harness);
+  harness.received.length = 0;
+
+  harness.transport.send({
+    id: 56,
+    method: "Target.detachFromTarget",
+    params: { sessionId: "playwright-cdp-session" },
+  });
+  for (let index = 0; index < 3; index += 1) await waitForImmediate();
+
+  assert.deepEqual(
+    harness.received.find((message) => message.id === 56),
+    {
+      id: 56,
+      result: {},
+    },
+  );
+  harness.transport.close();
+});
+
+test("a Playwright CDPSession keeps its emulation state across a navigation replacement", async () => {
+  const harness = await createTaskSpaceTransportHarness({
+    tabs: [["tab-main", "https://main.test/before"]],
+    transportOptions: { navigationCommitTimeoutMs: 5_000 },
+  });
+  const { fake, transport, received } = harness;
+  const mainSession = [...fake.sessions.keys()][0];
+
+  transport.send({
+    id: 59,
+    method: "Target.attachToTarget",
+    params: { targetId: "tab-main", flatten: true },
+  });
+  const attached = await waitForMessage(
+    received,
+    (message) => message.id === 59,
+  );
+  const cdpSession = attached?.result?.sessionId;
+  assert.equal(typeof cdpSession, "string");
+
+  transport.send({
+    id: 60,
+    method: "Emulation.setScriptExecutionDisabled",
+    params: { value: true },
+    sessionId: cdpSession,
+  });
+  await waitForMessage(received, (message) => message.id === 60);
+
+  transport.send({
+    id: 61,
+    method: "Page.navigate",
+    params: {
+      frameId: "tab-main",
+      url: "https://main.test/after",
+    },
+    sessionId: mainSession,
+  });
+  await waitForMessage(received, (message) => message.id === 61, 5_000);
+
+  const nativeNavigate = fake.log.find(
+    (request) =>
+      request.method === "Page.navigate" &&
+      request.params?.url === "https://main.test/after",
+  );
+  const replayedEmulation = fake.log.find(
+    (request) =>
+      request.method === "Emulation.setScriptExecutionDisabled" &&
+      request.params?.value === true &&
+      request.sessionId !== cdpSession &&
+      fake.sessions.get(request.sessionId) ===
+        fake.sessions.get(nativeNavigate?.sessionId),
+  );
+  assert.ok(
+    replayedEmulation,
+    "the replacement target receives the CDPSession emulation state",
+  );
+  assert.ok(
+    fake.log.indexOf(replayedEmulation) < fake.log.indexOf(nativeNavigate),
+    "the replacement receives the emulation state before navigation starts",
+  );
+
+  transport.send({
+    id: 62,
+    method: "Runtime.evaluate",
+    params: { expression: "document.readyState", returnByValue: true },
+    sessionId: cdpSession,
+  });
+  const evaluation = await waitForMessage(
+    received,
+    (message) => message.id === 62,
+  );
+  assert.equal(evaluation?.error, undefined);
+  assert.equal(evaluation?.sessionId, cdpSession);
+  assert.equal(
+    fake.sessions.get(fake.log.at(-1).sessionId),
+    fake.sessions.get(nativeNavigate.sessionId),
+    "later CDPSession commands reach the replacement target",
+  );
+  await transport.closeAndWait();
+});
+
+test("a Playwright CDPSession keeps one native session when navigation reuses the tab", async () => {
+  const harness = await createTaskSpaceTransportHarness({
+    tabs: [["tab-main", "https://main.test/before"]],
+    transportOptions: { navigationCommitTimeoutMs: 5_000 },
+  });
+  const { fake, transport, received } = harness;
+  const mainSession = [...fake.sessions.keys()][0];
+
+  transport.send({
+    id: 63,
+    method: "Target.attachToTarget",
+    params: { targetId: "tab-main", flatten: true },
+  });
+  const attached = await waitForMessage(
+    received,
+    (message) => message.id === 63,
+  );
+  const cdpSession = attached?.result?.sessionId;
+  assert.equal(typeof cdpSession, "string");
+
+  // A tab the native side hands back unchanged: the route detaches only its
+  // own session, so the CDPSession's session is still attached and still
+  // carries its state. Attaching a replacement would strand the original,
+  // which nothing ever detaches.
+  fake.runtime.createTab = async (url) => {
+    fake.createdUrls.push(url);
+    const tab = fake.tabs.get("tab-main");
+    tab.url = url;
+    tab.frames[0].url = url;
+    return { targetId: "tab-main" };
+  };
+
+  const liveSessions = () => fake.sessions.size;
+  const beforeNavigations = liveSessions();
+  for (let round = 1; round <= 3; round += 1) {
+    transport.send({
+      id: 63 + round,
+      method: "Page.navigate",
+      params: { frameId: "tab-main", url: `https://main.test/n${round}` },
+      sessionId: mainSession,
+    });
+    await waitForMessage(
+      received,
+      (message) => message.id === 63 + round,
+      5_000,
+    );
+    assert.equal(
+      liveSessions(),
+      beforeNavigations,
+      `round ${round} leaves no extra native session behind`,
+    );
+  }
+
+  transport.send({
+    id: 67,
+    method: "Runtime.evaluate",
+    params: { expression: "document.readyState", returnByValue: true },
+    sessionId: cdpSession,
+  });
+  const evaluation = await waitForMessage(
+    received,
+    (message) => message.id === 67,
+  );
+  assert.equal(evaluation?.error, undefined);
+  assert.equal(evaluation?.sessionId, cdpSession);
+  await transport.closeAndWait();
 });
 
 test("browser-level Storage cookie commands use the selected TaskSpace session", async () => {
