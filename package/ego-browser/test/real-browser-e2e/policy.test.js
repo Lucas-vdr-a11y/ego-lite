@@ -211,8 +211,48 @@ test("parallel real-browser cases write isolated result files", () => {
     [{ name: "web test: one", body: () => "assert(true, 'one')" }],
     "/tmp/e2e-results/lane-1.json",
   );
-  assert.match(laneSource, /runWebLaneCase\("web test: one"/);
+  assert.match(laneSource, /runWebLaneCase\(\s*"web test: one"/);
   assert.match(laneSource, /lane-1\.json/);
+});
+
+test("web lanes keep known-gap matching strict inside the browser process", async () => {
+  const source = runner.webLaneBody(
+    [
+      {
+        name: "expected gap",
+        expectedFailure: "native search landmark",
+        body: () => 'throw new Error("native search landmark: missing")',
+      },
+      {
+        name: "wrong failure",
+        expectedFailure: "native search landmark",
+        body: () => 'throw new Error("business action failed")',
+      },
+      {
+        name: "misleading failure",
+        expectedFailure: "native search landmark",
+        body: () =>
+          'throw new Error("business action failed before native search landmark")',
+      },
+      {
+        name: "unexpected pass",
+        expectedFailure: "native search landmark",
+        body: () => "void 0",
+      },
+    ],
+    "/tmp/ignored-web-lane-report.json",
+  );
+  const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+  const results = await new AsyncFunction(
+    "writeFile",
+    `let __assertionCount = 0; ${source}; return webLaneResults;`,
+  )(async () => {});
+
+  assert.equal(results[0].status, "xfail");
+  assert.equal(results[1].status, "fail");
+  assert.equal(results[2].status, "fail");
+  assert.equal(results[3].status, "fail");
+  assert.match(results[3].message, /unexpected pass/i);
 });
 
 test("SDK global lifecycle runs before TaskSpace browser cases", () => {
@@ -1121,6 +1161,91 @@ test("a cleanup crash makes the final e2e result fail", () => {
     false,
   );
 });
+
+test("known gaps accept only their exact failure and reject unexpected passes", () => {
+  assert.equal(typeof runner.classifyExpectedFailureResult, "function");
+  const knownGap = {
+    name: "known gap",
+    expectedFailure: "scoped snapshot keeps the native canvas",
+  };
+
+  assert.deepEqual(
+    runner.classifyExpectedFailureResult(knownGap, {
+      name: knownGap.name,
+      status: "fail",
+      message: "scoped snapshot keeps the native canvas and ref",
+    }),
+    {
+      name: knownGap.name,
+      status: "xfail",
+      message: "scoped snapshot keeps the native canvas and ref",
+    },
+  );
+  assert.equal(
+    runner.classifyExpectedFailureResult(knownGap, {
+      name: knownGap.name,
+      status: "fail",
+      message: "the real user journey broke before the known gap",
+    }).status,
+    "fail",
+  );
+  assert.equal(
+    runner.classifyExpectedFailureResult(knownGap, {
+      name: knownGap.name,
+      status: "fail",
+      message:
+        "the real user journey broke before scoped snapshot keeps the native canvas",
+    }).status,
+    "fail",
+  );
+  const unexpectedPass = runner.classifyExpectedFailureResult(knownGap, {
+    name: knownGap.name,
+    status: "pass",
+  });
+  assert.equal(unexpectedPass.status, "fail");
+  assert.match(unexpectedPass.message, /unexpected pass/i);
+  assert.equal(runner.suitePassed([{ status: "xfail" }]), true);
+});
+
+test("known HTML gaps are explicit, categorized, and tied to their final diagnostic", () => {
+  const expectedGaps = new Map([
+    [
+      "Legacy frameset target navigation",
+      [
+        "legacy frame-targeted navigation delivers trusted activation, request, response, target-frame commit, and event delivery",
+        "framework",
+      ],
+    ],
+  ]);
+
+  for (const [name, [message, kind]] of expectedGaps) {
+    const testCase = e2eCases.find((candidate) => candidate.name === name);
+    assert.ok(testCase, name + " is registered");
+    assert.equal(testCase.expectedFailure, message, name);
+    assert.equal(testCase.expectedFailureKind, kind, name);
+    assert.match(
+      testCase.body(),
+      new RegExp(message.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+    );
+  }
+  assert.deepEqual(
+    e2eCases
+      .filter((testCase) => testCase.expectedFailure)
+      .map((testCase) => testCase.name)
+      .sort(),
+    [...expectedGaps.keys()].sort(),
+  );
+});
+
+test("known-gap output keeps the first diagnostic line concise", () => {
+  assert.equal(typeof runner.conciseResultMessage, "function");
+  assert.equal(
+    runner.conciseResultMessage("first line\nsecond   line"),
+    "first line second line",
+  );
+  assert.equal(runner.conciseResultMessage("x".repeat(600)).length, 500);
+});
+
 test("native form coverage attempts real datalist keys and proves select expansion", () => {
   const nativeForm = scenarioCases.find(
     (testCase) => testCase.name === "web test: native-form-controls",
