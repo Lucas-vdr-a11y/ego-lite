@@ -22,6 +22,129 @@ function scenarioOperations(source) {
   return source.slice(start + startMarker.length, finish);
 }
 
+test("registers the inline text semantics standards scenario", async () => {
+  const scenarioIndex = await readFile(
+    new URL("./site/src/scenarios/index.jsx", import.meta.url),
+    "utf8",
+  );
+  const testCase = TEST_CASES.find(
+    (candidate) => candidate.slug === "inline-semantics",
+  );
+
+  assert.equal(testCase?.route, "/tests/inline-semantics");
+  assert.match(scenarioIndex, /["']inline-semantics["']\s*:/);
+  assert(
+    scenarioCases.some(
+      (candidate) => candidate.name === "web test: inline-semantics",
+    ),
+    "inline-semantics has a real-browser journey",
+  );
+});
+
+test("uses every MDN inline text semantics element in localized release copy", async () => {
+  const viewSource = await readFile(
+    new URL("./site/src/scenarios/inline-semantics/view.jsx", import.meta.url),
+    "utf8",
+  ).catch(() => "");
+  const clientSource = await readFile(
+    new URL("./site/src/scenarios/inline-semantics/client.js", import.meta.url),
+    "utf8",
+  ).catch(() => "");
+
+  for (const element of [
+    "a",
+    "abbr",
+    "b",
+    "bdi",
+    "bdo",
+    "br",
+    "cite",
+    "code",
+    "data",
+    "dfn",
+    "em",
+    "i",
+    "kbd",
+    "mark",
+    "q",
+    "rp",
+    "rt",
+    "ruby",
+    "s",
+    "samp",
+    "small",
+    "span",
+    "strong",
+    "sub",
+    "sup",
+    "time",
+    "u",
+    "var",
+    "wbr",
+  ]) {
+    assert.match(viewSource, new RegExp(`<${element}\\b`), element);
+  }
+  assert.match(viewSource, /<ruby\b[\s\S]*<rp\b[\s\S]*<rt\b/);
+  assert.match(viewSource, /<bdo\b[^>]*dir=["']rtl["']/);
+  assert.match(viewSource, /<abbr\b[^>]*title=/);
+  assert.match(viewSource, /<time\b[^>]*dateTime=/);
+  assert.match(viewSource, /<data\b[^>]*value=/);
+  assert.match(viewSource, /<q\b[^>]*cite=/);
+  assert.match(viewSource, /href=["']#terminology["']/);
+  assert.match(viewSource, /href=["']#pronunciation["']/);
+  assert.doesNotMatch(
+    viewSource,
+    /role=["'](?:button|link)["']|onClick=|dangerouslySetInnerHTML/,
+  );
+  assert.match(clientSource, /addEventListener\(["']hashchange["']/);
+  assert.match(clientSource, /addEventListener\(["']click["']/);
+  assert.doesNotMatch(clientSource, /dispatchEvent\(|\.click\(\)/);
+});
+
+test("inline semantics journey uses pointer and keyboard review gates", () => {
+  const testCase = scenarioCases.find(
+    (candidate) => candidate.name === "web test: inline-semantics",
+  );
+  const source = testCase?.body() || "";
+  const operations = scenarioOperations(source);
+
+  assert.match(operations, /ariaSnapshot\(\{ ref: true \}\)/);
+  assert.match(operations, /observedAction\(page, terminologyLink, "click"\)/);
+  assert.match(
+    operations,
+    /observedFocusedKeyboard\(page, pronunciationLink, "press", "Enter"\)/,
+  );
+  assert.match(
+    operations,
+    /observedFocusedKeyboard\(page, approveRelease, "press", "Enter"\)/,
+  );
+  assert.match(operations, /new URL\(page\.url\(\)\)\.hash/);
+  assert.match(operations, /document\.activeElement/);
+  assert.match(operations, /getAttribute\("datetime"\)/);
+  assert.match(operations, /getAttribute\("value"\)/);
+  assert.match(operations, /getAttribute\("dir"\)/);
+  assert.match(operations, /boundingBox\(\)/);
+  assert.match(operations, /Accessibility\.getPartialAXTree/);
+  assert.match(operations, /abbrSnapshot/);
+  assert.match(operations, /const abbreviationRef = abbrSnapshot\.match/);
+  assert.match(operations, /"Abbr"/);
+  assert.doesNotMatch(
+    operations,
+    /assertIncludes\(\s*abbrSnapshot,\s*"Singapore Standard Time"/,
+  );
+  assert(
+    operations.indexOf('observedAction(page, terminologyLink, "click")') <
+      operations.indexOf(
+        'observedFocusedKeyboard(page, pronunciationLink, "press", "Enter")',
+      ),
+    "pointer terminology review happens before keyboard pronunciation review",
+  );
+  assert.doesNotMatch(
+    operations,
+    /force\s*:\s*true|dispatchEvent\(|\.evaluate\([^)]*\.click|waitForTimeout/,
+  );
+});
+
 test("registers the text content standards scenario", async () => {
   const scenarioIndex = await readFile(
     new URL("./site/src/scenarios/index.jsx", import.meta.url),

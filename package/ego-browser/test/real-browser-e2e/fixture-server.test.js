@@ -24,6 +24,7 @@ const interactiveRoutes = [
   "network",
   "svg-mathml",
   "text-content",
+  "inline-semantics",
 ];
 
 test("Hono test site exposes a Vite development command", async () => {
@@ -391,6 +392,24 @@ test("text content fixture renders the complete incident handoff document", asyn
   assert.match(
     html,
     /<button(?=[^>]*data-complete-handoff)(?=[^>]*disabled)[^>]*>/,
+  );
+});
+
+test("inline semantics fixture renders the complete localization proof", async () => {
+  const response = await createTestSiteApp("inline-semantics-test").request(
+    "/tests/inline-semantics",
+  );
+  const html = await response.text();
+
+  assert.equal(response.status, 200);
+  assert.match(html, /Localized release proof/);
+  assert.match(html, /Review terminology/);
+  assert.match(html, /Open[\s\S]*pronunciation notes/);
+  assert.match(html, /Approve localized release/);
+  assert.match(html, /data-testid=["']localization-review-status["']/);
+  assert.match(
+    html,
+    /<button(?=[^>]*data-approve-localization)(?=[^>]*disabled)[^>]*>/,
   );
 });
 

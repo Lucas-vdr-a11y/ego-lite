@@ -188,6 +188,15 @@ export const TEST_CASES = [
     description:
       "Read structured incident evidence, confirm its event log, and accept the overnight handoff.",
   },
+  {
+    slug: "inline-semantics",
+    route: "/tests/inline-semantics",
+    number: "22",
+    title: "Localization proof",
+    eyebrow: "Inline semantics / release copy",
+    description:
+      "Review terminology and pronunciation details before approving localized Singapore release copy.",
+  },
 ];
 
 export function findTestCase(slug) {

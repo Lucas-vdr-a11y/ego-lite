@@ -19,6 +19,7 @@ import { richTextScenarioCase } from "./rich-text.mjs";
 import { visualPathScenarioCase } from "./visual-path.mjs";
 import { svgMathmlScenarioCase } from "./svg-mathml.mjs";
 import { textContentScenarioCase } from "./text-content.mjs";
+import { inlineSemanticsScenarioCase } from "./inline-semantics.mjs";
 
 export const scenarioCases = [
   clicksScenarioCase,
@@ -42,4 +43,5 @@ export const scenarioCases = [
   svgMathmlScenarioCase,
   documentOutlineScenarioCase,
   textContentScenarioCase,
+  inlineSemanticsScenarioCase,
 ];
