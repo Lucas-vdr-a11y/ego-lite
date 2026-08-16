@@ -22,6 +22,101 @@ function scenarioOperations(source) {
   return source.slice(start + startMarker.length, finish);
 }
 
+test("registers the document outline standards scenario", async () => {
+  const scenarioIndex = await readFile(
+    new URL("./site/src/scenarios/index.jsx", import.meta.url),
+    "utf8",
+  );
+  const testCase = TEST_CASES.find(
+    (candidate) => candidate.slug === "document-outline",
+  );
+
+  assert.equal(testCase?.route, "/tests/document-outline");
+  assert.match(scenarioIndex, /["']document-outline["']\s*:/);
+  assert(
+    scenarioCases.some(
+      (candidate) => candidate.name === "web test: document-outline",
+    ),
+    "document-outline has a real-browser journey",
+  );
+});
+
+test("uses native document landmarks and every heading level", async () => {
+  const viewSource = await readFile(
+    new URL("./site/src/scenarios/document-outline/view.jsx", import.meta.url),
+    "utf8",
+  ).catch(() => "");
+  const testPageSource = await readFile(
+    new URL("./site/src/components/test-page.jsx", import.meta.url),
+    "utf8",
+  );
+  for (const element of [
+    "address",
+    "article",
+    "aside",
+    "footer",
+    "header",
+    "hgroup",
+    "nav",
+    "search",
+    "section",
+  ]) {
+    assert.match(viewSource, new RegExp(`<${element}\\b`), element);
+  }
+  assert.match(testPageSource, /<main\b/);
+  assert.match(testPageSource, /<h1\b/);
+  for (let level = 1; level <= 6; level += 1) {
+    assert.match(viewSource, new RegExp(`<h${level}\\b`), `h${level}`);
+  }
+  assert.doesNotMatch(viewSource, /<main\b/);
+  assert.match(viewSource, /href=["']#rollout["']/);
+  assert.match(viewSource, /href=["']#support["']/);
+  assert.doesNotMatch(
+    viewSource,
+    /role=["'](?:button|link)["']|onClick=|dangerouslySetInnerHTML/,
+  );
+});
+
+test("document outline journey uses pointer and keyboard fragment navigation", () => {
+  const testCase = scenarioCases.find(
+    (candidate) => candidate.name === "web test: document-outline",
+  );
+  const source = testCase?.body() || "";
+  const operations = scenarioOperations(source);
+
+  assert.match(operations, /ariaSnapshot\(\{ ref: true \}\)/);
+  assert.match(operations, /observedAction\(page, rolloutLink, "click"\)/);
+  assert.match(
+    operations,
+    /observedFocusedKeyboard\(page, supportLink, "press", "Enter"\)/,
+  );
+  assert(
+    operations.indexOf('observedAction(page, rolloutLink, "click")') <
+      operations.indexOf(
+        'observedFocusedKeyboard(page, supportLink, "press", "Enter")',
+      ),
+    "pointer rollout navigation happens before keyboard support navigation",
+  );
+  assert.match(operations, /#rollout/);
+  assert.match(operations, /#support/);
+  assert.match(operations, /new URL\(page\.url\(\)\)\.hash/);
+  assert.match(operations, /getByRole\("main"\)/);
+  assert.match(operations, /heading \"Release briefing\" \[level=1\]/);
+  assert.match(operations, /boundingBox\(\)/);
+  assert.match(operations, /observedAction\(page, briefingQuery, "fill"/);
+  assert.match(
+    operations,
+    /observedPageKey\(\s*page,\s*'searchbox "Find a release topic"',\s*"Enter"/,
+  );
+  assert.match(operations, /searchParams\.get\("q"\)/);
+  assert.match(operations, /Accessibility\.getPartialAXTree/);
+  assert.match(operations, /searchSnapshot/);
+  assert.doesNotMatch(
+    operations,
+    /force\s*:\s*true|dispatchEvent\(|\.evaluate\([^)]*\.click|waitForTimeout/,
+  );
+});
+
 test("registers the SVG and MathML standards scenario", async () => {
   const scenarioIndex = await readFile(
     new URL("./site/src/scenarios/index.jsx", import.meta.url),

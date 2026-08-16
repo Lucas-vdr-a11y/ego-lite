@@ -333,6 +333,33 @@ test("Hono test site exposes the health endpoint used by native Playwright e2e",
   assert.equal(typeof payload.now, "number");
 });
 
+test("document outline fixture composes one main landmark and every authored heading level", async () => {
+  const response = await createTestSiteApp("document-outline-test").request(
+    "/tests/document-outline",
+  );
+  const html = await response.text();
+
+  assert.equal(response.status, 200);
+  assert.equal(html.match(/<main\b/g)?.length, 1);
+  assert.equal(html.match(/<h1\b/g)?.length, 2);
+  for (const element of [
+    "address",
+    "article",
+    "aside",
+    "footer",
+    "header",
+    "hgroup",
+    "nav",
+    "search",
+    "section",
+  ]) {
+    assert.match(html, new RegExp(`<${element}\\b`), element);
+  }
+  for (let level = 1; level <= 6; level += 1) {
+    assert.match(html, new RegExp(`<h${level}\\b`), `h${level}`);
+  }
+});
+
 test("Hono test site links and renders every dedicated browser scenario", async () => {
   const app = createTestSiteApp("routes-test");
   const home = await app.request("/");

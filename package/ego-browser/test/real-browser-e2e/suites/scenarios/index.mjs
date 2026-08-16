@@ -8,6 +8,7 @@ import { uploadsScenarioCase } from "./uploads.mjs";
 import { scrollScenarioCase } from "./scroll.mjs";
 import { navigationScenarioCase } from "./navigation.mjs";
 import { dialogsScenarioCase } from "./dialogs.mjs";
+import { documentOutlineScenarioCase } from "./document-outline.mjs";
 import { downloadsScenarioCase } from "./downloads.mjs";
 import { framesScenarioCase } from "./frames.mjs";
 import { networkScenarioCase } from "./network.mjs";
@@ -38,4 +39,5 @@ export const scenarioCases = [
   richTextScenarioCase,
   visualPathScenarioCase,
   svgMathmlScenarioCase,
+  documentOutlineScenarioCase,
 ];

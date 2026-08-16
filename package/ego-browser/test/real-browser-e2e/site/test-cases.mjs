@@ -170,6 +170,15 @@ export const TEST_CASES = [
     description:
       "Inspect an accessible shipment forecast, review a chart risk, and recalculate required capacity from a native formula.",
   },
+  {
+    slug: "document-outline",
+    route: "/tests/document-outline",
+    number: "20",
+    title: "Release briefing",
+    eyebrow: "Document semantics / release outline",
+    description:
+      "Navigate a structured release brief through native landmarks, headings, and in-page links.",
+  },
 ];
 
 export function findTestCase(slug) {

@@ -2,6 +2,7 @@ import CanvasSurface from "./canvas/view.jsx";
 import ClicksSurface from "./clicks/view.jsx";
 import CollaborativeDocsSurface from "./collaborative-docs/view.jsx";
 import DialogsSurface from "./dialogs/view.jsx";
+import DocumentOutlineSurface from "./document-outline/view.jsx";
 import DownloadsSurface from "./downloads/view.jsx";
 import DragDropSurface from "./drag-drop/view.jsx";
 import FormsSurface from "./forms/view.jsx";
@@ -29,6 +30,7 @@ export const surfaces = {
   scroll: ScrollSurface,
   navigation: NavigationSurface,
   dialogs: DialogsSurface,
+  "document-outline": DocumentOutlineSurface,
   downloads: DownloadsSurface,
   frames: FramesSurface,
   network: NetworkSurface,
