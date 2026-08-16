@@ -4053,6 +4053,82 @@ select:focus-visible,
   }
 }
 
+.web-components-surface {
+  max-width: 70rem;
+  margin: 0 auto;
+  padding: clamp(1.5rem, 4vw, 3rem);
+}
+
+.web-components-heading {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: var(--ui-space-4);
+  padding-bottom: var(--ui-space-4);
+  border-bottom: 1px solid var(--ui-border);
+}
+
+.web-components-heading span,
+.web-components-evidence span {
+  color: var(--ui-muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.web-components-heading h2 {
+  margin: var(--ui-space-1) 0 0;
+}
+
+.web-components-heading p {
+  max-width: 31rem;
+  margin: 0;
+  color: var(--ui-muted);
+}
+
+.web-components-start {
+  min-height: 2.65rem;
+  margin-top: var(--ui-space-4);
+}
+
+.shipment-card-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--ui-space-4);
+  margin-top: var(--ui-space-4);
+}
+
+shipment-card:not(:defined) {
+  min-height: 18rem;
+  border: 1px dashed var(--ui-border-strong);
+  border-radius: var(--ui-radius-sm);
+  background: var(--ui-surface-muted);
+}
+
+.web-components-evidence {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--ui-space-3);
+  margin-top: var(--ui-space-4);
+  padding: var(--ui-space-4);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-sm);
+  background: var(--ui-surface-muted);
+}
+
+.web-components-evidence > div {
+  min-width: 0;
+}
+
+.web-components-evidence output {
+  display: block;
+  margin-top: var(--ui-space-2);
+  overflow-wrap: anywhere;
+  color: var(--ui-text);
+  font-size: 0.8rem;
+  font-weight: 650;
+}
+
 @media (max-width: 64rem) {
   .capacity-model {
     grid-template-columns: 1fr;
@@ -4165,9 +4241,19 @@ select:focus-visible,
     flex-direction: column;
   }
 
+  .web-components-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
   .native-form-controls-grid,
   .native-form-controls-readiness,
   .native-form-controls-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .shipment-card-grid,
+  .web-components-evidence {
     grid-template-columns: 1fr;
   }
 

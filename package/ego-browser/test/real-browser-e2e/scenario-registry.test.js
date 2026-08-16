@@ -22,6 +22,118 @@ function scenarioOperations(source) {
   return source.slice(start + startMarker.length, finish);
 }
 
+test("registers the web components standards scenario", async () => {
+  const scenarioIndex = await readFile(
+    new URL("./site/src/scenarios/index.jsx", import.meta.url),
+    "utf8",
+  );
+  const testCase = TEST_CASES.find(
+    (candidate) => candidate.slug === "web-components",
+  );
+
+  assert.equal(testCase?.route, "/tests/web-components");
+  assert.match(scenarioIndex, /["']web-components["']\s*:/);
+  assert(
+    scenarioCases.some(
+      (candidate) => candidate.name === "web test: web-components",
+    ),
+    "web-components has a real-browser journey",
+  );
+});
+
+test("web components fixture clones an inert template into open shipment cards", async () => {
+  const viewSource = await readFile(
+    new URL("./site/src/scenarios/web-components/view.jsx", import.meta.url),
+    "utf8",
+  ).catch(() => "");
+  const clientSource = await readFile(
+    new URL("./site/src/scenarios/web-components/client.js", import.meta.url),
+    "utf8",
+  ).catch(() => "");
+
+  assert.match(viewSource, /<template\b[^>]*id=["']shipment-card-template["']/);
+  assert.match(viewSource, /<slot\b[^>]*name=["']reference["']/);
+  assert.match(viewSource, /<slot\b[^>]*name=["']route["']/);
+  assert.match(viewSource, /<slot>\s*No review notes supplied\./);
+  assert.equal(
+    viewSource.match(/<shipment-card\b/g)?.length,
+    2,
+    "the fixture authors one populated card and one fallback card",
+  );
+  assert.match(viewSource, /slot=["']reference["']/);
+  assert.match(viewSource, /slot=["']route["']/);
+  assert.match(viewSource, /Singapore to Shanghai/);
+  assert.match(viewSource, /Unassigned shipment/);
+  assert.match(viewSource, /Route pending/);
+  assert.doesNotMatch(
+    viewSource,
+    /\brole=|shadowrootmode=|onClick=|dangerouslySetInnerHTML/,
+  );
+
+  assert.match(clientSource, /attachShadow\(\{\s*mode:\s*["']open["']\s*\}\)/);
+  assert.match(clientSource, /template\.content\.cloneNode\(true\)/);
+  assert.match(clientSource, /customElements\.define\(["']shipment-card["']/);
+  assert.match(clientSource, /assignedElements\(\{\s*flatten:\s*true\s*\}\)/);
+  assert.match(clientSource, /new CustomEvent\(["']shipment-reviewed["']/);
+  assert.match(clientSource, /bubbles:\s*true/);
+  assert.match(clientSource, /composed:\s*true/);
+  assert.match(clientSource, /composedPath\(\)/);
+  assert.match(clientSource, /removeAttribute\(["']slot["']\)/);
+  assert.match(clientSource, /setAttribute\(["']slot["']/);
+  assert.doesNotMatch(
+    clientSource,
+    /mode:\s*["']closed["']|innerHTML\s*=|\.click\(\)|force\s*:\s*true/,
+  );
+});
+
+test("web components journey uses real shadow keyboard and fresh ref actions", () => {
+  const testCase = scenarioCases.find(
+    (candidate) => candidate.name === "web test: web-components",
+  );
+  const operations = scenarioOperations(testCase?.body() || "");
+
+  assert.match(operations, /ariaSnapshot\(\{ ref: true \}\)/);
+  assert.match(operations, /HTMLTemplateElement/);
+  assert.match(operations, /\.content\.querySelectorAll/);
+  assert.match(operations, /shadowRoot\.mode/);
+  assert.match(operations, /assignedElements\(\{ flatten: true \}\)/);
+  assert.match(operations, /observedAction\(page, beginReview, "click"\)/);
+  assert.match(operations, /observedPageKey\(page, [^,]+, "Tab"\)/);
+  assert.match(operations, /observedPageKey\(page, [^,]+, "Enter"\)/);
+  assert.match(operations, /document\.activeElement/);
+  assert.match(operations, /shadowRoot\.activeElement/);
+  assert.match(operations, /shadow-click-path/);
+  assert.match(operations, /shadow-custom-event-path/);
+  assert.match(operations, /freshSwapRef/);
+  assert.match(
+    operations,
+    /const freshSwapButton = page\.locator\("aria-ref=" \+ freshSwapRef\)/,
+  );
+  assert.match(operations, /observedAction\(page, freshSwapButton, "click"\)/);
+  assert.match(operations, /initialAssignments/);
+  assert.match(operations, /swappedAssignments/);
+  assert.match(operations, /Accessibility\.getPartialAXTree/);
+  assert.match(operations, /DOM\.describeNode/);
+  assert.match(operations, /backendDOMNodeId/);
+  assert.match(operations, /Runtime\.evaluate/);
+  assert.match(operations, /rawReviewButton/);
+  assert.match(operations, /rawSwapButton/);
+  assert(
+    operations.indexOf('observedPageKey(page, reviewButtonLine, "Tab")') <
+      operations.indexOf('observedPageKey(page, reviewButtonLine, "Enter")'),
+    "Tab focuses the shadow review button before Enter activates it",
+  );
+  assert(
+    operations.indexOf('observedPageKey(page, reviewButtonLine, "Enter")') <
+      operations.indexOf('observedAction(page, freshSwapButton, "click")'),
+    "keyboard review completes before the fresh-ref swap",
+  );
+  assert.doesNotMatch(
+    operations,
+    /dispatchEvent\(|force\s*:\s*true|xpath=|shadowRoot\.querySelector\([^)]*\)\.click\(|waitForTimeout|mode:\s*["']closed["']|observedAction\([^\n]*slot/i,
+  );
+});
+
 test("registers the native form controls standards scenario", async () => {
   const scenarioIndex = await readFile(
     new URL("./site/src/scenarios/index.jsx", import.meta.url),

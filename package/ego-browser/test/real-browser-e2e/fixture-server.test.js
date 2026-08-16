@@ -28,6 +28,7 @@ const interactiveRoutes = [
   "media-embeds",
   "table-semantics",
   "native-form-controls",
+  "web-components",
 ];
 
 test("Hono test site exposes a Vite development command", async () => {
@@ -523,6 +524,28 @@ test("native form fixture renders the complete cross-border release review", asy
       /<form\b[^>]*id=["']cross-border-release-review["'][\s\S]*?<\/form>/,
     )?.[0] || "";
   assert.doesNotMatch(formHtml, /\b(?:role|novalidate)=/);
+});
+
+test("web components fixture authors an inert shipment template and two hosts", async () => {
+  const response = await createTestSiteApp("web-components-test").request(
+    "/tests/web-components",
+  );
+  const html = await response.text();
+
+  assert.equal(response.status, 200);
+  assert.match(html, /Shipment component review/);
+  assert.match(
+    html,
+    /<template\b[^>]*id=["']shipment-card-template["'][\s\S]*<slot\b[^>]*name=["']reference["']/,
+  );
+  assert.match(html, /<slot\b[^>]*name=["']route["']/);
+  assert.match(html, /<slot>\s*No review notes supplied\./);
+  assert.equal(html.match(/<shipment-card\b/g)?.length, 2);
+  assert.match(html, /slot=["']reference["']/);
+  assert.match(html, /slot=["']route["']/);
+  assert.match(html, /data-testid=["']shadow-click-path["']/);
+  assert.match(html, /data-testid=["']shadow-custom-event-path["']/);
+  assert.doesNotMatch(html, /shadowrootmode=/);
 });
 
 test("Hono test site links and renders every dedicated browser scenario", async () => {

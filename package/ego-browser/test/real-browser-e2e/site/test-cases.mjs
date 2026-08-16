@@ -224,6 +224,15 @@ export const TEST_CASES = [
     description:
       "Use browser-native validation, city suggestions, and grouped market selection to submit an APAC release review.",
   },
+  {
+    slug: "web-components",
+    route: "/tests/web-components",
+    number: "26",
+    title: "Shipment component review",
+    eyebrow: "Web components / projected content",
+    description:
+      "Review independent open-shadow shipment cards, then reassign their projected route and notes through a real component control.",
+  },
 ];
 
 export function findTestCase(slug) {

@@ -29,6 +29,7 @@ const interactiveScenarios = new Set([
   "media-embeds",
   "table-semantics",
   "native-form-controls",
+  "web-components",
 ]);
 
 export function scenarioModulePath(slug) {

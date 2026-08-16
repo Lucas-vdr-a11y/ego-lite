@@ -23,6 +23,7 @@ import InlineSemanticsSurface from "./inline-semantics/view.jsx";
 import MediaEmbedsSurface from "./media-embeds/view.jsx";
 import TableSemanticsSurface from "./table-semantics/view.jsx";
 import NativeFormControlsSurface from "./native-form-controls/view.jsx";
+import WebComponentsSurface from "./web-components/view.jsx";
 
 export const surfaces = {
   clicks: ClicksSurface,
@@ -50,4 +51,5 @@ export const surfaces = {
   "media-embeds": MediaEmbedsSurface,
   "table-semantics": TableSemanticsSurface,
   "native-form-controls": NativeFormControlsSurface,
+  "web-components": WebComponentsSurface,
 };
