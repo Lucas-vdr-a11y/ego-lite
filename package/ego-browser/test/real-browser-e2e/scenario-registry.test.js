@@ -1053,6 +1053,129 @@ test("contract amendment journey compares native AX and drives trusted review ac
   );
 });
 
+test("registers the interactive elements standards scenario", async () => {
+  const scenarioIndex = await readFile(
+    new URL("./site/src/scenarios/index.jsx", import.meta.url),
+    "utf8",
+  );
+  const testCase = TEST_CASES.find(
+    (candidate) => candidate.slug === "interactive-elements",
+  );
+
+  assert.equal(testCase?.route, "/tests/interactive-elements");
+  assert.match(scenarioIndex, /["']interactive-elements["']\s*:/);
+  assert(
+    scenarioCases.some(
+      (candidate) => candidate.name === "web test: interactive-elements",
+    ),
+    "interactive-elements has a real-browser journey",
+  );
+});
+
+test("interactive fixture authors native disclosure, location, and modal controls", async () => {
+  const viewSource = await readFile(
+    new URL(
+      "./site/src/scenarios/interactive-elements/view.jsx",
+      import.meta.url,
+    ),
+    "utf8",
+  ).catch(() => "");
+  const clientSource = await readFile(
+    new URL(
+      "./site/src/scenarios/interactive-elements/client.js",
+      import.meta.url,
+    ),
+    "utf8",
+  ).catch(() => "");
+
+  for (const element of ["details", "summary", "geolocation", "dialog"]) {
+    assert.match(viewSource, new RegExp(`<${element}\\b`), element);
+  }
+  assert.match(
+    viewSource,
+    /<geolocation\b[\s\S]*<button\b[^>]*data-manual-location-fallback/,
+  );
+  assert.match(viewSource, /data-testid=["']details-toggle-status["']/);
+  assert.match(viewSource, /data-testid=["']geolocation-validation-status["']/);
+  assert.match(viewSource, /data-testid=["']dialog-decision-status["']/);
+  assert.match(viewSource, /data-open-dispatch-dialog/);
+  assert.match(viewSource, /<form\b[^>]*method=["']dialog["']/);
+  assert.match(viewSource, /<button\b[^>]*value=["']cancel["']/);
+  assert.match(
+    viewSource,
+    /<button\b(?=[^>]*value=["']confirmed["'])(?=[^>]*autofocus)[^>]*>/,
+  );
+  assert.doesNotMatch(
+    viewSource,
+    /\brole=|\btab[Ii]ndex=|onClick=|dangerouslySetInnerHTML/,
+  );
+
+  assert.match(clientSource, /addEventListener\(\s*["']toggle["']/);
+  assert.match(
+    clientSource,
+    /addEventListener\(\s*["']validationstatuschange["']/,
+  );
+  assert.match(clientSource, /HTMLGeolocationElement/);
+  assert.match(clientSource, /showModal\(\)/);
+  assert.match(clientSource, /addEventListener\(["']close["']/);
+  assert.match(clientSource, /addEventListener\(["']click["']/);
+  assert.doesNotMatch(
+    clientSource,
+    /dispatchEvent\(|\.click\(\)|\.focus\(|grantPermissions|setGeolocation|innerHTML\s*=/,
+  );
+});
+
+test("interactive journey uses trusted disclosure, fallback, and dialog actions before its semantic comparison", () => {
+  const testCase = scenarioCases.find(
+    (candidate) => candidate.name === "web test: interactive-elements",
+  );
+  const operations = scenarioOperations(testCase?.body() || "");
+
+  assert.match(operations, /observedBoxGesture\(\s*page,\s*summary/);
+  assert.match(
+    operations,
+    /observedPageKey\(\s*page,\s*'[^']*shipment terms[^']*',\s*"Enter"/i,
+  );
+  assert.match(
+    operations,
+    /observedPageKey\(\s*page,\s*'[^']*shipment terms[^']*',\s*"Space"/i,
+  );
+  assert.match(operations, /details\[open\]/);
+  assert.match(operations, /details-toggle-status/);
+  assert.match(operations, /HTMLGeolocationElement/);
+  assert.match(operations, /intersection_changed/);
+  assert.match(operations, /validationstatuschange|validationHistory/);
+  assert.match(operations, /observedPageKey\(\s*page,\s*[^,]+,\s*"Tab"/);
+  assert.match(operations, /Accessibility\.getPartialAXTree/);
+  assert.match(operations, /rawGeolocation/);
+  assert.match(
+    operations,
+    /observedAction\(page, manualLocationFallback, "click"\)/,
+  );
+  assert.match(
+    operations,
+    /observedAction\(page, openDispatchDialog, "click"\)/,
+  );
+  assert.match(operations, /matches\(["']:modal["']\)/);
+  assert.match(operations, /document\.activeElement/);
+  assert.match(operations, /Accessibility\.getFullAXTree/);
+  assert.match(operations, /modalSnapshotExposesBackgroundRef/);
+  assert.match(operations, /observedPageKey\(\s*page,\s*[^,]+,\s*"Escape"/);
+  assert.match(operations, /observedAction\(page, cancelDecision, "click"\)/);
+  assert.match(operations, /observedPageKey\(\s*page,\s*[^,]+,\s*"Enter"/);
+  assert.match(operations, /returnValue/);
+  assert.match(operations, /const frameworkGaps/);
+  assert(
+    operations.indexOf("const frameworkGaps") >
+      operations.lastIndexOf('"confirmed"'),
+    "the framework RED is aggregated only after the final confirm state",
+  );
+  assert.doesNotMatch(
+    operations,
+    /grantPermissions|setGeolocation|dispatchEvent\(|force\s*:\s*true|waitForTimeout|observedAction\(page, geolocation|observedAction\(page, summary/,
+  );
+});
+
 test("registers the four business collaboration scenarios", async () => {
   const scenarioIndex = await readFile(
     new URL("./site/src/scenarios/index.jsx", import.meta.url),

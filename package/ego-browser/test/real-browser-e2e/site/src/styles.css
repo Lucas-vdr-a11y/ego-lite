@@ -4216,6 +4216,115 @@ shipment-card:not(:defined) {
   min-height: 2.75rem;
 }
 
+.interactive-elements {
+  display: grid;
+  gap: var(--ui-space-4);
+  max-width: 70rem;
+  margin-inline: auto;
+  padding: var(--ui-space-5);
+}
+
+.interactive-elements-heading {
+  padding-bottom: var(--ui-space-4);
+  border-bottom: 1px solid var(--ui-border);
+}
+
+.interactive-elements-heading h2,
+.interactive-elements-disclosure h3,
+.interactive-elements-decision h3 {
+  margin-top: 0;
+}
+
+.interactive-elements-heading > p:last-child,
+.interactive-elements-details-body > p:first-child,
+.interactive-elements-location > p {
+  color: var(--ui-muted);
+}
+
+.interactive-elements-disclosure,
+.interactive-elements-decision {
+  padding: var(--ui-space-4);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-sm);
+  background: var(--ui-surface-muted);
+}
+
+.interactive-elements details {
+  overflow: hidden;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-sm);
+  background: var(--ui-surface);
+}
+
+.interactive-elements summary {
+  padding: var(--ui-space-3);
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.interactive-elements summary:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--ui-accent) 45%, transparent);
+  outline-offset: -3px;
+}
+
+.interactive-elements-details-body {
+  padding: var(--ui-space-4);
+  border-top: 1px solid var(--ui-border);
+}
+
+.interactive-elements-location {
+  display: grid;
+  gap: var(--ui-space-2);
+  margin-top: var(--ui-space-4);
+}
+
+.interactive-elements-location h4 {
+  margin: 0;
+}
+
+.interactive-elements geolocation {
+  margin-block: var(--ui-space-2);
+}
+
+.interactive-elements output {
+  display: block;
+  min-height: 2.5rem;
+  margin-top: var(--ui-space-3);
+  padding: var(--ui-space-3);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-sm);
+  background: var(--ui-surface);
+}
+
+.interactive-elements dialog {
+  width: min(34rem, calc(100vw - 2rem));
+  padding: 0;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-sm);
+  background: var(--ui-surface);
+  color: inherit;
+}
+
+.interactive-elements dialog::backdrop {
+  background: rgb(15 23 42 / 55%);
+}
+
+.interactive-elements dialog form {
+  padding: var(--ui-space-5);
+}
+
+.interactive-elements dialog h2 {
+  margin-top: 0;
+}
+
+.interactive-elements-dialog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--ui-space-2);
+  margin-top: var(--ui-space-4);
+}
+
 @media (max-width: 64rem) {
   .capacity-model {
     grid-template-columns: 1fr;

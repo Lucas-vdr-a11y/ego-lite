@@ -30,6 +30,7 @@ const interactiveRoutes = [
   "native-form-controls",
   "web-components",
   "contract-amendment",
+  "interactive-elements",
 ];
 
 test("Hono test site exposes a Vite development command", async () => {
@@ -574,6 +575,34 @@ test("contract amendment fixture renders both CR-482 revisions and review state"
   assert.match(html, /data-testid=["']amendment-review-status["']/);
   assert.match(html, /Pending legal acceptance for CR-482/);
   assert.doesNotMatch(html, /<(?:del|ins)\b[^>]*\brole=/);
+});
+
+test("interactive fixture renders native disclosure, geolocation, and dialog markup", async () => {
+  const response = await createTestSiteApp("interactive-elements-test").request(
+    "/tests/interactive-elements",
+  );
+  const html = await response.text();
+
+  assert.equal(response.status, 200);
+  assert.match(html, /Dispatch interaction review/);
+  assert.match(html, /<details\b[\s\S]*<summary\b/);
+  assert.match(
+    html,
+    /<geolocation\b[\s\S]*<button\b[^>]*data-manual-location-fallback/,
+  );
+  assert.match(html, /<dialog\b[^>]*id=["']dispatch-decision-dialog["']/);
+  assert.match(html, /<form\b[^>]*method=["']dialog["']/);
+  assert.match(
+    html,
+    /<button\b(?=[^>]*value=["']confirmed["'])(?=[^>]*autofocus)[^>]*>/,
+  );
+  assert.match(html, /data-testid=["']details-toggle-status["']/);
+  assert.match(html, /data-testid=["']geolocation-validation-status["']/);
+  assert.match(html, /data-testid=["']dialog-decision-status["']/);
+  assert.doesNotMatch(
+    html,
+    /<(?:details|summary|geolocation|dialog)\b[^>]*\brole=/,
+  );
 });
 
 test("Hono test site links and renders every dedicated browser scenario", async () => {

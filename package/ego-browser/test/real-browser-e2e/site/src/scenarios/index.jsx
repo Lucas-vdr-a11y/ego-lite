@@ -25,6 +25,7 @@ import TableSemanticsSurface from "./table-semantics/view.jsx";
 import NativeFormControlsSurface from "./native-form-controls/view.jsx";
 import WebComponentsSurface from "./web-components/view.jsx";
 import ContractAmendmentSurface from "./contract-amendment/view.jsx";
+import InteractiveElementsSurface from "./interactive-elements/view.jsx";
 
 export const surfaces = {
   clicks: ClicksSurface,
@@ -54,4 +55,5 @@ export const surfaces = {
   "native-form-controls": NativeFormControlsSurface,
   "web-components": WebComponentsSurface,
   "contract-amendment": ContractAmendmentSurface,
+  "interactive-elements": InteractiveElementsSurface,
 };

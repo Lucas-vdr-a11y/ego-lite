@@ -31,6 +31,7 @@ const clientEntries = [
   "native-form-controls",
   "web-components",
   "contract-amendment",
+  "interactive-elements",
 ];
 
 export default defineConfig(({ command, mode }) => {

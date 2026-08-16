@@ -242,6 +242,15 @@ export const TEST_CASES = [
     description:
       "Compare the retained terms in change request CR-482, accept the revision, and verify keyboard undo and restore history.",
   },
+  {
+    slug: "interactive-elements",
+    route: "/tests/interactive-elements",
+    number: "28",
+    title: "Interactive elements",
+    eyebrow: "Interactive elements / dispatch decision",
+    description:
+      "Exercise native disclosure, location validation, and modal decision controls without fabricating permissions or semantics.",
+  },
 ];
 
 export function findTestCase(slug) {
