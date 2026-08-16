@@ -126,6 +126,22 @@ test("shared target observation resolves synthetic generic roots from a final sc
   );
 });
 
+test("screenshot timeout coverage contains a stuck RPC in a disposable Page", () => {
+  const screenshotCase = e2eCases.find(
+    (testCase) => testCase.name === "Playwright screenshot timeout containment",
+  );
+
+  assert.ok(screenshotCase);
+  assert.equal(screenshotCase.kind, "platform");
+  const source = screenshotCase.body();
+  assert.match(source, /context\.newPage\(\)/);
+  assert.match(source, /Promise\.race/);
+  assert.match(source, /\.screenshot\([\s\S]*\.then\(/);
+  assert.match(source, /child\.close/);
+  assert.match(source, /egoBrowser[\s\S]*\.closeTaskSpace\(scratch\.id\)/);
+  assert.match(source, /screenshotOutcome\?\.kind !== "watchdog"/);
+});
+
 test("real-browser e2e classifies platform and scenario cases explicitly", () => {
   assert.equal(typeof runner.groupE2eCasesByKind, "function");
   const platform = { name: "platform", kind: "platform" };

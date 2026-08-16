@@ -14,6 +14,7 @@ import { ownershipLifecycleCase } from "./platform/ownership-lifecycle.mjs";
 import { playwrightCdpSessionCase } from "./platform/playwright-cdp-session.mjs";
 import { taskSpaceProfileCase } from "./platform/profile-selection.mjs";
 import { taskSpaceProcessContentionCase } from "./platform/process-contention.mjs";
+import { screenshotTimeoutCase } from "./platform/screenshot-timeout.mjs";
 import { taskSpaceControlCase } from "./platform/taskspace-control.mjs";
 import { taskSpaceVideoCapabilityCase } from "./platform/video-capability.mjs";
 import { scenarioProgressCase } from "./runtime/scenario-progress.mjs";
@@ -58,6 +59,7 @@ export const e2eCases = [
   agentMouseOverlayCase,
   playwrightCdpSessionCase,
   networkRoutingCase,
+  screenshotTimeoutCase,
   nativeCloseRegressionCase,
   nativeCallbackContainmentCase,
 ];
