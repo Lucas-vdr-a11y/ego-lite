@@ -1208,15 +1208,12 @@ test("known gaps accept only their exact failure and reject unexpected passes", 
 });
 
 test("known HTML gaps are explicit, categorized, and tied to their final diagnostic", () => {
-  const expectedGaps = new Map([
-    [
-      "Legacy frameset target navigation",
-      [
-        "legacy frame-targeted navigation delivers trusted activation, request, response, target-frame commit, and event delivery",
-        "framework",
-      ],
-    ],
-  ]);
+  // Empty on purpose. Legacy frameset target navigation was the one entry, and
+  // it stopped being a gap once the suite waited for the first compositor frame
+  // before clicking; the case now delivers a genuinely trusted click and
+  // passes. The mechanism stays because the final assertion is the real guard:
+  // no case may excuse itself with expectedFailure without being listed here.
+  const expectedGaps = new Map([]);
 
   for (const [name, [message, kind]] of expectedGaps) {
     const testCase = e2eCases.find((candidate) => candidate.name === name);
@@ -1288,11 +1285,10 @@ test("legacy frame navigation separates activation, request, response, commit, a
     (testCase) => testCase.name === "Legacy frameset target navigation",
   );
   assert.ok(frameNavigation);
-  assert.equal(
-    frameNavigation.expectedFailure,
-    "legacy frame-targeted navigation delivers trusted activation, request, response, target-frame commit, and event delivery",
-  );
-  assert.equal(frameNavigation.expectedFailureKind, "framework");
+  // The compositor-frame gate closed this gap, so the case must earn its pass
+  // rather than be excused as a known failure.
+  assert.equal(frameNavigation.expectedFailure, undefined);
+  assert.equal(frameNavigation.expectedFailureKind, undefined);
   const source = frameNavigation.body();
   assert.match(source, /waitForRequest/);
   assert.match(source, /waitForResponse/);
