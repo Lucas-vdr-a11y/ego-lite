@@ -210,6 +210,7 @@ export const crossRoundOopifPersistenceCase = {
           1,
           "semantic locators work in the restored checkout OOPIF",
         );
+        await checkoutFrame.waitForLoadState("load", { timeout: 5_000 });
         const mapDeadline = Date.now() + 3_000;
         let mapFrame;
         do {
@@ -230,11 +231,13 @@ export const crossRoundOopifPersistenceCase = {
           1,
           "the restored nested OOPIF has a working Playwright session",
         );
+        await mapFrame.waitForLoadState("load", { timeout: 5_000 });
 
-        const zoomStateSelector =
-          'a[href*="/fixthemap?"][href*="zoom="]';
-        const zoomStateLink = mapFrame.locator(zoomStateSelector);
-        await zoomStateLink.waitFor({ state: "attached", timeout: 10_000 });
+        // The third-party page publishes this link only after its map has
+        // initialised once, so it doubles as the readiness gate.
+        await mapFrame
+          .locator('a[href*="/fixthemap?"][href*="zoom="]')
+          .waitFor({ state: "attached", timeout: 10_000 });
         const zoomSnapshot = await mapFrame
           .locator("body")
           .ariaSnapshot({ ref: true });
@@ -253,40 +256,93 @@ export const crossRoundOopifPersistenceCase = {
           "the restored nested OOPIF zoom-in control is visible",
         );
 
-        const readMapZoom = async () => {
-          const href = await zoomStateLink.getAttribute("href");
-          assert(href, "the restored nested OOPIF exposes its zoom state");
-          const zoom = Number(
-            new URL(href, mapFrame.url()).searchParams.get("zoom"),
-          );
-          assert(
-            Number.isFinite(zoom),
-            "the restored nested OOPIF reports a numeric zoom level",
-          );
-          return zoom;
-        };
+        // This control sits two cross-site boundaries below the host page
+        // (host -> checkout.localhost -> openstreetmap.org). Observe the
+        // browser's own event dispatch rather than the map's camera state: the
+        // third-party page decides when its UI catches up, and one click was
+        // measured moving its published zoom level by 0, 1, or 2 — but a click
+        // either gets hit-tested into this renderer or it does not. Arming the
+        // listener and reading it back are themselves round trips through the
+        // nested session.
+        const zoomInHandle = await zoomInButton.elementHandle();
+        assert(
+          zoomInHandle,
+          "the restored nested OOPIF resolves its zoom control to a handle",
+        );
+        await mapFrame.evaluate((control) => {
+          window.__egoNestedClicks = [];
+          control.addEventListener("click", (event) => {
+            window.__egoNestedClicks.push({
+              trusted: event.isTrusted,
+              onControl: event.currentTarget === control,
+            });
+          });
+        }, zoomInHandle);
 
-        const zoomBefore = await readMapZoom();
         await zoomInButton.click();
         await mapFrame.waitForFunction(
-          ({ selector, expectedZoom }) => {
-            const href = document
-              .querySelector(selector)
-              ?.getAttribute("href");
-            return (
-              href &&
-              Number(new URL(href, location.href).searchParams.get("zoom")) ===
-                expectedZoom
-            );
-          },
-          { selector: zoomStateSelector, expectedZoom: zoomBefore + 1 },
+          () => (window.__egoNestedClicks || []).length > 0,
+          undefined,
           { timeout: 5_000, polling: 50 },
         );
-        const zoomAfter = await readMapZoom();
+        const nestedClicks = await mapFrame.evaluate(
+          () => window.__egoNestedClicks,
+        );
         assertEqual(
-          zoomAfter,
-          zoomBefore + 1,
-          "clicking the restored nested OOPIF zoom control changes map state",
+          nestedClicks.length,
+          1,
+          "a click on the restored nested OOPIF arrives exactly once",
+        );
+        assertEqual(
+          nestedClicks[0].trusted,
+          true,
+          "the restored nested OOPIF receives a browser-dispatched click",
+        );
+        assertEqual(
+          nestedClicks[0].onControl,
+          true,
+          "the click is hit-tested onto the zoom control inside the restored nested OOPIF",
+        );
+        assertEqual(
+          await mapFrame.evaluate(
+            (control) => document.activeElement === control,
+            zoomInHandle,
+          ),
+          true,
+          "the restored nested OOPIF moves focus to the control the click landed on",
+        );
+
+        // Closing the page must release its frames: a page that outlives it
+        // rebuilds its own OOPIF tree in the same Node round, through the same
+        // transport that just tore the first one down.
+        const reopened = await restored.context.newPage();
+        await restored.page.close();
+        await reopened.goto(saved.pageUrl, {
+          waitUntil: "load",
+          timeout: 20_000,
+        });
+        await reopened
+          .getByRole("button", { name: "Load secure checkout" })
+          .click();
+        const reopenDeadline = Date.now() + 10_000;
+        let reopenedCheckout;
+        do {
+          reopenedCheckout = reopened
+            .frames()
+            .find((frame) => frame.url().includes("checkout.localhost"));
+          if (reopenedCheckout) break;
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        } while (Date.now() < reopenDeadline);
+        assert(
+          reopenedCheckout,
+          "a page opened after the OOPIF page closed attaches its own checkout OOPIF",
+        );
+        assertEqual(
+          await reopenedCheckout
+            .getByRole("heading", { name: "Confirm payment details" })
+            .count(),
+          1,
+          "the reopened checkout OOPIF is readable",
         );
 
         const result = await egoBrowser.closeTaskSpace(saved.id);

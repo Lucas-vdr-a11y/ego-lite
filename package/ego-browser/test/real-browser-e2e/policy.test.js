@@ -555,7 +555,11 @@ test("frames e2e validates nested frame snapshots and the external map", () => {
   );
 });
 
-test("cross-round OOPIF e2e clicks the restored nested zoom control and verifies its state change", () => {
+// The evidence is the browser's own dispatch, not the map's camera: the
+// third-party page decides when its UI catches up, so a zoom-level delta
+// cannot separate "the click landed" from "the map has not repainted yet".
+// A trusted click event that names the control it hit can.
+test("cross-round OOPIF e2e clicks the restored nested zoom control and proves the click was trusted", () => {
   const oopif = e2eCases.find(
     (testCase) => testCase.name === "TaskSpace cross-round OOPIF persistence",
   );
@@ -564,21 +568,22 @@ test("cross-round OOPIF e2e clicks the restored nested zoom control and verifies
   assert.ok(oopif);
   assert.match(source, /ariaSnapshot\(\{ ref: true \}\)/);
   assert.match(source, /mapFrame\.locator\("aria-ref=" \+ zoomInMatch\[1\]\)/);
-  assert.match(source, /const zoomBefore = await readMapZoom\(\)/);
+  assert.match(source, /window\.__egoNestedClicks = \[\]/);
   assert.match(source, /await zoomInButton\.click\(\)/);
   assert.match(source, /fixthemap\?[^\n]+zoom=/);
   assert.match(source, /await mapFrame\.waitForFunction\(/);
-  assert.match(source, /assertEqual\(\s*zoomAfter,\s*zoomBefore \+ 1,/);
+  assert.match(source, /assertEqual\(\s*nestedClicks\[0\]\.trusted,\s*true,/);
+  assert.match(source, /assertEqual\(\s*nestedClicks\[0\]\.onControl,\s*true,/);
   const snapshotIndex = source.indexOf("ariaSnapshot({ ref: true })");
-  const beforeIndex = source.indexOf("const zoomBefore = await readMapZoom()");
+  const armIndex = source.indexOf("window.__egoNestedClicks = []");
   const clickIndex = source.indexOf("await zoomInButton.click()");
   const waitIndex = source.indexOf("await mapFrame.waitForFunction(");
-  const afterIndex = source.indexOf("const zoomAfter = await readMapZoom()");
+  const readIndex = source.indexOf("nestedClicks[0].trusted");
   assert.ok(
-    snapshotIndex < beforeIndex &&
-      beforeIndex < clickIndex &&
+    snapshotIndex < armIndex &&
+      armIndex < clickIndex &&
       clickIndex < waitIndex &&
-      waitIndex < afterIndex,
+      waitIndex < readIndex,
   );
 });
 
