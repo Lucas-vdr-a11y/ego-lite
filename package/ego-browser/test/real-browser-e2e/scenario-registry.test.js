@@ -22,6 +22,185 @@ function scenarioOperations(source) {
   return source.slice(start + startMarker.length, finish);
 }
 
+test("registers the native form controls standards scenario", async () => {
+  const scenarioIndex = await readFile(
+    new URL("./site/src/scenarios/index.jsx", import.meta.url),
+    "utf8",
+  );
+  const testCase = TEST_CASES.find(
+    (candidate) => candidate.slug === "native-form-controls",
+  );
+
+  assert.equal(testCase?.route, "/tests/native-form-controls");
+  assert.match(scenarioIndex, /["']native-form-controls["']\s*:/);
+  assert(
+    scenarioCases.some(
+      (candidate) => candidate.name === "web test: native-form-controls",
+    ),
+    "native-form-controls has a real-browser journey",
+  );
+});
+
+test("uses every MDN native form control in a cross-border release review", async () => {
+  const viewSource = await readFile(
+    new URL(
+      "./site/src/scenarios/native-form-controls/view.jsx",
+      import.meta.url,
+    ),
+    "utf8",
+  ).catch(() => "");
+  const clientSource = await readFile(
+    new URL(
+      "./site/src/scenarios/native-form-controls/client.js",
+      import.meta.url,
+    ),
+    "utf8",
+  ).catch(() => "");
+
+  for (const element of [
+    "button",
+    "datalist",
+    "fieldset",
+    "form",
+    "input",
+    "label",
+    "legend",
+    "meter",
+    "optgroup",
+    "option",
+    "output",
+    "progress",
+    "select",
+    "selectedcontent",
+    "textarea",
+  ]) {
+    assert.match(viewSource, new RegExp(`<${element}\\b`), element);
+  }
+  assert.match(
+    viewSource,
+    /<input\b(?=[^>]*id=["']release-reference["'])(?=[^>]*name=["']releaseReference["'])(?=[^>]*required)(?=[^>]*pattern=)[^>]*>/,
+  );
+  assert.match(
+    viewSource,
+    /<input\b(?=[^>]*id=["']launch-city["'])(?=[^>]*list=["']launch-city-list["'])[^>]*>/,
+  );
+  assert.match(
+    viewSource,
+    /<datalist\b[^>]*id=["']launch-city-list["'][\s\S]*<option\b[^>]*value=["']Shanghai["']/,
+  );
+  assert.match(viewSource, /<optgroup\b[^>]*label=["']Southeast Asia["']/);
+  assert.match(viewSource, /<optgroup\b[^>]*label=["']Greater China["']/);
+  assert.match(
+    viewSource,
+    /<select\b[^>]*id=["']release-template["'][\s\S]*<button\b[\s\S]*<selectedcontent\b/,
+  );
+  assert.match(
+    viewSource,
+    /<label\b[^>]*for=["']risk-buffer["'][^>]*>\s*Risk buffer utilization/,
+  );
+  assert.match(
+    viewSource,
+    /<label\b[^>]*for=["']review-progress["'][^>]*>\s*Review completion/,
+  );
+  assert.match(viewSource, /<meter\b[^>]*id=["']risk-buffer["']/);
+  assert.match(viewSource, /<progress\b[^>]*id=["']review-progress["']/);
+  assert.match(
+    viewSource,
+    /<textarea\b(?=[^>]*name=["']reviewNotes["'])(?=[^>]*minLength=)[^>]*>/,
+  );
+  assert.doesNotMatch(
+    viewSource,
+    /\b(?:role|novalidate|noValidate)=|onClick=|dangerouslySetInnerHTML/,
+  );
+
+  for (const eventName of ["invalid", "input", "change", "submit"]) {
+    assert.match(
+      clientSource,
+      new RegExp(`addEventListener\\s*\\(\\s*["']${eventName}["']`),
+      eventName,
+    );
+  }
+  assert.match(clientSource, /new FormData\(form\)/);
+  assert.match(clientSource, /event\.preventDefault\(\)/);
+  assert.doesNotMatch(
+    clientSource,
+    /dispatchEvent\(|\.click\(\)|\.requestSubmit\(|\.submit\(|\.checked\s*=/,
+  );
+  assert.match(clientSource, /reviewProgress\.value\s*=/);
+  assert.match(clientSource, /riskBuffer\.value\s*=/);
+  assert.match(clientSource, /reviewProgress\.textContent\s*=/);
+  assert.match(clientSource, /riskBuffer\.textContent\s*=/);
+});
+
+test("native form journey uses browser validation and genuine select interaction", () => {
+  const testCase = scenarioCases.find(
+    (candidate) => candidate.name === "web test: native-form-controls",
+  );
+  const operations = scenarioOperations(testCase?.body() || "");
+
+  assert.match(operations, /ariaSnapshot\(\{ ref: true \}\)/);
+  assert(
+    (operations.match(/observedAction\(page, releaseSubmit, "click"\)/g) || [])
+      .length >= 3,
+    "empty, pattern-invalid, and complete submissions all use the visible submit button",
+  );
+  assert.match(operations, /validationMessage/);
+  assert.match(operations, /document\.activeElement/);
+  assert.match(operations, /valueMissing/);
+  assert.match(operations, /patternMismatch/);
+  assert.match(
+    operations,
+    /observedPageKey\(\s*page,\s*'textbox "Release reference"',\s*"ControlOrMeta\+A",?\s*\)/,
+  );
+  assert.match(
+    operations,
+    /observedCurrentKeyboard\(\s*page,\s*'textbox "Release reference"',\s*"type",\s*"SG-2026-0815",?\s*\)/,
+  );
+  assert.match(
+    operations,
+    /observedPageKey\(page, 'combobox "Launch city"', "ArrowDown"\)/,
+  );
+  assert.match(operations, /observedAction\(page, primaryMarket, "click"\)/);
+  assert.match(
+    operations,
+    /observedPageKey\(\s*page,\s*[^,]+,\s*"Escape",?\s*\)/,
+  );
+  assert.match(
+    operations,
+    /observedCurrentKeyboard\(\s*page,\s*'combobox "Primary release market"',\s*"type",\s*"Shanghai"/,
+  );
+  assert.match(operations, /HTMLSelectedContentElement/);
+  assert.match(operations, /CSS\.supports\("appearance", "base-select"\)/);
+  assert.match(operations, /observedAction\(page, releaseTemplate, "click"\)/);
+  assert.match(operations, /observedAction\(page, shanghaiTemplate, "click"\)/);
+  assert.match(operations, /selectedcontent/);
+  assert.match(operations, /reviewNotes/);
+  assert.match(operations, /reviewProgress/);
+  assert.match(operations, /native-form-data/);
+  assert.match(operations, /Accessibility\.getPartialAXTree/);
+  assert.match(operations, /missingRangeControlNames/);
+  assert.match(operations, /Risk buffer utilization/);
+  assert.match(operations, /Review completion/);
+  assert(
+    operations.indexOf('observedAction(page, releaseSubmit, "click")') <
+      operations.search(
+        /observedCurrentKeyboard\(\s*page,\s*'textbox "Release reference"',\s*"type",\s*"SG-2026-0815"/,
+      ),
+    "native invalid submission happens before keyboard repair",
+  );
+  assert(
+    operations.indexOf('observedAction(page, primaryMarket, "click")') <
+      operations.indexOf(
+        "observedCurrentKeyboard(\n      page,\n      'combobox \"Primary release market\"'",
+      ),
+    "mouse-open and Escape happen before classic select typeahead",
+  );
+  assert.doesNotMatch(
+    operations,
+    /force\s*:\s*true|dispatchEvent\(|selectOption\(|requestSubmit\(|\.submit\(|\.evaluate\([^)]*\.click|waitForTimeout/,
+  );
+});
+
 test("registers the table content standards scenario", async () => {
   const scenarioIndex = await readFile(
     new URL("./site/src/scenarios/index.jsx", import.meta.url),

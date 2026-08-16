@@ -27,6 +27,7 @@ const interactiveRoutes = [
   "inline-semantics",
   "media-embeds",
   "table-semantics",
+  "native-form-controls",
 ];
 
 test("Hono test site exposes a Vite development command", async () => {
@@ -471,6 +472,57 @@ test("table fixture renders native grouped transfer commitments", async () => {
     html,
     /role=["'](?:table|rowgroup|row|columnheader|rowheader|cell|checkbox)["']/,
   );
+});
+
+test("native form fixture renders the complete cross-border release review", async () => {
+  const response = await createTestSiteApp("native-form-controls-test").request(
+    "/tests/native-form-controls",
+  );
+  const html = await response.text();
+
+  assert.equal(response.status, 200);
+  assert.match(html, /Cross-border release review/);
+  for (const element of [
+    "button",
+    "datalist",
+    "fieldset",
+    "form",
+    "input",
+    "label",
+    "legend",
+    "meter",
+    "optgroup",
+    "option",
+    "output",
+    "progress",
+    "select",
+    "selectedcontent",
+    "textarea",
+  ]) {
+    assert.match(html, new RegExp(`<${element}\\b`), element);
+  }
+  assert.match(
+    html,
+    /<input\b(?=[^>]*id=["']release-reference["'])(?=[^>]*required)(?=[^>]*pattern=)[^>]*>/,
+  );
+  assert.match(html, /list=["']launch-city-list["']/);
+  assert.match(html, /<option\b[^>]*value=["']Shanghai["']/);
+  assert.match(html, /<optgroup\b[^>]*label=["']Southeast Asia["']/);
+  assert.match(html, /<optgroup\b[^>]*label=["']Greater China["']/);
+  assert.match(html, /<selectedcontent\b/);
+  assert.match(html, /for=["']risk-buffer["']/);
+  assert.match(html, /for=["']review-progress["']/);
+  assert.match(
+    html,
+    /<progress\b(?=[^>]*max=["']5["'])(?=[^>]*value=["']0["'])[^>]*>/,
+  );
+  assert.match(html, /<textarea\b[^>]*min[Ll]ength=["']30["']/);
+  assert.match(html, /data-testid=["']native-form-data["']/);
+  const formHtml =
+    html.match(
+      /<form\b[^>]*id=["']cross-border-release-review["'][\s\S]*?<\/form>/,
+    )?.[0] || "";
+  assert.doesNotMatch(formHtml, /\b(?:role|novalidate)=/);
 });
 
 test("Hono test site links and renders every dedicated browser scenario", async () => {

@@ -28,6 +28,7 @@ const clientEntries = [
   "inline-semantics",
   "media-embeds",
   "table-semantics",
+  "native-form-controls",
 ];
 
 export default defineConfig(({ command, mode }) => {

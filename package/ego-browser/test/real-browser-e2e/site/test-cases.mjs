@@ -215,6 +215,15 @@ export const TEST_CASES = [
     description:
       "Sort grouped APAC transfer commitments, select a route for review, and verify the committed cases and value.",
   },
+  {
+    slug: "native-form-controls",
+    route: "/tests/native-form-controls",
+    number: "25",
+    title: "Cross-border release review",
+    eyebrow: "Native forms / release validation",
+    description:
+      "Use browser-native validation, city suggestions, and grouped market selection to submit an APAC release review.",
+  },
 ];
 
 export function findTestCase(slug) {

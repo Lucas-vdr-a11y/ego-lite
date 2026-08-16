@@ -915,6 +915,43 @@ test("a cleanup crash makes the final e2e result fail", () => {
     false,
   );
 });
+test("native form coverage attempts real datalist keys and proves select expansion", () => {
+  const nativeForm = scenarioCases.find(
+    (testCase) => testCase.name === "web test: native-form-controls",
+  );
+  assert.ok(nativeForm);
+  const source = nativeForm.body();
+
+  assert.match(
+    source,
+    /observedPageKey\(page, 'combobox "Launch city"', "Tab"\)/,
+  );
+  assert.match(
+    source,
+    /observedCurrentKeyboard\(\s*page,\s*'combobox "Launch city"',\s*"type",\s*"Sh"/,
+  );
+  assert.match(
+    source,
+    /observedPageKey\(page, 'combobox "Launch city"', "ArrowDown"\)/,
+  );
+  assert.match(
+    source,
+    /observedPageKey\(page, 'combobox "Launch city"', "Enter"\)/,
+  );
+  assert.match(source, /datalistKeyboardSelected/);
+  assert.match(
+    source,
+    /if \(!datalistKeyboardSelected\)[\s\S]*observedPageKey\(page, 'combobox "Launch city"', "Escape"\)/,
+  );
+  assert.match(
+    source,
+    /if \(!datalistKeyboardSelected\)[\s\S]*observedAction\(page, launchCity, "click"\)/,
+  );
+  assert.match(source, /Accessibility\.getPartialAXTree/);
+  assert.match(source, /property\.name === "expanded"/);
+  assert.match(source, /native classic select reports expanded=true/);
+});
+
 test("keyboard helpers distinguish explicit focus from natural focus flow", () => {
   const sharedSource = scenarioCases[0].body();
   assert.match(sharedSource, /async function observedFocusedKeyboard/);

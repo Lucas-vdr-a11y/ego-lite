@@ -3898,6 +3898,161 @@ select:focus-visible,
   margin-top: var(--ui-space-4);
 }
 
+.native-form-controls-surface {
+  max-width: 68rem;
+  margin: 0 auto;
+  padding: clamp(1.5rem, 4vw, 3rem);
+}
+
+.native-form-controls-heading {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: var(--ui-space-4);
+  padding-bottom: var(--ui-space-4);
+  border-bottom: 1px solid var(--ui-border);
+}
+
+.native-form-controls-heading span,
+.native-form-controls-summary span {
+  color: var(--ui-muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.native-form-controls-heading h2 {
+  margin: var(--ui-space-1) 0 0;
+}
+
+.native-form-controls-heading p {
+  max-width: 28rem;
+  margin: 0;
+  color: var(--ui-muted);
+}
+
+.native-form-controls-form {
+  display: grid;
+  gap: var(--ui-space-4);
+  margin-top: var(--ui-space-4);
+}
+
+.native-form-controls-form fieldset {
+  margin: 0;
+  padding: var(--ui-space-4);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-sm);
+}
+
+.native-form-controls-form legend {
+  float: none;
+  width: auto;
+  margin: 0 0 var(--ui-space-3);
+  padding: 0 var(--ui-space-2);
+  color: var(--ui-text);
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.native-form-controls-grid,
+.native-form-controls-readiness,
+.native-form-controls-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--ui-space-4);
+}
+
+.native-form-control,
+.native-form-controls-readiness > div,
+.native-form-controls-summary > div {
+  min-width: 0;
+}
+
+.native-form-control label,
+.native-form-controls-readiness label {
+  display: block;
+  margin-bottom: var(--ui-space-2);
+  color: var(--ui-text);
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.native-form-control input,
+.native-form-control select,
+.native-form-control textarea {
+  width: 100%;
+  min-height: 2.75rem;
+  padding: var(--ui-space-2) var(--ui-space-3);
+  border: 1px solid var(--ui-border-strong);
+  border-radius: var(--ui-radius-sm);
+  color: var(--ui-text);
+  background: var(--ui-surface);
+  font: inherit;
+}
+
+.native-form-control textarea {
+  min-height: 7.5rem;
+  resize: vertical;
+}
+
+.native-form-control small,
+.native-form-controls-readiness small {
+  display: block;
+  margin-top: var(--ui-space-2);
+  color: var(--ui-muted);
+  font-size: 0.75rem;
+}
+
+.native-form-control-wide {
+  margin-bottom: var(--ui-space-4);
+}
+
+.native-form-controls-readiness meter,
+.native-form-controls-readiness progress {
+  display: block;
+  width: 100%;
+  height: 1rem;
+}
+
+.native-form-controls-summary {
+  padding: var(--ui-space-4);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-sm);
+  background: var(--ui-surface-muted);
+}
+
+.native-form-controls-summary output {
+  display: block;
+  margin-top: var(--ui-space-2);
+  overflow-wrap: anywhere;
+  color: var(--ui-text);
+  font-weight: 650;
+}
+
+.native-form-submit {
+  justify-self: end;
+  min-height: 2.75rem;
+}
+
+@supports (appearance: base-select) {
+  .native-form-controls-surface .customizable-select,
+  .native-form-controls-surface .customizable-select::picker(select) {
+    appearance: base-select;
+  }
+
+  .native-form-controls-surface .customizable-select::picker(select) {
+    padding: var(--ui-space-2);
+    border: 1px solid var(--ui-border-strong);
+    border-radius: var(--ui-radius-sm);
+    background: var(--ui-surface);
+  }
+
+  .native-form-controls-surface .customizable-select option {
+    padding: var(--ui-space-2) var(--ui-space-3);
+    border-radius: calc(var(--ui-radius-sm) / 2);
+  }
+}
+
 @media (max-width: 64rem) {
   .capacity-model {
     grid-template-columns: 1fr;
@@ -4003,5 +4158,20 @@ select:focus-visible,
     flex-direction: column;
     gap: var(--ui-space-1);
     padding-inline: var(--ui-space-4);
+  }
+
+  .native-form-controls-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .native-form-controls-grid,
+  .native-form-controls-readiness,
+  .native-form-controls-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .native-form-submit {
+    justify-self: stretch;
   }
 }

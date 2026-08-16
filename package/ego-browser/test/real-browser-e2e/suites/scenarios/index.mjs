@@ -22,6 +22,7 @@ import { textContentScenarioCase } from "./text-content.mjs";
 import { inlineSemanticsScenarioCase } from "./inline-semantics.mjs";
 import { mediaEmbedsScenarioCase } from "./media-embeds.mjs";
 import { tableSemanticsScenarioCase } from "./table-semantics.mjs";
+import { nativeFormControlsScenarioCase } from "./native-form-controls.mjs";
 
 export const scenarioCases = [
   clicksScenarioCase,
@@ -48,4 +49,5 @@ export const scenarioCases = [
   inlineSemanticsScenarioCase,
   mediaEmbedsScenarioCase,
   tableSemanticsScenarioCase,
+  nativeFormControlsScenarioCase,
 ];
