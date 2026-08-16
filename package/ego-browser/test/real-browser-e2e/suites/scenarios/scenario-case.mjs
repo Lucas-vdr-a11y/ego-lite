@@ -11,7 +11,7 @@ const secondLaneCases = new Set([
   "rich-text",
 ]);
 
-export function scenarioCase(slug, body) {
+export function scenarioCase(slug, body, options = {}) {
   const testCase = TEST_CASES.find((candidate) => candidate.slug === slug);
   if (!testCase) throw new Error(`Unknown web test route: ${slug}`);
   return {
@@ -19,6 +19,7 @@ export function scenarioCase(slug, body) {
     kind: "scenario",
     route: testCase.route,
     parallelLane: secondLaneCases.has(slug) ? 1 : 0,
+    ...options,
     body: () => `
       const task = await openE2eTaskSpace(taskName);
       const page = task.page;
@@ -61,7 +62,16 @@ export function scenarioCase(slug, body) {
               (!accessibleName || candidate.includes('"' + accessibleName + '"'))
             );
           });
-        const match = line?.match(/\\[ref=(s\\d+e\\d+)\\]/);
+        let match = line?.match(/\\[ref=(s\\d+e\\d+)\\]/);
+        let scopedSnapshot;
+        if (
+          !match &&
+          typeof targetOrRole !== "string" &&
+          targetDescription?.trimStart().startsWith("- generic")
+        ) {
+          scopedSnapshot = await targetOrRole.ariaSnapshot({ ref: true });
+          match = scopedSnapshot.match(/\\[ref=(s\\d+e\\d+)\\]/);
+        }
         assert(
           match,
           "the observed structure exposes " +
@@ -70,7 +80,7 @@ export function scenarioCase(slug, body) {
                 ? targetOrRole
                 : targetDescription || "target")) +
             ":\\n" +
-            snapshot,
+            (scopedSnapshot || snapshot),
         );
         return {
           content: snapshot,
@@ -108,7 +118,7 @@ export function scenarioCase(slug, body) {
         return observed.locator[action](...args);
       }
 
-      async function observedKeyboard(scope, target, action, ...args) {
+      async function observedFocusedKeyboard(scope, target, action, ...args) {
         const observed = await snapshotTarget(scope, target);
         await observed.locator.focus();
         switch (action) {
@@ -119,15 +129,30 @@ export function scenarioCase(slug, body) {
         }
       }
 
-      async function observedPageKey(scope, expectedContent, key) {
+      async function observedCurrentKeyboard(
+        scope,
+        expectedContent,
+        action,
+        ...args
+      ) {
         const snapshot = await scope.locator("body").ariaSnapshot({ ref: true });
         assertIncludes(snapshot, expectedContent, "the structure tree establishes keyboard context");
-        return scope.keyboard.press(key);
+        switch (action) {
+          case "press": return scope.keyboard.press(...args);
+          case "insertText": return scope.keyboard.insertText(...args);
+          case "type": return scope.keyboard.type(...args);
+          default: throw new Error("unsupported current-focus keyboard action: " + action);
+        }
+      }
+
+      async function observedPageKey(scope, expectedContent, key) {
+        return observedCurrentKeyboard(scope, expectedContent, "press", key);
       }
 
       async function observedScreenshot(scope, label) {
         const image = await scope.screenshot({
           animations: "disabled",
+          scale: "css",
           timeout: 60_000,
         });
         assert(image.length > 0, label + " screenshot contains image bytes");
@@ -143,6 +168,23 @@ export function scenarioCase(slug, body) {
           wheel: (...args) => scope.mouse.wheel(...args),
         };
         return action(pointer);
+      }
+
+      async function observedBoxGesture(scope, target, label, action) {
+        assertEqual(await target.isVisible(), true, label + " target is visible");
+        await target.scrollIntoViewIfNeeded();
+        const box = await target.boundingBox();
+        assert(
+          box && box.width > 0 && box.height > 0,
+          label + " target has visible pointer geometry",
+        );
+        const pointer = {
+          move: (...args) => scope.mouse.move(...args),
+          down: (...args) => scope.mouse.down(...args),
+          up: (...args) => scope.mouse.up(...args),
+          wheel: (...args) => scope.mouse.wheel(...args),
+        };
+        return action(pointer, box);
       }
 
       async function observedPixelClick(scope, label, point) {

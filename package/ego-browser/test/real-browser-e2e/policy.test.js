@@ -78,6 +78,54 @@ test("real-browser e2e serializes scenario cases in one TaskSpace lane", () => {
   );
 });
 
+test("every generated scenario body parses as asynchronous JavaScript", () => {
+  const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+
+  for (const scenario of scenarioCases) {
+    assert.doesNotThrow(
+      () => new AsyncFunction(scenario.body()),
+      `${scenario.name} emits valid asynchronous JavaScript`,
+    );
+  }
+});
+
+test("shared gesture observation screenshots use CSS pixel coordinates", () => {
+  const source = scenarioCases[0].body();
+  const start = source.indexOf("async function observedScreenshot");
+  const end = source.indexOf("async function observedGesture", start);
+  const screenshotHelper = source.slice(start, end);
+
+  assert.match(screenshotHelper, /scale:\s*"css"/);
+});
+
+test("shared geometry gestures observe a visible box before pointer input", () => {
+  const source = scenarioCases[0].body();
+  const start = source.indexOf("async function observedBoxGesture");
+  const end = source.indexOf("async function observedPixelClick", start);
+  const geometryHelper = source.slice(start, end);
+
+  assert.match(geometryHelper, /target\.isVisible\(\)/);
+  assert.match(geometryHelper, /target\.scrollIntoViewIfNeeded\(\)/);
+  assert.match(geometryHelper, /target\.boundingBox\(\)/);
+  assert.match(geometryHelper, /action\(pointer, box\)/);
+  assert.doesNotMatch(geometryHelper, /screenshot|force\s*:\s*true/);
+});
+
+test("shared target observation resolves synthetic generic roots from a final scoped snapshot", () => {
+  const source = scenarioCases[0].body();
+  const start = source.indexOf("async function snapshotTarget");
+  const end = source.indexOf("async function observedAction", start);
+  const snapshotHelper = source.slice(start, end);
+
+  assert.match(snapshotHelper, /startsWith\("- generic"\)/);
+  assert.match(snapshotHelper, /targetOrRole\.ariaSnapshot\(\{ ref: true \}\)/);
+  assert(
+    snapshotHelper.indexOf('locator("body").ariaSnapshot({ ref: true })') <
+      snapshotHelper.indexOf("targetOrRole.ariaSnapshot({ ref: true })"),
+    "the scoped snapshot runs last so its ref generation remains current",
+  );
+});
+
 test("real-browser e2e classifies platform and scenario cases explicitly", () => {
   assert.equal(typeof runner.groupE2eCasesByKind, "function");
   const platform = { name: "platform", kind: "platform" };
