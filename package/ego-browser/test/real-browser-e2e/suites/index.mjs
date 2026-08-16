@@ -8,6 +8,10 @@ import {
   crossRoundPersistenceCase,
 } from "./platform/cross-round-persistence.mjs";
 import { duplicateTaskSpaceNameCase } from "./platform/duplicate-name.mjs";
+import {
+  documentStartupCase,
+  javaScriptDisabledNavigationCase,
+} from "./platform/document-startup.mjs";
 import { nativeCallbackContainmentCase } from "./platform/native-callback-containment.mjs";
 import { nativePlaywrightCase } from "./platform/native-playwright.mjs";
 import { networkRoutingCase } from "./platform/network-routing.mjs";
@@ -44,6 +48,8 @@ export const e2eCases = [
     kind: "platform",
     body: taskSpaceVideoCapabilityCase,
   },
+  documentStartupCase,
+  javaScriptDisabledNavigationCase,
   ...scenarioCases,
   scenarioProgressCase,
   {

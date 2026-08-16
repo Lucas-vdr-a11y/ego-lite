@@ -383,6 +383,62 @@ test("native canvas ARIA coverage compares raw AX with its scoped locator ref", 
   );
 });
 
+test("document startup e2e exercises script and no-script user journeys", () => {
+  const documentStartup = e2eCases.find(
+    (testCase) =>
+      testCase.name === "HTML document startup and noscript fallback",
+  );
+
+  assert.ok(documentStartup);
+  assert.equal(documentStartup.kind, "platform");
+  const source = documentStartup.body();
+  assert.match(source, /\/tests\/document-startup/);
+  assert.match(source, /ariaSnapshot\(\{ ref: true \}\)/);
+  assert.match(source, /aria-ref=/);
+  assert.match(source, /newCDPSession\(noScriptPage\)/);
+  assert.match(source, /Emulation\.setScriptExecutionDisabled/);
+  assert.match(source, /value:\s*true/);
+  assert.match(source, /locator\("noscript a"\)/);
+  assert.match(source, /Open the operations workspace/);
+  assert.match(source, /Open the no-script recovery guide/);
+  assert.match(source, /document\.baseURI/);
+  assert.match(source, /getComputedStyle/);
+  assert.doesNotMatch(
+    source,
+    /force\s*:\s*true|dispatchEvent\(|\.evaluate\([^)]*\.click\(/,
+  );
+});
+
+test("JavaScript-disabled navigation remains a real success expectation", () => {
+  const disabledNavigation = e2eCases.find(
+    (testCase) =>
+      testCase.name === "JavaScript-disabled document replacement navigation",
+  );
+
+  assert.ok(disabledNavigation);
+  assert.equal(disabledNavigation.kind, "platform");
+  const source = disabledNavigation.body();
+  const initialNavigation = source.indexOf("mode=warm");
+  const disable = source.indexOf(
+    'Emulation.setScriptExecutionDisabled", { value: true }',
+  );
+  const disabledNavigationIndex = source.indexOf("mode=disabled");
+  const reenable = source.indexOf(
+    'Emulation.setScriptExecutionDisabled", { value: false }',
+  );
+
+  assert(
+    initialNavigation >= 0 &&
+      disable > initialNavigation &&
+      disabledNavigationIndex > disable &&
+      reenable > disabledNavigationIndex,
+    "the case disables JavaScript only for the replacement navigation and restores it afterward",
+  );
+  assert.match(source, /assertEqual\(disabledResponse\?\.status\(\), 200/);
+  assert.match(source, /locator\("noscript a"\)/);
+  assert.doesNotMatch(source, /assertRejects|force\s*:\s*true|dispatchEvent\(/);
+});
+
 test("frames e2e validates nested frame snapshots and the external map", () => {
   const frames = e2eCases.find(
     (testCase) => testCase.name === "web test: frames",
@@ -1008,6 +1064,30 @@ test("native form coverage attempts real datalist keys and proves select expansi
   assert.match(source, /Accessibility\.getPartialAXTree/);
   assert.match(source, /property\.name === "expanded"/);
   assert.match(source, /native classic select reports expanded=true/);
+});
+
+test("JavaScript-disabled navigation preserves replacement and cleanup evidence", () => {
+  const disabledNavigation = e2eCases.find(
+    (testCase) =>
+      testCase.name === "JavaScript-disabled document replacement navigation",
+  );
+  assert.ok(disabledNavigation);
+  const source = disabledNavigation.body();
+
+  assert.match(source, /navigationError/);
+  assert.match(source, /page\.isClosed\(\)/);
+  assert.match(source, /task\.context\s*\.pages\(\)/);
+  assert.match(source, /navigationEvidence/);
+  assert.match(source, /navigationResolved/);
+  assert.match(source, /originalPageOpen/);
+  assert.match(source, /disabledUrlCommitted/);
+  assert.match(source, /scriptsStayedDisabled/);
+  assert.match(source, /noscriptVisible/);
+  assert.match(source, /sessionBoundToReplacement/);
+  assert.match(source, /session\s*\.send\("Runtime\.evaluate"/);
+  assert.match(source, /JSON\.stringify\(navigationEvidence\)/);
+  assert.match(source, /navigationOperationError/);
+  assert.match(source, /if \(!navigationOperationError && cleanupError\)/);
 });
 
 test("keyboard helpers distinguish explicit focus from natural focus flow", () => {

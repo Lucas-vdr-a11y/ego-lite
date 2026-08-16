@@ -338,6 +338,106 @@ export function createTestSiteApp(taskName, options = {}) {
   app.get("/api/download-status", (context) =>
     context.json({ requests: downloadRequests }),
   );
+  app.get("/tests/document-startup/theme.css", (context) => {
+    context.header("content-type", "text/css; charset=utf-8");
+    context.header("cache-control", "no-store");
+    return context.body(`
+      :root { --startup-accent: rgb(15, 118, 110); }
+      .startup-action { color: var(--startup-accent); font-weight: 700; }
+    `);
+  });
+  app.get("/tests/document-startup/startup.js", (context) => {
+    context.header("content-type", "text/javascript; charset=utf-8");
+    context.header("cache-control", "no-store");
+    return context.body(`
+      document.documentElement.setAttribute("data-startup-state", "hydrated");
+      document.querySelector("#startup-status").textContent = "Workspace client ready";
+    `);
+  });
+  app.get("/tests/document-startup/workspace", (context) =>
+    context.html(
+      documentHtml(
+        <html lang="en-SG">
+          <head>
+            <meta charset="utf-8" />
+            <title>Operations workspace · Ego Browser Lab</title>
+          </head>
+          <body>
+            <main>
+              <h1>Operations workspace</h1>
+              <p>Opened from the document's relative base URL.</p>
+              <a href="/tests/document-startup">Return to startup status</a>
+            </main>
+          </body>
+        </html>,
+      ),
+    ),
+  );
+  app.get("/tests/document-startup/recovery", (context) =>
+    context.html(
+      documentHtml(
+        <html lang="en-SG">
+          <head>
+            <meta charset="utf-8" />
+            <title>No-script recovery · Ego Browser Lab</title>
+          </head>
+          <body>
+            <main>
+              <h1>No-script recovery guide</h1>
+              <p>The workspace remains usable when scripts are unavailable.</p>
+              <a href="/tests/document-startup">Retry the workspace</a>
+            </main>
+          </body>
+        </html>,
+      ),
+    ),
+  );
+  app.get("/tests/document-startup", (context) =>
+    context.html(
+      documentHtml(
+        <html lang="en-SG" data-startup-state="server">
+          <head>
+            <meta charset="utf-8" />
+            <meta
+              name="viewport"
+              content="width=device-width, initial-scale=1"
+            />
+            <meta
+              name="description"
+              content="Northstar operations workspace startup status."
+            />
+            <base href="/tests/document-startup/" />
+            <link rel="stylesheet" href="theme.css" />
+            <title>Northstar workspace · Ego Browser Lab</title>
+            <style data-startup-core="true">
+              {raw(
+                "body{margin:0;background:rgb(248,250,252);color:rgb(15,23,42);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}.startup-shell{width:min(42rem,calc(100% - 2rem));margin:4rem auto;padding:2rem;border:1px solid rgb(203,213,225);border-radius:.75rem;background:white}.startup-shell p{line-height:1.6}",
+              )}
+            </style>
+            <script defer src="startup.js"></script>
+          </head>
+          <body>
+            <main class="startup-shell">
+              <p>NORTHSTAR / OPERATIONS</p>
+              <h1>Workspace startup</h1>
+              <p id="startup-status" role="status">
+                Waiting for workspace client
+              </p>
+              <a class="startup-action" href="workspace">
+                Open the operations workspace
+              </a>
+              <noscript>
+                <p>
+                  Scripts are unavailable, but the recovery guide still works.
+                </p>
+                <a href="recovery">Open the no-script recovery guide</a>
+              </noscript>
+            </main>
+          </body>
+        </html>,
+      ),
+    ),
+  );
   app.get("/tests/media-embeds/floor-plan-wide.svg", (context) => {
     context.header("content-type", "image/svg+xml; charset=utf-8");
     return context.body(`

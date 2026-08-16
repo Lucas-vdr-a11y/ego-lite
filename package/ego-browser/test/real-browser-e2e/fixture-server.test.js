@@ -342,6 +342,59 @@ test("Hono test site exposes the health endpoint used by native Playwright e2e",
   assert.equal(typeof payload.now, "number");
 });
 
+test("document startup fixture serves real metadata, resources, and a no-script recovery path", async () => {
+  const app = createTestSiteApp("document-startup-test");
+  const response = await app.request("/tests/document-startup");
+  const html = await response.text();
+
+  assert.equal(response.status, 200);
+  assert.match(html, /^<!doctype html><html[^>]+lang=["']en-SG["']/);
+  assert.match(html, /<base[^>]+href=["']\/tests\/document-startup\/["']/);
+  assert.match(html, /<meta[^>]+charset=["']utf-8["']/);
+  assert.match(html, /<meta[^>]+name=["']viewport["']/);
+  assert.match(html, /<meta[^>]+name=["']description["']/);
+  assert.match(
+    html,
+    /<link[^>]+rel=["']stylesheet["'][^>]+href=["']theme\.css["']/,
+  );
+  assert.match(html, /<title>Northstar workspace · Ego Browser Lab<\/title>/);
+  assert.match(html, /<style[^>]+data-startup-core=["']true["']/);
+  assert.match(html, /<script[^>]+src=["']startup\.js["'][^>]*><\/script>/);
+  assert.match(
+    html,
+    /<a[^>]+class=["']startup-action["'][^>]+href=["']workspace["'][^>]*>\s*Open the operations workspace\s*<\/a>/,
+  );
+  assert.match(
+    html,
+    /<noscript>[\s\S]*<a[^>]+href=["']recovery["'][^>]*>\s*Open the no-script recovery guide\s*<\/a>[\s\S]*<\/noscript>/,
+  );
+  assert.doesNotMatch(
+    html,
+    /scenario-test-controls|test-progress-summary|progress\.js/,
+  );
+
+  const stylesheet = await app.request("/tests/document-startup/theme.css");
+  assert.equal(stylesheet.status, 200);
+  assert.match(stylesheet.headers.get("content-type") || "", /text\/css/);
+  assert.match(
+    await stylesheet.text(),
+    /--startup-accent:\s*rgb\(15, 118, 110\)/,
+  );
+
+  const script = await app.request("/tests/document-startup/startup.js");
+  assert.equal(script.status, 200);
+  assert.match(script.headers.get("content-type") || "", /javascript/);
+  assert.match(await script.text(), /data-startup-state/);
+
+  const workspace = await app.request("/tests/document-startup/workspace");
+  assert.equal(workspace.status, 200);
+  assert.match(await workspace.text(), /<h1>Operations workspace<\/h1>/);
+
+  const recovery = await app.request("/tests/document-startup/recovery");
+  assert.equal(recovery.status, 200);
+  assert.match(await recovery.text(), /<h1>No-script recovery guide<\/h1>/);
+});
+
 test("document outline fixture composes one main landmark and every authored heading level", async () => {
   const response = await createTestSiteApp("document-outline-test").request(
     "/tests/document-outline",
