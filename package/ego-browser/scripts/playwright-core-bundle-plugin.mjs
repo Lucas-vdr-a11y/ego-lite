@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 const PLAYWRIGHT_CORE_PREFIX = "node_modules/playwright-core/lib/";
 
 const patches = new Map([
+  ["generated/injectedScriptSource.js", patchInjectedScriptSource],
   ["inProcessFactory.js", patchInProcessFactory],
   ["client/connection.js", patchClientConnection],
   ["client/playwright.js", patchClientPlaywright],
@@ -244,6 +245,75 @@ export function patchPlaywrightServerErrors(source, path) {
     source,
     '  constructor(cause, logs) {\n    super((cause || "Target page, context or browser has been closed") + (logs || ""));\n  }',
     '  constructor(cause, logs) {\n    super((cause || "Target page, context or browser has been closed") + (logs || ""));\n    this.name = "TargetClosedError";\n  }',
+    path,
+  );
+}
+
+export function patchInjectedScriptSource(source, path) {
+  source = replaceRequired(
+    source,
+    '  return ["STYLE", "SCRIPT", "NOSCRIPT", "TEMPLATE"].includes(elementSafeTagName(element));',
+    '  return ["STYLE", "SCRIPT", "TEMPLATE"].includes(elementSafeTagName(element));',
+    path,
+  );
+  source = replaceRequired(
+    source,
+    "    const childAriaNode = toAriaNode(element);\\n    if (childAriaNode)",
+    '    let childAriaNode = toAriaNode(element);\\n    if (!childAriaNode && element === rootElement && !["BODY", "HTML"].includes(element.nodeName))\\n      childAriaNode = { role: "generic", name: normalizeWhiteSpace(getElementAccessibleName(element, false) || ""), children: [], props: {}, element };\\n    if (childAriaNode)',
+    path,
+  );
+  source = replaceRequired(
+    source,
+    '  if (element.nodeName === "IFRAME")\\n    return { role: "iframe", name: "", children: [], props: {}, element };',
+    '  if (["FRAME", "IFRAME"].includes(element.nodeName))\\n    return { role: "iframe", name: getElementAccessibleName(element, false), children: [], props: {}, element };',
+    path,
+  );
+  source = replaceRequired(
+    source,
+    '    if (e.getAttribute("scope") === "col")\\n      return "columnheader";',
+    '    if (["col", "colgroup"].includes(e.getAttribute("scope")))\\n      return "columnheader";',
+    path,
+  );
+  source = replaceRequired(
+    source,
+    '  "SECTION": (e) => hasExplicitAccessibleName(e) ? "region" : null,\\n  "SELECT":',
+    '  "SECTION": (e) => hasExplicitAccessibleName(e) ? "region" : null,\\n  "SEARCH": () => "search",\\n  "SELECT":',
+    path,
+  );
+  source = replaceRequired(
+    source,
+    '  "DETAILS": () => "group",\\n  "DFN":',
+    '  "DETAILS": () => "group",\\n  "DIR": () => "list",\\n  "DFN":',
+    path,
+  );
+  source = replaceRequired(
+    source,
+    '  "FORM": (e) => hasExplicitAccessibleName(e) ? "form" : null,\\n  "H1":',
+    '  "FORM": (e) => hasExplicitAccessibleName(e) ? "form" : null,\\n  "GEOLOCATION": () => "button",\\n  "H1":',
+    path,
+  );
+  source = replaceRequired(
+    source,
+    "  addElement(rootElement);\\n  const visit = (ariaNode, node) => {",
+    '  addElement(rootElement);\\n  const activeModal = rootElement.ownerDocument.querySelector("dialog:modal");\\n  const visit = (ariaNode, node) => {',
+    path,
+  );
+  source = replaceRequired(
+    source,
+    "    const element = node;\\n    if (isElementHiddenForAria(element))",
+    "    const element = node;\\n    if (activeModal && !element.contains(activeModal) && !activeModal.contains(element))\\n      return;\\n    if (isElementHiddenForAria(element))",
+    path,
+  );
+  source = replaceRequired(
+    source,
+    '    if (!labelledBy && tagName === "BUTTON") {\\n      options.visitedElements.add(element);',
+    '    if (!labelledBy && ["BUTTON", "METER", "PROGRESS"].includes(tagName)) {\\n      options.visitedElements.add(element);',
+    path,
+  );
+  return replaceRequired(
+    source,
+    '    if (e.getAttribute("scope") === "row")\\n      return "rowheader";',
+    '    if (["row", "rowgroup"].includes(e.getAttribute("scope")))\\n      return "rowheader";',
     path,
   );
 }
