@@ -22,6 +22,115 @@ function scenarioOperations(source) {
   return source.slice(start + startMarker.length, finish);
 }
 
+test("registers the table content standards scenario", async () => {
+  const scenarioIndex = await readFile(
+    new URL("./site/src/scenarios/index.jsx", import.meta.url),
+    "utf8",
+  );
+  const testCase = TEST_CASES.find(
+    (candidate) => candidate.slug === "table-semantics",
+  );
+
+  assert.equal(testCase?.route, "/tests/table-semantics");
+  assert.match(scenarioIndex, /["']table-semantics["']\s*:/);
+  assert(
+    scenarioCases.some(
+      (candidate) => candidate.name === "web test: table-semantics",
+    ),
+    "table-semantics has a real-browser journey",
+  );
+});
+
+test("uses every MDN table content element in an APAC transfer review", async () => {
+  const viewSource = await readFile(
+    new URL("./site/src/scenarios/table-semantics/view.jsx", import.meta.url),
+    "utf8",
+  ).catch(() => "");
+  const clientSource = await readFile(
+    new URL("./site/src/scenarios/table-semantics/client.js", import.meta.url),
+    "utf8",
+  ).catch(() => "");
+
+  for (const element of [
+    "table",
+    "caption",
+    "col",
+    "colgroup",
+    "thead",
+    "tbody",
+    "tfoot",
+    "tr",
+    "th",
+    "td",
+  ]) {
+    assert.match(viewSource, new RegExp(`<${element}\\b`), element);
+  }
+  assert.match(viewSource, /<col\b[^>]*span=\{2\}/);
+  assert.match(viewSource, /<th\b[^>]*scope=["']colgroup["']/);
+  assert.match(viewSource, /<th\b[^>]*scope=["']rowgroup["']/);
+  assert.match(viewSource, /<th\b[^>]*scope=["']col["']/);
+  assert.match(viewSource, /<th\b[^>]*scope=["']row["']/);
+  assert.match(viewSource, /<td\b[^>]*headers=/);
+  assert.match(viewSource, /aria-sort=["']none["']/);
+  assert.match(viewSource, /Review Singapore to Shanghai transfer/);
+  assert.doesNotMatch(
+    viewSource,
+    /role=["'](?:table|rowgroup|row|columnheader|rowheader|cell|checkbox)["']|onClick=|dangerouslySetInnerHTML/,
+  );
+  assert.match(clientSource, /addEventListener\(["']click["']/);
+  assert.match(clientSource, /addEventListener\(["']change["']/);
+  assert.match(clientSource, /setAttribute\(["']aria-sort["']/);
+  assert.doesNotMatch(
+    clientSource,
+    /dispatchEvent\(|\.click\(\)|force\s*:\s*true/,
+  );
+});
+
+test("table journey uses real sorting, keyboard selection, and AX comparison", () => {
+  const testCase = scenarioCases.find(
+    (candidate) => candidate.name === "web test: table-semantics",
+  );
+  const operations = scenarioOperations(testCase?.body() || "");
+
+  assert.match(operations, /ariaSnapshot\(\{ ref: true \}\)/);
+  assert.equal(
+    operations.match(/observedAction\(page, etaSort, "click"\)/g)?.length,
+    2,
+    "pointer sorting happens both before and after selection",
+  );
+  assert.match(operations, /observedPageKey\(page, 'button "ETA"', "Enter"\)/);
+  assert.match(operations, /observedPageKey\(page, [^,]+, "Tab"\)/);
+  assert.match(operations, /observedPageKey\(page, [^,]+, "Space"\)/);
+  assert.match(operations, /getAttribute\("aria-sort"\)/);
+  assert.match(operations, /allTextContents\(\)/);
+  assert.match(operations, /document\.activeElement/);
+  assert.match(operations, /isChecked\(\)/);
+  assert.match(operations, /selected-cases/);
+  assert.match(operations, /selected-value/);
+  assert.match(operations, /Accessibility\.getPartialAXTree/);
+  assert.match(operations, /missingGroupHeaderSemantics/);
+  assert.match(operations, /columnheader/);
+  assert.match(operations, /rowheader/);
+  assert(
+    operations.indexOf('observedAction(page, etaSort, "click")') <
+      operations.indexOf('observedPageKey(page, \'button "ETA"\', "Enter")'),
+    "pointer ascending sort happens before keyboard descending sort",
+  );
+  assert(
+    operations.indexOf('observedPageKey(page, \'button "ETA"\', "Enter")') <
+      operations.indexOf('"Tab"'),
+    "keyboard sort happens before tabbing into the review queue",
+  );
+  assert(
+    operations.indexOf('"Tab"') < operations.indexOf('"Space"'),
+    "focus navigation happens before keyboard selection",
+  );
+  assert.doesNotMatch(
+    operations,
+    /force\s*:\s*true|dispatchEvent\(|\.evaluate\([^)]*\.click|waitForTimeout/,
+  );
+});
+
 test("registers the media and embedded content standards scenario", async () => {
   const scenarioIndex = await readFile(
     new URL("./site/src/scenarios/index.jsx", import.meta.url),

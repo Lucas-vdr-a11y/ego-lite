@@ -3716,6 +3716,99 @@ select:focus-visible,
   font-size: 0.55em;
 }
 
+.table-semantics-sheet {
+  max-width: 76rem;
+  margin: 0 auto;
+  padding: clamp(1.5rem, 4vw, 3rem);
+}
+
+.transfer-table-shell {
+  margin-top: var(--ui-space-4);
+  overflow-x: auto;
+}
+
+.table-semantics-review table {
+  width: 100%;
+  min-width: 54rem;
+  border-collapse: collapse;
+}
+
+.table-semantics-review caption {
+  padding-bottom: var(--ui-space-3);
+  color: var(--ui-text);
+  font-size: 1rem;
+  font-weight: 700;
+  text-align: left;
+}
+
+.table-semantics-review th,
+.table-semantics-review td {
+  padding: var(--ui-space-3);
+  border: 1px solid var(--ui-border);
+  text-align: left;
+  vertical-align: middle;
+}
+
+.table-semantics-review thead {
+  background: var(--ui-surface-muted);
+}
+
+.table-semantics-review tbody:nth-of-type(even) {
+  background: color-mix(in srgb, var(--ui-surface-muted) 55%, transparent);
+}
+
+.table-semantics-review tfoot {
+  background: var(--ui-surface-muted);
+  font-weight: 700;
+}
+
+.table-semantics-review tr[data-selected="true"] {
+  outline: 3px solid var(--ui-primary);
+  outline-offset: -3px;
+}
+
+.table-semantics-review label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ui-space-2);
+}
+
+.table-semantics-review [data-sort-eta] {
+  min-height: 2.25rem;
+  padding: var(--ui-space-1) var(--ui-space-2);
+  border: 1px solid var(--ui-border-strong);
+  border-radius: var(--ui-radius-sm);
+  color: inherit;
+  background: var(--ui-surface);
+  font: inherit;
+  font-weight: 700;
+}
+
+.table-semantics-review [data-testid="transfer-review-status"] {
+  margin: var(--ui-space-3) 0 0;
+  color: var(--ui-muted);
+}
+
+.transfer-origin-column {
+  width: 18%;
+}
+
+.transfer-destination-column {
+  width: 22%;
+}
+
+.transfer-commitment-column {
+  width: 14%;
+}
+
+.transfer-eta-column {
+  width: 18%;
+}
+
+.transfer-review-column {
+  width: 14%;
+}
+
 .media-embeds-review > article {
   max-width: 76rem;
   margin: 0 auto;

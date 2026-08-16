@@ -26,6 +26,7 @@ const interactiveRoutes = [
   "text-content",
   "inline-semantics",
   "media-embeds",
+  "table-semantics",
 ];
 
 test("Hono test site exposes a Vite development command", async () => {
@@ -434,6 +435,42 @@ test("media fixture renders native responsive, timed, mapped, and embedded conte
   assert.match(html, /<embed\b/);
   assert.match(html, /<fencedframe\b/);
   assert.match(html, /data-testid=["']media-review-status["']/);
+});
+
+test("table fixture renders native grouped transfer commitments", async () => {
+  const response = await createTestSiteApp("table-semantics-test").request(
+    "/tests/table-semantics",
+  );
+  const html = await response.text();
+
+  assert.equal(response.status, 200);
+  assert.match(html, /Transfer commitments for 15 August 2026/);
+  for (const element of [
+    "table",
+    "caption",
+    "col",
+    "colgroup",
+    "thead",
+    "tbody",
+    "tfoot",
+    "tr",
+    "th",
+    "td",
+  ]) {
+    assert.match(html, new RegExp(`<${element}\\b`), element);
+  }
+  assert.match(html, /scope=["']colgroup["']/);
+  assert.match(html, /scope=["']rowgroup["']/);
+  assert.match(html, /headers=["'][^"']*commitment-header/);
+  assert.match(html, /aria-sort=["']none["']/);
+  assert.match(html, /Review Singapore to Shanghai transfer/);
+  assert.match(html, /data-testid=["']selected-cases["']/);
+  assert.match(html, /data-testid=["']selected-value["']/);
+  assert.match(html, /data-testid=["']transfer-review-status["']/);
+  assert.doesNotMatch(
+    html,
+    /role=["'](?:table|rowgroup|row|columnheader|rowheader|cell|checkbox)["']/,
+  );
 });
 
 test("Hono test site links and renders every dedicated browser scenario", async () => {

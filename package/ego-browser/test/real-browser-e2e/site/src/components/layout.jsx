@@ -27,6 +27,7 @@ const interactiveScenarios = new Set([
   "text-content",
   "inline-semantics",
   "media-embeds",
+  "table-semantics",
 ]);
 
 export function scenarioModulePath(slug) {

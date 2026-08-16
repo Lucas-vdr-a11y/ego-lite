@@ -21,6 +21,7 @@ import { svgMathmlScenarioCase } from "./svg-mathml.mjs";
 import { textContentScenarioCase } from "./text-content.mjs";
 import { inlineSemanticsScenarioCase } from "./inline-semantics.mjs";
 import { mediaEmbedsScenarioCase } from "./media-embeds.mjs";
+import { tableSemanticsScenarioCase } from "./table-semantics.mjs";
 
 export const scenarioCases = [
   clicksScenarioCase,
@@ -46,4 +47,5 @@ export const scenarioCases = [
   textContentScenarioCase,
   inlineSemanticsScenarioCase,
   mediaEmbedsScenarioCase,
+  tableSemanticsScenarioCase,
 ];

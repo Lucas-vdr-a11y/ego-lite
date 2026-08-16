@@ -27,6 +27,7 @@ const clientEntries = [
   "text-content",
   "inline-semantics",
   "media-embeds",
+  "table-semantics",
 ];
 
 export default defineConfig(({ command, mode }) => {

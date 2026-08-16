@@ -206,6 +206,15 @@ export const TEST_CASES = [
     description:
       "Review mapped venue zones, timed media, and embedded compliance documents before APAC launch approval.",
   },
+  {
+    slug: "table-semantics",
+    route: "/tests/table-semantics",
+    number: "24",
+    title: "Transfer allocation",
+    eyebrow: "Table content / commitment review",
+    description:
+      "Sort grouped APAC transfer commitments, select a route for review, and verify the committed cases and value.",
+  },
 ];
 
 export function findTestCase(slug) {

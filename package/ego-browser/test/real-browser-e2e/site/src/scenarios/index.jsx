@@ -21,6 +21,7 @@ import SvgMathmlSurface from "./svg-mathml/view.jsx";
 import TextContentSurface from "./text-content/view.jsx";
 import InlineSemanticsSurface from "./inline-semantics/view.jsx";
 import MediaEmbedsSurface from "./media-embeds/view.jsx";
+import TableSemanticsSurface from "./table-semantics/view.jsx";
 
 export const surfaces = {
   clicks: ClicksSurface,
@@ -46,4 +47,5 @@ export const surfaces = {
   "text-content": TextContentSurface,
   "inline-semantics": InlineSemanticsSurface,
   "media-embeds": MediaEmbedsSurface,
+  "table-semantics": TableSemanticsSurface,
 };
