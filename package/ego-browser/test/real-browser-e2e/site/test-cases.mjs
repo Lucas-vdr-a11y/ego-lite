@@ -251,6 +251,15 @@ export const TEST_CASES = [
     description:
       "Exercise native disclosure, location validation, and modal decision controls without fabricating permissions or semantics.",
   },
+  {
+    slug: "legacy-elements",
+    route: "/tests/legacy-elements",
+    number: "29",
+    title: "Legacy supplier manifest compatibility",
+    eyebrow: "Deprecated elements / supplier import compatibility",
+    description:
+      "Inspect how Chromium parses an archived supplier manifest, then review and approve it through modern controls.",
+  },
 ];
 
 export function findTestCase(slug) {

@@ -26,6 +26,7 @@ import { nativeFormControlsScenarioCase } from "./native-form-controls.mjs";
 import { webComponentsScenarioCase } from "./web-components.mjs";
 import { contractAmendmentScenarioCase } from "./contract-amendment.mjs";
 import { interactiveElementsScenarioCase } from "./interactive-elements.mjs";
+import { legacyElementsScenarioCase } from "./legacy-elements.mjs";
 
 export const scenarioCases = [
   clicksScenarioCase,
@@ -56,4 +57,5 @@ export const scenarioCases = [
   webComponentsScenarioCase,
   contractAmendmentScenarioCase,
   interactiveElementsScenarioCase,
+  legacyElementsScenarioCase,
 ];

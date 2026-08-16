@@ -26,6 +26,7 @@ import NativeFormControlsSurface from "./native-form-controls/view.jsx";
 import WebComponentsSurface from "./web-components/view.jsx";
 import ContractAmendmentSurface from "./contract-amendment/view.jsx";
 import InteractiveElementsSurface from "./interactive-elements/view.jsx";
+import LegacyElementsSurface from "./legacy-elements/view.jsx";
 
 export const surfaces = {
   clicks: ClicksSurface,
@@ -56,4 +57,5 @@ export const surfaces = {
   "web-components": WebComponentsSurface,
   "contract-amendment": ContractAmendmentSurface,
   "interactive-elements": InteractiveElementsSurface,
+  "legacy-elements": LegacyElementsSurface,
 };

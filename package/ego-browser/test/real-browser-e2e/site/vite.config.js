@@ -32,6 +32,7 @@ const clientEntries = [
   "web-components",
   "contract-amendment",
   "interactive-elements",
+  "legacy-elements",
 ];
 
 export default defineConfig(({ command, mode }) => {

@@ -405,6 +405,113 @@ export function createTestSiteApp(taskName, options = {}) {
       ),
     ),
   );
+  app.get("/tests/legacy-elements/frameset/nav", (context) =>
+    context.html(`<!doctype html><html lang="en-SG"><head>
+      <meta charset="utf-8">
+      <title>Release navigation</title>
+      <style>
+        body { margin: 0; padding: 1rem; color: #0f172a; background: #e2e8f0; font: 16px/1.5 system-ui, sans-serif; }
+        nav { display: grid; gap: .75rem; }
+        a { padding: .65rem; border: 1px solid #64748b; border-radius: .35rem; color: #0f172a; background: #fff; }
+      </style>
+    </head><body>
+      <h1>Release console</h1>
+      <nav aria-label="Release views">
+        <a href="/tests/legacy-elements/frameset/waiting" target="release-detail">Waiting approvals</a>
+        <a href="/tests/legacy-elements/frameset/manifest" target="release-detail">Release manifest</a>
+      </nav>
+    </body></html>`),
+  );
+  app.get("/tests/legacy-elements/frameset/waiting", (context) =>
+    context.html(`<!doctype html><html lang="en-SG"><head>
+      <meta charset="utf-8">
+      <title>Waiting release approval</title>
+      <style>
+        body { margin: 0; padding: 2rem; color: #0f172a; background: #f8fafc; font: 16px/1.6 system-ui, sans-serif; }
+        .actions { display: flex; gap: 1rem; margin: 1.5rem 0; }
+        a { padding: .7rem 1rem; border: 1px solid #0f766e; border-radius: .35rem; color: #0f766e; background: #fff; }
+      </style>
+    </head><body>
+      <main>
+        <p>NORTHSTAR / RELEASE CR-204</p>
+        <h1>Waiting for release approval</h1>
+        <p>Singapore operations has finished the Shanghai handoff review.</p>
+        <div class="actions">
+          <a id="review-deployment-notes" href="#deployment-notes">Review deployment notes</a>
+          <a id="approve-release" href="/tests/legacy-elements/frameset/manifest?decision=approved">Approve release CR-204</a>
+        </div>
+        <section id="deployment-notes">
+          <h2>Deployment notes</h2>
+          <p>Manifest signatures and rollback contacts are complete.</p>
+        </section>
+      </main>
+    </body></html>`),
+  );
+  app.get("/tests/legacy-elements/frameset/manifest", (context) => {
+    const approved = context.req.query("decision") === "approved";
+    return context.html(`<!doctype html><html lang="en-SG"><head>
+      <meta charset="utf-8">
+      <title>Release manifest</title>
+      <style>
+        body { margin: 0; padding: 2rem; color: #0f172a; background: #f8fafc; font: 16px/1.6 system-ui, sans-serif; }
+        strong { color: ${approved ? "#166534" : "#92400e"}; }
+      </style>
+    </head><body>
+      <main>
+        <p>NORTHSTAR / RELEASE CR-204</p>
+        <h1>Release manifest</h1>
+        <p><strong>${approved ? "Release CR-204 approved" : "Approval pending"}</strong></p>
+        <dl>
+          <dt>Origin</dt><dd>Singapore</dd>
+          <dt>Destination</dt><dd>Shanghai</dd>
+          <dt>Rollback owner</dt><dd>Platform operations</dd>
+        </dl>
+      </main>
+    </body></html>`);
+  });
+  app.get("/tests/legacy-elements/frameset", (context) =>
+    context.html(`<!doctype html><html lang="en-SG"><head>
+      <meta charset="utf-8">
+      <title>Legacy release console</title>
+    </head>
+    <frameset cols="280,*">
+      <frame src="/tests/legacy-elements/frameset/nav" name="release-navigation" title="Release navigation">
+      <frame src="/tests/legacy-elements/frameset/waiting" name="release-detail" title="Release detail workspace">
+      <noframes>
+        <p>Legacy release console requires frame support.</p>
+        <a href="/tests/legacy-elements/frameset/manifest">Open the release manifest</a>
+      </noframes>
+    </frameset></html>`),
+  );
+  app.get("/tests/legacy-elements/plaintext", (context) => {
+    const checked = context.req.query("checked") === "release-review";
+    return context.html(`<!doctype html><html lang="en-SG"><head>
+      <meta charset="utf-8">
+      <title>Legacy incident transcript</title>
+      <style>
+        body { margin: 0; padding: 2rem; color: #0f172a; background: #f8fafc; font: 16px/1.6 system-ui, sans-serif; }
+        button { padding: .7rem 1rem; border: 1px solid #0f766e; border-radius: .35rem; color: #fff; background: #0f766e; }
+        #transcript-status { display: block; margin: 1rem 0; }
+      </style>
+    </head><body>
+      <main>
+        <p>NORTHSTAR / INCIDENT ARCHIVE</p>
+        <h1>Legacy incident transcript</h1>
+        <form action="/tests/legacy-elements/plaintext" method="get">
+          <input type="hidden" name="checked" value="release-review">
+          <button type="submit">Mark transcript checked</button>
+        </form>
+        <strong id="transcript-status">${
+          checked
+            ? "Transcript checked by release reviewer"
+            : "Awaiting release reviewer check"
+        }</strong>
+        <plaintext id="incident-transcript">
+[00:00] Singapore operations opened the archived deployment channel.
+[00:04] Shanghai rollback contacts acknowledged the handoff.
+<button id="plaintext-fake-action">Delete transcript</button>
+<section id="plaintext-fake-section">This remains transcript text.</section>`);
+  });
   app.get("/tests/:slug", (context) => {
     const testCase = findTestCase(context.req.param("slug"));
     return testCase

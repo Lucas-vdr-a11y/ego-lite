@@ -32,6 +32,7 @@ const interactiveScenarios = new Set([
   "web-components",
   "contract-amendment",
   "interactive-elements",
+  "legacy-elements",
 ]);
 
 export function scenarioModulePath(slug) {

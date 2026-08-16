@@ -1228,3 +1228,143 @@ test("covers every business scenario with a real-browser journey", () => {
     assert(names.has(`web test: ${slug}`), `${slug} has a browser journey`);
   }
 });
+
+test("registers the legacy supplier manifest compatibility scenario", async () => {
+  const scenarioIndex = await readFile(
+    new URL("./site/src/scenarios/index.jsx", import.meta.url),
+    "utf8",
+  );
+  const testCase = TEST_CASES.find(
+    (candidate) => candidate.slug === "legacy-elements",
+  );
+
+  assert.equal(testCase?.route, "/tests/legacy-elements");
+  assert.match(scenarioIndex, /["']legacy-elements["']\s*:/);
+  assert(
+    scenarioCases.some(
+      (candidate) => candidate.name === "web test: legacy-elements",
+    ),
+    "legacy-elements has a real-browser journey",
+  );
+});
+
+test("legacy supplier fixture authors all imported deprecated elements behind modern controls", async () => {
+  const viewSource = await readFile(
+    new URL("./site/src/scenarios/legacy-elements/view.jsx", import.meta.url),
+    "utf8",
+  ).catch(() => "");
+  const clientSource = await readFile(
+    new URL("./site/src/scenarios/legacy-elements/client.js", import.meta.url),
+    "utf8",
+  ).catch(() => "");
+
+  for (const element of [
+    "acronym",
+    "big",
+    "center",
+    "content",
+    "dir",
+    "font",
+    "image",
+    "marquee",
+    "menuitem",
+    "nobr",
+    "noembed",
+    "param",
+    "rb",
+    "rtc",
+    "shadow",
+    "strike",
+    "tt",
+    "xmp",
+  ]) {
+    assert.match(viewSource, new RegExp(`<${element}\\b`), element);
+  }
+  assert.match(viewSource, /Legacy supplier manifest compatibility/);
+  assert.match(viewSource, /not recommended for new documents/i);
+  assert.match(
+    viewSource,
+    /<dir\b[\s\S]*<a\b[^>]*href=["']#manifest-line-sup-208["']/,
+  );
+  assert.match(
+    viewSource,
+    /id=["']manifest-line-sup-208["'][^>]*tabIndex=["']-1["']/,
+  );
+  assert.match(viewSource, /<image\b[^>]*alt=["']Scanned supplier seal["']/);
+  assert.match(
+    viewSource,
+    /<param\b(?=[^>]*name=["']archive["'])(?=[^>]*value=["']supplier-manifest-v3\.pdf["'])/,
+  );
+  assert.match(viewSource, /<marquee\b[^>]*scrollAmount=\{0\}/);
+  assert.match(
+    viewSource,
+    /<xmp\b[\s\S]*<button\b[^>]*id=["']xmp-fake-approve["']/,
+  );
+  assert.match(viewSource, /data-review-legacy-manifest/);
+  assert.match(viewSource, /data-approve-legacy-manifest/);
+  assert.match(viewSource, /data-testid=["']legacy-manifest-status["']/);
+  assert.doesNotMatch(
+    viewSource,
+    /<(?:acronym|big|center|content|dir|font|image|marquee|menuitem|nobr|noembed|param|rb|rtc|shadow|strike|tt|xmp)\b[^>]*\brole=|onClick=|dangerouslySetInnerHTML/,
+  );
+
+  assert.match(clientSource, /addEventListener\(["']click["']/);
+  assert.match(clientSource, /event\.isTrusted/);
+  assert.match(clientSource, /Legacy manifest SUP-208 reviewed/);
+  assert.match(clientSource, /Legacy manifest SUP-208 approved/);
+  assert.match(clientSource, /approveManifest\.disabled\s*=\s*false/);
+  assert.doesNotMatch(
+    clientSource,
+    /dispatchEvent\(|\.click\(\)|\.focus\(\)|innerHTML\s*=|setAttribute\(["']role/,
+  );
+});
+
+test("legacy supplier journey tests parser compatibility before the final directory snapshot assertion", () => {
+  const testCase = scenarioCases.find(
+    (candidate) => candidate.name === "web test: legacy-elements",
+  );
+  const operations = scenarioOperations(testCase?.body() || "");
+
+  assert.match(operations, /getComputedStyle/);
+  assert.match(operations, /boundingBox\(\)/);
+  assert.match(operations, /fontSize/);
+  assert.match(operations, /textDecorationLine/);
+  assert.match(operations, /whiteSpace/);
+  assert.match(operations, /HTMLUnknownElement/);
+  assert.match(operations, /legacyImageTagName/);
+  assert.match(operations, /Scanned supplier seal/);
+  assert.match(operations, /xmpFakeButtonCount/);
+  assert.match(operations, /rubyChildTextOrder/);
+  assert.match(operations, /scrollAmount/);
+  assert.match(operations, /typeof element\.start/);
+  assert.match(operations, /Accessibility\.getPartialAXTree/);
+  assert.match(operations, /rawDirectoryRole/);
+  assert.match(operations, /rawImageRole/);
+  assert.match(operations, /observedAction\(page, manifestLink, "click"\)/);
+  assert.match(operations, /location\.hash/);
+  assert.match(operations, /document\.activeElement/);
+  assert.match(operations, /observedAction\(page, reviewManifest, "click"\)/);
+  assert.match(
+    operations,
+    /observedPageKey\(\s*page,\s*'button "Approve supplier manifest"',\s*"Tab",?\s*\)/,
+  );
+  assert.match(
+    operations,
+    /observedPageKey\(\s*page,\s*'button "Approve supplier manifest"',\s*"Enter",?\s*\)/,
+  );
+  assert.match(operations, /const directorySnapshot/);
+  assert.match(
+    operations,
+    /assertIncludes\(\s*directorySnapshot,\s*"- list \[ref="/,
+  );
+  const approvalEnterIndex = operations.lastIndexOf('"Enter"');
+  const directorySnapshotIndex = operations.indexOf("const directorySnapshot");
+  assert(
+    approvalEnterIndex >= 0 && directorySnapshotIndex > approvalEnterIndex,
+    "the final directory snapshot assertion runs only after approval",
+  );
+  assert.doesNotMatch(
+    operations,
+    /force\s*:\s*true|dispatchEvent\(|\.evaluate\([^)]*\.click|waitForTimeout|assertRejects/,
+  );
+});

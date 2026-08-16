@@ -31,6 +31,7 @@ const interactiveRoutes = [
   "web-components",
   "contract-amendment",
   "interactive-elements",
+  "legacy-elements",
 ];
 
 test("Hono test site exposes a Vite development command", async () => {
@@ -649,4 +650,58 @@ test("interactive fixtures load served ES modules instead of inline scripts", as
     );
     assert.match(await moduleResponse.text(), /addEventListener/, modulePath);
   }
+});
+
+test("legacy supplier fixture renders imported deprecated markup and modern controls", async () => {
+  const response = await createTestSiteApp("legacy-elements-test").request(
+    "/tests/legacy-elements",
+  );
+  const html = await response.text();
+
+  assert.equal(response.status, 200);
+  assert.match(html, /Legacy supplier manifest compatibility/);
+  assert.match(html, /not recommended for new documents/i);
+  for (const element of [
+    "acronym",
+    "big",
+    "center",
+    "content",
+    "dir",
+    "font",
+    "image",
+    "marquee",
+    "menuitem",
+    "nobr",
+    "noembed",
+    "param",
+    "rb",
+    "rtc",
+    "shadow",
+    "strike",
+    "tt",
+    "xmp",
+  ]) {
+    assert.match(html, new RegExp(`<${element}\\b`), element);
+  }
+  assert.match(
+    html,
+    /<dir\b[\s\S]*<a\b[^>]*href=["']#manifest-line-sup-208["']/,
+  );
+  assert.match(html, /<image\b[^>]*alt=["']Scanned supplier seal["']/);
+  assert.match(
+    html,
+    /<param\b(?=[^>]*name=["']archive["'])(?=[^>]*value=["']supplier-manifest-v3\.pdf["'])/,
+  );
+  assert.match(html, /<marquee\b[^>]*scrollamount=["']0["']/i);
+  assert.match(html, /<xmp\b[\s\S]*<button\b[^>]*id=["']xmp-fake-approve["']/);
+  assert.match(html, />\s*Review imported manifest\s*</);
+  assert.match(
+    html,
+    /<button\b(?=[^>]*data-approve-legacy-manifest)(?=[^>]*disabled)[^>]*>\s*Approve supplier manifest\s*<\/button>/,
+  );
+  assert.match(html, /data-testid=["']legacy-manifest-status["']/);
+  assert.doesNotMatch(
+    html,
+    /<(?:acronym|big|center|content|dir|font|image|marquee|menuitem|nobr|noembed|param|rb|rtc|shadow|strike|tt|xmp)\b[^>]*\brole=/,
+  );
 });
