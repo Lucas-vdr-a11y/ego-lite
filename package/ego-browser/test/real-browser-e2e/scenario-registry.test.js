@@ -22,6 +22,109 @@ function scenarioOperations(source) {
   return source.slice(start + startMarker.length, finish);
 }
 
+test("registers the text content standards scenario", async () => {
+  const scenarioIndex = await readFile(
+    new URL("./site/src/scenarios/index.jsx", import.meta.url),
+    "utf8",
+  );
+  const testCase = TEST_CASES.find(
+    (candidate) => candidate.slug === "text-content",
+  );
+
+  assert.equal(testCase?.route, "/tests/text-content");
+  assert.match(scenarioIndex, /["']text-content["']\s*:/);
+  assert(
+    scenarioCases.some(
+      (candidate) => candidate.name === "web test: text-content",
+    ),
+    "text-content has a real-browser journey",
+  );
+});
+
+test("uses every MDN text content element in a real incident handoff", async () => {
+  const viewSource = await readFile(
+    new URL("./site/src/scenarios/text-content/view.jsx", import.meta.url),
+    "utf8",
+  ).catch(() => "");
+  const clientSource = await readFile(
+    new URL("./site/src/scenarios/text-content/client.js", import.meta.url),
+    "utf8",
+  ).catch(() => "");
+
+  for (const element of [
+    "blockquote",
+    "dd",
+    "div",
+    "dl",
+    "dt",
+    "figcaption",
+    "figure",
+    "hr",
+    "li",
+    "menu",
+    "ol",
+    "p",
+    "pre",
+    "ul",
+  ]) {
+    assert.match(viewSource, new RegExp(`<${element}\\b`), element);
+  }
+  assert.match(viewSource, /<menu\b[\s\S]*<li\b[\s\S]*<button\b/);
+  assert.match(viewSource, />\s*Confirm log evidence\s*</);
+  assert.match(viewSource, />\s*Mark handoff reviewed\s*</);
+  assert.doesNotMatch(
+    viewSource,
+    /role=["'](?:button|link)["']|onClick=|dangerouslySetInnerHTML/,
+  );
+  assert.match(clientSource, /addEventListener\(["']click["']/);
+  assert.match(clientSource, /aria-pressed/);
+  assert.doesNotMatch(clientSource, /dispatchEvent\(|\.click\(\)/);
+});
+
+test("text content journey requires pointer evidence before keyboard handoff", () => {
+  const testCase = scenarioCases.find(
+    (candidate) => candidate.name === "web test: text-content",
+  );
+  const source = testCase?.body() || "";
+  const operations = scenarioOperations(source);
+
+  assert.match(operations, /ariaSnapshot\(\{ ref: true \}\)/);
+  assert.match(operations, /observedAction\(page, confirmEvidence, "click"\)/);
+  assert.match(
+    operations,
+    /observedPageKey\(page, "Mark handoff reviewed", "Enter"\)/,
+  );
+  assert.match(
+    operations,
+    /observedPageKey\(page, "Incident event log", "Shift\+Tab"\)/,
+  );
+  assert.match(operations, /textContent\(\)/);
+  assert.match(operations, /boundingBox\(\)/);
+  assert.match(operations, /observedBoxGesture\(page, incidentLog/);
+  assert.match(operations, /pointer\.wheel\([1-9]\d*,\s*0\)/);
+  assert.match(operations, /scrollLeft/);
+  assert.match(operations, /document\.activeElement/);
+  assert.match(operations, /scopedLogSnapshot/);
+  assert.match(operations, /"PRE"/);
+  assert(
+    operations.indexOf('observedAction(page, confirmEvidence, "click")') <
+      operations.indexOf(
+        'observedPageKey(page, "Mark handoff reviewed", "Enter")',
+      ),
+    "pointer evidence review happens before keyboard handoff",
+  );
+  assert.equal(
+    operations.match(/observedAction\(page, confirmEvidence, "click"\)/g)
+      ?.length,
+    2,
+    "the journey retries evidence confirmation after completion",
+  );
+  assert.doesNotMatch(
+    operations,
+    /force\s*:\s*true|dispatchEvent\(|\.evaluate\([^)]*\.click|waitForTimeout/,
+  );
+});
+
 test("registers the document outline standards scenario", async () => {
   const scenarioIndex = await readFile(
     new URL("./site/src/scenarios/index.jsx", import.meta.url),

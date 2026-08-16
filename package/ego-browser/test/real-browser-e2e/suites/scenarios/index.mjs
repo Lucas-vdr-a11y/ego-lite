@@ -18,6 +18,7 @@ import { spreadsheetScenarioCase } from "./spreadsheet.mjs";
 import { richTextScenarioCase } from "./rich-text.mjs";
 import { visualPathScenarioCase } from "./visual-path.mjs";
 import { svgMathmlScenarioCase } from "./svg-mathml.mjs";
+import { textContentScenarioCase } from "./text-content.mjs";
 
 export const scenarioCases = [
   clicksScenarioCase,
@@ -40,4 +41,5 @@ export const scenarioCases = [
   visualPathScenarioCase,
   svgMathmlScenarioCase,
   documentOutlineScenarioCase,
+  textContentScenarioCase,
 ];

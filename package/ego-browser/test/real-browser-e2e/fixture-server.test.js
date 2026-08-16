@@ -23,6 +23,7 @@ const interactiveRoutes = [
   "navigation",
   "network",
   "svg-mathml",
+  "text-content",
 ];
 
 test("Hono test site exposes a Vite development command", async () => {
@@ -358,6 +359,39 @@ test("document outline fixture composes one main landmark and every authored hea
   for (let level = 1; level <= 6; level += 1) {
     assert.match(html, new RegExp(`<h${level}\\b`), `h${level}`);
   }
+});
+
+test("text content fixture renders the complete incident handoff document", async () => {
+  const response = await createTestSiteApp("text-content-test").request(
+    "/tests/text-content",
+  );
+  const html = await response.text();
+
+  assert.equal(response.status, 200);
+  for (const element of [
+    "blockquote",
+    "dd",
+    "div",
+    "dl",
+    "dt",
+    "figcaption",
+    "figure",
+    "hr",
+    "li",
+    "menu",
+    "ol",
+    "p",
+    "pre",
+    "ul",
+  ]) {
+    assert.match(html, new RegExp(`<${element}\\b`), element);
+  }
+  assert.match(html, /data-testid=["']incident-review-status["']/);
+  assert.match(html, /<button[^>]+data-confirm-evidence/);
+  assert.match(
+    html,
+    /<button(?=[^>]*data-complete-handoff)(?=[^>]*disabled)[^>]*>/,
+  );
 });
 
 test("Hono test site links and renders every dedicated browser scenario", async () => {

@@ -24,6 +24,7 @@ const interactiveScenarios = new Set([
   "rich-text",
   "visual-path",
   "svg-mathml",
+  "text-content",
 ]);
 
 export function scenarioModulePath(slug) {

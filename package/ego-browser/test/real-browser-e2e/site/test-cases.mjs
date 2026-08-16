@@ -179,6 +179,15 @@ export const TEST_CASES = [
     description:
       "Navigate a structured release brief through native landmarks, headings, and in-page links.",
   },
+  {
+    slug: "text-content",
+    route: "/tests/text-content",
+    number: "21",
+    title: "Incident handoff",
+    eyebrow: "Text content / operational review",
+    description:
+      "Read structured incident evidence, confirm its event log, and accept the overnight handoff.",
+  },
 ];
 
 export function findTestCase(slug) {

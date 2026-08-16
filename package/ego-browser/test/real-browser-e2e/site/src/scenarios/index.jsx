@@ -18,6 +18,7 @@ import SpreadsheetSurface from "./spreadsheet/view.jsx";
 import UploadsSurface from "./uploads/view.jsx";
 import VisualPathSurface from "./visual-path/view.jsx";
 import SvgMathmlSurface from "./svg-mathml/view.jsx";
+import TextContentSurface from "./text-content/view.jsx";
 
 export const surfaces = {
   clicks: ClicksSurface,
@@ -40,4 +41,5 @@ export const surfaces = {
   "rich-text": RichTextSurface,
   "visual-path": VisualPathSurface,
   "svg-mathml": SvgMathmlSurface,
+  "text-content": TextContentSurface,
 };

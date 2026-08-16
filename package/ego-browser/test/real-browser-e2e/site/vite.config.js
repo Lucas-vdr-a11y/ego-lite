@@ -24,6 +24,7 @@ const clientEntries = [
   "rich-text",
   "visual-path",
   "svg-mathml",
+  "text-content",
 ];
 
 export default defineConfig(({ command, mode }) => {
