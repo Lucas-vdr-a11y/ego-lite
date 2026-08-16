@@ -25,6 +25,7 @@ const interactiveRoutes = [
   "svg-mathml",
   "text-content",
   "inline-semantics",
+  "media-embeds",
 ];
 
 test("Hono test site exposes a Vite development command", async () => {
@@ -411,6 +412,28 @@ test("inline semantics fixture renders the complete localization proof", async (
     html,
     /<button(?=[^>]*data-approve-localization)(?=[^>]*disabled)[^>]*>/,
   );
+});
+
+test("media fixture renders native responsive, timed, mapped, and embedded content", async () => {
+  const response = await createTestSiteApp("media-embeds-test").request(
+    "/tests/media-embeds",
+  );
+  const html = await response.text();
+
+  assert.equal(response.status, 200);
+  assert.match(html, /Venue media readiness review/);
+  assert.match(
+    html,
+    /<picture\b[\s\S]*<img\b[^>]*usemap=["']#venue-zones["']/i,
+  );
+  assert.match(html, /<map\b[^>]*name=["']venue-zones["']/);
+  assert.match(html, /<video\b[^>]*controls/);
+  assert.match(html, /<audio\b[^>]*controls/);
+  assert.match(html, /<iframe\b[^>]*title=["']Safety checklist["']/);
+  assert.match(html, /<object\b/);
+  assert.match(html, /<embed\b/);
+  assert.match(html, /<fencedframe\b/);
+  assert.match(html, /data-testid=["']media-review-status["']/);
 });
 
 test("Hono test site links and renders every dedicated browser scenario", async () => {

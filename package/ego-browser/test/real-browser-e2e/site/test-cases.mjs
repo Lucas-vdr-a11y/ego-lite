@@ -197,6 +197,15 @@ export const TEST_CASES = [
     description:
       "Review terminology and pronunciation details before approving localized Singapore release copy.",
   },
+  {
+    slug: "media-embeds",
+    route: "/tests/media-embeds",
+    number: "23",
+    title: "Venue evidence",
+    eyebrow: "Media + embeds / launch readiness",
+    description:
+      "Review mapped venue zones, timed media, and embedded compliance documents before APAC launch approval.",
+  },
 ];
 
 export function findTestCase(slug) {

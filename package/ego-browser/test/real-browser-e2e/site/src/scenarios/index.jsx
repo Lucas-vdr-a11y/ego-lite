@@ -20,6 +20,7 @@ import VisualPathSurface from "./visual-path/view.jsx";
 import SvgMathmlSurface from "./svg-mathml/view.jsx";
 import TextContentSurface from "./text-content/view.jsx";
 import InlineSemanticsSurface from "./inline-semantics/view.jsx";
+import MediaEmbedsSurface from "./media-embeds/view.jsx";
 
 export const surfaces = {
   clicks: ClicksSurface,
@@ -44,4 +45,5 @@ export const surfaces = {
   "svg-mathml": SvgMathmlSurface,
   "text-content": TextContentSurface,
   "inline-semantics": InlineSemanticsSurface,
+  "media-embeds": MediaEmbedsSurface,
 };

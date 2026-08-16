@@ -22,6 +22,113 @@ function scenarioOperations(source) {
   return source.slice(start + startMarker.length, finish);
 }
 
+test("registers the media and embedded content standards scenario", async () => {
+  const scenarioIndex = await readFile(
+    new URL("./site/src/scenarios/index.jsx", import.meta.url),
+    "utf8",
+  );
+  const testCase = TEST_CASES.find(
+    (candidate) => candidate.slug === "media-embeds",
+  );
+
+  assert.equal(testCase?.route, "/tests/media-embeds");
+  assert.match(scenarioIndex, /["']media-embeds["']\s*:/);
+  assert(
+    scenarioCases.some(
+      (candidate) => candidate.name === "web test: media-embeds",
+    ),
+    "media-embeds has a real-browser journey",
+  );
+});
+
+test("uses every MDN image, multimedia, and embedded content element", async () => {
+  const viewSource = await readFile(
+    new URL("./site/src/scenarios/media-embeds/view.jsx", import.meta.url),
+    "utf8",
+  ).catch(() => "");
+  const clientSource = await readFile(
+    new URL("./site/src/scenarios/media-embeds/client.js", import.meta.url),
+    "utf8",
+  ).catch(() => "");
+
+  for (const element of [
+    "area",
+    "audio",
+    "img",
+    "map",
+    "track",
+    "video",
+    "embed",
+    "fencedframe",
+    "iframe",
+    "object",
+    "picture",
+    "source",
+  ]) {
+    assert.match(viewSource, new RegExp(`<${element}\\b`), element);
+  }
+  assert.match(viewSource, /<img\b[^>]*useMap=["']#venue-zones["']/);
+  assert.match(viewSource, /<map\b[^>]*name=["']venue-zones["']/);
+  assert.match(viewSource, /<area\b[^>]*href=["']#stage-zone["'][^>]*alt=/);
+  assert.match(viewSource, /<video\b[^>]*controls/);
+  assert.match(viewSource, /<audio\b[^>]*controls/);
+  assert.match(viewSource, /<track\b[^>]*kind=["']captions["'][^>]*default/);
+  assert.match(viewSource, /<picture\b[\s\S]*<source\b[^>]*(?:srcSet|srcset)=/);
+  assert.match(viewSource, /<iframe\b[^>]*title=/);
+  assert.match(viewSource, /<object\b[^>]*(?:data|type)=/);
+  assert.match(viewSource, /<embed\b[^>]*(?:src|type)=/);
+  assert.doesNotMatch(
+    viewSource,
+    /role=["'](?:button|link|img)["']|onClick=|dangerouslySetInnerHTML/,
+  );
+  assert.match(clientSource, /addEventListener\(["']hashchange["']/);
+  assert.match(clientSource, /addEventListener\(["']message["']/);
+  assert.doesNotMatch(clientSource, /dispatchEvent\(|\.click\(\)/);
+});
+
+test("media and embeds journey uses real pointer, keyboard, and frame actions", () => {
+  const testCase = scenarioCases.find(
+    (candidate) => candidate.name === "web test: media-embeds",
+  );
+  const operations = scenarioOperations(testCase?.body() || "");
+
+  assert.match(operations, /ariaSnapshot\(\{ ref: true \}\)/);
+  assert.match(operations, /observedBoxGesture\(\s*page,\s*venuePlan/);
+  assert.match(
+    operations,
+    /observedFocusedKeyboard\(page, loadingArea, "press", "Enter"\)/,
+  );
+  assert.match(operations, /observedBoxGesture\(\s*page,\s*briefingAudio/);
+  assert.match(operations, /observedBoxGesture\(\s*page,\s*briefingVideo/);
+  assert.match(
+    operations,
+    /observedPageKey\(page, "Audio briefing played", "Space"\)/,
+  );
+  assert.match(
+    operations,
+    /observedPageKey\(page, "Video briefing played", "Space"\)/,
+  );
+  assert.match(operations, /contentFrame\(\)/);
+  assert.match(
+    operations,
+    /observedAction\(safetyFrame, frameChecklist, "click"\)/,
+  );
+  assert.match(operations, /document\.activeElement/);
+  assert.match(operations, /currentTime/);
+  assert.match(operations, /readyState/);
+  assert.match(
+    operations,
+    /waitForFunction\(\(\) => \{[\s\S]*querySelector\(\"\[data-venue-plan\]\"\)[\s\S]*currentSrc[\s\S]*complete[\s\S]*naturalWidth/,
+    "responsive picture selection waits for the newly selected image to load",
+  );
+  assert.match(operations, /Accessibility\.getPartialAXTree/);
+  assert.match(operations, /missingSnapshotSemantics/);
+  assert.doesNotMatch(
+    operations,
+    /force\s*:\s*true|dispatchEvent\(|\.evaluate\([^)]*\.click|waitForTimeout/,
+  );
+});
+
 test("registers the inline text semantics standards scenario", async () => {
   const scenarioIndex = await readFile(
     new URL("./site/src/scenarios/index.jsx", import.meta.url),

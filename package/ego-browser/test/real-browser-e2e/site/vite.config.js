@@ -26,6 +26,7 @@ const clientEntries = [
   "svg-mathml",
   "text-content",
   "inline-semantics",
+  "media-embeds",
 ];
 
 export default defineConfig(({ command, mode }) => {
