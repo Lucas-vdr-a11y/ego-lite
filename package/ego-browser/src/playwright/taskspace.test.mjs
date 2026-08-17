@@ -550,3 +550,204 @@ test("the Playwright connector connects normally when no prepareSession hook is 
   await session.close();
   assert.deepEqual(calls, ["browser.close"]);
 });
+
+// The benchmark's recurring failure was a task-space bring-up that produced no
+// output at all: newTaskSpace() never returned, the agent script was hard-killed
+// at its command budget, and everything it had already printed was lost with the
+// process. prepareSession is the step that can do this — it calls
+// page.evaluate(), and Playwright waits for an execution context with no
+// deadline of its own, so a lost Runtime.executionContextCreated strands it
+// forever. A bring-up deadline cannot make the context arrive; it makes the
+// failure sayable.
+test("a bring-up step that never settles fails with the step named instead of hanging", async () => {
+  const calls = [];
+  const page = { targetId: "target-1" };
+  let released;
+  const stalled = new Promise((resolve) => (released = resolve));
+  const connector = playwrightTaskSpace.createPlaywrightTaskSpaceConnector({
+    bringUpTimeoutMs: 200,
+    runtime: () => ({
+      async listTabs() {
+        return { tabs: [{ targetId: page.targetId, active: true }] };
+      },
+    }),
+    transport: async () => ({ connectToken: "ws+ego://transport/test" }),
+    connectOverCDP: async () => ({
+      contexts() {
+        return [{ pages: () => [page] }];
+      },
+      async close() {
+        calls.push("browser.close");
+      },
+    }),
+    // Stands in for page.evaluate() waiting on an execution context that never
+    // arrives: pending, never rejecting.
+    prepareSession: () => stalled,
+  });
+
+  await assert.rejects(
+    () => connector({ id: 7 }),
+    /TaskSpace bring-up stalled in prepareSession: no result within 200ms/,
+    "the caller learns which step stalled, rather than waiting for a hard kill " +
+      "that discards the script's output",
+  );
+  assert.deepEqual(
+    calls,
+    ["browser.close"],
+    "and the half-built session is torn down rather than leaked",
+  );
+  released();
+});
+
+test("the bring-up deadline is one budget for the whole sequence, not one per step", async () => {
+  const page = { targetId: "target-1" };
+  const connector = playwrightTaskSpace.createPlaywrightTaskSpaceConnector({
+    bringUpTimeoutMs: 300,
+    runtime: () => ({
+      async listTabs() {
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        return { tabs: [{ targetId: page.targetId, active: true }] };
+      },
+    }),
+    transport: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      return { connectToken: "ws+ego://transport/test" };
+    },
+    connectOverCDP: async () => ({
+      contexts() {
+        return [{ pages: () => [page] }];
+      },
+      async close() {},
+    }),
+  });
+
+  // Two 200ms steps: each is inside a 300ms per-step limit, their sum is not.
+  await assert.rejects(
+    () => connector({ id: 7 }),
+    /TaskSpace bring-up stalled in ego\.listTabs/,
+    "a sequence that keeps making slow progress must still not outlast the budget",
+  );
+});
+
+test("a bring-up well inside the deadline is untouched by it", async () => {
+  const page = { targetId: "target-1" };
+  const context = { pages: () => [page] };
+  const prepared = [];
+  const connector = playwrightTaskSpace.createPlaywrightTaskSpaceConnector({
+    bringUpTimeoutMs: 5_000,
+    runtime: () => ({
+      async listTabs() {
+        return { tabs: [{ targetId: page.targetId, active: true }] };
+      },
+    }),
+    transport: async () => ({ connectToken: "ws+ego://transport/test" }),
+    connectOverCDP: async () => ({
+      contexts() {
+        return [context];
+      },
+      async close() {},
+    }),
+    prepareSession: async (session) => prepared.push(session.page),
+  });
+
+  const session = await connector({ id: 7 });
+
+  assert.equal(session.page, page);
+  assert.deepEqual(prepared, [page]);
+  await session.close();
+});
+
+// Losing the deadline race does not cancel the step. Two of them hand back
+// something that owns a live resource, and the assignments that would let the
+// teardown find it sit *after* the await that just rejected — so a late success
+// is invisible to closeSession() and the connection stays open for the life of
+// the browser.
+test("a transport lease that arrives after its deadline is closed, not leaked", async () => {
+  let lateLeaseClosed = 0;
+  let connectCalled = 0;
+  let release;
+  const late = new Promise((resolve) => (release = resolve));
+  const connector = playwrightTaskSpace.createPlaywrightTaskSpaceConnector({
+    bringUpTimeoutMs: 50,
+    runtime: () => ({
+      async listTabs() {
+        return { tabs: [] };
+      },
+    }),
+    transport: () => late,
+    connectOverCDP: async () => {
+      connectCalled += 1;
+      return { contexts: () => [], async close() {} };
+    },
+  });
+
+  const failure = await connector({ id: 7 }).catch((error) => error);
+  release({
+    connectToken: "ws+ego://transport/test",
+    close: async () => {
+      lateLeaseClosed += 1;
+    },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 30));
+
+  assert.match(
+    failure?.message || "",
+    /TaskSpace bring-up stalled in transport setup: no result within 50ms/,
+  );
+  assert.equal(
+    lateLeaseClosed,
+    1,
+    "the lease nobody upstream ever saw is released exactly once",
+  );
+  assert.equal(
+    connectCalled,
+    0,
+    "and the abandoned bring-up does not carry on to the next step",
+  );
+});
+
+test("a browser connection that arrives after its deadline is closed, not leaked", async () => {
+  let lateBrowserClosed = 0;
+  let leaseClosed = 0;
+  let release;
+  const late = new Promise((resolve) => (release = resolve));
+  const connector = playwrightTaskSpace.createPlaywrightTaskSpaceConnector({
+    bringUpTimeoutMs: 50,
+    runtime: () => ({
+      async listTabs() {
+        return { tabs: [] };
+      },
+    }),
+    transport: async () => ({
+      connectToken: "ws+ego://transport/test",
+      close: async () => {
+        leaseClosed += 1;
+      },
+    }),
+    connectOverCDP: () => late,
+  });
+
+  const failure = await connector({ id: 7 }).catch((error) => error);
+  release({
+    contexts: () => [],
+    async close() {
+      lateBrowserClosed += 1;
+    },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 30));
+
+  assert.match(
+    failure?.message || "",
+    /TaskSpace bring-up stalled in connectOverCDP: no result within 50ms/,
+  );
+  assert.equal(
+    lateBrowserClosed,
+    1,
+    "the CDP connection nobody upstream ever saw is closed",
+  );
+  assert.equal(
+    leaseClosed,
+    1,
+    "and the transport lease recorded before it is torn down as usual",
+  );
+});
