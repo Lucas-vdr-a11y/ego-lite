@@ -810,9 +810,13 @@ test("native callback containment remains a dedicated opt-in process E2E", () =>
   assert.match(culprit, /waitForGuard\("CDP message handling"/);
   assert.match(culprit, /waitForGuard\("onCDPMessage"/);
   assert.match(culprit, /await cdp\("Target\.getTargets"/);
+  assert.match(culprit, /locator\("#same-page-link"\)/);
+  assert.match(culprit, /\.click\(\)\s*\.catch/);
+  assert.doesNotMatch(culprit, /native-callback-culprit-done\.json/);
 
   const source = readFileSync(new URL("./runner.mjs", import.meta.url), "utf8");
   assert.match(source, /runNativeCallbackContainmentCase/);
+  assert.match(source, /writeFile\(culpritDonePath/);
   assert.match(source, /holderReady\.pid !== culpritSummary\.pid/);
   assert.match(source, /holderSummary\.pid !== holderReady\.pid/);
   assert.match(source, /NodeRuntime disconnected\|disconnected unexpectedly/);

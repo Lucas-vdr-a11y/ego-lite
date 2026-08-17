@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 
 import * as sdk from "../dist/src/index.js";
+import { subscribeEgoCdpTransport } from "../dist/src/browser-runtime.js";
 import {
   connectPlaywrightTaskSpace,
   disconnectPlaywrightTaskSpace,
@@ -49,6 +50,30 @@ test("disposeEgoSdk closes the active Playwright connection for SDK hosts", asyn
   } finally {
     await disconnectPlaywrightTaskSpace();
     restore();
+  }
+});
+
+test("disposeEgoSdk releases native CDP callbacks before the Node context exits", async () => {
+  const previousEgo = globalThis.ego;
+  const runtime = {};
+  globalThis.ego = runtime;
+  const unsubscribe = subscribeEgoCdpTransport(runtime, { message() {} });
+
+  try {
+    assert.equal(typeof runtime.onCDPMessage, "function");
+    assert.equal(typeof runtime.onSendCDPMessageError, "function");
+
+    await sdk.disposeEgoSdk();
+
+    assert.equal(
+      runtime.onCDPMessage,
+      undefined,
+      "native must not retain a callback into a disposed Node context",
+    );
+    assert.equal(runtime.onSendCDPMessageError, undefined);
+  } finally {
+    unsubscribe();
+    globalThis.ego = previousEgo;
   }
 });
 

@@ -154,6 +154,18 @@ export const nativeCallbackContainmentCase = {
         Array.isArray(targets.targetInfos),
         "CDP remains usable after the guarded callback failure",
       );
+      await culprit.page.goto(
+        baseUrl + "/tests/navigation?native-callback=teardown",
+        { waitUntil: "load", timeout: 20_000 },
+      );
+      // Match the benchmark failure shape: the script starts a browser-driven
+      // navigation and immediately enters SDK teardown while native is still
+      // delivering its CDP events. The holder must remain alive throughout the
+      // culprit's teardown, not merely until this body returns.
+      void culprit.page
+        .locator("#same-page-link")
+        .click()
+        .catch(() => {});
       await writeFile(
         join(tempDir, "native-callback-culprit-summary.json"),
         JSON.stringify({
@@ -161,10 +173,6 @@ export const nativeCallbackContainmentCase = {
           targetCount: targets.targetInfos.length,
           guards: guardEvents.map((event) => event.label),
         }),
-      );
-      await writeFile(
-        join(tempDir, "native-callback-culprit-done.json"),
-        JSON.stringify({ done: true }),
       );
     `,
   ],

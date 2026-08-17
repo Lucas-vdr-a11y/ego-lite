@@ -687,6 +687,10 @@ export async function runRealBrowserE2e() {
       if (culprit.status === "fail") {
         throw new Error(`culprit: ${culprit.message}`);
       }
+      // Signal only after runEgoCase has observed the culprit process exit. If
+      // the body writes this itself, the holder can finish before SDK teardown
+      // and the callback-lifetime regression is never exercised.
+      await writeFile(culpritDonePath, JSON.stringify({ done: true }));
 
       while (holderCommand.session_id) {
         holderCommand = await codexTools.write_stdin({

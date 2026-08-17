@@ -6,6 +6,7 @@ import {
   clearPreferredTarget,
   invalidateSession,
   onUserControlHardStop,
+  releaseRuntimeCallbacks,
   setPreferredTarget,
 } from "./browser-runtime.js";
 import { formatCliLogValue } from "./format.js";
@@ -43,7 +44,11 @@ export async function disposeEgoSdk() {
   try {
     await disconnectPlaywrightTaskSpace();
   } finally {
-    releaseTaskSpaceLease();
+    try {
+      releaseTaskSpaceLease();
+    } finally {
+      releaseRuntimeCallbacks(globalThis.ego);
+    }
   }
 }
 
