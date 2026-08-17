@@ -50,25 +50,56 @@ function bindRuntimeCallbacks(runtime: EgoCdpCallbackRuntime) {
   runtime.onSendCDPMessageError = dispatchCdpSendError;
 }
 
+export function releaseRuntimeCallbacks(runtime?: EgoCdpCallbackRuntime) {
+  if (!runtime) return;
+  if (runtime.onCDPMessage === dispatchCdpMessage) {
+    runtime.onCDPMessage = undefined;
+  }
+  if (runtime.onSendCDPMessageError === dispatchCdpSendError) {
+    runtime.onSendCDPMessageError = undefined;
+  }
+}
+
 /**
- * Runs a native callback body so no exception can escape into the host.
+ * Reports a failure the guards below contain. One place, so every containment
+ * site is greppable by the same `"<label> failed:"` line.
+ */
+function reportGuardedFailure(label: string, error: unknown) {
+  try {
+    console.error(`${label} failed:`, error);
+  } catch {
+    // Reporting must never re-enter the failure it is reporting.
+  }
+}
+
+/**
+ * Runs a callback body so no exception can escape into the host.
  *
  * The host invokes these callbacks through `v8::Function::Call` and unwraps the
  * result with `ToLocalChecked()`. A synchronous throw leaves that `MaybeLocal`
  * empty, which aborts the whole shared NodeService process rather than failing
  * this script — every other agent script running concurrently dies with
  * "NodeRuntime disconnected" and loses output it had already printed.
+ *
+ * A throw out of a timer callback, and a rejection nothing handles, end that
+ * same shared process the same way, so those surfaces use this guard too — and
+ * {@link catchGuarded} for the rejection half.
  */
-function guardNativeCallback(label: string, body: () => void) {
+export function guardNativeCallback(label: string, body: () => void) {
   try {
     body();
   } catch (error) {
-    try {
-      console.error(`${label} failed:`, error);
-    } catch {
-      // Reporting must never re-enter the failure it is reporting.
-    }
+    reportGuardedFailure(label, error);
   }
+}
+
+/**
+ * The last link of a promise chain nobody awaits. Chains that end in
+ * `.finally(...)` look handled but are not: a throw inside `.finally` rejects
+ * the chain *after* its `.catch`, and that rejection reaches no one.
+ */
+export function catchGuarded(label: string) {
+  return (error: unknown) => reportGuardedFailure(label, error);
 }
 
 function dispatchCdpMessage(payload: string) {
