@@ -31,6 +31,10 @@ type NewPageOptions = {
   timeout?: number;
 };
 
+type AdoptPageOptions = {
+  as?: string;
+};
+
 type PageGotoOptions = {
   timeout?: number;
 };
@@ -63,6 +67,7 @@ type LedgerPort = {
   ): Promise<ManagedPage>;
   getPage(spaceId: number, label: string): Promise<ManagedPage>;
   closePage(spaceId: number, label: string): Promise<ManagedPage>;
+  releasePage(spaceId: number, label: string): Promise<ManagedPage>;
   reconcile(
     spaceId: number,
     liveTargetIds: Iterable<string>,
@@ -99,7 +104,7 @@ type PageModelServices = {
 export type PageInventoryItem = {
   targetId: string;
   label?: string;
-  page?: Page;
+  page: Page | UnmanagedPage;
   title: string;
   url: string;
   active: boolean;
@@ -120,6 +125,7 @@ export class PageBudgetError extends Error {
 }
 
 let defaultLedger: PageLedgerStore | undefined;
+const unmanagedPageConstructorToken = Symbol("UnmanagedPage");
 
 const defaultGate: OperationGate = {
   withSpace: defaultWithSpace,
@@ -212,6 +218,72 @@ export class TaskSpace {
     });
   }
 
+  /**
+   * Bring an untracked browser tab under the durable Page lifecycle.
+   * Untracked handles intentionally cannot operate on the tab before adoption.
+   */
+  async adopt(
+    page: UnmanagedPage,
+    options: AdoptPageOptions = {},
+  ): Promise<Page> {
+    assertUnmanagedPage(page);
+    if (page.spaceId !== this.id) {
+      throw new Error(
+        `untracked page ${page.targetId} belongs to space ${page.spaceId}, not space ${this.id}`,
+      );
+    }
+    return this.#services.gate.withSpace(this.id, async () => {
+      const { ledger, tabs } = await this.#reconcilePages();
+      const live = tabs.some((tab) => tab.targetId === page.targetId);
+      if (!live) {
+        throw new Error(`untracked page ${page.targetId} is no longer open`);
+      }
+      const existing = Object.entries(ledger.pages).find(
+        ([, entry]) => entry.targetId === page.targetId,
+      );
+      if (existing) {
+        throw new Error(
+          `target ${page.targetId} is already page ${existing[0]}`,
+        );
+      }
+      if (Object.keys(ledger.pages).length >= this.#services.pageBudget) {
+        throw pageBudgetError(this, this.#services.pageBudget, ledger, tabs);
+      }
+      const entry = await this.#services.ledger.addPage(
+        this.id,
+        page.targetId,
+        {
+          as: options.as,
+          openedBy: page.openedBy,
+        },
+      );
+      return new Page(this, entry.label, this.#services, entry);
+    });
+  }
+
+  /**
+   * Stop managing a user or unknown-origin page without closing its browser tab.
+   * Agent-created pages must be closed so they cannot become untracked orphans.
+   */
+  async release(label: string): Promise<UnmanagedPage> {
+    return this.#services.gate.withSpace(this.id, async () => {
+      await this.#reconcilePages();
+      const entry = await this.#services.ledger.getPage(this.id, label);
+      if (entry.openedBy === "agent") {
+        throw new Error(
+          `page ${label} was created by the agent; close it instead of releasing it`,
+        );
+      }
+      const released = await this.#services.ledger.releasePage(this.id, label);
+      return new UnmanagedPage(
+        this,
+        released.targetId,
+        released.openedBy,
+        unmanagedPageConstructorToken,
+      );
+    });
+  }
+
   async newPage(
     url = "about:blank",
     options: NewPageOptions = {},
@@ -279,6 +351,34 @@ export class TaskSpace {
       tabs.map((tab) => tab.targetId),
     );
     return { ledger, tabs };
+  }
+}
+
+/**
+ * A read-only identity for a live tab that is not managed by the Page model.
+ * Obtain one from TaskSpace.listPages(), then call TaskSpace.adopt() before
+ * navigating, observing, or closing the tab.
+ */
+export class UnmanagedPage {
+  readonly spaceId: number;
+  readonly targetId: string;
+  readonly openedBy: PageOrigin;
+
+  constructor(
+    task: TaskSpace,
+    targetId: string,
+    openedBy: PageOrigin,
+    token: symbol,
+  ) {
+    if (token !== unmanagedPageConstructorToken) {
+      throw new TypeError(
+        "UnmanagedPage handles can only be obtained from task.listPages()",
+      );
+    }
+    this.spaceId = task.id;
+    this.targetId = targetId;
+    this.openedBy = openedBy;
+    Object.freeze(this);
   }
 }
 
@@ -434,6 +534,12 @@ function pageInventory(
     if (!managed) {
       return {
         targetId: tab.targetId,
+        page: new UnmanagedPage(
+          task,
+          tab.targetId,
+          "unknown",
+          unmanagedPageConstructorToken,
+        ),
         title: tab.title || "",
         url: tab.url || "",
         active: Boolean(tab.active),
@@ -451,6 +557,14 @@ function pageInventory(
       openedBy: entry.openedBy,
     };
   });
+}
+
+function assertUnmanagedPage(page: unknown): asserts page is UnmanagedPage {
+  if (!(page instanceof UnmanagedPage)) {
+    throw new TypeError(
+      "task.adopt requires an untracked page returned by task.listPages()",
+    );
+  }
 }
 
 function pageBudgetError(

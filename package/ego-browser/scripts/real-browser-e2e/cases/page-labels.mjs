@@ -131,3 +131,58 @@ export function pageBudgetCase() {
     for (const page of managed) await page.close();
   `;
 }
+
+export function pageAdoptionCase() {
+  return `
+    const task = await taskSpace(taskName);
+    const source = await openOrReuseTab(baseUrl + "/?adopt=source", {
+      wait: true,
+      timeout: 10,
+    });
+    const beforeAdopt = await task.listPages();
+    const untracked = beforeAdopt.find(
+      (item) => item.targetId === source.targetId && item.label === undefined
+    );
+    assert(Boolean(untracked), "listPages reports the source tab as untracked");
+    assertEqual(untracked.page.targetId, source.targetId, "untracked handle keeps the target id");
+    assertEqual(untracked.page.snapshot, undefined, "untracked handle cannot snapshot directly");
+    assertEqual(untracked.page.goto, undefined, "untracked handle cannot navigate directly");
+    assertEqual(untracked.page.close, undefined, "untracked handle cannot close directly");
+
+    const adopted = await task.adopt(untracked.page, { as: "borrowed" });
+    assertEqual(adopted.label, "borrowed", "adopt assigns the requested durable label");
+    assertEqual(adopted.openedBy, "unknown", "adopt preserves conservative origin attribution");
+    assertIncludes(await adopted.snapshot(), "Helper e2e fixture", "adopted page supports Page operations");
+
+    const released = await task.release(adopted.label);
+    assertEqual(released.targetId, source.targetId, "release returns the same untracked target");
+    assert(
+      (await listTabs()).some((tab) => tab.targetId === source.targetId),
+      "release leaves the browser tab open"
+    );
+    assertEqual(
+      (await task.listPages()).find((item) => item.targetId === source.targetId).label,
+      undefined,
+      "release removes the durable label"
+    );
+    await assertRejects(
+      () => adopted.snapshot(),
+      "page borrowed was released",
+      "the released label fails closed"
+    );
+
+    const adoptedAgain = await task.adopt(released, { as: "borrowed-again" });
+    assertEqual(adoptedAgain.targetId, source.targetId, "a released tab can be adopted again");
+    await task.release(adoptedAgain.label);
+
+    const agentPage = await task.newPage(baseUrl + "/secondary?release=agent", {
+      as: "agent-owned",
+    });
+    await assertRejects(
+      () => task.release(agentPage.label),
+      "was created by the agent; close it instead",
+      "agent-created pages cannot become untracked orphans"
+    );
+    await agentPage.close();
+  `;
+}

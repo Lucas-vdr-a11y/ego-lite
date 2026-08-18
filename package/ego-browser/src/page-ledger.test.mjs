@@ -72,6 +72,7 @@ test("writes use a complete atomic ledger document", async () => {
       writerRound: "round-a",
       nextLabel: 2,
       usedLabels: ["p1"],
+      releasedLabels: [],
       pages: {
         p1: {
           targetId: "target-a",
@@ -82,6 +83,24 @@ test("writes use a complete atomic ledger document", async () => {
       },
       touchedAt: 1234,
     });
+  });
+});
+
+test("release removes a managed page without making its label reusable", async () => {
+  await withTempLedger(async (rootDir) => {
+    const store = new PageLedgerStore({ rootDir, roundId: "round-a" });
+    const released = await store.addPage(3, "target-user", {
+      openedBy: "unknown",
+    });
+
+    assert.deepEqual(await store.releasePage(3, released.label), released);
+    await assert.rejects(
+      () => store.getPage(3, released.label),
+      /page p1 was released/,
+    );
+
+    const next = await store.addPage(3, "target-next");
+    assert.equal(next.label, "p2");
   });
 });
 

@@ -22,6 +22,7 @@ export type PageLedger = {
   writerRound: string;
   nextLabel: number;
   usedLabels: string[];
+  releasedLabels: string[];
   pages: Record<string, PageLedgerEntry>;
   touchedAt: number;
 };
@@ -96,6 +97,9 @@ export class PageLedgerStore {
     const ledger = await this.read(spaceId);
     const entry = ledger.pages[label];
     if (entry) return { label, ...entry };
+    if (ledger.releasedLabels.includes(label)) {
+      throw new Error(`page ${label} was released`);
+    }
     if (ledger.usedLabels.includes(label)) {
       throw new Error(`page ${label} was closed`);
     }
@@ -143,6 +147,9 @@ export class PageLedgerStore {
     await this.#update(spaceId, (ledger) => {
       const entry = ledger.pages[label];
       if (!entry) {
+        if (ledger.releasedLabels.includes(label)) {
+          throw new Error(`page ${label} was released`);
+        }
         if (ledger.usedLabels.includes(label)) {
           throw new Error(`page ${label} was closed`);
         }
@@ -150,6 +157,27 @@ export class PageLedgerStore {
       }
       removed = { label, ...entry };
       delete ledger.pages[label];
+    });
+    return removed!;
+  }
+
+  async releasePage(spaceId: number, label: string): Promise<ManagedPage> {
+    assertLabel(label);
+    let removed: ManagedPage;
+    await this.#update(spaceId, (ledger) => {
+      const entry = ledger.pages[label];
+      if (!entry) {
+        if (ledger.releasedLabels.includes(label)) {
+          throw new Error(`page ${label} was released`);
+        }
+        if (ledger.usedLabels.includes(label)) {
+          throw new Error(`page ${label} was closed`);
+        }
+        throw new Error(`page label not found: ${label}`);
+      }
+      removed = { label, ...entry };
+      delete ledger.pages[label];
+      ledger.releasedLabels.push(label);
     });
     return removed!;
   }
@@ -246,6 +274,7 @@ function emptyLedger(spaceId: number): PageLedger {
     writerRound: "",
     nextLabel: 1,
     usedLabels: [],
+    releasedLabels: [],
     pages: {},
     touchedAt: 0,
   };
@@ -270,7 +299,13 @@ function validateLedger(
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error(`invalid page ledger ${path}: expected an object`);
   }
-  const ledger = value as PageLedger;
+  const stored = value as PageLedger;
+  // Ledgers written before release support did not have releasedLabels. An
+  // empty default keeps those labels readable without rewriting on read.
+  const ledger = {
+    ...stored,
+    releasedLabels: stored.releasedLabels ?? [],
+  };
   if (
     ledger.spaceId !== expectedSpaceId ||
     !Number.isInteger(ledger.version) ||
@@ -280,6 +315,13 @@ function validateLedger(
     ledger.nextLabel < 1 ||
     !Array.isArray(ledger.usedLabels) ||
     ledger.usedLabels.some((label) => typeof label !== "string") ||
+    !Array.isArray(ledger.releasedLabels) ||
+    ledger.releasedLabels.some(
+      (label) =>
+        typeof label !== "string" ||
+        !ledger.usedLabels.includes(label) ||
+        Object.hasOwn(ledger.pages || {}, label),
+    ) ||
     !ledger.pages ||
     typeof ledger.pages !== "object" ||
     Array.isArray(ledger.pages) ||

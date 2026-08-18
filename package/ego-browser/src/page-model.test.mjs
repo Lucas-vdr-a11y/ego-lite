@@ -222,9 +222,150 @@ test("listPages combines managed labels with live browser information", async ()
     assert.equal(managedItem.title, "https://example.test/managed");
     assert.equal(managedItem.openedBy, "agent");
     assert.equal(unknownItem.label, undefined);
-    assert.equal(unknownItem.page, undefined);
+    assert.equal(unknownItem.page.targetId, "target-user");
+    assert.equal(unknownItem.page.spaceId, 7);
+    assert.equal(unknownItem.page.openedBy, "unknown");
+    assert.equal(unknownItem.page.snapshot, undefined);
+    assert.equal(unknownItem.page.goto, undefined);
+    assert.equal(unknownItem.page.close, undefined);
     assert.equal(unknownItem.title, "User page");
     assert.equal(unknownItem.openedBy, "unknown");
+  });
+});
+
+test("adopt turns a live untracked page into a managed page", async () => {
+  await withFixture(async (fixture) => {
+    fixture.tabs.set("target-user", {
+      targetId: "target-user",
+      url: "https://example.test/user",
+      title: "User page",
+      active: true,
+    });
+    const task = taskForRound(fixture, "round-a");
+    const [{ page: untracked }] = await task.listPages();
+
+    const adopted = await task.adopt(untracked, { as: "notes" });
+
+    assert.equal(adopted.label, "notes");
+    assert.equal(adopted.targetId, "target-user");
+    assert.equal(adopted.openedBy, "unknown");
+    assert.equal(
+      await adopted.snapshot(),
+      "snapshot:https://example.test/user",
+    );
+    assert.deepEqual(
+      (await task.listPages()).map(({ label, openedBy }) => ({
+        label,
+        openedBy,
+      })),
+      [{ label: "notes", openedBy: "unknown" }],
+    );
+  });
+});
+
+test("adopt rejects stale, cross-space, and already managed handles", async () => {
+  await withFixture(async (fixture) => {
+    fixture.tabs.set("target-user", {
+      targetId: "target-user",
+      url: "https://example.test/user",
+      title: "User page",
+      active: true,
+    });
+    const task = taskForRound(fixture, "round-a");
+    const [{ page: untracked }] = await task.listPages();
+    const otherTask = createTaskSpaceHandle(
+      { id: 8, name: "other", ownership: "agent" },
+      {
+        ledger: new PageLedgerStore({
+          rootDir: fixture.rootDir,
+          roundId: "round-a",
+        }),
+        ...fixture.services,
+      },
+    );
+
+    await assert.rejects(
+      () => otherTask.adopt(untracked),
+      /belongs to space 7, not space 8/,
+    );
+
+    const adopted = await task.adopt(untracked);
+    await assert.rejects(
+      () => task.adopt(untracked),
+      /target target-user is already page p1/,
+    );
+
+    const inventory = await task.listPages();
+    assert.equal(inventory[0].page.label, adopted.label);
+    fixture.tabs.delete("target-user");
+    const stale = untracked;
+    await assert.rejects(
+      () => task.adopt(stale),
+      /untracked page target-user is no longer open/,
+    );
+  });
+});
+
+test("adopt applies the managed-page budget before changing the ledger", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a", { pageBudget: 1 });
+    await task.newPage("https://example.test/managed");
+    fixture.tabs.set("target-user", {
+      targetId: "target-user",
+      url: "https://example.test/user",
+      title: "User page",
+      active: false,
+    });
+    const untracked = (await task.listPages()).find(
+      (item) => item.targetId === "target-user",
+    ).page;
+
+    await assert.rejects(
+      () => task.adopt(untracked),
+      /Page budget reached \(1\/1\)/,
+    );
+    const after = await task.listPages();
+    assert.equal(
+      after.find((item) => item.targetId === "target-user").label,
+      undefined,
+    );
+  });
+});
+
+test("release leaves an adopted page open and retires its label", async () => {
+  await withFixture(async (fixture) => {
+    fixture.tabs.set("target-user", {
+      targetId: "target-user",
+      url: "https://example.test/user",
+      title: "User page",
+      active: true,
+    });
+    const task = taskForRound(fixture, "round-a");
+    const untracked = (await task.listPages())[0].page;
+    const adopted = await task.adopt(untracked);
+
+    const released = await task.release(adopted.label);
+
+    assert.equal(released.targetId, "target-user");
+    assert.equal(fixture.tabs.has("target-user"), true);
+    assert.equal((await task.listPages())[0].label, undefined);
+    await assert.rejects(() => adopted.snapshot(), /page p1 was released/);
+    const adoptedAgain = await task.adopt(released);
+    assert.equal(adoptedAgain.label, "p2");
+  });
+});
+
+test("release refuses to orphan a page created by the agent", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a");
+    const created = await task.newPage("https://example.test/agent");
+
+    await assert.rejects(
+      () => task.release(created.label),
+      /page p1 was created by the agent; close it instead/,
+    );
+    assert.equal(fixture.tabs.has(created.targetId), true);
+    assert.equal((await task.listPages())[0].label, "p1");
   });
 });
 
