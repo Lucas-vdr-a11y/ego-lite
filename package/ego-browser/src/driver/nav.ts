@@ -86,8 +86,8 @@ export async function gotoAndWait(
  */
 export async function pageInfo() {
   if (isBrowserRuntime()) {
-    await ensureSession();
-    const dialog = pendingDialog();
+    const sessionId = await ensureSession();
+    const dialog = pendingDialog(sessionId);
     if (dialog) {
       return { dialog };
     }
@@ -146,7 +146,6 @@ export async function currentTab() {
 export async function switchTab(target: string | { targetId: string }) {
   const targetId = typeof target === "object" ? target.targetId : target;
   await cdp("Target.activateTarget", { targetId });
-  invalidateSession();
   setPreferredTarget(targetId);
   return targetId;
 }
@@ -215,7 +214,7 @@ export async function closeTab(target: TabTarget | undefined = undefined) {
     throw new Error("closeTab requires a targetId");
   }
   await cdp("Target.closeTarget", { targetId });
-  invalidateSession();
+  invalidateSession(targetId);
   if (state.preferredTargetId === targetId) {
     clearPreferredTarget();
   }

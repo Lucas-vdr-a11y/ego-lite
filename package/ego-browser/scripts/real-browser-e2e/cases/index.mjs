@@ -8,6 +8,7 @@ import { keyboardCase } from "./keyboard.mjs";
 import { keyboardRegressionCase } from "./keyboard-regression.mjs";
 import { runtimeCase } from "./runtime.mjs";
 import { runtimeRegressionCase } from "./runtime-regression.mjs";
+import { eventIsolationCase } from "./event-isolation.mjs";
 
 export const e2eCases = [
   { name: "environment initialization", body: environmentCase },
@@ -20,4 +21,5 @@ export const e2eCases = [
   { name: "keyboard regression", body: keyboardRegressionCase },
   { name: "wait, fetch, cdp, js, help", body: runtimeCase },
   { name: "runtime regression", body: runtimeRegressionCase },
+  { name: "target-scoped event isolation", body: eventIsolationCase },
 ];

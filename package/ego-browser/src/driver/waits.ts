@@ -4,6 +4,12 @@ import { resolveHandle, releaseHandle } from "./element-ops.js";
 import { ElementResolutionError } from "../element-resolver.js";
 import { type WaitForLoadOptions, waitForDocumentLoad } from "./load.js";
 import { drainEvents } from "./observe.js";
+import {
+  drainBrowserEvents,
+  ensureSession,
+  isBrowserRuntime,
+  isNetworkDomainEnabled,
+} from "../browser-runtime.js";
 
 type WaitForElementOptions = {
   timeout?: number;
@@ -101,13 +107,19 @@ export async function waitForNetworkIdle(
   const deadline = state.now() + timeout * 1000;
   let lastActivity = state.now();
   const inflight = new Set();
-  const ownsNetworkDomain = !state.networkDomainEnabled;
-  await cdp("Network.enable").catch(() => {
+  const sessionId = isBrowserRuntime() ? await ensureSession() : undefined;
+  const ownsNetworkDomain = sessionId
+    ? !isNetworkDomainEnabled(sessionId)
+    : !state.networkDomainEnabled;
+  await cdp("Network.enable", {}, sessionId).catch(() => {
     // Domain may be unsupported by the bridge; fall back to passive observation.
   });
   try {
     while (state.now() < deadline) {
-      for (const event of await drainEvents()) {
+      const events = sessionId
+        ? drainBrowserEvents(sessionId)
+        : await drainEvents();
+      for (const event of events) {
         const method = event.method || "";
         const params = event.params || {};
         if (method === "Network.requestWillBeSent") {
@@ -131,7 +143,7 @@ export async function waitForNetworkIdle(
     return false;
   } finally {
     if (ownsNetworkDomain) {
-      await cdp("Network.disable").catch(() => {
+      await cdp("Network.disable", {}, sessionId).catch(() => {
         // Best-effort cleanup; keeps the event buffer from accumulating after the wait.
       });
     }

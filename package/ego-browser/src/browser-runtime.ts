@@ -12,9 +12,81 @@ const BROWSER_LEVEL = (method) =>
   method.startsWith("Target.") || method.startsWith("Browser.");
 let nextMessageId = 1;
 const pending = new Map();
-const events = [];
-const pageEnabledSessions = new Set();
-const pendingDialogs = new Map();
+const browserEvents = [];
+const targetStates = new Map();
+const sessionTargets = new Map();
+let defaultTargetId = null;
+
+function targetState(targetId) {
+  let target = targetStates.get(targetId);
+  if (!target) {
+    target = {
+      targetId,
+      sessionId: null,
+      sessionAt: 0,
+      sessionInflight: null,
+      events: [],
+      pageEventsEnabled: false,
+      networkDomainEnabled: false,
+      pendingDialog: null,
+    };
+    targetStates.set(targetId, target);
+  }
+  return target;
+}
+
+function registerSession(targetId, sessionId) {
+  const target = targetState(targetId);
+  if (target.sessionId === sessionId) {
+    target.sessionAt = Date.now();
+    sessionTargets.set(sessionId, targetId);
+    return target;
+  }
+  if (target.sessionId && target.sessionId !== sessionId) {
+    sessionTargets.delete(target.sessionId);
+  }
+  target.sessionId = sessionId;
+  target.sessionAt = Date.now();
+  target.pageEventsEnabled = false;
+  target.networkDomainEnabled = false;
+  target.pendingDialog = null;
+  sessionTargets.set(sessionId, targetId);
+  return target;
+}
+
+function clearTargetSession(targetId, { remove = false } = {}) {
+  const target = targetStates.get(targetId);
+  if (!target) return;
+  if (target.sessionId) {
+    sessionTargets.delete(target.sessionId);
+  }
+  if (remove) {
+    targetStates.delete(targetId);
+    if (defaultTargetId === targetId) defaultTargetId = null;
+    return;
+  }
+  target.sessionId = null;
+  target.sessionAt = 0;
+  target.sessionInflight = null;
+  target.events.length = 0;
+  target.pageEventsEnabled = false;
+  target.networkDomainEnabled = false;
+  target.pendingDialog = null;
+}
+
+function capEvents(events) {
+  if (events.length > MAX_BUFFERED_EVENTS) {
+    events.splice(0, events.length - MAX_BUFFERED_EVENTS);
+  }
+}
+
+function clearLegacySessionMirror(targetId = undefined) {
+  if (targetId && state.sessionTargetId !== targetId) return;
+  state.sessionId = null;
+  state.sessionTargetId = null;
+  state.sessionAt = 0;
+  state.sessionInflight = null;
+}
 export function isBrowserRuntime() {
   return Boolean(
     globalThis.ego && typeof globalThis.ego.sendCDPMessage === "function",
@@ -85,65 +157,116 @@ export async function browserCdp(
     effective = await ensureSession();
   }
   try {
-    return await rawCdp(method, params, effective, timeoutMs);
+    const response = await rawCdp(method, params, effective, timeoutMs);
+    recordCommandState(method, params, effective, response);
+    return response;
   } catch (error) {
     const lost = SESSION_LOST.test(error?.message || "");
     if (lost && !explicit && !BROWSER_LEVEL(method)) {
-      invalidateSession();
-      const fresh = await ensureSession();
-      return rawCdp(method, params, fresh, timeoutMs);
+      const lostTargetId = effective
+        ? sessionTargets.get(effective)
+        : defaultTargetId;
+      if (lostTargetId) clearTargetSession(lostTargetId);
+      const fresh = await ensureSession(lostTargetId);
+      const response = await rawCdp(method, params, fresh, timeoutMs);
+      recordCommandState(method, params, fresh, response);
+      return response;
     }
     throw error;
   }
 }
 
-export async function ensureSession() {
-  if (state.sessionId && Date.now() - state.sessionAt < SESSION_TTL_MS) {
-    return state.sessionId;
+function recordCommandState(method, params, sessionId, response) {
+  if (method === "Target.attachToTarget") {
+    const attachedSessionId = response.result?.sessionId || response.sessionId;
+    if (params?.targetId && attachedSessionId) {
+      registerSession(params.targetId, attachedSessionId);
+    }
+    return;
   }
-  if (state.sessionInflight) {
-    return state.sessionInflight;
+  if (method === "Target.detachFromTarget" && params?.sessionId) {
+    const targetId = sessionTargets.get(params.sessionId);
+    if (targetId) clearTargetSession(targetId);
+    return;
   }
-  state.sessionInflight = (async () => {
+  if (!sessionId) return;
+  const targetId = sessionTargets.get(sessionId);
+  if (!targetId) return;
+  const target = targetStates.get(targetId);
+  if (!target) return;
+  if (method === "Network.enable") target.networkDomainEnabled = true;
+  if (method === "Network.disable") target.networkDomainEnabled = false;
+}
+
+export async function ensureSession(requestedTargetId = undefined) {
+  const cachedTargetId =
+    requestedTargetId || state.preferredTargetId || defaultTargetId;
+  const cached = cachedTargetId ? targetStates.get(cachedTargetId) : undefined;
+  if (cached?.sessionId && Date.now() - cached.sessionAt < SESSION_TTL_MS) {
+    return cached.sessionId;
+  }
+
+  let targetId = requestedTargetId;
+  if (!targetId) {
+    const result = assertNoEgoError(await browserEgo().listTabs());
+    const tabs = result?.tabs || result?.targetInfos || [];
+    const preferred = state.preferredTargetId
+      ? tabs.find((tab) => tab.targetId === state.preferredTargetId)
+      : null;
+    const active =
+      preferred || tabs.find((tab) => tab.active) || tabs[tabs.length - 1];
+    if (!active) {
+      throw new Error("no active tab to attach session");
+    }
+    targetId = active.targetId;
+  }
+
+  defaultTargetId = targetId;
+  const target = targetState(targetId);
+  if (target.sessionInflight) {
+    return target.sessionInflight;
+  }
+  target.sessionInflight = (async () => {
     try {
-      const result = assertNoEgoError(await browserEgo().listTabs());
-      const tabs = result?.tabs || result?.targetInfos || [];
-      const preferred = state.preferredTargetId
-        ? tabs.find((t) => t.targetId === state.preferredTargetId)
-        : null;
-      const active =
-        preferred || tabs.find((t) => t.active) || tabs[tabs.length - 1];
-      if (!active) {
-        throw new Error("no active tab to attach session");
-      }
-      const targetId = active.targetId;
-      if (targetId !== state.sessionTargetId || !state.sessionId) {
+      if (!target.sessionId) {
         const attached = await rawCdp(
           "Target.attachToTarget",
           { targetId, flatten: true },
           undefined,
         );
-        state.sessionId = attached.result?.sessionId || attached.sessionId;
-        state.sessionTargetId = targetId;
+        const sessionId = attached.result?.sessionId || attached.sessionId;
+        if (!sessionId) {
+          throw new Error("Target.attachToTarget returned no sessionId");
+        }
+        registerSession(targetId, sessionId);
       }
-      await enablePageEvents(state.sessionId);
-      state.sessionAt = Date.now();
-      return state.sessionId;
+      await enablePageEvents(target.sessionId);
+      target.sessionAt = Date.now();
+      // Keep the old singleton fields as a read-only compatibility mirror while
+      // existing helpers and tests migrate to target-scoped runtime state.
+      state.sessionId = target.sessionId;
+      state.sessionTargetId = targetId;
+      state.sessionAt = target.sessionAt;
+      return target.sessionId;
     } finally {
-      state.sessionInflight = null;
+      target.sessionInflight = null;
     }
   })();
-  return state.sessionInflight;
+  return target.sessionInflight;
 }
 
-export function invalidateSession() {
-  if (state.sessionId) {
-    pageEnabledSessions.delete(state.sessionId);
-    pendingDialogs.delete(state.sessionId);
+export function invalidateSession(targetId = undefined) {
+  if (targetId) {
+    clearTargetSession(targetId, { remove: true });
+    clearLegacySessionMirror(targetId);
+    return;
   }
-  state.sessionId = null;
-  state.sessionTargetId = null;
-  state.sessionAt = 0;
+  for (const knownTargetId of [...targetStates.keys()]) {
+    clearTargetSession(knownTargetId, { remove: true });
+  }
+  browserEvents.length = 0;
+  defaultTargetId = null;
+  clearLegacySessionMirror();
 }
 
 export function setPreferredTarget(targetId) {
@@ -154,25 +277,40 @@ export function clearPreferredTarget() {
   state.preferredTargetId = null;
 }
 
-export function drainBrowserEvents() {
-  const out = events.splice(0, events.length);
+export function drainBrowserEvents(sessionId = undefined) {
+  const targetId = sessionId
+    ? sessionTargets.get(sessionId)
+    : state.preferredTargetId || defaultTargetId;
+  const target = targetId ? targetStates.get(targetId) : undefined;
+  const out = browserEvents.splice(0, browserEvents.length);
+  if (target) out.push(...target.events.splice(0, target.events.length));
   return out;
 }
 
-export function pendingDialog(sessionId = state.sessionId) {
-  if (sessionId && pendingDialogs.has(sessionId)) {
-    return { ...pendingDialogs.get(sessionId) };
-  }
-  return null;
+export function pendingDialog(sessionId) {
+  const targetId = sessionId
+    ? sessionTargets.get(sessionId)
+    : state.preferredTargetId || defaultTargetId;
+  const dialog = targetId ? targetStates.get(targetId)?.pendingDialog : null;
+  return dialog ? { ...dialog } : null;
+}
+
+export function isNetworkDomainEnabled(sessionId) {
+  const targetId = sessionId ? sessionTargets.get(sessionId) : undefined;
+  return targetId
+    ? Boolean(targetStates.get(targetId)?.networkDomainEnabled)
+    : false;
 }
 
 async function enablePageEvents(sessionId) {
-  if (!sessionId || pageEnabledSessions.has(sessionId)) {
+  const targetId = sessionId ? sessionTargets.get(sessionId) : undefined;
+  const target = targetId ? targetStates.get(targetId) : undefined;
+  if (!target || target.pageEventsEnabled) {
     return;
   }
   try {
     await rawCdp("Page.enable", {}, sessionId);
-    pageEnabledSessions.add(sessionId);
+    target.pageEventsEnabled = true;
   } catch {
     // Dialog tracking is best-effort. Do not make all helpers fail on targets
     // that reject Page.enable, such as unusual internal pages.
@@ -218,30 +356,31 @@ function handleMessage(message) {
     data.method === "Target.targetDestroyed"
   ) {
     const sessionId = data.params?.sessionId || data.sessionId;
-    if (sessionId) {
-      pageEnabledSessions.delete(sessionId);
-      pendingDialogs.delete(sessionId);
+    const targetId =
+      (sessionId ? sessionTargets.get(sessionId) : undefined) ||
+      data.params?.targetId ||
+      data.params?.targetInfo?.targetId;
+    if (targetId) {
+      clearTargetSession(targetId, {
+        remove: data.method === "Target.targetDestroyed",
+      });
     }
-    const targetId = data.params?.targetId || data.params?.targetInfo?.targetId;
-    if (targetId && targetId === state.sessionTargetId) {
-      invalidateSession();
-    }
+  } else if (data.method === "Target.attachedToTarget") {
+    const sessionId = data.params?.sessionId;
+    const targetId = data.params?.targetInfo?.targetId;
+    if (sessionId && targetId) registerSession(targetId, sessionId);
   }
+  const sessionId = data.sessionId;
+  const targetId = sessionId ? sessionTargets.get(sessionId) : undefined;
+  const target = targetId ? targetStates.get(targetId) : undefined;
   if (data.method === "Page.javascriptDialogOpening") {
-    const sessionId = data.sessionId || state.sessionId;
-    if (sessionId) {
-      pendingDialogs.set(sessionId, data.params || {});
-    }
+    if (target) target.pendingDialog = data.params || {};
   } else if (data.method === "Page.javascriptDialogClosed") {
-    const sessionId = data.sessionId || state.sessionId;
-    if (sessionId) {
-      pendingDialogs.delete(sessionId);
-    }
+    if (target) target.pendingDialog = null;
   }
+  const events = target ? target.events : browserEvents;
   events.push(data);
-  if (events.length > MAX_BUFFERED_EVENTS) {
-    events.splice(0, events.length - MAX_BUFFERED_EVENTS);
-  }
+  capEvents(events);
 }
 
 export function browserSnapshotRefsToRefMap(refMap, refs = []) {

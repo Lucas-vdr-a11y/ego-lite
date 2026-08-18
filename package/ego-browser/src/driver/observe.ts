@@ -41,7 +41,8 @@ type CaptureScreenshotOptions = {
 };
 
 export async function drainEvents() {
-  return drainBrowserEvents();
+  const sessionId = isBrowserRuntime() ? await ensureSession() : undefined;
+  return drainBrowserEvents(sessionId);
 }
 
 export async function snapshot(options: SnapshotOptions = {}) {
@@ -111,10 +112,11 @@ export async function captureScreenshot(
       params.clip = { ...options.clip };
     }
   } else {
+    let sessionId;
     if (isBrowserRuntime()) {
-      await ensureSession();
+      sessionId = await ensureSession();
     }
-    if (!pendingDialog()) {
+    if (!pendingDialog(sessionId)) {
       const dpr = Number(await js("window.devicePixelRatio")) || 1;
       const cssScale = 1 / dpr;
       if (options.clip) {

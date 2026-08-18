@@ -162,13 +162,11 @@ function wrapCreateTab(ego: EgoRuntime) {
     const result = original.apply(this, args);
     if (result && typeof result.then === "function") {
       return result.then((value) => {
-        invalidateSession();
         const id = value?.targetId || value?.result?.targetId;
         if (id) setPreferredTarget(id);
         return value;
       });
     }
-    invalidateSession();
     return result;
   };
 }

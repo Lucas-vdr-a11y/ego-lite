@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { browserCdp } from "../dist/src/browser-runtime.js";
+import { browserCdp, drainBrowserEvents } from "../dist/src/browser-runtime.js";
 
 // Gap A: ensureSession() calls the raw listTabs binding to attach a session.
 // When the task is blocked it returns { error, error_code }; the result must
@@ -62,5 +62,60 @@ test("browserCdp rejects the in-flight request via onSendCDPMessageError", async
     );
   } finally {
     delete globalThis.ego;
+  }
+});
+
+test("CDP events are drained only by the target session that received them", async () => {
+  const previous = globalThis.ego;
+  let nextSession = 1;
+  const runtime = {
+    sendCDPMessage(payload) {
+      const request = JSON.parse(payload);
+      const result =
+        request.method === "Target.attachToTarget"
+          ? { sessionId: `session-${nextSession++}` }
+          : {};
+      queueMicrotask(() => {
+        runtime.onCDPMessage(JSON.stringify({ id: request.id, result }));
+      });
+    },
+    emit(sessionId, method, params = {}) {
+      runtime.onCDPMessage(JSON.stringify({ sessionId, method, params }));
+    },
+  };
+  globalThis.ego = runtime;
+
+  try {
+    const attachedA = await browserCdp("Target.attachToTarget", {
+      targetId: "target-a",
+      flatten: true,
+    });
+    const attachedB = await browserCdp("Target.attachToTarget", {
+      targetId: "target-b",
+      flatten: true,
+    });
+    const sessionA = attachedA.result.sessionId;
+    const sessionB = attachedB.result.sessionId;
+
+    runtime.emit(sessionA, "Network.requestWillBeSent", {
+      requestId: "request-a",
+    });
+
+    assert.deepEqual(
+      drainBrowserEvents(sessionB),
+      [],
+      "target B must not consume target A events",
+    );
+    assert.deepEqual(
+      drainBrowserEvents(sessionA).map((event) => event.params.requestId),
+      ["request-a"],
+      "target A retains its own event queue",
+    );
+  } finally {
+    if (previous === undefined) {
+      delete globalThis.ego;
+    } else {
+      globalThis.ego = previous;
+    }
   }
 });
