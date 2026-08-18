@@ -10,6 +10,7 @@ import {
 import { formatCliLogValue } from "./format.js";
 import {
   bufferOutput,
+  createRoundConsole,
   installLifecycleFlush,
   resetSink,
 } from "./output-sink.js";
@@ -81,6 +82,16 @@ export function installEgoSdk(
     enumerable: false,
   });
   installed.cliLog = cliLogFn;
+  Object.defineProperty(target, "console", {
+    value: createRoundConsole(
+      usingDefaultCliLog
+        ? undefined
+        : (line) => cliLogFn(line.endsWith("\n") ? line.slice(0, -1) : line),
+    ),
+    writable: true,
+    configurable: true,
+    enumerable: false,
+  });
   if (usingDefaultCliLog) {
     // SDK path: the host runs each heredoc in a fresh short-lived process and never
     // calls execute(), so reset the per-run sink and flush it on process teardown.

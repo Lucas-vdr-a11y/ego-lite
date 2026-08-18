@@ -6,7 +6,12 @@ import {
 
 import { formatCliLogValue } from "./format.js";
 import * as helpers from "./helpers.js";
-import { bufferOutput, flushSink, resetSink } from "./output-sink.js";
+import {
+  bufferOutput,
+  createRoundConsole,
+  flushSink,
+  resetSink,
+} from "./output-sink.js";
 
 type WritableLike = {
   write(chunk: string): unknown;
@@ -108,7 +113,11 @@ export async function runMain(options: RunMainOptions = {}) {
 async function execute(code: string, stdout: WritableLike) {
   resetSink();
   const context = await executionContext();
-  Object.assign(globalThis, context);
+  // Helpers remain globally visible for loaded agent modules, but console is a
+  // lexical round parameter so the CLI never replaces Node's process console.
+  const globalHelpers = { ...context };
+  delete globalHelpers.console;
+  Object.assign(globalThis, globalHelpers);
   const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
   const names = Object.keys(context);
   const values = Object.values(context);
@@ -135,6 +144,8 @@ export async function executionContext() {
     // once the script settles. Keeps the CLI path identical to the SDK path.
     bufferOutput(`${args.map(formatCliLogValue).join(" ")}\n`);
   };
+  // A lexical parameter shadows Node's global console without mutating it.
+  context.console = createRoundConsole();
   return context;
 }
 

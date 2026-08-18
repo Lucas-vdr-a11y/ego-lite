@@ -217,6 +217,18 @@ export function pageBasicOperationsCase() {
     assertIncludes(info.url, "page-api=first", "page.info reads its own URL");
     assert(info.w > 0 && info.h > 0, "page.info reports a usable viewport");
     assertEqual((await currentTab()).targetId, second.targetId, "metadata reads do not activate their page");
+    const baselineSnapshot = await first.snapshot({ diff: true });
+    assertIncludes(baselineSnapshot, 'page-api-first', "snapshot identifies its source Page");
+    assertIncludes(baselineSnapshot, 'space "' + taskName + '"', "snapshot identifies its task space");
+    assertIncludes(baselineSnapshot, "diff: full (baseline unavailable)", "first diff snapshot reports its full fallback");
+    await first.evaluate(() => {
+      const marker = document.createElement("p");
+      marker.textContent = "Snapshot diff marker";
+      document.body.append(marker);
+    });
+    const changedSnapshot = await first.snapshot({ diff: true });
+    assertIncludes(changedSnapshot, "diff: changes from previous snapshot", "second diff snapshot reports its baseline");
+    assertIncludes(changedSnapshot, "Snapshot diff marker", "snapshot diff contains the new page content");
     assertEqual(
       await first.evaluate("document.querySelector('h1').textContent"),
       "Helper e2e fixture",
@@ -316,6 +328,11 @@ export function pageBasicOperationsCase() {
       "page.screenshot activates the page it captures"
     );
 
+    const navigationReceipt = await first.click("#nav-link");
+    assertIncludes(navigationReceipt.navigation.from, "page-api=first", "click receipt reports the source URL");
+    assertIncludes(navigationReceipt.navigation.to, "/nav-target", "click receipt reports the destination URL");
+    assertEqual(navigationReceipt.domChanged, true, "navigation is reported as a document change");
+
     await first.close();
     await second.close();
   `;
@@ -342,7 +359,9 @@ export function pageActionsAndPopupCase() {
     });
 
     assertEqual((await currentTab()).targetId, budgetFiller.targetId, "the budget page starts active");
-    assertEqual(await source.fill("#text-input", "page-filled").then(() => source.evaluate("document.querySelector('#text-input').value")), "page-filled", "page.fill writes into the addressed page");
+    const fillReceipt = await source.fill("#text-input", "page-filled");
+    assertEqual(fillReceipt.domChanged, true, "page.fill reports its form-state change");
+    assertEqual(await source.evaluate("document.querySelector('#text-input').value"), "page-filled", "page.fill writes into the addressed page");
     assertEqual((await currentTab()).targetId, source.targetId, "page.fill activates and keeps its page current");
 
     await source.evaluate((popupUrl) => {

@@ -1,3 +1,5 @@
+import { formatCliLogValue } from "./format.js";
+
 /**
  * Output sink for the agent-facing heredoc runtime.
  *
@@ -21,6 +23,8 @@
 
 type WritableLike = { write(chunk: string): unknown };
 
+export type RoundConsole = Pick<Console, "log" | "info" | "warn" | "error">;
+
 let buffer: string[] = [];
 let hardStopMessage: string | null = null;
 let flushed = false;
@@ -29,6 +33,22 @@ let lifecycleHooked = false;
 /** Buffer one already-formatted cliLog chunk (the trailing newline is included). */
 export function bufferOutput(chunk: string): void {
   buffer.push(chunk);
+}
+
+/** Create the console object injected into one agent round. */
+export function createRoundConsole(
+  writeLine: (line: string) => void = bufferOutput,
+): RoundConsole {
+  const append = (prefix: string, args: unknown[]) => {
+    const body = args.map(formatCliLogValue).join(" ");
+    writeLine(`${prefix}${body}\n`);
+  };
+  return Object.freeze({
+    log: (...args: unknown[]) => append("", args),
+    info: (...args: unknown[]) => append("", args),
+    warn: (...args: unknown[]) => append("[warn] ", args),
+    error: (...args: unknown[]) => append("[error] ", args),
+  });
 }
 
 /**

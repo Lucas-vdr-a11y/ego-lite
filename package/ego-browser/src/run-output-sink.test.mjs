@@ -85,6 +85,37 @@ test("a clean run flushes buffered cliLog output in order", async () => {
   assert.equal(result.stdout, "one\ntwo\n");
 });
 
+test("round console methods share the buffered output channel", async () => {
+  const result = await runScript(`
+    console.log("plain", { value: 1 });
+    console.info("info");
+    console.warn("careful");
+    console.error("broken");
+    cliLog("legacy");
+  `);
+
+  assert.equal(result.exitCode, 0);
+  assert.equal(
+    result.stdout,
+    'plain {"value":1}\ninfo\n[warn] careful\n[error] broken\nlegacy\n',
+  );
+});
+
+test("a hard stop discards console output together with cliLog output", async () => {
+  const ego = hardStopEgo("EGO_TASK_SPACE_USER_IN_CONTROL");
+  const result = await runScript(
+    `
+      console.log("before");
+      try { await listTaskSpaces(); } catch {}
+      console.warn("after");
+    `,
+    ego,
+  );
+
+  assert.match(result.stdout, /taken control of this task space/);
+  assert.doesNotMatch(result.stdout, /before|after/);
+});
+
 test("a swallowed user-control hard stop discards all output and prints the guidance once", async () => {
   const ego = hardStopEgo("EGO_TASK_SPACE_USER_IN_CONTROL");
   const result = await runScript(

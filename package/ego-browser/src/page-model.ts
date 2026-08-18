@@ -78,6 +78,10 @@ type PageGotoOptions = {
   timeout?: number;
 };
 
+type PageSnapshotOptions = Record<string, unknown> & {
+  diff?: boolean;
+};
+
 type CdpOptions = {
   timeout?: number;
 };
@@ -139,6 +143,7 @@ type OperationGate = {
 };
 
 type LedgerPort = {
+  read(spaceId: number): Promise<PageLedger>;
   addPage(
     spaceId: number,
     targetId: string,
@@ -163,6 +168,7 @@ type RuntimeTab = {
 type PageModelServices = {
   ledger: LedgerPort;
   pageRefs: PageRefRegistry;
+  snapshotBaselines: Map<string, string>;
   gate: OperationGate;
   createTab(url: string): Promise<string>;
   listTabs(): Promise<RuntimeTab[]>;
@@ -201,6 +207,8 @@ export type PageInventoryItem = {
 
 export type PageActionReceipt = {
   popups?: Array<{ label: string; targetId: string }>;
+  navigation?: { from: string; to: string };
+  domChanged?: true;
 };
 
 type MouseActionRunner = (
@@ -341,6 +349,7 @@ export class PageBudgetError extends Error {
 
 let defaultLedger: PageLedgerStore | undefined;
 const defaultPageRefs = new PageRefRegistry();
+const defaultSnapshotBaselines = new Map<string, string>();
 const unmanagedPageConstructorToken = Symbol("UnmanagedPage");
 
 const defaultGate: OperationGate = {
@@ -351,6 +360,7 @@ const defaultGate: OperationGate = {
 const baseDefaultServices: Omit<PageModelServices, "ledger" | "pageBudget"> = {
   gate: defaultGate,
   pageRefs: defaultPageRefs,
+  snapshotBaselines: defaultSnapshotBaselines,
   async createTab(url) {
     const result = assertNoEgoError(
       await browserEgo().createTab(url),
@@ -633,6 +643,7 @@ export class Page {
   readonly mouse: PageMouse;
   readonly keyboard: PageKeyboard;
   readonly #services: PageModelServices;
+  readonly #spaceName: string;
   #targetId?: string;
   #openedBy?: PageOrigin;
   #closed = false;
@@ -645,6 +656,7 @@ export class Page {
   ) {
     this.label = label;
     this.spaceId = task.id;
+    this.#spaceName = task.name;
     this.#services = services;
     this.#targetId = entry?.targetId;
     this.#openedBy = entry?.openedBy;
@@ -669,13 +681,17 @@ export class Page {
     return this.#openedBy;
   }
 
-  async goto(url: string, options: PageGotoOptions = {}): Promise<any> {
+  async goto(
+    url: string,
+    options: PageGotoOptions = {},
+  ): Promise<PageActionReceipt> {
     assertUrl(url);
     const timeoutMs = options.timeout ?? 15_000;
     assertTimeout(timeoutMs);
     const page = await this.#resolve();
-    return this.#services.gate.withPage(page, async ({ sessionId }) => {
-      try {
+    const { receipt } = await this.#runActionBoundary(
+      page,
+      async (sessionId) => {
         const navigation = await this.#services.cdp(
           "Page.navigate",
           { url },
@@ -686,14 +702,19 @@ export class Page {
           throw new Error(`page.goto failed: ${navigation.errorText}`);
         }
         await waitForReadyState(this.#services, sessionId, timeoutMs);
-        return navigation;
-      } finally {
-        this.#services.pageRefs.clear(page.targetId);
-      }
-    });
+      },
+    );
+    return receipt;
   }
 
-  async snapshot(options: Record<string, unknown> = {}): Promise<string> {
+  async snapshot(options: PageSnapshotOptions = {}): Promise<string> {
+    if (!options || typeof options !== "object" || Array.isArray(options)) {
+      throw new TypeError("page.snapshot options must be an object");
+    }
+    const { diff = false, ...nativeOptions } = options;
+    if (typeof diff !== "boolean") {
+      throw new TypeError("page.snapshot diff must be a boolean");
+    }
     const page = await this.#resolve();
     return this.#services.gate.withPage(page, async () => {
       await this.#activate(page.targetId);
@@ -701,10 +722,23 @@ export class Page {
         scope: "full_page",
         includeActionMarks: true,
         includeStableLocator: true,
-        ...options,
+        ...nativeOptions,
       });
       this.#services.pageRefs.replace(page.targetId, result?.refs || []);
-      return result?.content || "";
+      const content = result?.content || "";
+      const previous = this.#services.snapshotBaselines.get(page.targetId);
+      this.#services.snapshotBaselines.set(page.targetId, content);
+      const projection =
+        diff && previous !== undefined
+          ? snapshotLineDiff(previous, content)
+          : content;
+      const diffStatus = !diff
+        ? undefined
+        : previous === undefined
+          ? "full (baseline unavailable)"
+          : "changes from previous snapshot";
+      const header = await this.#snapshotHeader(page, diffStatus);
+      return `${header}\n${projection}`;
     });
   }
 
@@ -956,6 +990,7 @@ export class Page {
       if (!live) {
         await this.#services.ledger.closePage(this.spaceId, this.label);
         this.#services.pageRefs.clear(page.targetId);
+        this.#services.snapshotBaselines.delete(page.targetId);
         this.#closed = true;
         throw new Error(`page ${this.label} was closed`);
       }
@@ -970,6 +1005,7 @@ export class Page {
       }
       this.#services.invalidateSession(page.targetId);
       this.#services.pageRefs.clear(page.targetId);
+      this.#services.snapshotBaselines.delete(page.targetId);
       await this.#services.ledger.closePage(this.spaceId, this.label);
       this.#closed = true;
     });
@@ -1053,6 +1089,10 @@ export class Page {
         const before = new Set(
           (await this.#services.listTabs()).map((tab) => tab.targetId),
         );
+        const observation = await startActionObservation(
+          this.#services,
+          sessionId,
+        );
         let actionError: unknown;
         let value: T | undefined;
         try {
@@ -1065,6 +1105,11 @@ export class Page {
         // settle covers native tab-list propagation without turning this into a
         // navigation wait or silently changing the page's active state.
         await this.#services.sleep(50);
+        const observedAfter = await finishActionObservation(
+          this.#services,
+          sessionId,
+          observation,
+        );
         let popupError: unknown;
         const popups: Array<{ label: string; targetId: string }> = [];
         try {
@@ -1086,7 +1131,7 @@ export class Page {
         if (popupError) throw popupError;
         return {
           value: value as T,
-          receipt: popups.length > 0 ? { popups } : {},
+          receipt: actionReceipt(observation, observedAfter, popups),
         };
       } finally {
         this.#services.pageRefs.clear(page.targetId);
@@ -1114,10 +1159,239 @@ export class Page {
     return refs;
   }
 
+  async #snapshotHeader(
+    page: PageTarget,
+    diffStatus?: string,
+  ): Promise<string> {
+    try {
+      const [tabs, ledger] = await Promise.all([
+        this.#services.listTabs(),
+        this.#services.ledger.read(this.spaceId),
+      ]);
+      return snapshotSourceHeader({
+        currentLabel: this.label,
+        currentTargetId: page.targetId,
+        diffStatus,
+        ledger,
+        pageBudget: this.#services.pageBudget,
+        spaceId: this.spaceId,
+        spaceName: this.#spaceName,
+        tabs,
+      });
+    } catch {
+      const diffPart = diffStatus ? ` | diff: ${diffStatus}` : "";
+      return `[${this.label} | space ${JSON.stringify(this.#spaceName)}(${this.spaceId})${diffPart}]`;
+    }
+  }
+
   async #activate(targetId: string): Promise<void> {
     await this.#services.cdp("Target.activateTarget", { targetId });
     this.#services.setPreferredTarget(targetId);
   }
+}
+
+type ActionObservation = {
+  id: string;
+  url: string;
+  documentToken: string;
+  controlHash: number;
+  mutations?: number;
+};
+
+async function startActionObservation(
+  services: PageModelServices,
+  sessionId: string,
+): Promise<ActionObservation | undefined> {
+  const id = `action_${services.now()}_${Math.random().toString(16).slice(2)}`;
+  try {
+    const response = await services.cdp(
+      "Runtime.evaluate",
+      {
+        expression: `(() => {
+          const id = ${JSON.stringify(id)};
+          const hashControls = () => {
+            let hash = 2166136261;
+            const values = Array.from(document.querySelectorAll('input,textarea,select'))
+              .map((element) => [element.value, element.checked, element.selectedIndex].join(':'))
+              .join('|');
+            for (let index = 0; index < values.length; index += 1) {
+              hash = Math.imul(hash ^ values.charCodeAt(index), 16777619);
+            }
+            return hash >>> 0;
+          };
+          const probe = { mutations: 0 };
+          probe.observer = new MutationObserver((records) => {
+            probe.mutations += records.length;
+          });
+          if (document.documentElement) {
+            probe.observer.observe(document.documentElement, {
+              attributes: true,
+              childList: true,
+              characterData: true,
+              subtree: true,
+            });
+          }
+          globalThis.__egoBrowserActionProbes ||= Object.create(null);
+          globalThis.__egoBrowserActionProbes[id] = probe;
+          return {
+            url: location.href,
+            documentToken: String(performance.timeOrigin),
+            controlHash: hashControls(),
+          };
+        })()`,
+        returnByValue: true,
+        awaitPromise: false,
+      },
+      sessionId,
+    );
+    const value = response?.result?.value;
+    if (!value || typeof value.url !== "string") return undefined;
+    return { id, ...value };
+  } catch {
+    // Receipts are feedback only. A page that blocks observation must not make
+    // the requested action fail.
+    return undefined;
+  }
+}
+
+async function finishActionObservation(
+  services: PageModelServices,
+  sessionId: string,
+  before: ActionObservation | undefined,
+): Promise<ActionObservation | undefined> {
+  if (!before) return undefined;
+  try {
+    const response = await services.cdp(
+      "Runtime.evaluate",
+      {
+        expression: `(() => {
+          const id = ${JSON.stringify(before.id)};
+          const hashControls = () => {
+            let hash = 2166136261;
+            const values = Array.from(document.querySelectorAll('input,textarea,select'))
+              .map((element) => [element.value, element.checked, element.selectedIndex].join(':'))
+              .join('|');
+            for (let index = 0; index < values.length; index += 1) {
+              hash = Math.imul(hash ^ values.charCodeAt(index), 16777619);
+            }
+            return hash >>> 0;
+          };
+          const probes = globalThis.__egoBrowserActionProbes;
+          const probe = probes?.[id];
+          let mutations = 0;
+          if (probe) {
+            mutations = probe.mutations + probe.observer.takeRecords().length;
+            probe.observer.disconnect();
+            delete probes[id];
+          }
+          return {
+            url: location.href,
+            documentToken: String(performance.timeOrigin),
+            controlHash: hashControls(),
+            mutations,
+          };
+        })()`,
+        returnByValue: true,
+        awaitPromise: false,
+      },
+      sessionId,
+    );
+    const value = response?.result?.value;
+    if (!value || typeof value.url !== "string") return undefined;
+    return { id: before.id, ...value };
+  } catch {
+    return undefined;
+  }
+}
+
+function actionReceipt(
+  before: ActionObservation | undefined,
+  after: ActionObservation | undefined,
+  popups: Array<{ label: string; targetId: string }>,
+): PageActionReceipt {
+  const receipt: PageActionReceipt = {};
+  if (before && after) {
+    const navigated =
+      before.url !== after.url || before.documentToken !== after.documentToken;
+    if (navigated) {
+      receipt.navigation = { from: before.url, to: after.url };
+    }
+    if (
+      navigated ||
+      (after.mutations ?? 0) > 0 ||
+      before.controlHash !== after.controlHash
+    ) {
+      receipt.domChanged = true;
+    }
+  }
+  if (popups.length > 0) receipt.popups = popups;
+  return receipt;
+}
+
+function snapshotSourceHeader(input: {
+  currentLabel: string;
+  currentTargetId: string;
+  diffStatus?: string;
+  ledger: PageLedger;
+  pageBudget: number;
+  spaceId: number;
+  spaceName: string;
+  tabs: RuntimeTab[];
+}): string {
+  const tabsByTarget = new Map(input.tabs.map((tab) => [tab.targetId, tab]));
+  const managedTargets = new Set(
+    Object.values(input.ledger.pages).map((page) => page.targetId),
+  );
+  const current = tabsByTarget.get(input.currentTargetId);
+  const currentTitle = compactPageTitle(
+    current?.title || current?.url || "untitled",
+  );
+  const pages = Object.entries(input.ledger.pages).map(([label, page]) => {
+    const tab = tabsByTarget.get(page.targetId);
+    const title = compactPageTitle(tab?.title || tab?.url || "untitled");
+    return `${label}${page.targetId === input.currentTargetId ? "*" : ""} ${JSON.stringify(title)}`;
+  });
+  const untracked = input.tabs.filter(
+    (tab) => !managedTargets.has(tab.targetId),
+  ).length;
+  const managed = pages.length;
+  const budget =
+    managed >= input.pageBudget - 1
+      ? ` | budget ${managed}/${input.pageBudget}`
+      : "";
+  const diff = input.diffStatus ? ` | diff: ${input.diffStatus}` : "";
+  const inventory = pages.length > 0 ? ` — ${pages.join(", ")}` : "";
+  return `[${input.currentLabel} ${JSON.stringify(currentTitle)} | space ${JSON.stringify(input.spaceName)}(${input.spaceId}): ${managed} managed, ${untracked} untracked${inventory}${budget}${diff}]`;
+}
+
+function snapshotLineDiff(previous: string, current: string): string {
+  if (previous === current) return "[no snapshot changes]";
+  const oldLines = previous.split("\n");
+  const newLines = current.split("\n");
+  let prefix = 0;
+  while (
+    prefix < oldLines.length &&
+    prefix < newLines.length &&
+    oldLines[prefix] === newLines[prefix]
+  ) {
+    prefix += 1;
+  }
+  let suffix = 0;
+  while (
+    suffix < oldLines.length - prefix &&
+    suffix < newLines.length - prefix &&
+    oldLines[oldLines.length - 1 - suffix] ===
+      newLines[newLines.length - 1 - suffix]
+  ) {
+    suffix += 1;
+  }
+  const removed = oldLines.slice(prefix, oldLines.length - suffix);
+  const added = newLines.slice(prefix, newLines.length - suffix);
+  return [
+    `@@ line ${prefix + 1} @@`,
+    ...removed.map((line) => `-${line}`),
+    ...added.map((line) => `+${line}`),
+  ].join("\n");
 }
 
 async function evaluateInSession<T>(

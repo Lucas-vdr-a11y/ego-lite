@@ -27,9 +27,11 @@ function createFixture(rootDir) {
   let popupOnNextClick = null;
   let timeoutNextMouseDispatch = false;
   let rejectNextClickPoint = false;
+  let navigateOnNextClickUrl = null;
   let nowMs = 1_000;
   const pageEvents = new Map();
   const networkSessions = new Set();
+  const snapshotOptions = [];
 
   function openPendingPopup() {
     if (!popupOnNextClick) return;
@@ -57,6 +59,7 @@ function createFixture(rootDir) {
   const services = {
     gate,
     pageRefs: new PageRefRegistry(),
+    snapshotBaselines: new Map(),
     async createTab(url) {
       assert.equal(selectedSpace, 7);
       const targetId = `target-${nextTarget++}`;
@@ -85,6 +88,19 @@ function createFixture(rootDir) {
       if (method === "Runtime.evaluate") {
         const targetId = sessionId?.slice("session:".length);
         const tab = tabs.get(targetId);
+        if (params.expression.includes("__egoBrowserActionProbes")) {
+          return {
+            result: {
+              type: "object",
+              value: {
+                url: tab.url,
+                documentToken: `document:${tab.url}`,
+                controlHash: "controls",
+                mutations: 0,
+              },
+            },
+          };
+        }
         if (params.expression === "globalThis") {
           return {
             result: {
@@ -233,7 +249,15 @@ function createFixture(rootDir) {
           timeoutNextMouseDispatch = false;
           throw new Error("CDP request timed out: Input.dispatchMouseEvent");
         }
-        if (params.type === "mouseReleased") openPendingPopup();
+        if (params.type === "mouseReleased") {
+          if (navigateOnNextClickUrl) {
+            const targetId = sessionId.slice("session:".length);
+            tabs.get(targetId).url = navigateOnNextClickUrl;
+            tabs.get(targetId).title = navigateOnNextClickUrl;
+            navigateOnNextClickUrl = null;
+          }
+          openPendingPopup();
+        }
         return {};
       }
       if (method === "Target.activateTarget") {
@@ -247,9 +271,10 @@ function createFixture(rootDir) {
       }
       throw new Error(`unexpected CDP method ${method}`);
     },
-    async snapshot() {
+    async snapshot(options = {}) {
       const tab = tabs.get(activeTarget);
       calls.push(["snapshot", activeTarget]);
+      snapshotOptions.push(options);
       return {
         content: `snapshot:${tab?.url}`,
         refs: [
@@ -294,6 +319,7 @@ function createFixture(rootDir) {
     gate,
     rootDir,
     services,
+    snapshotOptions,
     tabs,
     openPopupOnNextClick(url) {
       popupOnNextClick = url;
@@ -303,6 +329,9 @@ function createFixture(rootDir) {
     },
     rejectNextClickPoint() {
       rejectNextClickPoint = true;
+    },
+    navigateOnNextClick(url) {
+      navigateOnNextClickUrl = url;
     },
     emitPageEvent(targetId, method, params = {}) {
       const sessionId = `session:${targetId}`;
@@ -337,7 +366,7 @@ test("a page label restores in a new round and goto reuses its target", async ()
 
     const secondRound = taskForRound(fixture, "round-b");
     const restored = secondRound.page("p1");
-    await restored.goto("https://example.test/second");
+    const receipt = await restored.goto("https://example.test/second");
 
     assert.equal(restored.targetId, "target-1");
     assert.equal(fixture.tabs.size, 1, "goto must not create a second tab");
@@ -345,9 +374,16 @@ test("a page label restores in a new round and goto reuses its target", async ()
       fixture.tabs.get("target-1").url,
       "https://example.test/second",
     );
-    assert.equal(
+    assert.deepEqual(receipt, {
+      navigation: {
+        from: "https://example.test/first",
+        to: "https://example.test/second",
+      },
+      domChanged: true,
+    });
+    assert.match(
       await restored.snapshot(),
-      "snapshot:https://example.test/second",
+      /\[p1 .*space "research"\(7\).*\]\nsnapshot:https:\/\/example\.test\/second/,
     );
   });
 });
@@ -411,8 +447,33 @@ test("snapshot activates the addressed page, not whichever tab was current", asy
     await task.newPage("https://example.test/second");
 
     assert.equal(fixture.activeTarget(), "target-2");
-    assert.equal(await first.snapshot(), "snapshot:https://example.test/first");
+    assert.match(
+      await first.snapshot(),
+      /\[p1 .*space "research"\(7\).*\]\nsnapshot:https:\/\/example\.test\/first/,
+    );
     assert.equal(fixture.activeTarget(), "target-1");
+  });
+});
+
+test("snapshot reports its source and returns a line diff after the baseline", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a");
+    const page = await task.newPage("https://example.test/before");
+
+    const first = await page.snapshot({ diff: true });
+    assert.match(first, /diff: full \(baseline unavailable\)/);
+    assert.match(first, /snapshot:https:\/\/example\.test\/before/);
+
+    await page.goto("https://example.test/after");
+    const second = await page.snapshot({ diff: true });
+    assert.match(second, /diff: changes from previous snapshot/);
+    assert.match(second, /-snapshot:https:\/\/example\.test\/before/);
+    assert.match(second, /\+snapshot:https:\/\/example\.test\/after/);
+    assert.equal(
+      Object.hasOwn(fixture.snapshotOptions.at(-1), "diff"),
+      false,
+      "diff is a JS option and must not leak into the native snapshot call",
+    );
   });
 });
 
@@ -669,6 +730,22 @@ test("Page fill uses its target session and reports no popup when none opened", 
       "target-1",
       "fill must leave its Page active",
     );
+  });
+});
+
+test("Page action receipts report navigation and obvious document changes", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a");
+    const page = await task.newPage("https://example.test/before");
+    fixture.navigateOnNextClick("https://example.test/after");
+
+    assert.deepEqual(await page.click("#navigate"), {
+      navigation: {
+        from: "https://example.test/before",
+        to: "https://example.test/after",
+      },
+      domChanged: true,
+    });
   });
 });
 
@@ -1145,9 +1222,9 @@ test("adopt turns a live untracked page into a managed page", async () => {
     assert.equal(adopted.label, "notes");
     assert.equal(adopted.targetId, "target-user");
     assert.equal(adopted.openedBy, "unknown");
-    assert.equal(
+    assert.match(
       await adopted.snapshot(),
-      "snapshot:https://example.test/user",
+      /\[notes .*space "research"\(7\).*\]\nsnapshot:https:\/\/example\.test\/user/,
     );
     assert.deepEqual(
       (await task.listPages()).map(({ label, openedBy }) => ({
