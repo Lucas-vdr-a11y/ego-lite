@@ -29,6 +29,17 @@ export function createNativePlaywrightTaskSpaceConnector() {
     // when the user drags the browser window to a display with a different one.
     prepareSession: async (session) => {
       await syncCssPixelScreenshots(session);
+      // Remove Playwright-injected globals that bot-detection scripts check for.
+      // Safe because this project does not use exposeFunction/exposeBinding,
+      // which are the only consumers of __playwright__binding__.
+      await session.context.addInitScript(() => {
+        delete (window as any).__pwInitScripts;
+        delete (window as any).__playwright__binding__;
+      });
+      await session.page.evaluate(() => {
+        delete (window as any).__pwInitScripts;
+        delete (window as any).__playwright__binding__;
+      });
     },
   });
 }
