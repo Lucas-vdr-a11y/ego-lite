@@ -13,10 +13,21 @@ import {
   type CaptureScreenshotOptions,
 } from "./driver/observe.js";
 import {
+  clickPointInPage,
   clickInPage,
+  dragAndDropInPage,
   fillInPage,
+  hoverInPage,
+  mouseButtonInPage,
+  mouseButtonMask,
+  moveMouseInPage,
+  wheelInPage,
   type PageClickOptions,
+  type PageDragAndDropOptions,
   type PageFillOptions,
+  type PageHoverOptions,
+  type PageMouseButtonOptions,
+  type PageMouseClickOptions,
 } from "./driver/page-actions.js";
 import { assertNoEgoError } from "./ego-errors.js";
 import {
@@ -171,6 +182,86 @@ export type PageInventoryItem = {
 export type PageActionReceipt = {
   popups?: Array<{ label: string; targetId: string }>;
 };
+
+type MouseActionRunner = (
+  operation: (services: PageModelServices, sessionId: string) => Promise<void>,
+) => Promise<PageActionReceipt>;
+
+/** Page-scoped mouse state and CDP Input primitives. */
+export class PageMouse {
+  readonly #run: MouseActionRunner;
+  #x = 0;
+  #y = 0;
+  #buttons = 0;
+
+  constructor(run: MouseActionRunner) {
+    this.#run = run;
+  }
+
+  async click(
+    x: number,
+    y: number,
+    options: PageMouseClickOptions = {},
+  ): Promise<PageActionReceipt> {
+    const receipt = await this.#run((services, sessionId) =>
+      clickPointInPage(services, sessionId, x, y, options),
+    );
+    this.#x = x;
+    this.#y = y;
+    return receipt;
+  }
+
+  async move(x: number, y: number): Promise<PageActionReceipt> {
+    const receipt = await this.#run((services, sessionId) =>
+      moveMouseInPage(services, sessionId, x, y, this.#buttons),
+    );
+    this.#x = x;
+    this.#y = y;
+    return receipt;
+  }
+
+  async down(options: PageMouseButtonOptions = {}): Promise<PageActionReceipt> {
+    const button = options.button ?? "left";
+    const nextButtons = this.#buttons | mouseButtonMask(button);
+    const receipt = await this.#run((services, sessionId) =>
+      mouseButtonInPage(
+        services,
+        sessionId,
+        "mousePressed",
+        this.#x,
+        this.#y,
+        nextButtons,
+        options,
+      ).then(() => undefined),
+    );
+    this.#buttons = nextButtons;
+    return receipt;
+  }
+
+  async up(options: PageMouseButtonOptions = {}): Promise<PageActionReceipt> {
+    const button = options.button ?? "left";
+    const nextButtons = this.#buttons & ~mouseButtonMask(button);
+    const receipt = await this.#run((services, sessionId) =>
+      mouseButtonInPage(
+        services,
+        sessionId,
+        "mouseReleased",
+        this.#x,
+        this.#y,
+        nextButtons,
+        options,
+      ).then(() => undefined),
+    );
+    this.#buttons = nextButtons;
+    return receipt;
+  }
+
+  async wheel(deltaX: number, deltaY: number): Promise<PageActionReceipt> {
+    return this.#run((services, sessionId) =>
+      wheelInPage(services, sessionId, this.#x, this.#y, deltaX, deltaY),
+    );
+  }
+}
 
 export class PageBudgetError extends Error {
   readonly code = "EGO_PAGE_BUDGET_REACHED";
@@ -457,6 +548,7 @@ export class UnmanagedPage {
 export class Page {
   readonly label: string;
   readonly spaceId: number;
+  readonly mouse: PageMouse;
   readonly #services: PageModelServices;
   #targetId?: string;
   #openedBy?: PageOrigin;
@@ -473,6 +565,9 @@ export class Page {
     this.#services = services;
     this.#targetId = entry?.targetId;
     this.#openedBy = entry?.openedBy;
+    this.mouse = new PageMouse((operation) =>
+      this.#runRawAction((sessionId) => operation(this.#services, sessionId)),
+    );
   }
 
   get targetId(): string | undefined {
@@ -600,6 +695,46 @@ export class Page {
     );
   }
 
+  async dblclick(
+    selector: string,
+    options: Omit<PageClickOptions, "clickCount"> = {},
+  ): Promise<PageActionReceipt> {
+    return this.#runAction(selector, (sessionId, refMap) =>
+      clickInPage(this.#services, sessionId, refMap, selector, {
+        ...options,
+        clickCount: 2,
+      }),
+    );
+  }
+
+  async hover(
+    selector: string,
+    options: PageHoverOptions = {},
+  ): Promise<PageActionReceipt> {
+    return this.#runAction(selector, (sessionId, refMap) =>
+      hoverInPage(this.#services, sessionId, refMap, selector, options),
+    );
+  }
+
+  async dragAndDrop(
+    sourceSelector: string,
+    targetSelector: string,
+    options: PageDragAndDropOptions = {},
+  ): Promise<PageActionReceipt> {
+    return this.#runAction(
+      [sourceSelector, targetSelector],
+      (sessionId, refMap) =>
+        dragAndDropInPage(
+          this.#services,
+          sessionId,
+          refMap,
+          sourceSelector,
+          targetSelector,
+          options,
+        ),
+    );
+  }
+
   async fill(
     selector: string,
     value: string,
@@ -607,6 +742,41 @@ export class Page {
   ): Promise<PageActionReceipt> {
     return this.#runAction(selector, (sessionId, refMap) =>
       fillInPage(this.#services, sessionId, refMap, selector, value, options),
+    );
+  }
+
+  async scrollBy(
+    deltaY: number,
+    options: { deltaX?: number; behavior?: ScrollBehavior } = {},
+  ): Promise<{ x: number; y: number }> {
+    if (!Number.isFinite(deltaY) || !Number.isFinite(options.deltaX ?? 0)) {
+      throw new TypeError("page.scrollBy requires finite pixel deltas");
+    }
+    if (
+      options.behavior !== undefined &&
+      !["auto", "instant", "smooth"].includes(options.behavior)
+    ) {
+      throw new TypeError(`page.scrollBy received unsupported behavior`);
+    }
+    return this.#runValueAction((sessionId) =>
+      evaluateInSession<{ x: number; y: number }>(
+        this.#services,
+        sessionId,
+        function (input) {
+          window.scrollBy({
+            left: input.deltaX,
+            top: input.deltaY,
+            behavior: input.behavior,
+          });
+          return { x: window.scrollX, y: window.scrollY };
+        },
+        true,
+        {
+          deltaX: options.deltaX ?? 0,
+          deltaY,
+          behavior: options.behavior ?? "auto",
+        },
+      ),
     );
   }
 
@@ -674,20 +844,51 @@ export class Page {
   }
 
   async #runAction(
-    selector: string,
+    selector: string | string[],
     operation: (sessionId: string, refMap: RefMap) => Promise<void>,
   ): Promise<PageActionReceipt> {
     const page = await this.#resolve();
+    const selectors = Array.isArray(selector) ? selector : [selector];
+    const { receipt } = await this.#runActionBoundary(
+      page,
+      async (sessionId) => {
+        const refMap = await this.#refMapForAction(page, ...selectors);
+        await operation(sessionId, refMap);
+      },
+    );
+    return receipt;
+  }
+
+  async #runRawAction(
+    operation: (sessionId: string) => Promise<void>,
+  ): Promise<PageActionReceipt> {
+    const page = await this.#resolve();
+    const { receipt } = await this.#runActionBoundary(page, operation);
+    return receipt;
+  }
+
+  async #runValueAction<T>(
+    operation: (sessionId: string) => Promise<T>,
+  ): Promise<T> {
+    const page = await this.#resolve();
+    const { value } = await this.#runActionBoundary(page, operation);
+    return value;
+  }
+
+  async #runActionBoundary<T>(
+    page: PageTarget,
+    operation: (sessionId: string) => Promise<T>,
+  ): Promise<{ value: T; receipt: PageActionReceipt }> {
     return this.#services.gate.withPage(page, async ({ sessionId }) => {
       await this.#activate(page.targetId);
       try {
-        const refMap = await this.#refMapForAction(page, selector);
         const before = new Set(
           (await this.#services.listTabs()).map((tab) => tab.targetId),
         );
         let actionError: unknown;
+        let value: T | undefined;
         try {
-          await operation(sessionId, refMap);
+          value = await operation(sessionId);
         } catch (error) {
           actionError = error;
         }
@@ -715,17 +916,26 @@ export class Page {
 
         if (actionError) throw actionError;
         if (popupError) throw popupError;
-        return popups.length > 0 ? { popups } : {};
+        return {
+          value: value as T,
+          receipt: popups.length > 0 ? { popups } : {},
+        };
       } finally {
         this.#services.pageRefs.clear(page.targetId);
       }
     });
   }
 
-  async #refMapForAction(page: PageTarget, selector: string): Promise<RefMap> {
+  async #refMapForAction(
+    page: PageTarget,
+    ...selectors: string[]
+  ): Promise<RefMap> {
     let refs = this.#services.pageRefs.forTarget(page.targetId);
-    const refId = parseRef(selector);
-    if (!refId || refs.get(refId)) return refs;
+    const missingRef = selectors.some((selector) => {
+      const refId = parseRef(selector);
+      return Boolean(refId && !refs.get(refId));
+    });
+    if (!missingRef) return refs;
 
     const result = await this.#services.snapshot({
       scope: "full_page",

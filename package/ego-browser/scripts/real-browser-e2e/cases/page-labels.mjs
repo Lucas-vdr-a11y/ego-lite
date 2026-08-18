@@ -282,6 +282,74 @@ export function pageActionsAndPopupCase() {
     assertEqual(await source.fill("#text-input", "page-filled").then(() => source.evaluate("document.querySelector('#text-input').value")), "page-filled", "page.fill writes into the addressed page");
     assertEqual((await currentTab()).targetId, source.targetId, "page.fill activates and keeps its page current");
 
+    await source.evaluate((popupUrl) => {
+      const area = document.createElement("div");
+      area.innerHTML = String.raw\`
+        <button id="page-dblclick" style="position:fixed;left:120px;top:20px">Double</button>
+        <button id="page-hover" style="position:fixed;left:220px;top:20px">Hover</button>
+        <div id="page-drag-source" style="position:fixed;left:120px;top:80px;width:40px;height:40px;background:red"></div>
+        <div id="page-drag-target" style="position:fixed;left:240px;top:80px;width:40px;height:40px;background:blue"></div>
+        <div id="page-raw-mouse" style="position:fixed;left:340px;top:80px;width:80px;height:80px;background:green"></div>
+      \`;
+      document.body.append(area);
+      window.__pagePointer = {};
+      area.querySelector("#page-dblclick").addEventListener("dblclick", (event) => {
+        window.__pagePointer.dblclickTrusted = event.isTrusted;
+        window.open(popupUrl, "_blank");
+      });
+      area.querySelector("#page-hover").addEventListener("mouseover", (event) => {
+        window.__pagePointer.hoverTrusted = event.isTrusted;
+      });
+      area.querySelector("#page-drag-source").addEventListener("mousedown", (event) => {
+        window.__pagePointer.dragStartTrusted = event.isTrusted;
+      });
+      area.querySelector("#page-drag-target").addEventListener("mouseup", (event) => {
+        window.__pagePointer.dragEndTrusted = event.isTrusted;
+      });
+      const raw = area.querySelector("#page-raw-mouse");
+      raw.addEventListener("mousedown", (event) => {
+        window.__pagePointer.rawDownTrusted = event.isTrusted;
+      });
+      raw.addEventListener("mouseup", (event) => {
+        window.__pagePointer.rawUpTrusted = event.isTrusted;
+      });
+      raw.addEventListener("click", (event) => {
+        window.__pagePointer.rawClickTrusted = event.isTrusted;
+      });
+    }, baseUrl + "/secondary?page-actions=dblclick-popup");
+
+    const dblclickReceipt = await source.dblclick("#page-dblclick");
+    assertEqual(dblclickReceipt.popups.length, 1, "page.dblclick adopts its popup");
+    assertEqual(
+      (await source.evaluate("window.__pagePointer")).dblclickTrusted,
+      true,
+      "page.dblclick reaches the site as a trusted event"
+    );
+    await task.page(dblclickReceipt.popups[0].label).close();
+
+    await source.hover("#page-hover");
+    await source.dragAndDrop("#page-drag-source", "#page-drag-target");
+    const pointerState = await source.evaluate("window.__pagePointer");
+    assertEqual(pointerState.hoverTrusted, true, "page.hover uses trusted mouse input");
+    assertEqual(pointerState.dragStartTrusted, true, "page.dragAndDrop starts with trusted input");
+    assertEqual(pointerState.dragEndTrusted, true, "page.dragAndDrop ends on the target");
+
+    await source.mouse.move(360, 100);
+    await source.mouse.down();
+    await source.mouse.move(380, 120);
+    await source.mouse.up();
+    await source.mouse.click(380, 120);
+    const rawState = await source.evaluate("window.__pagePointer");
+    assertEqual(rawState.rawDownTrusted, true, "page.mouse.down uses trusted input");
+    assertEqual(rawState.rawUpTrusted, true, "page.mouse.up uses trusted input");
+    assertEqual(rawState.rawClickTrusted, true, "page.mouse.click uses trusted input");
+
+    await source.evaluate("window.scrollTo(0, 0)");
+    const scrolled = await source.scrollBy(300);
+    assert(scrolled.y > 0, "page.scrollBy scrolls the addressed document");
+    await source.mouse.wheel(0, 120);
+    assertEqual((await currentTab()).targetId, source.targetId, "Page mouse methods keep their Page active");
+
     await source.evaluate(() => {
       const spacer = document.createElement("div");
       spacer.style.height = "2200px";

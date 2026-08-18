@@ -136,6 +136,17 @@ function createFixture(rootDir) {
         return { result: { type: "string", value: "complete" } };
       }
       if (method === "Runtime.callFunctionOn") {
+        if (params.functionDeclaration.includes("window.scrollBy")) {
+          return {
+            result: {
+              type: "object",
+              value: {
+                x: params.arguments?.[0]?.value?.deltaX ?? 0,
+                y: params.arguments?.[0]?.value?.deltaY ?? 0,
+              },
+            },
+          };
+        }
         if (params.functionDeclaration.includes("window.fetch")) {
           return {
             result: {
@@ -623,6 +634,94 @@ test("Page fill uses its target session and reports no popup when none opened", 
       "target-1",
       "fill must leave its Page active",
     );
+  });
+});
+
+test("Page pointer methods dispatch through the addressed target session", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a");
+    const first = await task.newPage("https://example.test/first");
+    await task.newPage("https://example.test/second");
+
+    await first.dblclick("button.primary");
+    await first.hover("button.primary");
+    await first.dragAndDrop("#source", "#destination");
+
+    const pointerCalls = fixture.calls.filter(
+      ([kind, method]) =>
+        kind === "cdp" && method === "Input.dispatchMouseEvent",
+    );
+    assert(pointerCalls.length >= 7);
+    assert(
+      pointerCalls.every((call) => call[3] === `session:${first.targetId}`),
+      "all pointer events must use the addressed Page session",
+    );
+    assert(
+      pointerCalls.some(
+        ([, , params]) =>
+          params.type === "mousePressed" && params.clickCount === 2,
+      ),
+      "dblclick must preserve the double-click count",
+    );
+    assert.equal(fixture.activeTarget(), first.targetId);
+  });
+});
+
+test("Page mouse primitives preserve button state on one target", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a");
+    const first = await task.newPage("https://example.test/first");
+    await task.newPage("https://example.test/second");
+
+    await first.mouse.move(20, 30);
+    await first.mouse.down();
+    await first.mouse.move(40, 50);
+    await first.mouse.up();
+    await first.mouse.click(60, 70);
+    await first.mouse.wheel(5, 120);
+
+    const pointerCalls = fixture.calls.filter(
+      ([kind, method]) =>
+        kind === "cdp" && method === "Input.dispatchMouseEvent",
+    );
+    assert(pointerCalls.length >= 8);
+    assert(
+      pointerCalls.every((call) => call[3] === `session:${first.targetId}`),
+    );
+    assert(
+      pointerCalls.some(
+        ([, , params]) => params.type === "mouseMoved" && params.buttons === 1,
+      ),
+      "mouse.move must retain the pressed left button",
+    );
+    assert(
+      pointerCalls.some(
+        ([, , params]) =>
+          params.type === "mouseWheel" &&
+          params.deltaX === 5 &&
+          params.deltaY === 120,
+      ),
+    );
+    assert.equal(fixture.activeTarget(), first.targetId);
+  });
+});
+
+test("Page scrollBy evaluates in the addressed page", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a");
+    const first = await task.newPage("https://example.test/first");
+    await task.newPage("https://example.test/second");
+
+    assert.deepEqual(await first.scrollBy(450), { x: 0, y: 450 });
+
+    const scrollCall = fixture.calls.find(
+      ([kind, method, params]) =>
+        kind === "cdp" &&
+        method === "Runtime.callFunctionOn" &&
+        params.functionDeclaration.includes("window.scrollBy"),
+    );
+    assert.equal(scrollCall[3], `session:${first.targetId}`);
+    assert.equal(fixture.activeTarget(), first.targetId);
   });
 });
 
