@@ -252,7 +252,7 @@ test("snapshot activates the addressed page, not whichever tab was current", asy
   });
 });
 
-test("basic Page reads stay target-scoped and screenshot activates its Page", async () => {
+test("metadata reads stay target-scoped while evaluate and screenshot activate their Page", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
     const first = await task.newPage("https://example.test/first");
@@ -271,14 +271,19 @@ test("basic Page reads stay target-scoped and screenshot activates its Page", as
       pw: 1200,
       ph: 900,
     });
+    assert.equal(
+      fixture.activeTarget(),
+      "target-2",
+      "metadata reads must not activate the addressed page",
+    );
     assert.deepEqual(
       await first.evaluate((value) => value, { source: "first" }),
       { source: "first" },
     );
     assert.equal(
       fixture.activeTarget(),
-      "target-2",
-      "pure reads must not activate the addressed page",
+      "target-1",
+      "page.evaluate must activate the page whose JavaScript it runs",
     );
     assert.equal(
       await first.screenshot("/tmp/first.png", { full: true }),

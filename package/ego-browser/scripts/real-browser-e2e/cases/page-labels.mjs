@@ -203,11 +203,13 @@ export function pageBasicOperationsCase() {
     const info = await first.info();
     assertIncludes(info.url, "page-api=first", "page.info reads its own URL");
     assert(info.w > 0 && info.h > 0, "page.info reports a usable viewport");
+    assertEqual((await currentTab()).targetId, second.targetId, "metadata reads do not activate their page");
     assertEqual(
       await first.evaluate("document.querySelector('h1').textContent"),
       "Helper e2e fixture",
       "string evaluate runs on the addressed page"
     );
+    assertEqual((await currentTab()).targetId, first.targetId, "page.evaluate activates its page");
     const evaluated = await first.evaluate(
       async ({ selector, suffix }) => ({
         text: document.querySelector(selector)?.textContent?.trim(),

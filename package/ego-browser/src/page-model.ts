@@ -496,7 +496,7 @@ export class Page {
     argument?: unknown,
   ): Promise<T> {
     const hasArgument = arguments.length >= 2;
-    return this.#evaluate(expression, hasArgument, argument);
+    return this.#evaluate(expression, hasArgument, argument, true);
   }
 
   async screenshot(
@@ -569,6 +569,7 @@ export class Page {
     expression: string | ((argument: any) => T),
     hasArgument: boolean,
     argument?: unknown,
+    activate = false,
   ): Promise<T> {
     const serializedArgument = validateEvaluateInput(
       expression,
@@ -576,15 +577,16 @@ export class Page {
       argument,
     );
     const page = await this.#resolve();
-    return this.#services.gate.withPage(page, ({ sessionId }) =>
-      evaluateInSession<T>(
+    return this.#services.gate.withPage(page, async ({ sessionId }) => {
+      if (activate) await this.#activate(page.targetId);
+      return evaluateInSession<T>(
         this.#services,
         sessionId,
         expression,
         hasArgument,
         serializedArgument,
-      ),
-    );
+      );
+    });
   }
 
   async #runAction(
