@@ -29,6 +29,12 @@ import {
   type PageMouseButtonOptions,
   type PageMouseClickOptions,
 } from "./driver/page-actions.js";
+import {
+  dispatchKeyInPage,
+  parseKeyChord,
+  setInputFilesInPage,
+} from "./driver/page-input.js";
+import { pressKeyInPage, typeTextInPage } from "./driver/keyboard.js";
 import { assertNoEgoError } from "./ego-errors.js";
 import {
   withPage as defaultWithPage,
@@ -187,6 +193,15 @@ type MouseActionRunner = (
   operation: (services: PageModelServices, sessionId: string) => Promise<void>,
 ) => Promise<PageActionReceipt>;
 
+type KeyboardSelectorRunner = (
+  selector: string,
+  operation: (
+    services: PageModelServices,
+    sessionId: string,
+    refMap: RefMap,
+  ) => Promise<void>,
+) => Promise<PageActionReceipt>;
+
 /** Page-scoped mouse state and CDP Input primitives. */
 export class PageMouse {
   readonly #run: MouseActionRunner;
@@ -259,6 +274,40 @@ export class PageMouse {
   async wheel(deltaX: number, deltaY: number): Promise<PageActionReceipt> {
     return this.#run((services, sessionId) =>
       wheelInPage(services, sessionId, this.#x, this.#y, deltaX, deltaY),
+    );
+  }
+}
+
+/** Page-scoped keyboard input and low-level event dispatch. */
+export class PageKeyboard {
+  readonly #run: MouseActionRunner;
+  readonly #runForSelector: KeyboardSelectorRunner;
+
+  constructor(run: MouseActionRunner, runForSelector: KeyboardSelectorRunner) {
+    this.#run = run;
+    this.#runForSelector = runForSelector;
+  }
+
+  async press(chord: string): Promise<PageActionReceipt> {
+    const { key, modifiers } = parseKeyChord(chord);
+    return this.#run((services, sessionId) =>
+      pressKeyInPage(services, sessionId, key, modifiers),
+    );
+  }
+
+  async type(text: string): Promise<PageActionReceipt> {
+    return this.#run((services, sessionId) =>
+      typeTextInPage(services, sessionId, text),
+    );
+  }
+
+  async dispatch(
+    selector: string,
+    key = "Enter",
+    event = "keypress",
+  ): Promise<PageActionReceipt> {
+    return this.#runForSelector(selector, (services, sessionId, refMap) =>
+      dispatchKeyInPage(services, sessionId, refMap, selector, key, event),
     );
   }
 }
@@ -549,6 +598,7 @@ export class Page {
   readonly label: string;
   readonly spaceId: number;
   readonly mouse: PageMouse;
+  readonly keyboard: PageKeyboard;
   readonly #services: PageModelServices;
   #targetId?: string;
   #openedBy?: PageOrigin;
@@ -567,6 +617,14 @@ export class Page {
     this.#openedBy = entry?.openedBy;
     this.mouse = new PageMouse((operation) =>
       this.#runRawAction((sessionId) => operation(this.#services, sessionId)),
+    );
+    this.keyboard = new PageKeyboard(
+      (operation) =>
+        this.#runRawAction((sessionId) => operation(this.#services, sessionId)),
+      (selector, operation) =>
+        this.#runAction(selector, (sessionId, refMap) =>
+          operation(this.#services, sessionId, refMap),
+        ),
     );
   }
 
@@ -742,6 +800,15 @@ export class Page {
   ): Promise<PageActionReceipt> {
     return this.#runAction(selector, (sessionId, refMap) =>
       fillInPage(this.#services, sessionId, refMap, selector, value, options),
+    );
+  }
+
+  async setInputFiles(
+    selector: string,
+    path: string | string[],
+  ): Promise<PageActionReceipt> {
+    return this.#runAction(selector, (sessionId, refMap) =>
+      setInputFilesInPage(this.#services, sessionId, refMap, selector, path),
     );
   }
 

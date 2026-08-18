@@ -209,6 +209,8 @@ function createFixture(rootDir) {
       }
       if (method === "Runtime.releaseObject") return {};
       if (method === "Input.insertText") return {};
+      if (method === "Input.dispatchKeyEvent") return {};
+      if (method === "DOM.setFileInputFiles") return {};
       if (method === "Input.dispatchMouseEvent") {
         if (timeoutNextMouseDispatch) {
           timeoutNextMouseDispatch = false;
@@ -721,6 +723,67 @@ test("Page scrollBy evaluates in the addressed page", async () => {
         params.functionDeclaration.includes("window.scrollBy"),
     );
     assert.equal(scrollCall[3], `session:${first.targetId}`);
+    assert.equal(fixture.activeTarget(), first.targetId);
+  });
+});
+
+test("Page keyboard press and type use the addressed target session", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a");
+    const first = await task.newPage("https://example.test/first");
+    await task.newPage("https://example.test/second");
+
+    await first.keyboard.press("Meta+A");
+    await first.keyboard.type("hello 世界");
+
+    const keyCalls = fixture.calls.filter(
+      ([kind, method]) =>
+        kind === "cdp" &&
+        (method === "Input.dispatchKeyEvent" || method === "Input.insertText"),
+    );
+    assert(keyCalls.length >= 3);
+    assert(keyCalls.every((call) => call[3] === `session:${first.targetId}`));
+    assert(
+      keyCalls.some(
+        ([, method, params]) =>
+          method === "Input.dispatchKeyEvent" &&
+          params.type === "keyDown" &&
+          params.modifiers === 4 &&
+          params.commands?.includes("selectAll"),
+      ),
+      "Meta+A must retain the native selectAll editing command",
+    );
+    assert(
+      keyCalls.some(
+        ([, method, params]) =>
+          method === "Input.insertText" && params.text === "hello 世界",
+      ),
+    );
+    assert.equal(fixture.activeTarget(), first.targetId);
+  });
+});
+
+test("Page keyboard dispatch and file input resolve inside the addressed page", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a");
+    const first = await task.newPage("https://example.test/first");
+    await task.newPage("https://example.test/second");
+
+    await first.keyboard.dispatch("#editor", "Enter", "keydown");
+    await first.setInputFiles("#upload", ["/tmp/one.txt", "/tmp/two.txt"]);
+
+    const dispatchCall = fixture.calls.find(
+      ([kind, method, params]) =>
+        kind === "cdp" &&
+        method === "Runtime.callFunctionOn" &&
+        params.functionDeclaration.includes("KeyboardEvent"),
+    );
+    assert.equal(dispatchCall[3], `session:${first.targetId}`);
+    const uploadCall = fixture.calls.find(
+      ([kind, method]) => kind === "cdp" && method === "DOM.setFileInputFiles",
+    );
+    assert.deepEqual(uploadCall[2].files, ["/tmp/one.txt", "/tmp/two.txt"]);
+    assert.equal(uploadCall[3], `session:${first.targetId}`);
     assert.equal(fixture.activeTarget(), first.targetId);
   });
 });

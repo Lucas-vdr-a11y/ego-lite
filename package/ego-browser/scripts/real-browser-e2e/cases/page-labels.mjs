@@ -240,6 +240,39 @@ export function pageBasicOperationsCase() {
       "function evaluate surfaces page exceptions"
     );
 
+    await first.fill("#text-input", "page keyboard");
+    await first.evaluate(() => {
+      const input = document.querySelector("#text-input");
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
+    });
+    await first.keyboard.type(" 世界");
+    assertEqual(
+      await first.evaluate("document.querySelector('#text-input').value"),
+      "page keyboard 世界",
+      "page.keyboard.type inserts Unicode text in the addressed page"
+    );
+    await first.keyboard.press(process.platform === "darwin" ? "Meta+A" : "Control+A");
+    await first.keyboard.type("replaced");
+    assertEqual(
+      await first.evaluate("document.querySelector('#text-input').value"),
+      "replaced",
+      "page.keyboard.press accepts platform shortcut chords"
+    );
+    await first.keyboard.dispatch("#text-input", "Escape", "keydown");
+    assertIncludes(
+      await first.evaluate("window.__fixtureState.keys.join(',')"),
+      "Escape",
+      "page.keyboard.dispatch targets an element in the addressed page"
+    );
+    await first.setInputFiles("#file-input", [uploadPath, uploadPathTwo]);
+    assertEqual(
+      await first.evaluate("Array.from(document.querySelector('#file-input').files).map(file => file.name).join(',')"),
+      "fixture-upload.txt,fixture-upload-two.txt",
+      "page.setInputFiles attaches multiple files in the addressed page"
+    );
+    assertEqual((await currentTab()).targetId, first.targetId, "Page keyboard and file methods keep their Page active");
+
     const screenshotPath = join(tempDir, "page-api-first.png");
     assertEqual(
       await first.screenshot(screenshotPath, { full: false }),

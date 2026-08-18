@@ -8,6 +8,16 @@ type FillInputOptions = {
   timeout?: number;
 };
 
+export type KeyboardServices = {
+  cdp(
+    method: string,
+    params?: Record<string, unknown>,
+    sessionId?: string,
+    timeoutMs?: number,
+  ): Promise<any>;
+  sleep(ms: number): Promise<void>;
+};
+
 const KEYS = {
   Enter: { vk: 13, key: "Enter", code: "Enter", text: "\r" },
   Tab: { vk: 9, key: "Tab", code: "Tab", text: "\t" },
@@ -31,7 +41,21 @@ const META_MODIFIER = 4;
 const INPUT_EVENT_DELAY_MS = 25;
 const INPUT_DISPATCH_TIMEOUT_MS = 1000;
 
-function keyDefinition(key) {
+const defaultKeyboardServices: KeyboardServices = {
+  async cdp(method, params = {}, sessionId, timeoutMs) {
+    // Keep the legacy cdp() override path for calls without a custom timeout.
+    // Timed input dispatches use browserCdp() so a stalled native request can
+    // still fall back to the synthetic event probe.
+    if (timeoutMs === undefined) {
+      return cdp(method, params, sessionId);
+    }
+    const response = await browserCdp(method, params, sessionId, timeoutMs);
+    return response?.result || {};
+  },
+  sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+};
+
+export function keyDefinition(key) {
   const special = KEYS[key];
   if (special) {
     return special;
@@ -69,6 +93,16 @@ function editingCommandsForKey(key, modifiers) {
  * @returns {Promise<void>}
  */
 export async function pressKey(key, modifiers = 0) {
+  return pressKeyInPage(defaultKeyboardServices, undefined, key, modifiers);
+}
+
+/** Dispatch one key press through an explicit Page session. */
+export async function pressKeyInPage(
+  services: KeyboardServices,
+  sessionId: string | undefined,
+  key: string,
+  modifiers = 0,
+) {
   const { vk, code, text } = keyDefinition(key);
   const base = {
     key,
@@ -78,22 +112,22 @@ export async function pressKey(key, modifiers = 0) {
     nativeVirtualKeyCode: vk,
   };
   const commands = editingCommandsForKey(key, modifiers);
-  const probeId = await installKeyProbe(key);
+  const probeId = await installKeyProbe(services, sessionId, key);
   let dispatchError: unknown = null;
   try {
-    await dispatchKeyEvent({
+    await dispatchKeyEvent(services, sessionId, {
       type: "keyDown",
       ...base,
       ...(text ? { text, unmodifiedText: text } : {}),
       ...(commands ? { commands } : {}),
     });
-    await inputEventDelay();
-    await dispatchKeyEvent({ type: "keyUp", ...base });
+    await inputEventDelay(services);
+    await dispatchKeyEvent(services, sessionId, { type: "keyUp", ...base });
   } catch (error) {
     if (!isKeyDispatchTimeout(error)) throw error;
     dispatchError = error;
   }
-  const completed = await finishKeyProbe(probeId, {
+  const completed = await finishKeyProbe(services, sessionId, probeId, {
     key,
     code,
     text,
@@ -108,7 +142,19 @@ export async function pressKey(key, modifiers = 0) {
  * @returns {Promise<void>}
  */
 export async function typeText(text) {
-  await cdp("Input.insertText", { text });
+  await typeTextInPage(defaultKeyboardServices, undefined, text);
+}
+
+/** Insert text through an explicit Page session. */
+export async function typeTextInPage(
+  services: KeyboardServices,
+  sessionId: string | undefined,
+  text: string,
+) {
+  if (typeof text !== "string") {
+    throw new TypeError("page.keyboard.type text must be a string");
+  }
+  await services.cdp("Input.insertText", { text }, sessionId);
 }
 
 /**
@@ -189,25 +235,35 @@ export async function dispatchKey(selector, key = "Enter", event = "keypress") {
   );
 }
 
-function inputEventDelay() {
-  return new Promise((resolve) => setTimeout(resolve, INPUT_EVENT_DELAY_MS));
+function inputEventDelay(services: KeyboardServices) {
+  return services.sleep(INPUT_EVENT_DELAY_MS);
 }
 
-async function dispatchKeyEvent(params: Record<string, unknown>) {
-  await browserCdp(
+async function dispatchKeyEvent(
+  services: KeyboardServices,
+  sessionId: string | undefined,
+  params: Record<string, unknown>,
+) {
+  await services.cdp(
     "Input.dispatchKeyEvent",
     params,
-    undefined,
+    sessionId,
     INPUT_DISPATCH_TIMEOUT_MS,
   );
 }
 
-async function installKeyProbe(key: string) {
+async function installKeyProbe(
+  services: KeyboardServices,
+  sessionId: string | undefined,
+  key: string,
+) {
   if (!canProbeInputFallback()) return null;
   const id = `key_${Date.now()}_${Math.random().toString(16).slice(2)}`;
   try {
-    const result = await cdp("Runtime.evaluate", {
-      expression: `(() => {
+    const result = await services.cdp(
+      "Runtime.evaluate",
+      {
+        expression: `(() => {
       window.__egoBrowserInputProbes ||= {};
       const probe = { seen: false };
       probe.handler = (event) => {
@@ -217,9 +273,11 @@ async function installKeyProbe(key: string) {
       window.__egoBrowserInputProbes[${JSON.stringify(id)}] = probe;
       return true;
     })()`,
-      returnByValue: true,
-      awaitPromise: false,
-    });
+        returnByValue: true,
+        awaitPromise: false,
+      },
+      sessionId,
+    );
     return result.result?.value ? id : null;
   } catch {
     return null;
@@ -227,14 +285,18 @@ async function installKeyProbe(key: string) {
 }
 
 async function finishKeyProbe(
+  services: KeyboardServices,
+  sessionId: string | undefined,
   id: string | null,
   definition: { key: string; code: string; text: string; commands?: string[] },
 ) {
   if (!id) return false;
-  await inputEventDelay();
+  await inputEventDelay(services);
   try {
-    const result = await cdp("Runtime.evaluate", {
-      expression: `(() => {
+    const result = await services.cdp(
+      "Runtime.evaluate",
+      {
+        expression: `(() => {
       const probes = window.__egoBrowserInputProbes || {};
       const probe = probes[${JSON.stringify(id)}];
       if (!probe) return { seen: false, fallback: false };
@@ -319,9 +381,11 @@ async function finishKeyProbe(
       target.dispatchEvent(new KeyboardEvent("keyup", keyboardInit));
       return { seen: false, fallback: true };
     })()`,
-      returnByValue: true,
-      awaitPromise: false,
-    });
+        returnByValue: true,
+        awaitPromise: false,
+      },
+      sessionId,
+    );
     const value = result.result?.value;
     return Boolean(value?.seen || value?.fallback);
   } catch {
