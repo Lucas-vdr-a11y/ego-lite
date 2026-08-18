@@ -1,8 +1,10 @@
 import {
   browserCdp,
   browserEgo,
+  drainPageEvents,
   ensureSession,
   invalidateSession,
+  isNetworkDomainEnabled,
   pendingDialog,
   setPreferredTarget,
 } from "./browser-runtime.js";
@@ -35,6 +37,12 @@ import {
   setInputFilesInPage,
 } from "./driver/page-input.js";
 import { pressKeyInPage, typeTextInPage } from "./driver/keyboard.js";
+import {
+  waitForLoadStateInPage,
+  waitForSelectorInPage,
+  type PageWaitForLoadStateOptions,
+  type PageWaitForSelectorOptions,
+} from "./driver/page-waits.js";
 import { assertNoEgoError } from "./ego-errors.js";
 import {
   withPage as defaultWithPage,
@@ -67,6 +75,10 @@ type AdoptPageOptions = {
 };
 
 type PageGotoOptions = {
+  timeout?: number;
+};
+
+type CdpOptions = {
   timeout?: number;
 };
 
@@ -167,6 +179,8 @@ type PageModelServices = {
     sessionId: string,
   ): Promise<string>;
   pendingDialog(sessionId: string): Record<string, unknown> | null;
+  drainEvents(sessionId: string): any[];
+  isNetworkDomainEnabled(sessionId: string): boolean;
   ensureSession(targetId: string): Promise<string>;
   invalidateSession(targetId: string): void;
   setPreferredTarget(targetId: string): void;
@@ -362,6 +376,8 @@ const baseDefaultServices: Omit<PageModelServices, "ledger" | "pageBudget"> = {
   snapshot: snapshotRaw,
   screenshot: captureScreenshotForSession,
   pendingDialog,
+  drainEvents: drainPageEvents,
+  isNetworkDomainEnabled,
   ensureSession,
   invalidateSession,
   setPreferredTarget,
@@ -421,6 +437,23 @@ export class TaskSpace {
       const { ledger, tabs } = await this.#reconcilePages();
       return pageInventory(this, this.#services, ledger, tabs);
     });
+  }
+
+  /** Send a Target or Browser domain command within this selected space. */
+  async cdp(
+    method: string,
+    params: Record<string, unknown> = {},
+    options: CdpOptions = {},
+  ): Promise<any> {
+    assertCdpCall(method, params, options);
+    if (!method.startsWith("Target.") && !method.startsWith("Browser.")) {
+      throw new TypeError(
+        "task.cdp only supports Target. and Browser. commands",
+      );
+    }
+    return this.#services.gate.withSpace(this.id, () =>
+      this.#services.cdp(method, params, undefined, options.timeout),
+    );
   }
 
   /**
@@ -728,6 +761,74 @@ export class Page {
         payload.timeoutMs + 1_000,
       );
     });
+  }
+
+  /** Send one CDP command through this Page's target session. */
+  async cdp(
+    method: string,
+    params: Record<string, unknown> = {},
+    options: CdpOptions = {},
+  ): Promise<any> {
+    assertCdpCall(method, params, options);
+    const page = await this.#resolve();
+    return this.#services.gate.withPage(page, async ({ sessionId }) => {
+      await this.#activate(page.targetId);
+      try {
+        return await this.#services.cdp(
+          method,
+          params,
+          sessionId,
+          options.timeout,
+        );
+      } finally {
+        // Raw CDP can navigate or mutate the document, so existing refs are no
+        // longer safe even when the command looked observational.
+        this.#services.pageRefs.clear(page.targetId);
+      }
+    });
+  }
+
+  async waitForSelector(
+    selector: string,
+    options: PageWaitForSelectorOptions = {},
+  ): Promise<true> {
+    if (options.timeout !== undefined) assertTimeout(options.timeout);
+    const page = await this.#resolve();
+    return this.#services.gate.withPage(page, async ({ sessionId }) => {
+      await this.#activate(page.targetId);
+      const refMap = await this.#refMapForAction(page, selector);
+      return waitForSelectorInPage(
+        this.#services,
+        sessionId,
+        refMap,
+        selector,
+        options,
+      );
+    });
+  }
+
+  async waitForLoadState(
+    state: "load" | "networkidle",
+    options: PageWaitForLoadStateOptions = {},
+  ): Promise<void> {
+    if (options.timeout !== undefined) assertTimeout(options.timeout);
+    const page = await this.#resolve();
+    return this.#services.gate.withPage(page, async ({ sessionId }) => {
+      await this.#activate(page.targetId);
+      try {
+        await waitForLoadStateInPage(this.#services, sessionId, state, options);
+      } finally {
+        this.#services.pageRefs.clear(page.targetId);
+      }
+    });
+  }
+
+  /** Drain only CDP events routed to this Page session. */
+  async events(): Promise<any[]> {
+    const page = await this.#resolve();
+    return this.#services.gate.withPage(page, ({ sessionId }) =>
+      this.#services.drainEvents(sessionId),
+    );
   }
 
   async screenshot(
@@ -1286,6 +1387,23 @@ function assertTimeout(timeout: number | undefined): void {
   if (timeout !== undefined && (!Number.isFinite(timeout) || timeout <= 0)) {
     throw new TypeError("timeout must be a positive number of milliseconds");
   }
+}
+
+function assertCdpCall(
+  method: string,
+  params: Record<string, unknown>,
+  options: CdpOptions,
+): void {
+  if (typeof method !== "string" || method.length === 0) {
+    throw new TypeError("cdp method must be a non-empty string");
+  }
+  if (!params || typeof params !== "object" || Array.isArray(params)) {
+    throw new TypeError("cdp params must be an object");
+  }
+  if (!options || typeof options !== "object" || Array.isArray(options)) {
+    throw new TypeError("cdp options must be an object");
+  }
+  if (options.timeout !== undefined) assertTimeout(options.timeout);
 }
 
 function pageInventory(

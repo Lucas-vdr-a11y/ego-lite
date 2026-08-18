@@ -27,6 +27,9 @@ function createFixture(rootDir) {
   let popupOnNextClick = null;
   let timeoutNextMouseDispatch = false;
   let rejectNextClickPoint = false;
+  let nowMs = 1_000;
+  const pageEvents = new Map();
+  const networkSessions = new Set();
 
   function openPendingPopup() {
     if (!popupOnNextClick) return;
@@ -136,6 +139,9 @@ function createFixture(rootDir) {
         return { result: { type: "string", value: "complete" } };
       }
       if (method === "Runtime.callFunctionOn") {
+        if (params.functionDeclaration.includes("checkVisibility")) {
+          return { result: { type: "boolean", value: true } };
+        }
         if (params.functionDeclaration.includes("window.scrollBy")) {
           return {
             result: {
@@ -211,6 +217,17 @@ function createFixture(rootDir) {
       if (method === "Input.insertText") return {};
       if (method === "Input.dispatchKeyEvent") return {};
       if (method === "DOM.setFileInputFiles") return {};
+      if (method === "Network.enable") {
+        networkSessions.add(sessionId);
+        return {};
+      }
+      if (method === "Network.disable") {
+        networkSessions.delete(sessionId);
+        return {};
+      }
+      if (method === "Browser.getVersion") {
+        return { product: "Ego Lite/Test" };
+      }
       if (method === "Input.dispatchMouseEvent") {
         if (timeoutNextMouseDispatch) {
           timeoutNextMouseDispatch = false;
@@ -251,6 +268,14 @@ function createFixture(rootDir) {
     pendingDialog() {
       return null;
     },
+    drainEvents(sessionId) {
+      const events = pageEvents.get(sessionId) || [];
+      pageEvents.set(sessionId, []);
+      return events;
+    },
+    isNetworkDomainEnabled(sessionId) {
+      return networkSessions.has(sessionId);
+    },
     ensureSession: ensureTargetSession,
     invalidateSession(targetId) {
       calls.push(["invalidateSession", targetId]);
@@ -258,8 +283,10 @@ function createFixture(rootDir) {
     setPreferredTarget(targetId) {
       calls.push(["setPreferredTarget", targetId]);
     },
-    now: () => Date.now(),
-    sleep: async () => {},
+    now: () => nowMs,
+    sleep: async (ms) => {
+      nowMs += ms;
+    },
   };
   return {
     activeTarget: () => activeTarget,
@@ -276,6 +303,12 @@ function createFixture(rootDir) {
     },
     rejectNextClickPoint() {
       rejectNextClickPoint = true;
+    },
+    emitPageEvent(targetId, method, params = {}) {
+      const sessionId = `session:${targetId}`;
+      const events = pageEvents.get(sessionId) || [];
+      events.push({ sessionId, method, params });
+      pageEvents.set(sessionId, events);
     },
   };
 }
@@ -785,6 +818,117 @@ test("Page keyboard dispatch and file input resolve inside the addressed page", 
     assert.deepEqual(uploadCall[2].files, ["/tmp/one.txt", "/tmp/two.txt"]);
     assert.equal(uploadCall[3], `session:${first.targetId}`);
     assert.equal(fixture.activeTarget(), first.targetId);
+  });
+});
+
+test("Page and TaskSpace CDP commands preserve their intended scope", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a");
+    const first = await task.newPage("https://example.test/first");
+    await task.newPage("https://example.test/second");
+
+    const pageResult = await first.cdp(
+      "Runtime.evaluate",
+      { expression: "document.title" },
+      { timeout: 1_234 },
+    );
+    const taskResult = await task.cdp(
+      "Browser.getVersion",
+      {},
+      { timeout: 987 },
+    );
+
+    assert.equal(pageResult.result.value, "https://example.test/first");
+    assert.equal(taskResult.product, "Ego Lite/Test");
+    assert(
+      fixture.calls.some(
+        ([kind, method, , sessionId, timeout]) =>
+          kind === "cdp" &&
+          method === "Runtime.evaluate" &&
+          sessionId === "session:target-1" &&
+          timeout === 1_234,
+      ),
+      "page.cdp must use the Page session and millisecond timeout",
+    );
+    assert(
+      fixture.calls.some(
+        ([kind, method, , sessionId, timeout]) =>
+          kind === "cdp" &&
+          method === "Browser.getVersion" &&
+          sessionId === undefined &&
+          timeout === 987,
+      ),
+      "task.cdp must use the selected space without a Page session",
+    );
+  });
+});
+
+test("Page waits and events remain isolated to the addressed target", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a");
+    const first = await task.newPage("https://example.test/first");
+    const second = await task.newPage("https://example.test/second");
+
+    assert.equal(
+      await first.waitForSelector("#ready", { timeout: 250, visible: true }),
+      true,
+    );
+    await first.waitForLoadState("load", { timeout: 250 });
+    fixture.emitPageEvent(first.targetId, "Network.requestWillBeSent", {
+      requestId: "request-first",
+    });
+    fixture.emitPageEvent(first.targetId, "Network.loadingFinished", {
+      requestId: "request-first",
+    });
+    await first.waitForLoadState("networkidle", {
+      timeout: 500,
+      idleMs: 100,
+    });
+
+    fixture.emitPageEvent(first.targetId, "Runtime.consoleAPICalled", {
+      value: "first",
+    });
+    fixture.emitPageEvent(second.targetId, "Runtime.consoleAPICalled", {
+      value: "second",
+    });
+    assert.deepEqual(
+      (await second.events()).map((event) => event.params.value),
+      ["second"],
+    );
+    assert.deepEqual(
+      (await first.events()).map((event) => event.params.value),
+      ["first"],
+    );
+
+    assert(
+      fixture.calls.some(
+        ([kind, method, , sessionId]) =>
+          kind === "cdp" &&
+          method === "Network.enable" &&
+          sessionId === "session:target-1",
+      ),
+      "network idle must enable events on the addressed Page session",
+    );
+  });
+});
+
+test("Page wait methods reject invalid states and millisecond timeouts", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a");
+    const page = await task.newPage("https://example.test/first");
+
+    await assert.rejects(
+      () => page.waitForLoadState("domcontentloaded"),
+      /supports only "load" and "networkidle"/,
+    );
+    await assert.rejects(
+      () => page.waitForSelector("#ready", { timeout: 0 }),
+      /positive number of milliseconds/,
+    );
+    await assert.rejects(
+      () => task.cdp("Page.navigate"),
+      /only supports Target\. and Browser\. commands/,
+    );
   });
 });
 

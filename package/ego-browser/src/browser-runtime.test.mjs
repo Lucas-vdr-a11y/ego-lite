@@ -1,7 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { browserCdp, drainBrowserEvents } from "../dist/src/browser-runtime.js";
+import {
+  browserCdp,
+  drainBrowserEvents,
+  drainPageEvents,
+} from "../dist/src/browser-runtime.js";
 
 // Gap A: ensureSession() calls the raw listTabs binding to attach a session.
 // When the task is blocked it returns { error, error_code }; the result must
@@ -117,5 +121,52 @@ test("CDP events are drained only by the target session that received them", asy
     } else {
       globalThis.ego = previous;
     }
+  }
+});
+
+test("page event drains exclude unscoped browser events", async () => {
+  const previous = globalThis.ego;
+  const runtime = {
+    sendCDPMessage(payload) {
+      const request = JSON.parse(payload);
+      const result =
+        request.method === "Target.attachToTarget"
+          ? { sessionId: "session-page" }
+          : {};
+      queueMicrotask(() => {
+        runtime.onCDPMessage(JSON.stringify({ id: request.id, result }));
+      });
+    },
+    emit(event) {
+      runtime.onCDPMessage(JSON.stringify(event));
+    },
+  };
+  globalThis.ego = runtime;
+
+  try {
+    const attached = await browserCdp("Target.attachToTarget", {
+      targetId: "target-page",
+      flatten: true,
+    });
+    const sessionId = attached.result.sessionId;
+    runtime.emit({ method: "Target.targetCreated", params: { targetId: "x" } });
+    runtime.emit({
+      sessionId,
+      method: "Runtime.consoleAPICalled",
+      params: { value: "page" },
+    });
+
+    assert.deepEqual(
+      drainPageEvents(sessionId).map((event) => event.method),
+      ["Runtime.consoleAPICalled"],
+    );
+    assert.deepEqual(
+      drainBrowserEvents(sessionId).map((event) => event.method),
+      ["Target.targetCreated"],
+      "legacy drain still exposes unscoped browser events",
+    );
+  } finally {
+    if (previous === undefined) delete globalThis.ego;
+    else globalThis.ego = previous;
   }
 });

@@ -240,6 +240,36 @@ export function pageBasicOperationsCase() {
       "function evaluate surfaces page exceptions"
     );
 
+    const cdpTitle = await first.cdp(
+      "Runtime.evaluate",
+      { expression: "document.title", returnByValue: true },
+      { timeout: 2_000 }
+    );
+    assertEqual(cdpTitle.result.value, "ego-lite helper e2e", "page.cdp uses the addressed Page session");
+    const targetList = await task.cdp("Target.getTargets", {}, { timeout: 2_000 });
+    assert(Array.isArray(targetList.targetInfos), "task.cdp sends Target commands inside the task space");
+
+    await first.evaluate(() => {
+      setTimeout(() => {
+        const ready = document.createElement("button");
+        ready.id = "page-wait-ready";
+        ready.textContent = "Ready";
+        document.body.append(ready);
+      }, 75);
+    });
+    assertEqual(
+      await first.waitForSelector("#page-wait-ready", { timeout: 2_000, visible: true }),
+      true,
+      "page.waitForSelector uses milliseconds and the addressed Page"
+    );
+    await first.waitForLoadState("load", { timeout: 2_000 });
+    await first.waitForLoadState("networkidle", { timeout: 2_000, idleMs: 100 });
+
+    const firstEvents = await first.events();
+    const secondEvents = await second.events();
+    assert(Array.isArray(firstEvents), "page.events returns this Page's event buffer");
+    assert(Array.isArray(secondEvents), "a second Page has an independent event buffer");
+
     await first.fill("#text-input", "page keyboard");
     await first.evaluate(() => {
       const input = document.querySelector("#text-input");

@@ -287,6 +287,13 @@ export function drainBrowserEvents(sessionId = undefined) {
   return out;
 }
 
+/** Drain only events routed to one Page session. */
+export function drainPageEvents(sessionId) {
+  const targetId = sessionId ? sessionTargets.get(sessionId) : undefined;
+  const target = targetId ? targetStates.get(targetId) : undefined;
+  return target ? target.events.splice(0, target.events.length) : [];
+}
+
 export function pendingDialog(sessionId) {
   const targetId = sessionId
     ? sessionTargets.get(sessionId)
