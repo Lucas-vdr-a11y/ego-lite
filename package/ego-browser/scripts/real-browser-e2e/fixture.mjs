@@ -78,6 +78,29 @@ export async function startFixtureServer(taskName) {
       });
       return;
     }
+    if (url.pathname === "/api/request-info") {
+      let body = "";
+      req.on("data", (chunk) => {
+        body += chunk;
+      });
+      req.on("end", () => {
+        res.writeHead(201, {
+          "content-type": "application/json",
+          "x-fixture-response": "page-fetch",
+        });
+        res.end(
+          JSON.stringify({
+            method: req.method,
+            path: url.pathname,
+            cookie: req.headers.cookie || "",
+            origin: req.headers.origin || "",
+            requestHeader: req.headers["x-page-fetch"] || "",
+            body,
+          }),
+        );
+      });
+      return;
+    }
     if (url.pathname === "/api/error") {
       res.writeHead(500, {
         "content-type": "text/plain",

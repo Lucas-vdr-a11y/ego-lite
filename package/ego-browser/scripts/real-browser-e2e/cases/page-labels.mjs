@@ -37,6 +37,9 @@ export function pageLabelRestoreCase() {
       1,
       "a ref printed in the previous process resolves in the restored Page"
     );
+    const fetched = await page.fetch("/api/text", { timeout: 2_000 });
+    assertEqual(fetched.status, 200, "a restored Page can make a page-context request");
+    assertEqual(fetched.body, "server text fixture", "the restored Page fetch returns its body");
     const before = await listTabs();
     await page.goto(baseUrl + "/nav-target?managed=restored");
     const after = await listTabs();
@@ -522,6 +525,61 @@ export function pageComplexEvaluateCase() {
     assertEqual(domResult.count, 96, "a later evaluate can read the injected DOM");
     assertIncludes(domResult.firstText, "条目 0", "injected DOM keeps non-ASCII text");
     assertEqual(domResult.lastRowId, "95", "injected DOM keeps the final row identity");
+
+    await source.close();
+    await comparison.close();
+  `;
+}
+
+export function pageFetchCase() {
+  return `
+    const task = await taskSpace(taskName);
+    const source = await task.newPage(baseUrl + "/nested/page-fetch/source", {
+      as: "page-fetch-source",
+    });
+    const comparison = await task.newPage(baseUrl + "/secondary?page-fetch=comparison", {
+      as: "page-fetch-comparison",
+    });
+    await source.evaluate(() => {
+      document.cookie = "egoPageFetch=page-cookie; path=/";
+    });
+    await comparison.evaluate("document.title");
+    assertEqual((await currentTab()).targetId, comparison.targetId, "comparison page starts active");
+
+    const response = await source.fetch("../../api/request-info", {
+      method: "POST",
+      headers: {
+        "content-type": "text/plain",
+        "x-page-fetch": "custom-header",
+      },
+      body: "page-body",
+      timeout: 2_000,
+    });
+    assertEqual((await currentTab()).targetId, source.targetId, "page.fetch activates its Page");
+    assertEqual(response.ok, true, "201 is a successful fetch response");
+    assertEqual(response.status, 201, "page.fetch returns the HTTP status");
+    assertEqual(response.statusText, "Created", "page.fetch returns the status text");
+    assertIncludes(response.url, "/api/request-info", "a relative URL resolves in the Page");
+    assertEqual(response.headers["content-type"], "application/json", "response headers are returned");
+    assertEqual(response.headers["x-fixture-response"], "page-fetch", "custom response headers are returned");
+    const request = JSON.parse(response.body);
+    assertEqual(request.method, "POST", "page.fetch forwards the method");
+    assertEqual(request.path, "/api/request-info", "page.fetch reaches the relative endpoint");
+    assertIncludes(request.cookie, "egoPageFetch=page-cookie", "page.fetch uses the Page cookie context");
+    assertEqual(request.origin, baseUrl, "page.fetch sends the Page origin");
+    assertEqual(request.requestHeader, "custom-header", "page.fetch forwards request headers");
+    assertEqual(request.body, "page-body", "page.fetch forwards the request body");
+
+    const errorResponse = await source.fetch("/api/status?code=418", { timeout: 2_000 });
+    assertEqual(errorResponse.ok, false, "non-2xx responses are returned instead of thrown");
+    assertEqual(errorResponse.status, 418, "non-2xx status is preserved");
+    assertEqual(errorResponse.body, "status 418", "non-2xx body is preserved");
+
+    await assertRejects(
+      () => source.fetch("/api/slow?ms=300", { timeout: 20 }),
+      "page.fetch timed out after 20ms",
+      "page.fetch enforces a millisecond timeout"
+    );
 
     await source.close();
     await comparison.close();

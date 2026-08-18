@@ -53,6 +53,42 @@ type PageGotoOptions = {
   timeout?: number;
 };
 
+export type PageFetchOptions = {
+  timeout?: number;
+  method?: string;
+  headers?: Record<string, string>;
+  body?: string;
+  cache?:
+    | "default"
+    | "no-store"
+    | "reload"
+    | "no-cache"
+    | "force-cache"
+    | "only-if-cached";
+  credentials?: "omit" | "same-origin" | "include";
+  integrity?: string;
+  keepalive?: boolean;
+  mode?: "cors" | "no-cors" | "same-origin";
+  redirect?: "follow" | "error" | "manual";
+  referrer?: string;
+  referrerPolicy?: string;
+};
+
+export type PageFetchResponse = {
+  ok: boolean;
+  status: number;
+  statusText: string;
+  url: string;
+  headers: Record<string, string>;
+  body: string;
+};
+
+type PageFetchPayload = {
+  url: string;
+  options: Record<string, unknown>;
+  timeoutMs: number;
+};
+
 type PageTarget = {
   spaceId: number;
   targetId: string;
@@ -502,11 +538,36 @@ export class Page {
   }
 
   async evaluate<T = unknown>(
-    expression: string | ((argument: any) => T),
+    expression: string | ((argument: any) => T | Promise<T>),
     argument?: unknown,
   ): Promise<T> {
     const hasArgument = arguments.length >= 2;
     return this.#evaluate(expression, hasArgument, argument, true);
+  }
+
+  /**
+   * Run window.fetch inside this Page and return a CDP-serializable response.
+   * Unlike a Node fetch, relative URLs, cookies, CORS, and service workers all
+   * use the addressed document's browser context.
+   */
+  async fetch(
+    url: string,
+    options: PageFetchOptions = {},
+  ): Promise<PageFetchResponse> {
+    assertUrl(url);
+    const payload = pageFetchPayload(url, options);
+    const page = await this.#resolve();
+    return this.#services.gate.withPage(page, async ({ sessionId }) => {
+      await this.#activate(page.targetId);
+      return evaluateInSession<PageFetchResponse>(
+        this.#services,
+        sessionId,
+        fetchInPage,
+        true,
+        payload,
+        payload.timeoutMs + 1_000,
+      );
+    });
   }
 
   async screenshot(
@@ -578,7 +639,7 @@ export class Page {
   }
 
   async #evaluate<T>(
-    expression: string | ((argument: any) => T),
+    expression: string | ((argument: any) => T | Promise<T>),
     hasArgument: boolean,
     argument?: unknown,
     activate = false,
@@ -680,9 +741,10 @@ export class Page {
 async function evaluateInSession<T>(
   services: PageModelServices,
   sessionId: string,
-  expression: string | ((argument: any) => T),
+  expression: string | ((argument: any) => T | Promise<T>),
   hasArgument: boolean,
   serializedArgument?: unknown,
+  timeoutMs?: number,
 ): Promise<T> {
   if (typeof expression === "string") {
     const response = await services.cdp(
@@ -693,6 +755,7 @@ async function evaluateInSession<T>(
         awaitPromise: true,
       },
       sessionId,
+      timeoutMs,
     );
     return runtimeValue(response, expression) as T;
   }
@@ -705,6 +768,7 @@ async function evaluateInSession<T>(
       returnByValue: false,
     },
     sessionId,
+    timeoutMs,
   );
   const objectId = owner?.result?.objectId;
   if (typeof objectId !== "string" || objectId.length === 0) {
@@ -723,6 +787,7 @@ async function evaluateInSession<T>(
         awaitPromise: true,
       },
       sessionId,
+      timeoutMs,
     );
     return runtimeValue(response, source) as T;
   } finally {
@@ -757,25 +822,88 @@ function validateEvaluateInput(
 }
 
 function serializeEvaluateArgument(argument: unknown): unknown {
+  return serializeJsonValue(
+    argument,
+    "page.evaluate argument must be JSON-serializable",
+  );
+}
+
+function serializeJsonValue(value: unknown, message: string): unknown {
   try {
-    const json = JSON.stringify(argument, (_key, value) => {
+    const json = JSON.stringify(value, (_key, item) => {
       if (
-        typeof value === "undefined" ||
-        typeof value === "function" ||
-        typeof value === "symbol" ||
-        typeof value === "bigint" ||
-        (typeof value === "number" && !Number.isFinite(value))
+        typeof item === "undefined" ||
+        typeof item === "function" ||
+        typeof item === "symbol" ||
+        typeof item === "bigint" ||
+        (typeof item === "number" && !Number.isFinite(item))
       ) {
         throw new TypeError("unsupported value");
       }
-      return value;
+      return item;
     });
     if (json === undefined) throw new TypeError("unsupported value");
     return JSON.parse(json);
   } catch (error) {
-    throw new TypeError("page.evaluate argument must be JSON-serializable", {
-      cause: error,
+    throw new TypeError(message, { cause: error });
+  }
+}
+
+function pageFetchPayload(
+  url: string,
+  options: PageFetchOptions,
+): PageFetchPayload {
+  if (!options || typeof options !== "object" || Array.isArray(options)) {
+    throw new TypeError("page.fetch options must be an object");
+  }
+  if (Object.hasOwn(options, "signal")) {
+    throw new TypeError(
+      "page.fetch does not accept options.signal; use timeout in milliseconds",
+    );
+  }
+  const { timeout = 20_000, ...requestOptions } = options;
+  assertTimeout(timeout);
+  return {
+    url,
+    options: serializeJsonValue(
+      requestOptions,
+      "page.fetch options must be JSON-serializable",
+    ) as Record<string, unknown>,
+    timeoutMs: timeout,
+  };
+}
+
+async function fetchInPage({
+  url,
+  options,
+  timeoutMs,
+}: PageFetchPayload): Promise<PageFetchResponse> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await window.fetch(url, {
+      ...options,
+      signal: controller.signal,
     });
+    const headers: Record<string, string> = {};
+    response.headers.forEach((value, key) => {
+      headers[key] = value;
+    });
+    return {
+      ok: response.ok,
+      status: response.status,
+      statusText: response.statusText,
+      url: response.url,
+      headers,
+      body: await response.text(),
+    };
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error(`page.fetch timed out after ${timeoutMs}ms`);
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timer);
   }
 }
 

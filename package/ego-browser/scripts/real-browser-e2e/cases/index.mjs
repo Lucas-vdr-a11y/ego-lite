@@ -14,6 +14,7 @@ import {
   pageActionsAndPopupCase,
   pageBasicOperationsCase,
   pageComplexEvaluateCase,
+  pageFetchCase,
   pageBudgetCase,
   pageLabelCloseCase,
   pageLabelCreateCase,
@@ -51,5 +52,6 @@ export const e2eCases = [
   { name: "page adoption and release", body: pageAdoptionCase },
   { name: "page basic operations", body: pageBasicOperationsCase },
   { name: "page complex evaluate", body: pageComplexEvaluateCase },
+  { name: "page fetch", body: pageFetchCase },
   { name: "page actions and popup adoption", body: pageActionsAndPopupCase },
 ];

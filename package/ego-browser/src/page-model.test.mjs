@@ -69,8 +69,10 @@ function createFixture(rootDir) {
         active: tab.targetId === activeTarget,
       }));
     },
-    async cdp(method, params, sessionId) {
-      calls.push(["cdp", method, params, sessionId]);
+    async cdp(method, params, sessionId, timeoutMs) {
+      const call = ["cdp", method, params, sessionId];
+      if (timeoutMs !== undefined) call.push(timeoutMs);
+      calls.push(call);
       if (method === "Page.navigate") {
         const targetId = sessionId.slice("session:".length);
         tabs.get(targetId).url = params.url;
@@ -122,6 +124,24 @@ function createFixture(rootDir) {
         return { result: { type: "string", value: "complete" } };
       }
       if (method === "Runtime.callFunctionOn") {
+        if (params.functionDeclaration.includes("window.fetch")) {
+          return {
+            result: {
+              type: "object",
+              value: {
+                ok: false,
+                status: 418,
+                statusText: "I'm a Teapot",
+                url: "https://example.test/api/teapot",
+                headers: {
+                  "content-type": "text/plain",
+                  "x-fixture": "page-fetch",
+                },
+                body: "short and stout",
+              },
+            },
+          };
+        }
         if (params.functionDeclaration.includes("getBoundingClientRect")) {
           if (rejectNextClickPoint) {
             rejectNextClickPoint = false;
@@ -394,6 +414,77 @@ test("Page evaluate preserves a large nested JSON argument", async () => {
 
     assert.deepEqual(result, argument);
     assert.equal(fixture.activeTarget(), page.targetId);
+  });
+});
+
+test("Page fetch activates its target and returns a structured non-2xx response", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a");
+    const first = await task.newPage("https://example.test/first");
+    await task.newPage("https://example.test/second");
+
+    const response = await first.fetch("/api/teapot", {
+      method: "POST",
+      headers: { "x-request": "page-fetch" },
+      body: "payload",
+      timeout: 250,
+    });
+
+    assert.deepEqual(response, {
+      ok: false,
+      status: 418,
+      statusText: "I'm a Teapot",
+      url: "https://example.test/api/teapot",
+      headers: {
+        "content-type": "text/plain",
+        "x-fixture": "page-fetch",
+      },
+      body: "short and stout",
+    });
+    assert.equal(fixture.activeTarget(), first.targetId);
+    const fetchCall = fixture.calls.find(
+      ([kind, method, params]) =>
+        kind === "cdp" &&
+        method === "Runtime.callFunctionOn" &&
+        params.functionDeclaration.includes("window.fetch"),
+    );
+    assert.deepEqual(fetchCall[2].arguments, [
+      {
+        value: {
+          url: "/api/teapot",
+          options: {
+            method: "POST",
+            headers: { "x-request": "page-fetch" },
+            body: "payload",
+          },
+          timeoutMs: 250,
+        },
+      },
+    ]);
+    assert.equal(fetchCall[3], "session:target-1");
+    assert.equal(fetchCall[4], 1_250);
+  });
+});
+
+test("Page fetch validates its JSON options and millisecond timeout", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a");
+    const page = await task.newPage("https://example.test/fetch");
+    const cyclic = {};
+    cyclic.self = cyclic;
+
+    await assert.rejects(
+      () => page.fetch("/api/text", { timeout: 0 }),
+      /positive number of milliseconds/,
+    );
+    await assert.rejects(
+      () => page.fetch("/api/text", { signal: {} }),
+      /does not accept options.signal/,
+    );
+    await assert.rejects(
+      () => page.fetch("/api/text", cyclic),
+      /options must be JSON-serializable/,
+    );
   });
 });
 
