@@ -1,6 +1,7 @@
 import {
   browserCdp,
   browserEgo,
+  ensureSession,
   invalidateSession,
   setPreferredTarget,
 } from "./browser-runtime.js";
@@ -14,6 +15,7 @@ import {
 import {
   PageLedgerStore,
   type ManagedPage,
+  type PageLedger,
   type PageOrigin,
 } from "./page-ledger.js";
 import { state } from "./state.js";
@@ -26,6 +28,7 @@ type TaskSpaceDescriptor = {
 
 type NewPageOptions = {
   as?: string;
+  timeout?: number;
 };
 
 type PageGotoOptions = {
@@ -60,6 +63,10 @@ type LedgerPort = {
   ): Promise<ManagedPage>;
   getPage(spaceId: number, label: string): Promise<ManagedPage>;
   closePage(spaceId: number, label: string): Promise<ManagedPage>;
+  reconcile(
+    spaceId: number,
+    liveTargetIds: Iterable<string>,
+  ): Promise<PageLedger>;
 };
 
 type RuntimeTab = {
@@ -81,21 +88,45 @@ type PageModelServices = {
     timeoutMs?: number,
   ): Promise<any>;
   snapshot(options?: Record<string, unknown>): Promise<any>;
+  ensureSession(targetId: string): Promise<string>;
   invalidateSession(targetId: string): void;
   setPreferredTarget(targetId: string): void;
   now(): number;
   sleep(ms: number): Promise<void>;
+  pageBudget: number;
 };
 
-const defaultLedger = new PageLedgerStore();
+export type PageInventoryItem = {
+  targetId: string;
+  label?: string;
+  page?: Page;
+  title: string;
+  url: string;
+  active: boolean;
+  openedBy: PageOrigin;
+};
+
+export class PageBudgetError extends Error {
+  readonly code = "EGO_PAGE_BUDGET_REACHED";
+  readonly spaceId: number;
+  readonly limit: number;
+
+  constructor(spaceId: number, limit: number, message: string) {
+    super(message);
+    this.name = "PageBudgetError";
+    this.spaceId = spaceId;
+    this.limit = limit;
+  }
+}
+
+let defaultLedger: PageLedgerStore | undefined;
 
 const defaultGate: OperationGate = {
   withSpace: defaultWithSpace,
   withPage: defaultWithPage,
 };
 
-const defaultServices: PageModelServices = {
-  ledger: defaultLedger,
+const baseDefaultServices: Omit<PageModelServices, "ledger" | "pageBudget"> = {
   gate: defaultGate,
   async createTab(url) {
     const result = assertNoEgoError(
@@ -120,6 +151,7 @@ const defaultServices: PageModelServices = {
     return response?.result || {};
   },
   snapshot: snapshotRaw,
+  ensureSession,
   invalidateSession,
   setPreferredTarget,
   now: () => state.now(),
@@ -140,7 +172,20 @@ export function createTaskSpaceHandle(
   if (!descriptor || !Number.isInteger(descriptor.id)) {
     throw new TypeError("TaskSpace requires a numeric id");
   }
-  return new TaskSpace(descriptor, { ...defaultServices, ...overrides });
+  // Ego Lite imports the SDK before it evaluates the submitted script. Resolve
+  // environment-backed settings lazily so SDK callers can configure a round
+  // before their first taskSpace() call.
+  defaultLedger ||= new PageLedgerStore();
+  const services = {
+    ...baseDefaultServices,
+    ledger: defaultLedger,
+    pageBudget: configuredPageBudget(),
+    ...overrides,
+  };
+  if (!Number.isInteger(services.pageBudget) || services.pageBudget < 1) {
+    throw new TypeError("pageBudget must be a positive integer");
+  }
+  return new TaskSpace(descriptor, services);
 }
 
 export class TaskSpace {
@@ -160,14 +205,37 @@ export class TaskSpace {
     return new Page(this, label, this.#services);
   }
 
+  async listPages(): Promise<PageInventoryItem[]> {
+    return this.#services.gate.withSpace(this.id, async () => {
+      const { ledger, tabs } = await this.#reconcilePages();
+      return pageInventory(this, this.#services, ledger, tabs);
+    });
+  }
+
   async newPage(
     url = "about:blank",
     options: NewPageOptions = {},
   ): Promise<Page> {
     assertUrl(url);
+    const timeoutMs = options.timeout ?? 15_000;
+    assertTimeout(timeoutMs);
     return this.#services.gate.withSpace(this.id, async () => {
+      const { ledger, tabs } = await this.#reconcilePages();
+      const managedCount = Object.keys(ledger.pages).length;
+      if (managedCount >= this.#services.pageBudget) {
+        throw pageBudgetError(this, this.#services.pageBudget, ledger, tabs);
+      }
       const targetId = await this.#services.createTab(url);
       this.#services.setPreferredTarget(targetId);
+      const existingManaged = Object.entries(ledger.pages).find(
+        ([, page]) => page.targetId === targetId,
+      );
+      if (existingManaged) {
+        throw new Error(
+          `task.newPage did not create a distinct tab; target ${targetId} is already page ${existingManaged[0]}`,
+        );
+      }
+      const existedBeforeCreate = tabs.some((tab) => tab.targetId === targetId);
       let entry: ManagedPage;
       try {
         entry = await this.#services.ledger.addPage(this.id, targetId, {
@@ -176,15 +244,41 @@ export class TaskSpace {
         });
       } catch (error) {
         // A tab without a committed label cannot be returned safely. Close it
-        // while the same space is still selected, then surface the ledger error.
-        await this.#services
-          .cdp("Target.closeTarget", { targetId })
-          .catch(() => {});
-        this.#services.invalidateSession(targetId);
+        // only when createTab produced a new target. Ego Lite may reuse a blank
+        // anchor tab; closing a pre-existing target on a ledger error could
+        // destroy a page the runtime does not own.
+        if (!existedBeforeCreate) {
+          await this.#services
+            .cdp("Target.closeTarget", { targetId })
+            .catch(() => {});
+          this.#services.invalidateSession(targetId);
+        }
         throw error;
       }
-      return new Page(this, entry.label, this.#services, entry);
+      const page = new Page(this, entry.label, this.#services, entry);
+      try {
+        const sessionId = await this.#services.ensureSession(targetId);
+        await waitForReadyState(this.#services, sessionId, timeoutMs);
+      } catch (error) {
+        throw new Error(
+          `page ${entry.label} was created but did not finish loading; retrieve it with task.page('${entry.label}'): ${error?.message || error}`,
+          { cause: error },
+        );
+      }
+      return page;
     });
+  }
+
+  async #reconcilePages(): Promise<{
+    ledger: PageLedger;
+    tabs: RuntimeTab[];
+  }> {
+    const tabs = await this.#services.listTabs();
+    const ledger = await this.#services.ledger.reconcile(
+      this.id,
+      tabs.map((tab) => tab.targetId),
+    );
+    return { ledger, tabs };
   }
 }
 
@@ -321,4 +415,78 @@ function assertTimeout(timeout: number | undefined): void {
   if (timeout !== undefined && (!Number.isFinite(timeout) || timeout <= 0)) {
     throw new TypeError("timeout must be a positive number of milliseconds");
   }
+}
+
+function pageInventory(
+  task: TaskSpace,
+  services: PageModelServices,
+  ledger: PageLedger,
+  tabs: RuntimeTab[],
+): PageInventoryItem[] {
+  const managedByTarget = new Map(
+    Object.entries(ledger.pages).map(([label, entry]) => [
+      entry.targetId,
+      { label, entry },
+    ]),
+  );
+  return tabs.map((tab) => {
+    const managed = managedByTarget.get(tab.targetId);
+    if (!managed) {
+      return {
+        targetId: tab.targetId,
+        title: tab.title || "",
+        url: tab.url || "",
+        active: Boolean(tab.active),
+        openedBy: "unknown",
+      };
+    }
+    const entry = { label: managed.label, ...managed.entry };
+    return {
+      targetId: tab.targetId,
+      label: managed.label,
+      page: new Page(task, managed.label, services, entry),
+      title: tab.title || "",
+      url: tab.url || "",
+      active: Boolean(tab.active),
+      openedBy: entry.openedBy,
+    };
+  });
+}
+
+function pageBudgetError(
+  task: TaskSpace,
+  limit: number,
+  ledger: PageLedger,
+  tabs: RuntimeTab[],
+): PageBudgetError {
+  const tabsByTarget = new Map(tabs.map((tab) => [tab.targetId, tab]));
+  const entries = Object.entries(ledger.pages);
+  const lines = entries.map(([label, page]) => {
+    const tab = tabsByTarget.get(page.targetId);
+    const title = compactPageTitle(tab?.title || tab?.url || "untitled");
+    return `  ${label.padEnd(6)} ${JSON.stringify(title)}${tab?.active ? " active" : ""}`;
+  });
+  const suggestion = entries[0]?.[0] || "p1";
+  return new PageBudgetError(
+    task.id,
+    limit,
+    [
+      `Page budget reached (${entries.length}/${limit}) in space ${JSON.stringify(task.name)}.`,
+      "",
+      ...lines,
+      "",
+      `Close: await task.page('${suggestion}').close()`,
+      `Reuse: await task.page('${suggestion}').goto(url)`,
+    ].join("\n"),
+  );
+}
+
+function compactPageTitle(value: string): string {
+  const compact = value.replace(/\s+/g, " ").trim();
+  return compact.length > 80 ? `${compact.slice(0, 77)}...` : compact;
+}
+
+function configuredPageBudget(): number {
+  const configured = Number(process.env.EGO_BROWSER_PAGE_BUDGET || 8);
+  return Number.isInteger(configured) && configured > 0 ? configured : 8;
 }

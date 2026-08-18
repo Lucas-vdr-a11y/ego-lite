@@ -25,6 +25,12 @@ export function egoSource(body, context) {
     const metadataPath = ${JSON.stringify(metadataPath)};
     const keepTaskSpace = ${JSON.stringify(keepTaskSpace)};
 
+    // The Ego Lite launcher does not forward arbitrary environment variables
+    // to the SDK Node process. Set isolated test configuration before the first
+    // taskSpace() call; page-model reads these values lazily.
+    process.env.EGO_BROWSER_STATE_DIR = join(tempDir, "runtime-state");
+    process.env.EGO_BROWSER_PAGE_BUDGET = "3";
+
     let __assertionCount = 0;
 
     function assert(condition, message) {

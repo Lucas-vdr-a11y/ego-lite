@@ -154,6 +154,24 @@ export class PageLedgerStore {
     return removed!;
   }
 
+  async reconcile(
+    spaceId: number,
+    liveTargetIds: Iterable<string>,
+  ): Promise<PageLedger> {
+    const live = new Set(liveTargetIds);
+    const current = await this.read(spaceId);
+    const hasMissingPage = Object.values(current.pages).some(
+      (page) => !live.has(page.targetId),
+    );
+    if (!hasMissingPage) return current;
+
+    return this.#update(spaceId, (ledger) => {
+      for (const [label, page] of Object.entries(ledger.pages)) {
+        if (!live.has(page.targetId)) delete ledger.pages[label];
+      }
+    });
+  }
+
   async #update(
     spaceId: number,
     mutate: (ledger: PageLedger) => void,

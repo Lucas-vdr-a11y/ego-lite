@@ -10,6 +10,7 @@ import { runtimeCase } from "./runtime.mjs";
 import { runtimeRegressionCase } from "./runtime-regression.mjs";
 import { eventIsolationCase } from "./event-isolation.mjs";
 import {
+  pageBudgetCase,
   pageLabelCloseCase,
   pageLabelCreateCase,
   pageLabelHardStopCase,
@@ -42,4 +43,5 @@ export const e2eCases = [
     name: "page labels: restore after hard stop",
     body: pageLabelHardStopRestoreCase,
   },
+  { name: "page inventory and budget", body: pageBudgetCase },
 ];

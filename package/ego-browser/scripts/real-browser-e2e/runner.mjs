@@ -52,9 +52,6 @@ export async function runRealBrowserE2e() {
       const { stdout } = await runCommand("ego-browser", egoBrowserArgs, {
         cwd: packageDir,
         egoBrowserSdkPath,
-        env: {
-          EGO_BROWSER_STATE_DIR: join(tempDir, "runtime-state"),
-        },
         input: source,
         timeoutMs,
       });
@@ -92,9 +89,6 @@ export async function runRealBrowserE2e() {
       await runCommand("ego-browser", egoBrowserArgs, {
         cwd: packageDir,
         egoBrowserSdkPath,
-        env: {
-          EGO_BROWSER_STATE_DIR: join(tempDir, "runtime-state"),
-        },
         input: source,
         timeoutMs,
       });

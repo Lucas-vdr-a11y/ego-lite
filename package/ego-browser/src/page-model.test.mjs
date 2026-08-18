@@ -23,16 +23,17 @@ function createFixture(rootDir) {
   let nextTarget = 1;
   let selectedSpace = null;
   let activeTarget = null;
+  async function ensureTargetSession(targetId) {
+    assert(tabs.has(targetId), `unknown target ${targetId}`);
+    calls.push(["ensureSession", targetId]);
+    return `session:${targetId}`;
+  }
   const gate = new NativeOperationGate({
     async selectSpace(spaceId) {
       selectedSpace = spaceId;
       calls.push(["selectSpace", spaceId]);
     },
-    async ensureSession(targetId) {
-      assert(tabs.has(targetId), `unknown target ${targetId}`);
-      calls.push(["ensureSession", targetId]);
-      return `session:${targetId}`;
-    },
+    ensureSession: ensureTargetSession,
   });
   const services = {
     gate,
@@ -77,6 +78,7 @@ function createFixture(rootDir) {
       const tab = tabs.get(activeTarget);
       return { content: `snapshot:${tab?.url}`, refs: [] };
     },
+    ensureSession: ensureTargetSession,
     invalidateSession(targetId) {
       calls.push(["invalidateSession", targetId]);
     },
@@ -96,12 +98,13 @@ function createFixture(rootDir) {
   };
 }
 
-function taskForRound(fixture, roundId) {
+function taskForRound(fixture, roundId, overrides = {}) {
   return createTaskSpaceHandle(
     { id: 7, name: "research", ownership: "agent" },
     {
       ledger: new PageLedgerStore({ rootDir: fixture.rootDir, roundId }),
       ...fixture.services,
+      ...overrides,
     },
   );
 }
@@ -176,6 +179,9 @@ test("a ledger failure closes the newly created uncommitted tab", async () => {
       {
         ...fixture.services,
         ledger: {
+          async reconcile() {
+            return { pages: {} };
+          },
           async addPage() {
             throw new Error("ledger unavailable");
           },
@@ -192,6 +198,130 @@ test("a ledger failure closes the newly created uncommitted tab", async () => {
       fixture.calls.some(
         ([kind, method]) => kind === "cdp" && method === "Target.closeTarget",
       ),
+    );
+  });
+});
+
+test("listPages combines managed labels with live browser information", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a");
+    const managed = await task.newPage("https://example.test/managed");
+    fixture.tabs.set("target-user", {
+      targetId: "target-user",
+      url: "https://example.test/user",
+      title: "User page",
+      active: false,
+    });
+
+    const pages = await task.listPages();
+    const managedItem = pages.find((item) => item.label === "p1");
+    const unknownItem = pages.find((item) => item.targetId === "target-user");
+
+    assert.equal(managedItem.page.label, "p1");
+    assert.equal(managedItem.page.targetId, managed.targetId);
+    assert.equal(managedItem.title, "https://example.test/managed");
+    assert.equal(managedItem.openedBy, "agent");
+    assert.equal(unknownItem.label, undefined);
+    assert.equal(unknownItem.page, undefined);
+    assert.equal(unknownItem.title, "User page");
+    assert.equal(unknownItem.openedBy, "unknown");
+  });
+});
+
+test("listPages retires a managed label when its browser tab disappeared", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a");
+    const page = await task.newPage("https://example.test/managed");
+    fixture.tabs.delete(page.targetId);
+
+    assert.deepEqual(await task.listPages(), []);
+    await assert.rejects(
+      () => task.page("p1").snapshot(),
+      /page p1 was closed/,
+    );
+  });
+});
+
+test("newPage rejects before creating a tab when the managed budget is full", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a", { pageBudget: 2 });
+    const first = await task.newPage("https://example.test/first");
+    await task.newPage("https://example.test/second");
+
+    await assert.rejects(
+      () => task.newPage("https://example.test/third"),
+      (error) => {
+        assert.match(
+          error.message,
+          /Page budget reached \(2\/2\) in space "research"/,
+        );
+        assert.match(error.message, /p1\s+"https:\/\/example\.test\/first"/);
+        assert.match(
+          error.message,
+          /Close: await task\.page\('p1'\)\.close\(\)/,
+        );
+        assert.match(
+          error.message,
+          /Reuse: await task\.page\('p1'\)\.goto\(url\)/,
+        );
+        return true;
+      },
+    );
+    assert.equal(
+      fixture.tabs.size,
+      2,
+      "budget rejection must happen before createTab",
+    );
+
+    await first.close();
+    const replacement = await task.newPage("https://example.test/third");
+    assert.equal(replacement.label, "p3");
+    assert.equal(fixture.tabs.size, 2);
+  });
+});
+
+test("a tab closed outside the runtime frees budget on the next newPage", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a", { pageBudget: 2 });
+    const first = await task.newPage("https://example.test/first");
+    await task.newPage("https://example.test/second");
+    fixture.tabs.delete(first.targetId);
+
+    const replacement = await task.newPage("https://example.test/third");
+
+    assert.equal(replacement.label, "p3");
+    assert.equal(fixture.tabs.size, 2);
+    await assert.rejects(
+      () => task.page("p1").snapshot(),
+      /page p1 was closed/,
+    );
+  });
+});
+
+test("newPage never closes a managed page when native returns its target again", async () => {
+  await withFixture(async (fixture) => {
+    const firstTask = taskForRound(fixture, "round-a");
+    const first = await firstTask.newPage("https://example.test/first");
+    const closeCallsBefore = fixture.calls.filter(
+      ([kind, method]) => kind === "cdp" && method === "Target.closeTarget",
+    ).length;
+    const secondTask = taskForRound(fixture, "round-a", {
+      async createTab() {
+        return first.targetId;
+      },
+    });
+
+    await assert.rejects(
+      () => secondTask.newPage("https://example.test/second"),
+      /did not create a distinct tab.*already page p1/,
+    );
+
+    assert.equal(fixture.tabs.has(first.targetId), true);
+    assert.equal(
+      fixture.calls.filter(
+        ([kind, method]) => kind === "cdp" && method === "Target.closeTarget",
+      ).length,
+      closeCallsBefore,
     );
   });
 });

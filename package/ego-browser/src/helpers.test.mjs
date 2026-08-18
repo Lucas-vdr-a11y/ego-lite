@@ -136,6 +136,7 @@ test("taskSpace returns the new object model for a resolved space", async () => 
       assert.equal(task.ownership, "agent");
       assert.equal(typeof task.newPage, "function");
       assert.equal(typeof task.page, "function");
+      assert.equal(typeof task.listPages, "function");
     },
   );
 });

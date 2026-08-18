@@ -123,3 +123,32 @@ test("different spaces update independently", async () => {
     assert.equal(pageB.label, "p1");
   });
 });
+
+test("reconciliation removes missing targets but permanently retires their labels", async () => {
+  await withTempLedger(async (rootDir) => {
+    const store = new PageLedgerStore({ rootDir, roundId: "round-a" });
+    await store.addPage(4, "target-live");
+    await store.addPage(4, "target-closed");
+
+    const reconciled = await store.reconcile(4, ["target-live"]);
+
+    assert.deepEqual(Object.keys(reconciled.pages), ["p1"]);
+    assert.deepEqual(reconciled.usedLabels, ["p1", "p2"]);
+    await assert.rejects(() => store.getPage(4, "p2"), /page p2 was closed/);
+    const next = await store.addPage(4, "target-next");
+    assert.equal(next.label, "p3");
+  });
+});
+
+test("reconciliation does not write a new version when every target is live", async () => {
+  await withTempLedger(async (rootDir) => {
+    const store = new PageLedgerStore({ rootDir, roundId: "round-a" });
+    await store.addPage(6, "target-live");
+    const before = await store.read(6);
+
+    const after = await store.reconcile(6, ["target-live", "target-unknown"]);
+
+    assert.equal(after.version, before.version);
+    assert.deepEqual(after.pages, before.pages);
+  });
+});
