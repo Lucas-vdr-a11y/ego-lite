@@ -13,6 +13,7 @@ import * as observe from "./driver/observe.js";
 import * as waits from "./driver/waits.js";
 import * as files from "./driver/files.js";
 import { browserFetch, serverFetch } from "./http.js";
+import { createTaskSpaceHandle } from "./page-model.js";
 import {
   loadBrowserToolSource,
   loadLearnedContext,
@@ -180,6 +181,17 @@ export async function useOrCreateTaskSpace(nameOrId) {
   throw new Error(
     `useOrCreateTaskSpace cannot use task space ${JSON.stringify(nameOrId)} with ownership ${JSON.stringify(existing.ownership)}`,
   );
+}
+
+/**
+ * Return the v2 object handle for an existing task space, or create the space
+ * when a string name does not exist.
+ * @param {string|number} nameOrId Task space name or numeric id.
+ * @returns {Promise<import('./page-model.js').TaskSpace>}
+ */
+export async function taskSpace(nameOrId) {
+  const descriptor = await useOrCreateTaskSpace(nameOrId);
+  return createTaskSpaceHandle(descriptor);
 }
 
 /**
@@ -506,6 +518,7 @@ export function helperContext(extra: any = {}) {
     listTaskSpaces,
     switchTaskSpace,
     newTaskSpace,
+    taskSpace,
     useOrCreateTaskSpace,
     claimTaskSpace,
     completeTaskSpace,

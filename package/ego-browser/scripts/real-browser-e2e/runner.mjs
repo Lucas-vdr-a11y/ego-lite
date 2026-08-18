@@ -52,6 +52,9 @@ export async function runRealBrowserE2e() {
       const { stdout } = await runCommand("ego-browser", egoBrowserArgs, {
         cwd: packageDir,
         egoBrowserSdkPath,
+        env: {
+          EGO_BROWSER_STATE_DIR: join(tempDir, "runtime-state"),
+        },
         input: source,
         timeoutMs,
       });
@@ -72,13 +75,70 @@ export async function runRealBrowserE2e() {
     }
   }
 
-  async function maybeRunEgoCase(name, body, timeoutMs = 45000) {
-    if (onlyCases.size > 0 && !onlyCases.has(name)) {
-      console.log(`-- ${name} (skipped)`);
-      recordResult(name, "skip", 0, 0);
+  async function runExpectedTerminationCase(
+    name,
+    body,
+    markerName,
+    timeoutMs = 45000,
+  ) {
+    console.log(`-- ${name}`);
+    const source = egoSource(body, {
+      ...context,
+      keepTaskSpace: keepTaskSpace && passed,
+    });
+    const startedAt = Date.now();
+    let commandError;
+    try {
+      await runCommand("ego-browser", egoBrowserArgs, {
+        cwd: packageDir,
+        egoBrowserSdkPath,
+        env: {
+          EGO_BROWSER_STATE_DIR: join(tempDir, "runtime-state"),
+        },
+        input: source,
+        timeoutMs,
+      });
+    } catch (error) {
+      commandError = error;
+    }
+
+    const durationMs = Date.now() - startedAt;
+    try {
+      if (!commandError) {
+        throw new Error("the browser script completed instead of terminating");
+      }
+      // The marker is written only after newPage() has returned. Its presence
+      // distinguishes the intended hard stop from an unrelated startup error.
+      await stat(join(tempDir, markerName));
+      recordResult(name, "pass", durationMs, 1);
+      console.log(
+        `-- ${name} passed (${formatDuration(durationMs)}, expected termination)`,
+      );
+    } catch (error) {
+      const message = error?.message || String(error);
+      recordResult(name, "fail", durationMs, 0, message);
+      console.error(
+        `[FAIL] ${name} (${formatDuration(durationMs)}): ${message}`,
+      );
+    }
+  }
+
+  async function maybeRunTestCase(testCase) {
+    if (onlyCases.size > 0 && !onlyCases.has(testCase.name)) {
+      console.log(`-- ${testCase.name} (skipped)`);
+      recordResult(testCase.name, "skip", 0, 0);
       return;
     }
-    await runEgoCase(name, body, timeoutMs);
+    if (testCase.expectedTermination) {
+      await runExpectedTerminationCase(
+        testCase.name,
+        testCase.body(),
+        testCase.markerName,
+        testCase.timeoutMs,
+      );
+      return;
+    }
+    await runEgoCase(testCase.name, testCase.body(), testCase.timeoutMs);
   }
 
   async function cleanupTaskSpace() {
@@ -147,9 +207,7 @@ export async function runRealBrowserE2e() {
     console.log(`task: ${taskName}`);
     console.log(`sdk: ${egoBrowserSdkPath}`);
 
-    for (const testCase of e2eCases) {
-      await maybeRunEgoCase(testCase.name, testCase.body());
-    }
+    for (const testCase of e2eCases) await maybeRunTestCase(testCase);
 
     passed = caseResults.every((r) => r.status !== "fail");
     printSummary(caseResults, Date.now() - totalStartedAt);

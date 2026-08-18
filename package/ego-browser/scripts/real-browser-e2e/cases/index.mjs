@@ -9,6 +9,13 @@ import { keyboardRegressionCase } from "./keyboard-regression.mjs";
 import { runtimeCase } from "./runtime.mjs";
 import { runtimeRegressionCase } from "./runtime-regression.mjs";
 import { eventIsolationCase } from "./event-isolation.mjs";
+import {
+  pageLabelCloseCase,
+  pageLabelCreateCase,
+  pageLabelHardStopCase,
+  pageLabelHardStopRestoreCase,
+  pageLabelRestoreCase,
+} from "./page-labels.mjs";
 
 export const e2eCases = [
   { name: "environment initialization", body: environmentCase },
@@ -22,4 +29,17 @@ export const e2eCases = [
   { name: "wait, fetch, cdp, js, help", body: runtimeCase },
   { name: "runtime regression", body: runtimeRegressionCase },
   { name: "target-scoped event isolation", body: eventIsolationCase },
+  { name: "page labels: create", body: pageLabelCreateCase },
+  { name: "page labels: restore and reuse", body: pageLabelRestoreCase },
+  { name: "page labels: close and do not reuse", body: pageLabelCloseCase },
+  {
+    name: "page labels: persist before hard stop",
+    body: pageLabelHardStopCase,
+    expectedTermination: true,
+    markerName: "hard-stop-page.json",
+  },
+  {
+    name: "page labels: restore after hard stop",
+    body: pageLabelHardStopRestoreCase,
+  },
 ];

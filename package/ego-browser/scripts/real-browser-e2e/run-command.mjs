@@ -7,7 +7,7 @@ export function runCommand(command, args, options = {}) {
     let settled = false;
     const child = spawn(command, args, {
       cwd: options.cwd ?? process.cwd(),
-      env: process.env,
+      env: { ...process.env, ...options.env },
       stdio: options.input ? ["pipe", "pipe", "pipe"] : "inherit",
     });
     const timer =

@@ -12,7 +12,7 @@ export function egoSource(body, context) {
     keepTaskSpace,
   } = context;
   return `
-    const { stat, writeFile } = await import("node:fs/promises");
+    const { readFile, stat, writeFile } = await import("node:fs/promises");
     const { join } = await import("node:path");
     const taskName = ${JSON.stringify(taskName)};
     const baseUrl = ${JSON.stringify(baseUrl)};

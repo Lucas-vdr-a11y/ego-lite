@@ -9,6 +9,7 @@ import {
   newTaskSpace,
   helperContext,
   listTaskSpaces,
+  taskSpace,
   useOrCreateTaskSpace,
   switchTaskSpace,
   waitForAgentControl,
@@ -95,6 +96,7 @@ test("listTaskSpaces throws on binding error objects", async () => {
 
 test("taskspace helper surface exposes public helpers including claimTaskSpace", () => {
   const context = helperContext();
+  assert.equal(typeof context.taskSpace, "function");
   assert.equal(typeof context.listTaskSpaces, "function");
   assert.equal(typeof context.switchTaskSpace, "function");
   assert.equal(typeof context.newTaskSpace, "function");
@@ -108,6 +110,34 @@ test("taskspace helper surface exposes public helpers including claimTaskSpace",
   assert.equal("newTab" in context, false);
   assert.equal("elementEval" in helperExports, false);
   assert.equal("elementEval" in context, false);
+});
+
+test("taskSpace returns the new object model for a resolved space", async () => {
+  await withEgo(
+    {
+      async listTaskSpaces() {
+        return {
+          taskSpaces: [
+            {
+              taskId: "research",
+              id: 7,
+              name: "Research",
+              ownership: "agent",
+            },
+          ],
+        };
+      },
+      async useTaskSpace() {},
+    },
+    async () => {
+      const task = await taskSpace("research");
+      assert.equal(task.id, 7);
+      assert.equal(task.name, "Research");
+      assert.equal(task.ownership, "agent");
+      assert.equal(typeof task.newPage, "function");
+      assert.equal(typeof task.page, "function");
+    },
+  );
 });
 
 test("switchTaskSpace selects a matching task space", async () => {

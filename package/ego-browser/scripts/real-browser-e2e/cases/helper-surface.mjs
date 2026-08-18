@@ -4,6 +4,7 @@ export function helperSurfaceCase() {
       "listTaskSpaces",
       "switchTaskSpace",
       "newTaskSpace",
+      "taskSpace",
       "useOrCreateTaskSpace",
       "claimTaskSpace",
       "completeTaskSpace",
