@@ -234,8 +234,8 @@ export function pageBasicOperationsCase() {
     assert((await stat(screenshotPath)).size > 0, "page.screenshot writes a non-empty PNG");
     assertEqual(
       (await currentTab()).targetId,
-      second.targetId,
-      "target-scoped reads and screenshot do not activate another page"
+      first.targetId,
+      "page.screenshot activates the page it captures"
     );
 
     await first.close();
@@ -265,7 +265,7 @@ export function pageActionsAndPopupCase() {
 
     assertEqual((await currentTab()).targetId, budgetFiller.targetId, "the budget page starts active");
     assertEqual(await source.fill("#text-input", "page-filled").then(() => source.evaluate("document.querySelector('#text-input').value")), "page-filled", "page.fill writes into the addressed page");
-    assertEqual((await currentTab()).targetId, budgetFiller.targetId, "page.fill does not activate its page");
+    assertEqual((await currentTab()).targetId, source.targetId, "page.fill activates and keeps its page current");
 
     await source.evaluate((popupUrl) => {
       const link = document.createElement("a");
@@ -273,11 +273,21 @@ export function pageActionsAndPopupCase() {
       link.href = popupUrl;
       link.target = "_blank";
       link.textContent = "Open managed popup";
+      link.style.cssText = "position:fixed;left:16px;top:16px;z-index:2147483647";
+      window.__pagePopupClickTrusted = null;
+      link.addEventListener("click", (event) => {
+        window.__pagePopupClickTrusted = event.isTrusted;
+      });
       document.body.append(link);
     }, baseUrl + "/secondary?page-actions=popup");
     const receipt = await source.click("#page-popup-link");
 
     assertEqual(receipt.popups.length, 1, "page.click reports the popup it opened");
+    assertEqual(
+      await source.evaluate("window.__pagePopupClickTrusted"),
+      true,
+      "page.click reaches the site as a trusted browser event"
+    );
     const popup = receipt.popups[0];
     assertEqual(typeof popup.label, "string", "the popup receives a durable label");
     assertIncludes(

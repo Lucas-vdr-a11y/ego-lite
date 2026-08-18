@@ -458,10 +458,7 @@ export class Page {
   async snapshot(options: Record<string, unknown> = {}): Promise<string> {
     const page = await this.#resolve();
     return this.#services.gate.withPage(page, async () => {
-      await this.#services.cdp("Target.activateTarget", {
-        targetId: page.targetId,
-      });
-      this.#services.setPreferredTarget(page.targetId);
+      await this.#activate(page.targetId);
       const result = await this.#services.snapshot({
         scope: "full_page",
         includeActionMarks: true,
@@ -510,9 +507,10 @@ export class Page {
       throw new TypeError("page.screenshot path must be a non-empty string");
     }
     const page = await this.#resolve();
-    return this.#services.gate.withPage(page, ({ sessionId }) =>
-      this.#services.screenshot(path, options, sessionId),
-    );
+    return this.#services.gate.withPage(page, async ({ sessionId }) => {
+      await this.#activate(page.targetId);
+      return this.#services.screenshot(path, options, sessionId);
+    });
   }
 
   async click(
@@ -594,6 +592,7 @@ export class Page {
   ): Promise<PageActionReceipt> {
     const page = await this.#resolve();
     return this.#services.gate.withPage(page, async ({ sessionId }) => {
+      await this.#activate(page.targetId);
       const before = new Set(
         (await this.#services.listTabs()).map((tab) => tab.targetId),
       );
@@ -629,6 +628,11 @@ export class Page {
       if (popupError) throw popupError;
       return popups.length > 0 ? { popups } : {};
     });
+  }
+
+  async #activate(targetId: string): Promise<void> {
+    await this.#services.cdp("Target.activateTarget", { targetId });
+    this.#services.setPreferredTarget(targetId);
   }
 }
 

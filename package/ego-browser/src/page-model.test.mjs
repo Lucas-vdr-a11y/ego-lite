@@ -252,7 +252,7 @@ test("snapshot activates the addressed page, not whichever tab was current", asy
   });
 });
 
-test("basic Page reads, evaluate, and screenshot stay on the addressed target", async () => {
+test("basic Page reads stay target-scoped and screenshot activates its Page", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
     const first = await task.newPage("https://example.test/first");
@@ -276,13 +276,18 @@ test("basic Page reads, evaluate, and screenshot stay on the addressed target", 
       { source: "first" },
     );
     assert.equal(
+      fixture.activeTarget(),
+      "target-2",
+      "pure reads must not activate the addressed page",
+    );
+    assert.equal(
       await first.screenshot("/tmp/first.png", { full: true }),
       "/tmp/first.png",
     );
     assert.equal(
       fixture.activeTarget(),
-      "target-2",
-      "target-scoped reads must not activate the addressed page",
+      "target-1",
+      "screenshot must activate the page before visual capture",
     );
 
     const pageCalls = fixture.calls.filter(
@@ -364,7 +369,11 @@ test("Page click stays target-scoped and adopts only tabs opened by the action",
           sessionId === "session:target-1",
       ),
     );
-    assert.equal(fixture.activeTarget(), "target-2");
+    assert.equal(
+      fixture.activeTarget(),
+      "target-1",
+      "click must leave its Page active",
+    );
     await assert.rejects(
       () => task.newPage("https://example.test/blocked"),
       /Page budget reached \(3\/2\)/,
@@ -388,7 +397,11 @@ test("Page fill uses its target session and reports no popup when none opened", 
       { text: "filled" },
       "session:target-1",
     ]);
-    assert.equal(fixture.activeTarget(), "target-2");
+    assert.equal(
+      fixture.activeTarget(),
+      "target-1",
+      "fill must leave its Page active",
+    );
   });
 });
 
