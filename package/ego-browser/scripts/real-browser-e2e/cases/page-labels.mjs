@@ -321,3 +321,180 @@ export function pageActionsAndPopupCase() {
     await budgetFiller.close();
   `;
 }
+
+export function pageComplexEvaluateCase() {
+  return `
+    const task = await taskSpace(taskName);
+    const source = await task.newPage(baseUrl + "/?page-evaluate=complex", {
+      as: "complex-evaluate-source",
+    });
+    const comparison = await task.newPage(baseUrl + "/secondary?page-evaluate=comparison", {
+      as: "complex-evaluate-comparison",
+    });
+    assertEqual((await currentTab()).targetId, comparison.targetId, "comparison page starts active");
+
+    const complexInput = {
+      marker: "复杂输入 😀 café",
+      specialText: [
+        'double-"quote"',
+        "single-'quote'",
+        String.fromCharCode(96) + "template tick" + String.fromCharCode(96),
+        "line\\nbreak",
+        "slash\\\\path",
+        "</script>",
+        String.fromCharCode(0x2028) + String.fromCharCode(0x2029),
+      ].join("|"),
+      config: {
+        multiplier: 7,
+        enabled: true,
+        nullable: null,
+        flags: [true, false, null],
+        labels: { zh: "中文", en: "English", emoji: "🧪" },
+        nested: { one: { two: { three: { value: "deep-value" } } } },
+      },
+      longText: Array.from({ length: 256 }, (_, index) => "segment-" + index + "-数据").join("|"),
+      rows: Array.from({ length: 96 }, (_, index) => ({
+        id: index,
+        label: "条目 " + index + " / " + (index % 2 ? "beta" : "alpha"),
+        tags: Array.from({ length: 8 }, (_, tag) => "tag-" + ((index + tag) % 13)),
+        metrics: {
+          value: index * 3,
+          valid: index % 3 !== 0,
+          ratio: index / 7,
+        },
+      })),
+    };
+    const expectedChecksum = complexInput.rows.reduce(
+      (sum, row) => sum + row.metrics.value * complexInput.config.multiplier + row.tags.length,
+      0
+    );
+
+    const result = await source.evaluate(async (input) => {
+      class RowModel {
+        constructor(row, multiplier) {
+          this.row = row;
+          this.multiplier = multiplier;
+        }
+
+        get slug() {
+          return String(this.row.label)
+            .normalize("NFKC")
+            .replace(/[^a-z0-9]+/gi, "-")
+            .replace(/^-|-$/g, "")
+            .toLowerCase();
+        }
+
+        score() {
+          return this.row.metrics.value * this.multiplier + this.row.tags.length;
+        }
+      }
+
+      const models = input.rows.map((row) => new RowModel(row, input.config.multiplier));
+      const root = document.createElement("section");
+      root.id = "complex-evaluate-root";
+      root.dataset.config = JSON.stringify(input.config);
+      root.dataset.marker = input.marker;
+      const fragment = document.createDocumentFragment();
+      for (const model of models) {
+        const article = document.createElement("article");
+        article.dataset.rowId = String(model.row.id);
+        article.dataset.slug = model.slug;
+        article.dataset.valid = String(model.row.metrics.valid);
+        article.textContent = model.row.label + " | " + model.row.tags.join(",");
+        fragment.append(article);
+      }
+      root.append(fragment);
+
+      const receivedEvents = [];
+      root.addEventListener("ego-complex-evaluate", (event) => {
+        receivedEvents.push(structuredClone(event.detail));
+      });
+      document.body.append(root);
+
+      const checksum = models.reduce((sum, model) => sum + model.score(), 0);
+      root.dispatchEvent(new CustomEvent("ego-complex-evaluate", {
+        bubbles: true,
+        detail: {
+          marker: input.marker,
+          checksum,
+          lastRow: models.at(-1).row.id,
+        },
+      }));
+
+      await new Promise((resolve) => {
+        requestAnimationFrame(() => queueMicrotask(resolve));
+      });
+
+      return {
+        marker: input.marker,
+        specialText: input.specialText,
+        longTextLength: input.longText.length,
+        rowCount: models.length,
+        checksum,
+        first: {
+          id: models[0].row.id,
+          slug: models[0].slug,
+          score: models[0].score(),
+          tags: models[0].row.tags.slice(0, 3),
+        },
+        last: {
+          id: models.at(-1).row.id,
+          score: models.at(-1).score(),
+          ratio: models.at(-1).row.metrics.ratio,
+        },
+        configClone: structuredClone(input.config),
+        event: receivedEvents[0],
+        projection: models.slice(0, 12).map((model) => ({
+          id: model.row.id,
+          slug: model.slug,
+          valid: model.row.metrics.valid,
+          score: model.score(),
+        })),
+        documentState: {
+          visibility: document.visibilityState,
+          hasFocus: document.hasFocus(),
+          articleCount: root.querySelectorAll("article").length,
+          htmlLength: root.outerHTML.length,
+        },
+      };
+    }, complexInput);
+
+    assertEqual((await currentTab()).targetId, source.targetId, "complex evaluate activates its page");
+    assertEqual(result.marker, complexInput.marker, "Unicode argument round-trips through evaluate");
+    assertEqual(result.specialText, complexInput.specialText, "quotes, slashes, and line separators round-trip");
+    assertEqual(result.longTextLength, complexInput.longText.length, "large string input reaches the page intact");
+    assertEqual(result.rowCount, complexInput.rows.length, "large nested array reaches the page intact");
+    assertEqual(result.checksum, expectedChecksum, "class methods and array reductions execute correctly");
+    assertEqual(result.first.id, 0, "complex return includes the first nested record");
+    assertEqual(result.last.id, 95, "complex return includes the last nested record");
+    assertEqual(result.projection.length, 12, "complex return preserves nested array objects");
+    assertEqual(result.configClone.nested.one.two.three.value, "deep-value", "deep input survives structuredClone");
+    assertEqual(result.configClone.flags[2], null, "null values survive nested serialization");
+    assertEqual(result.event.marker, complexInput.marker, "custom event receives the complex marker");
+    assertEqual(result.event.checksum, expectedChecksum, "custom event receives computed data");
+    assertEqual(result.documentState.visibility, "visible", "evaluate runs in the active document");
+    assertEqual(result.documentState.hasFocus, true, "evaluate runs in the focused document");
+    assertEqual(result.documentState.articleCount, 96, "complex script writes every DOM record");
+    assert(result.documentState.htmlLength > 10000, "complex script produces a substantial DOM result");
+
+    const domResult = await source.evaluate(() => {
+      const root = document.querySelector("#complex-evaluate-root");
+      const articles = Array.from(root.querySelectorAll("article"));
+      return {
+        marker: root.dataset.marker,
+        config: JSON.parse(root.dataset.config),
+        count: articles.length,
+        firstText: articles[0].textContent,
+        lastRowId: articles.at(-1).dataset.rowId,
+      };
+    });
+    assertEqual(domResult.marker, complexInput.marker, "injected DOM keeps Unicode dataset values");
+    assertEqual(domResult.config.labels.emoji, "🧪", "injected DOM keeps nested JSON data");
+    assertEqual(domResult.count, 96, "a later evaluate can read the injected DOM");
+    assertIncludes(domResult.firstText, "条目 0", "injected DOM keeps non-ASCII text");
+    assertEqual(domResult.lastRowId, "95", "injected DOM keeps the final row identity");
+
+    await source.close();
+    await comparison.close();
+  `;
+}

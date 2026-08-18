@@ -336,6 +336,33 @@ test("Page evaluate rejects ambiguous or non-serializable arguments", async () =
   });
 });
 
+test("Page evaluate preserves a large nested JSON argument", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a");
+    const page = await task.newPage("https://example.test/evaluate-complex");
+    const argument = {
+      marker: "复杂 input 😀 quotes: \" ' ` and a newline\n",
+      config: {
+        enabled: true,
+        nullable: null,
+        flags: [true, false, null],
+        nested: { level: { value: "深层值" } },
+      },
+      rows: Array.from({ length: 128 }, (_, index) => ({
+        id: index,
+        label: `row-${index}-数据`,
+        tags: [`tag-${index % 7}`, "共享", `quoted-\"${index}\"`],
+        metrics: { value: index * 3, valid: index % 2 === 0 },
+      })),
+    };
+
+    const result = await page.evaluate(async (input) => input, argument);
+
+    assert.deepEqual(result, argument);
+    assert.equal(fixture.activeTarget(), page.targetId);
+  });
+});
+
 test("Page click stays target-scoped and adopts only tabs opened by the action", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a", { pageBudget: 2 });
