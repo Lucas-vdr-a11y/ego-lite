@@ -1,6 +1,6 @@
 import { runtimeValue } from "../cdp-eval.js";
 import { resolveElementObjectId } from "../element-resolver.js";
-import { parseRef, RefMap } from "../ref-map.js";
+import { RefMap } from "../ref-map.js";
 
 type PageActionServices = {
   cdp(
@@ -27,15 +27,11 @@ export type PageFillOptions = {
 const INPUT_EVENT_DELAY_MS = 25;
 const INPUT_DISPATCH_TIMEOUT_MS = 1_000;
 
-/**
- * Click an element through one explicit target session. Page refs are rejected
- * until the Page model owns a target-scoped ref registry; accepting the legacy
- * process-global map here could silently click the same numeric ref on another
- * tab.
- */
+/** Click an element through one explicit target session and Page ref map. */
 export async function clickInPage(
   services: PageActionServices,
   sessionId: string,
+  refMap: RefMap,
   selector: string,
   options: PageClickOptions = {},
 ): Promise<void> {
@@ -51,7 +47,7 @@ export async function clickInPage(
   const target = await resolveElementObjectId(
     cdpAdapter(services),
     sessionId,
-    new RefMap(),
+    refMap,
     selector,
   );
   try {
@@ -139,6 +135,7 @@ export async function clickInPage(
 export async function fillInPage(
   services: PageActionServices,
   sessionId: string,
+  refMap: RefMap,
   selector: string,
   value: string,
   options: PageFillOptions = {},
@@ -155,7 +152,7 @@ export async function fillInPage(
   const resolved = await resolveElementObjectId(
     cdpAdapter(services),
     sessionId,
-    new RefMap(),
+    refMap,
     selector,
   );
   try {
@@ -222,9 +219,30 @@ async function resolveElementPoint(
   ) {
     throw new TypeError("page.click position requires finite x and y offsets");
   }
-  const expression = position
-    ? "function(position){const rect=this.getBoundingClientRect(); return {x:rect.x+position.x,y:rect.y+position.y};}"
-    : "function(){const rect=this.getBoundingClientRect(); return {x:rect.x+rect.width/2,y:rect.y+rect.height/2};}";
+  const pointExpression = position
+    ? "({x:rect.x+position.x,y:rect.y+position.y})"
+    : "({x:rect.x+rect.width/2,y:rect.y+rect.height/2})";
+  const expression = `function(${position ? "position" : ""}) {
+    let rect = this.getBoundingClientRect();
+    let point = ${pointExpression};
+    const outsideViewport =
+      rect.width <= 0 || rect.height <= 0 ||
+      point.x < 0 || point.y < 0 ||
+      point.x >= window.innerWidth || point.y >= window.innerHeight;
+    if (outsideViewport) {
+      this.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
+      rect = this.getBoundingClientRect();
+      point = ${pointExpression};
+    }
+    if (
+      rect.width <= 0 || rect.height <= 0 ||
+      point.x < 0 || point.y < 0 ||
+      point.x >= window.innerWidth || point.y >= window.innerHeight
+    ) {
+      return { error: "element is not visible in the viewport" };
+    }
+    return point;
+  }`;
   const response = await services.cdp(
     "Runtime.callFunctionOn",
     {
@@ -237,6 +255,9 @@ async function resolveElementPoint(
     sessionId,
   );
   const point = runtimeValue(response, expression);
+  if (typeof point?.error === "string") {
+    throw new Error(`page.click failed: ${point.error}`);
+  }
   if (!Number.isFinite(point?.x) || !Number.isFinite(point?.y)) {
     throw new Error("page.click could not resolve the element position");
   }
@@ -342,11 +363,6 @@ async function finishClickProbe(
 function assertPageSelector(selector: unknown): asserts selector is string {
   if (typeof selector !== "string" || selector.trim().length === 0) {
     throw new TypeError("Page actions require a non-empty selector string");
-  }
-  if (parseRef(selector)) {
-    throw new Error(
-      "page-scoped ref support is not available yet; use CSS, xpath=, or loc= for this Page action",
-    );
   }
 }
 

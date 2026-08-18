@@ -2,11 +2,15 @@ export function pageLabelCreateCase() {
   return `
     const task = await taskSpace(taskName);
     await openOrReuseTab(baseUrl + "/?inventory=unknown", { wait: true, timeout: 10 });
-    const page = await task.newPage(baseUrl + "/secondary?managed=p1");
+    const page = await task.newPage(baseUrl + "/?managed=p1");
     assertEqual(page.label, "p1", "first managed page receives p1");
     assertEqual(page.spaceId, task.id, "page carries its task-space id");
     assertEqual(typeof page.targetId, "string", "new page exposes its target id");
-    assertIncludes(await page.snapshot(), "Secondary tab", "p1 snapshot addresses the created page");
+    const snapshot = await page.snapshot();
+    assertIncludes(snapshot, "Helper e2e fixture", "p1 snapshot addresses the created page");
+    const refLine = snapshot.split("\\n").find((line) => line.includes("Increment counter"));
+    const refMatch = refLine && refLine.match(/\\[ref=([0-9]+)/);
+    assert(refMatch, "snapshot exposes a ref for the cross-round action");
     const inventory = await task.listPages();
     const managed = inventory.find((item) => item.label === page.label);
     assertEqual(managed.page.targetId, page.targetId, "listPages returns the managed Page handle");
@@ -17,7 +21,7 @@ export function pageLabelCreateCase() {
     );
     await writeFile(
       join(tempDir, "managed-page.json"),
-      JSON.stringify({ label: page.label, targetId: page.targetId })
+      JSON.stringify({ label: page.label, targetId: page.targetId, ref: "@" + refMatch[1] })
     );
   `;
 }
@@ -27,6 +31,12 @@ export function pageLabelRestoreCase() {
     const saved = JSON.parse(await readFile(join(tempDir, "managed-page.json"), "utf8"));
     const task = await taskSpace(taskName);
     const page = task.page(saved.label);
+    await page.click(saved.ref);
+    assertEqual(
+      await page.evaluate("window.__fixtureState.clicks"),
+      1,
+      "a ref printed in the previous process resolves in the restored Page"
+    );
     const before = await listTabs();
     await page.goto(baseUrl + "/nav-target?managed=restored");
     const after = await listTabs();
@@ -268,6 +278,25 @@ export function pageActionsAndPopupCase() {
     assertEqual((await currentTab()).targetId, budgetFiller.targetId, "the budget page starts active");
     assertEqual(await source.fill("#text-input", "page-filled").then(() => source.evaluate("document.querySelector('#text-input').value")), "page-filled", "page.fill writes into the addressed page");
     assertEqual((await currentTab()).targetId, source.targetId, "page.fill activates and keeps its page current");
+
+    await source.evaluate(() => {
+      const spacer = document.createElement("div");
+      spacer.style.height = "2200px";
+      const button = document.createElement("button");
+      button.id = "page-offscreen-button";
+      button.textContent = "Offscreen trusted action";
+      button.addEventListener("click", (event) => {
+        window.__pageOffscreenClickTrusted = event.isTrusted;
+      });
+      document.body.append(spacer, button);
+    });
+    await source.click("#page-offscreen-button");
+    const offscreenResult = await source.evaluate(() => ({
+      trusted: window.__pageOffscreenClickTrusted,
+      scrollY,
+    }));
+    assertEqual(offscreenResult.trusted, true, "offscreen Page click remains a trusted browser event");
+    assert(offscreenResult.scrollY > 0, "Page click scrolls an offscreen element into view");
 
     await source.evaluate((popupUrl) => {
       const link = document.createElement("a");

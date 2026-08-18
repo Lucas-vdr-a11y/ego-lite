@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { NativeOperationGate } from "../dist/src/native-gate.js";
 import { PageLedgerStore } from "../dist/src/page-ledger.js";
 import { createTaskSpaceHandle } from "../dist/src/page-model.js";
+import { PageRefRegistry } from "../dist/src/page-ref-registry.js";
 
 async function withFixture(fn) {
   const rootDir = await mkdtemp(join(tmpdir(), "ego-page-model-test-"));
@@ -25,6 +26,7 @@ function createFixture(rootDir) {
   let activeTarget = null;
   let popupOnNextClick = null;
   let timeoutNextMouseDispatch = false;
+  let rejectNextClickPoint = false;
 
   function openPendingPopup() {
     if (!popupOnNextClick) return;
@@ -51,6 +53,7 @@ function createFixture(rootDir) {
   });
   const services = {
     gate,
+    pageRefs: new PageRefRegistry(),
     async createTab(url) {
       assert.equal(selectedSpace, 7);
       const targetId = `target-${nextTarget++}`;
@@ -120,6 +123,15 @@ function createFixture(rootDir) {
       }
       if (method === "Runtime.callFunctionOn") {
         if (params.functionDeclaration.includes("getBoundingClientRect")) {
+          if (rejectNextClickPoint) {
+            rejectNextClickPoint = false;
+            return {
+              result: {
+                type: "object",
+                value: { error: "element is not visible in the viewport" },
+              },
+            };
+          }
           return {
             result: { type: "object", value: { x: 40, y: 60 } },
           };
@@ -140,6 +152,15 @@ function createFixture(rootDir) {
           result: {
             type: "object",
             value: params.arguments?.[0]?.value ?? null,
+          },
+        };
+      }
+      if (method === "DOM.resolveNode") {
+        const targetId = sessionId.slice("session:".length);
+        return {
+          object: {
+            type: "object",
+            objectId: `element:${targetId}:${params.backendNodeId}`,
           },
         };
       }
@@ -166,7 +187,17 @@ function createFixture(rootDir) {
     },
     async snapshot() {
       const tab = tabs.get(activeTarget);
-      return { content: `snapshot:${tab?.url}`, refs: [] };
+      calls.push(["snapshot", activeTarget]);
+      return {
+        content: `snapshot:${tab?.url}`,
+        refs: [
+          {
+            backendNodeId: 21,
+            role: "button",
+            name: "Run action",
+          },
+        ],
+      };
     },
     async screenshot(path, options, sessionId) {
       calls.push(["screenshot", path, options, sessionId]);
@@ -197,6 +228,9 @@ function createFixture(rootDir) {
     },
     timeoutNextMouseDispatch() {
       timeoutNextMouseDispatch = true;
+    },
+    rejectNextClickPoint() {
+      rejectNextClickPoint = true;
     },
   };
 }
@@ -437,18 +471,111 @@ test("Page fill uses its target session and reports no popup when none opened", 
   });
 });
 
-test("Page actions reject global refs until the page-scoped ref registry exists", async () => {
+test("Page actions resolve snapshot refs inside the addressed page", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a");
+    const first = await task.newPage("https://example.test/first");
+    const second = await task.newPage("https://example.test/second");
+
+    await first.snapshot();
+    await second.snapshot();
+    await first.click("@21");
+    await second.fill("@21", "page-scoped");
+
+    const firstResolveCall = fixture.calls.find(
+      ([kind, method, params, sessionId]) =>
+        kind === "cdp" &&
+        method === "DOM.resolveNode" &&
+        params.backendNodeId === 21 &&
+        sessionId === "session:target-1",
+    );
+    const secondResolveCall = fixture.calls.find(
+      ([kind, method, params, sessionId]) =>
+        kind === "cdp" &&
+        method === "DOM.resolveNode" &&
+        params.backendNodeId === 21 &&
+        sessionId === "session:target-2",
+    );
+    assert(firstResolveCall, "click must resolve through the first Page session");
+    assert(secondResolveCall, "fill must resolve through the second Page session");
+    assert.equal(fixture.activeTarget(), second.targetId);
+  });
+});
+
+test("a new round refreshes the addressed Page before resolving a ref", async () => {
+  await withFixture(async (fixture) => {
+    const firstRound = taskForRound(fixture, "round-a");
+    const created = await firstRound.newPage("https://example.test/first");
+    await created.snapshot();
+    const snapshotsBefore = fixture.calls.filter(
+      ([kind]) => kind === "snapshot",
+    ).length;
+
+    const secondRound = taskForRound(fixture, "round-b", {
+      pageRefs: new PageRefRegistry(),
+    });
+    await secondRound.page(created.label).click("@21");
+
+    assert.equal(
+      fixture.calls.filter(([kind]) => kind === "snapshot").length,
+      snapshotsBefore + 1,
+      "an empty per-round ref map must refresh the same Page",
+    );
+    assert.deepEqual(
+      fixture.calls.filter(([kind]) => kind === "snapshot").at(-1),
+      ["snapshot", created.targetId],
+    );
+  });
+});
+
+test("an unknown Page ref fails after one target-scoped refresh", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
     const page = await task.newPage("https://example.test/first");
 
     await assert.rejects(
-      () => page.click("@21"),
-      /page-scoped ref support is not available yet/,
+      () => page.click("@99"),
+      /Unknown ref: 99/,
     );
+    assert.deepEqual(
+      fixture.calls.filter(([kind]) => kind === "snapshot"),
+      [["snapshot", page.targetId]],
+    );
+  });
+});
+
+test("Page click scrolls the element into view before computing its point", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a");
+    const page = await task.newPage("https://example.test/first");
+
+    await page.click("#offscreen");
+
+    const pointCall = fixture.calls.find(
+      ([kind, method, params]) =>
+        kind === "cdp" &&
+        method === "Runtime.callFunctionOn" &&
+        params.functionDeclaration.includes("getBoundingClientRect"),
+    );
+    assert.match(pointCall[2].functionDeclaration, /scrollIntoView/);
+  });
+});
+
+test("Page click does not dispatch input when scrolling cannot make the element visible", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a");
+    const page = await task.newPage("https://example.test/first");
+    fixture.rejectNextClickPoint();
+
     await assert.rejects(
-      () => page.fill("@21", "wrong"),
-      /page-scoped ref support is not available yet/,
+      () => page.click("#hidden"),
+      /element is not visible in the viewport/,
+    );
+    assert.equal(
+      fixture.calls.some(
+        ([kind, method]) => kind === "cdp" && method === "Input.dispatchMouseEvent",
+      ),
+      false,
     );
   });
 });

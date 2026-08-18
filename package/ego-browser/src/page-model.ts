@@ -30,6 +30,8 @@ import {
   type PageLedger,
   type PageOrigin,
 } from "./page-ledger.js";
+import { PageRefRegistry } from "./page-ref-registry.js";
+import { parseRef, type RefMap } from "./ref-map.js";
 import { state } from "./state.js";
 
 type TaskSpaceDescriptor = {
@@ -95,6 +97,7 @@ type RuntimeTab = {
 
 type PageModelServices = {
   ledger: LedgerPort;
+  pageRefs: PageRefRegistry;
   gate: OperationGate;
   createTab(url: string): Promise<string>;
   listTabs(): Promise<RuntimeTab[]>;
@@ -147,6 +150,7 @@ export class PageBudgetError extends Error {
 }
 
 let defaultLedger: PageLedgerStore | undefined;
+const defaultPageRefs = new PageRefRegistry();
 const unmanagedPageConstructorToken = Symbol("UnmanagedPage");
 
 const defaultGate: OperationGate = {
@@ -156,6 +160,7 @@ const defaultGate: OperationGate = {
 
 const baseDefaultServices: Omit<PageModelServices, "ledger" | "pageBudget"> = {
   gate: defaultGate,
+  pageRefs: defaultPageRefs,
   async createTab(url) {
     const result = assertNoEgoError(
       await browserEgo().createTab(url),
@@ -441,17 +446,21 @@ export class Page {
     assertTimeout(timeoutMs);
     const page = await this.#resolve();
     return this.#services.gate.withPage(page, async ({ sessionId }) => {
-      const navigation = await this.#services.cdp(
-        "Page.navigate",
-        { url },
-        sessionId,
-        timeoutMs,
-      );
-      if (navigation?.errorText) {
-        throw new Error(`page.goto failed: ${navigation.errorText}`);
+      try {
+        const navigation = await this.#services.cdp(
+          "Page.navigate",
+          { url },
+          sessionId,
+          timeoutMs,
+        );
+        if (navigation?.errorText) {
+          throw new Error(`page.goto failed: ${navigation.errorText}`);
+        }
+        await waitForReadyState(this.#services, sessionId, timeoutMs);
+        return navigation;
+      } finally {
+        this.#services.pageRefs.clear(page.targetId);
       }
-      await waitForReadyState(this.#services, sessionId, timeoutMs);
-      return navigation;
     });
   }
 
@@ -465,6 +474,7 @@ export class Page {
         includeStableLocator: true,
         ...options,
       });
+      this.#services.pageRefs.replace(page.targetId, result?.refs || []);
       return result?.content || "";
     });
   }
@@ -517,8 +527,8 @@ export class Page {
     selector: string,
     options: PageClickOptions = {},
   ): Promise<PageActionReceipt> {
-    return this.#runAction((sessionId) =>
-      clickInPage(this.#services, sessionId, selector, options),
+    return this.#runAction(selector, (sessionId, refMap) =>
+      clickInPage(this.#services, sessionId, refMap, selector, options),
     );
   }
 
@@ -527,8 +537,8 @@ export class Page {
     value: string,
     options: PageFillOptions = {},
   ): Promise<PageActionReceipt> {
-    return this.#runAction((sessionId) =>
-      fillInPage(this.#services, sessionId, selector, value, options),
+    return this.#runAction(selector, (sessionId, refMap) =>
+      fillInPage(this.#services, sessionId, refMap, selector, value, options),
     );
   }
 
@@ -539,6 +549,7 @@ export class Page {
       const live = tabs.some((tab) => tab.targetId === page.targetId);
       if (!live) {
         await this.#services.ledger.closePage(this.spaceId, this.label);
+        this.#services.pageRefs.clear(page.targetId);
         this.#closed = true;
         throw new Error(`page ${this.label} was closed`);
       }
@@ -552,6 +563,7 @@ export class Page {
         throw new Error(`failed to close page ${this.label}`);
       }
       this.#services.invalidateSession(page.targetId);
+      this.#services.pageRefs.clear(page.targetId);
       await this.#services.ledger.closePage(this.spaceId, this.label);
       this.#closed = true;
     });
@@ -579,57 +591,84 @@ export class Page {
     const page = await this.#resolve();
     return this.#services.gate.withPage(page, async ({ sessionId }) => {
       if (activate) await this.#activate(page.targetId);
-      return evaluateInSession<T>(
-        this.#services,
-        sessionId,
-        expression,
-        hasArgument,
-        serializedArgument,
-      );
+      try {
+        return await evaluateInSession<T>(
+          this.#services,
+          sessionId,
+          expression,
+          hasArgument,
+          serializedArgument,
+        );
+      } finally {
+        if (activate) this.#services.pageRefs.clear(page.targetId);
+      }
     });
   }
 
   async #runAction(
-    operation: (sessionId: string) => Promise<void>,
+    selector: string,
+    operation: (sessionId: string, refMap: RefMap) => Promise<void>,
   ): Promise<PageActionReceipt> {
     const page = await this.#resolve();
     return this.#services.gate.withPage(page, async ({ sessionId }) => {
       await this.#activate(page.targetId);
-      const before = new Set(
-        (await this.#services.listTabs()).map((tab) => tab.targetId),
-      );
-      let actionError: unknown;
       try {
-        await operation(sessionId);
-      } catch (error) {
-        actionError = error;
-      }
-
-      // A popup is normally created synchronously by the input event. A short
-      // settle covers native tab-list propagation without turning this into a
-      // navigation wait or silently changing the page's active state.
-      await this.#services.sleep(50);
-      let popupError: unknown;
-      const popups: Array<{ label: string; targetId: string }> = [];
-      try {
-        const after = await this.#services.listTabs();
-        for (const tab of after) {
-          if (before.has(tab.targetId)) continue;
-          const managed = await this.#services.ledger.addPage(
-            this.spaceId,
-            tab.targetId,
-            { openedBy: "agent" },
-          );
-          popups.push({ label: managed.label, targetId: managed.targetId });
+        const refMap = await this.#refMapForAction(page, selector);
+        const before = new Set(
+          (await this.#services.listTabs()).map((tab) => tab.targetId),
+        );
+        let actionError: unknown;
+        try {
+          await operation(sessionId, refMap);
+        } catch (error) {
+          actionError = error;
         }
-      } catch (error) {
-        popupError = error;
-      }
 
-      if (actionError) throw actionError;
-      if (popupError) throw popupError;
-      return popups.length > 0 ? { popups } : {};
+        // A popup is normally created synchronously by the input event. A short
+        // settle covers native tab-list propagation without turning this into a
+        // navigation wait or silently changing the page's active state.
+        await this.#services.sleep(50);
+        let popupError: unknown;
+        const popups: Array<{ label: string; targetId: string }> = [];
+        try {
+          const after = await this.#services.listTabs();
+          for (const tab of after) {
+            if (before.has(tab.targetId)) continue;
+            const managed = await this.#services.ledger.addPage(
+              this.spaceId,
+              tab.targetId,
+              { openedBy: "agent" },
+            );
+            popups.push({ label: managed.label, targetId: managed.targetId });
+          }
+        } catch (error) {
+          popupError = error;
+        }
+
+        if (actionError) throw actionError;
+        if (popupError) throw popupError;
+        return popups.length > 0 ? { popups } : {};
+      } finally {
+        this.#services.pageRefs.clear(page.targetId);
+      }
     });
+  }
+
+  async #refMapForAction(
+    page: PageTarget,
+    selector: string,
+  ): Promise<RefMap> {
+    let refs = this.#services.pageRefs.forTarget(page.targetId);
+    const refId = parseRef(selector);
+    if (!refId || refs.get(refId)) return refs;
+
+    const result = await this.#services.snapshot({
+      scope: "full_page",
+      includeActionMarks: true,
+      includeStableLocator: true,
+    });
+    refs = this.#services.pageRefs.replace(page.targetId, result?.refs || []);
+    return refs;
   }
 
   async #activate(targetId: string): Promise<void> {
