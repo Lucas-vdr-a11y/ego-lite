@@ -96,6 +96,18 @@ function createFixture(rootDir) {
         if (params.expression === "document.title") {
           return { result: { type: "string", value: tab.title } };
         }
+        if (params.expression.includes("performance.timeOrigin")) {
+          return {
+            result: {
+              type: "object",
+              value: {
+                readyState: "complete",
+                url: tab.url,
+                timeOrigin: Date.now() + 1_000,
+              },
+            },
+          };
+        }
         if (params.expression.includes("innerWidth")) {
           return {
             result: {
@@ -291,6 +303,58 @@ test("a page label restores in a new round and goto reuses its target", async ()
       await restored.snapshot(),
       "snapshot:https://example.test/second",
     );
+  });
+});
+
+test("newPage waits for the document created by this call, not an already-complete placeholder", async () => {
+  await withFixture(async (fixture) => {
+    const requestedUrl = "https://example.test/created-document";
+    const baseCreateTab = fixture.services.createTab;
+    const baseCdp = fixture.services.cdp;
+    let now = 10_000;
+    let targetId;
+    let sleepCount = 0;
+
+    const task = taskForRound(fixture, "round-a", {
+      async createTab(url) {
+        targetId = await baseCreateTab(url);
+        fixture.tabs.get(targetId).url = "chrome://newtab/";
+        return targetId;
+      },
+      async cdp(method, params, sessionId, timeoutMs) {
+        if (method === "Runtime.evaluate") {
+          if (params.expression === "document.readyState") {
+            return { result: { type: "string", value: "complete" } };
+          }
+          if (params.expression.includes("performance.timeOrigin")) {
+            const tab = fixture.tabs.get(targetId);
+            return {
+              result: {
+                type: "object",
+                value: {
+                  readyState: "complete",
+                  url: tab.url,
+                  timeOrigin: tab.url === requestedUrl ? now : now - 5_000,
+                },
+              },
+            };
+          }
+        }
+        return baseCdp(method, params, sessionId, timeoutMs);
+      },
+      now: () => now,
+      async sleep(ms) {
+        sleepCount += 1;
+        now += ms;
+        fixture.tabs.get(targetId).url = requestedUrl;
+      },
+    });
+
+    const page = await task.newPage(requestedUrl);
+
+    assert.equal(page.targetId, targetId);
+    assert.equal(sleepCount, 1);
+    assert.equal(fixture.tabs.get(targetId).url, requestedUrl);
   });
 });
 
@@ -587,8 +651,14 @@ test("Page actions resolve snapshot refs inside the addressed page", async () =>
         params.backendNodeId === 21 &&
         sessionId === "session:target-2",
     );
-    assert(firstResolveCall, "click must resolve through the first Page session");
-    assert(secondResolveCall, "fill must resolve through the second Page session");
+    assert(
+      firstResolveCall,
+      "click must resolve through the first Page session",
+    );
+    assert(
+      secondResolveCall,
+      "fill must resolve through the second Page session",
+    );
     assert.equal(fixture.activeTarget(), second.targetId);
   });
 });
@@ -624,10 +694,7 @@ test("an unknown Page ref fails after one target-scoped refresh", async () => {
     const task = taskForRound(fixture, "round-a");
     const page = await task.newPage("https://example.test/first");
 
-    await assert.rejects(
-      () => page.click("@99"),
-      /Unknown ref: 99/,
-    );
+    await assert.rejects(() => page.click("@99"), /Unknown ref: 99/);
     assert.deepEqual(
       fixture.calls.filter(([kind]) => kind === "snapshot"),
       [["snapshot", page.targetId]],
@@ -664,7 +731,8 @@ test("Page click does not dispatch input when scrolling cannot make the element 
     );
     assert.equal(
       fixture.calls.some(
-        ([kind, method]) => kind === "cdp" && method === "Input.dispatchMouseEvent",
+        ([kind, method]) =>
+          kind === "cdp" && method === "Input.dispatchMouseEvent",
       ),
       false,
     );

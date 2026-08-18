@@ -362,6 +362,7 @@ export class TaskSpace {
       if (managedCount >= this.#services.pageBudget) {
         throw pageBudgetError(this, this.#services.pageBudget, ledger, tabs);
       }
+      const creationStartedAtMs = this.#services.now();
       const targetId = await this.#services.createTab(url);
       this.#services.setPreferredTarget(targetId);
       const existingManaged = Object.entries(ledger.pages).find(
@@ -395,7 +396,13 @@ export class TaskSpace {
       const page = new Page(this, entry.label, this.#services, entry);
       try {
         const sessionId = await this.#services.ensureSession(targetId);
-        await waitForReadyState(this.#services, sessionId, timeoutMs);
+        await waitForCreatedDocument(
+          this.#services,
+          sessionId,
+          url,
+          creationStartedAtMs,
+          timeoutMs,
+        );
       } catch (error) {
         throw new Error(
           `page ${entry.label} was created but did not finish loading; retrieve it with task.page('${entry.label}'): ${error?.message || error}`,
@@ -715,10 +722,7 @@ export class Page {
     });
   }
 
-  async #refMapForAction(
-    page: PageTarget,
-    selector: string,
-  ): Promise<RefMap> {
+  async #refMapForAction(page: PageTarget, selector: string): Promise<RefMap> {
     let refs = this.#services.pageRefs.forTarget(page.targetId);
     const refId = parseRef(selector);
     if (!refId || refs.get(refId)) return refs;
@@ -905,6 +909,71 @@ async function fetchInPage({
   } finally {
     window.clearTimeout(timer);
   }
+}
+
+async function waitForCreatedDocument(
+  services: PageModelServices,
+  sessionId: string,
+  requestedUrl: string,
+  creationStartedAtMs: number,
+  timeoutMs: number,
+): Promise<void> {
+  const deadline = services.now() + timeoutMs;
+  while (services.now() <= deadline) {
+    const remaining = Math.max(1, deadline - services.now());
+    const response = await services.cdp(
+      "Runtime.evaluate",
+      {
+        // createTab() can return while the target still exposes an already
+        // complete Chrome placeholder document. Read all three values in one
+        // evaluation so newPage resolves only after the requested navigation
+        // has committed a document created during this call.
+        expression:
+          "({readyState:document.readyState,url:location.href,timeOrigin:performance.timeOrigin})",
+        returnByValue: true,
+      },
+      sessionId,
+      Math.min(1_000, remaining),
+    );
+    const observation = response?.result?.value;
+    if (
+      isCreatedDocumentReady(observation, requestedUrl, creationStartedAtMs)
+    ) {
+      return;
+    }
+    await services.sleep(Math.min(100, remaining));
+  }
+  throw new Error(`task.newPage timed out after ${timeoutMs}ms`);
+}
+
+function isCreatedDocumentReady(
+  observation: any,
+  requestedUrl: string,
+  creationStartedAtMs: number,
+): boolean {
+  if (
+    observation?.readyState !== "complete" ||
+    typeof observation?.url !== "string" ||
+    typeof observation?.timeOrigin !== "number" ||
+    observation.timeOrigin < creationStartedAtMs
+  ) {
+    return false;
+  }
+
+  if (isBrowserPlaceholderUrl(requestedUrl)) {
+    return observation.url === requestedUrl;
+  }
+  return !isBrowserPlaceholderUrl(observation.url);
+}
+
+function isBrowserPlaceholderUrl(url: string): boolean {
+  return (
+    url === "" ||
+    url === ":" ||
+    url === "about:blank" ||
+    url === "chrome://newtab/" ||
+    url === "chrome://new-tab-page/"
+  );
 }
 
 async function waitForReadyState(
