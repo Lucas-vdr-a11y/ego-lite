@@ -11,6 +11,7 @@ import { runtimeRegressionCase } from "./runtime-regression.mjs";
 import { eventIsolationCase } from "./event-isolation.mjs";
 import {
   pageAdoptionCase,
+  pageActionsAndPopupCase,
   pageBasicOperationsCase,
   pageBudgetCase,
   pageLabelCloseCase,
@@ -48,4 +49,5 @@ export const e2eCases = [
   { name: "page inventory and budget", body: pageBudgetCase },
   { name: "page adoption and release", body: pageAdoptionCase },
   { name: "page basic operations", body: pageBasicOperationsCase },
+  { name: "page actions and popup adoption", body: pageActionsAndPopupCase },
 ];

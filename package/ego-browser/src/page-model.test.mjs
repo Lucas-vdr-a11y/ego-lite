@@ -23,6 +23,20 @@ function createFixture(rootDir) {
   let nextTarget = 1;
   let selectedSpace = null;
   let activeTarget = null;
+  let popupOnNextClick = null;
+  let timeoutNextMouseDispatch = false;
+
+  function openPendingPopup() {
+    if (!popupOnNextClick) return;
+    const targetId = `target-${nextTarget++}`;
+    tabs.set(targetId, {
+      targetId,
+      url: popupOnNextClick,
+      title: "Popup",
+      active: false,
+    });
+    popupOnNextClick = null;
+  }
   async function ensureTargetSession(targetId) {
     assert(tabs.has(targetId), `unknown target ${targetId}`);
     calls.push(["ensureSession", targetId]);
@@ -94,9 +108,34 @@ function createFixture(rootDir) {
             },
           };
         }
+        if (params.returnByValue === false) {
+          return {
+            result: {
+              type: "object",
+              objectId: `element:${targetId}`,
+            },
+          };
+        }
         return { result: { type: "string", value: "complete" } };
       }
       if (method === "Runtime.callFunctionOn") {
+        if (params.functionDeclaration.includes("getBoundingClientRect")) {
+          return {
+            result: { type: "object", value: { x: 40, y: 60 } },
+          };
+        }
+        if (params.functionDeclaration.includes("const probe = { seen")) {
+          return { result: { type: "boolean", value: true } };
+        }
+        if (params.functionDeclaration.includes("target.dispatchEvent")) {
+          openPendingPopup();
+          return {
+            result: {
+              type: "object",
+              value: { seen: false, fallback: true },
+            },
+          };
+        }
         return {
           result: {
             type: "object",
@@ -105,6 +144,15 @@ function createFixture(rootDir) {
         };
       }
       if (method === "Runtime.releaseObject") return {};
+      if (method === "Input.insertText") return {};
+      if (method === "Input.dispatchMouseEvent") {
+        if (timeoutNextMouseDispatch) {
+          timeoutNextMouseDispatch = false;
+          throw new Error("CDP request timed out: Input.dispatchMouseEvent");
+        }
+        if (params.type === "mouseReleased") openPendingPopup();
+        return {};
+      }
       if (method === "Target.activateTarget") {
         activeTarget = params.targetId;
         return { success: true };
@@ -144,6 +192,12 @@ function createFixture(rootDir) {
     rootDir,
     services,
     tabs,
+    openPopupOnNextClick(url) {
+      popupOnNextClick = url;
+    },
+    timeoutNextMouseDispatch() {
+      timeoutNextMouseDispatch = true;
+    },
   };
 }
 
@@ -268,6 +322,88 @@ test("Page evaluate rejects ambiguous or non-serializable arguments", async () =
     await assert.rejects(
       () => page.evaluate(42),
       /expects a function or string expression/,
+    );
+  });
+});
+
+test("Page click stays target-scoped and adopts only tabs opened by the action", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a", { pageBudget: 2 });
+    const first = await task.newPage("https://example.test/first");
+    await task.newPage("https://example.test/second");
+    fixture.tabs.set("target-user", {
+      targetId: "target-user",
+      url: "https://example.test/user",
+      title: "Existing user page",
+      active: false,
+    });
+    fixture.openPopupOnNextClick("https://example.test/popup");
+    fixture.timeoutNextMouseDispatch();
+
+    const receipt = await first.click("#open-popup");
+
+    assert.deepEqual(receipt, {
+      popups: [{ label: "p3", targetId: "target-3" }],
+    });
+    const inventory = await task.listPages();
+    assert.equal(
+      inventory.find((item) => item.targetId === "target-user").label,
+      undefined,
+      "a tab that existed before the action must remain untracked",
+    );
+    assert.equal(
+      inventory.find((item) => item.targetId === "target-3").label,
+      "p3",
+      "a popup opened by the action is managed even above the budget",
+    );
+    assert(
+      fixture.calls.some(
+        ([kind, method, , sessionId]) =>
+          kind === "cdp" &&
+          method === "Input.dispatchMouseEvent" &&
+          sessionId === "session:target-1",
+      ),
+    );
+    assert.equal(fixture.activeTarget(), "target-2");
+    await assert.rejects(
+      () => task.newPage("https://example.test/blocked"),
+      /Page budget reached \(3\/2\)/,
+    );
+  });
+});
+
+test("Page fill uses its target session and reports no popup when none opened", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a");
+    const first = await task.newPage("https://example.test/first");
+    await task.newPage("https://example.test/second");
+
+    assert.deepEqual(await first.fill("#text-input", "filled"), {});
+    const insertText = fixture.calls.find(
+      ([kind, method]) => kind === "cdp" && method === "Input.insertText",
+    );
+    assert.deepEqual(insertText, [
+      "cdp",
+      "Input.insertText",
+      { text: "filled" },
+      "session:target-1",
+    ]);
+    assert.equal(fixture.activeTarget(), "target-2");
+  });
+});
+
+test("Page actions reject global refs until the page-scoped ref registry exists", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a");
+    const page = await task.newPage("https://example.test/first");
+
+    await assert.rejects(
+      () => page.click("@21"),
+      /page-scoped ref support is not available yet/,
+    );
+    await assert.rejects(
+      () => page.fill("@21", "wrong"),
+      /page-scoped ref support is not available yet/,
     );
   });
 });

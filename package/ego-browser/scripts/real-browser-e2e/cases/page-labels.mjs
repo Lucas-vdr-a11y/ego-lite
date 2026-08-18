@@ -242,3 +242,70 @@ export function pageBasicOperationsCase() {
     await second.close();
   `;
 }
+
+export function pageActionsAndPopupCase() {
+  return `
+    const task = await taskSpace(taskName);
+    await openOrReuseTab(baseUrl + "/?page-actions=unknown", {
+      wait: true,
+      timeout: 10,
+    });
+    const unknownBefore = (await task.listPages())
+      .filter((item) => item.label === undefined)
+      .map((item) => item.targetId);
+    const source = await task.newPage(baseUrl + "/?page-actions=source", {
+      as: "page-actions-source",
+    });
+    const comparison = await task.newPage(baseUrl + "/secondary?page-actions=comparison", {
+      as: "page-actions-comparison",
+    });
+    const budgetFiller = await task.newPage(baseUrl + "/secondary?page-actions=budget", {
+      as: "page-actions-budget",
+    });
+
+    assertEqual((await currentTab()).targetId, budgetFiller.targetId, "the budget page starts active");
+    assertEqual(await source.fill("#text-input", "page-filled").then(() => source.evaluate("document.querySelector('#text-input').value")), "page-filled", "page.fill writes into the addressed page");
+    assertEqual((await currentTab()).targetId, budgetFiller.targetId, "page.fill does not activate its page");
+
+    await source.evaluate((popupUrl) => {
+      const link = document.createElement("a");
+      link.id = "page-popup-link";
+      link.href = popupUrl;
+      link.target = "_blank";
+      link.textContent = "Open managed popup";
+      document.body.append(link);
+    }, baseUrl + "/secondary?page-actions=popup");
+    const receipt = await source.click("#page-popup-link");
+
+    assertEqual(receipt.popups.length, 1, "page.click reports the popup it opened");
+    const popup = receipt.popups[0];
+    assertEqual(typeof popup.label, "string", "the popup receives a durable label");
+    assertIncludes(
+      await task.page(popup.label).url(),
+      "page-actions=popup",
+      "the receipt label resolves the popup Page"
+    );
+    const inventory = await task.listPages();
+    assertEqual(
+      inventory.find((item) => item.targetId === popup.targetId).openedBy,
+      "agent",
+      "the popup is recorded as agent-created"
+    );
+    assert(
+      unknownBefore.every(
+        (targetId) => inventory.find((item) => item.targetId === targetId)?.label === undefined
+      ),
+      "tabs that existed before the action remain untracked"
+    );
+    await assertRejects(
+      () => task.newPage(baseUrl + "/secondary?page-actions=blocked"),
+      "Page budget reached (4/3)",
+      "an adopted popup can exceed the budget and backpressure later newPage calls"
+    );
+
+    await task.page(popup.label).close();
+    await source.close();
+    await comparison.close();
+    await budgetFiller.close();
+  `;
+}

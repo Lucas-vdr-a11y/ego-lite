@@ -12,6 +12,12 @@ import {
   snapshotRaw,
   type CaptureScreenshotOptions,
 } from "./driver/observe.js";
+import {
+  clickInPage,
+  fillInPage,
+  type PageClickOptions,
+  type PageFillOptions,
+} from "./driver/page-actions.js";
 import { assertNoEgoError } from "./ego-errors.js";
 import {
   withPage as defaultWithPage,
@@ -121,6 +127,10 @@ export type PageInventoryItem = {
   url: string;
   active: boolean;
   openedBy: PageOrigin;
+};
+
+export type PageActionReceipt = {
+  popups?: Array<{ label: string; targetId: string }>;
 };
 
 export class PageBudgetError extends Error {
@@ -505,6 +515,25 @@ export class Page {
     );
   }
 
+  async click(
+    selector: string,
+    options: PageClickOptions = {},
+  ): Promise<PageActionReceipt> {
+    return this.#runAction((sessionId) =>
+      clickInPage(this.#services, sessionId, selector, options),
+    );
+  }
+
+  async fill(
+    selector: string,
+    value: string,
+    options: PageFillOptions = {},
+  ): Promise<PageActionReceipt> {
+    return this.#runAction((sessionId) =>
+      fillInPage(this.#services, sessionId, selector, value, options),
+    );
+  }
+
   async close(): Promise<void> {
     const page = await this.#resolve();
     await this.#services.gate.withSpace(this.spaceId, async () => {
@@ -558,6 +587,48 @@ export class Page {
         serializedArgument,
       ),
     );
+  }
+
+  async #runAction(
+    operation: (sessionId: string) => Promise<void>,
+  ): Promise<PageActionReceipt> {
+    const page = await this.#resolve();
+    return this.#services.gate.withPage(page, async ({ sessionId }) => {
+      const before = new Set(
+        (await this.#services.listTabs()).map((tab) => tab.targetId),
+      );
+      let actionError: unknown;
+      try {
+        await operation(sessionId);
+      } catch (error) {
+        actionError = error;
+      }
+
+      // A popup is normally created synchronously by the input event. A short
+      // settle covers native tab-list propagation without turning this into a
+      // navigation wait or silently changing the page's active state.
+      await this.#services.sleep(50);
+      let popupError: unknown;
+      const popups: Array<{ label: string; targetId: string }> = [];
+      try {
+        const after = await this.#services.listTabs();
+        for (const tab of after) {
+          if (before.has(tab.targetId)) continue;
+          const managed = await this.#services.ledger.addPage(
+            this.spaceId,
+            tab.targetId,
+            { openedBy: "agent" },
+          );
+          popups.push({ label: managed.label, targetId: managed.targetId });
+        }
+      } catch (error) {
+        popupError = error;
+      }
+
+      if (actionError) throw actionError;
+      if (popupError) throw popupError;
+      return popups.length > 0 ? { popups } : {};
+    });
   }
 }
 
