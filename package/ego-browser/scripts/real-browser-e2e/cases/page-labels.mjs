@@ -186,3 +186,59 @@ export function pageAdoptionCase() {
     await agentPage.close();
   `;
 }
+
+export function pageBasicOperationsCase() {
+  return `
+    const task = await taskSpace(taskName);
+    const first = await task.newPage(baseUrl + "/?page-api=first", {
+      as: "page-api-first",
+    });
+    const second = await task.newPage(baseUrl + "/secondary?page-api=second", {
+      as: "page-api-second",
+    });
+    assertEqual((await currentTab()).targetId, second.targetId, "second page starts active");
+
+    assertIncludes(await first.url(), "page-api=first", "page.url reads its own target");
+    assertEqual(await first.title(), "ego-lite helper e2e", "page.title reads its own target");
+    const info = await first.info();
+    assertIncludes(info.url, "page-api=first", "page.info reads its own URL");
+    assert(info.w > 0 && info.h > 0, "page.info reports a usable viewport");
+    assertEqual(
+      await first.evaluate("document.querySelector('h1').textContent"),
+      "Helper e2e fixture",
+      "string evaluate runs on the addressed page"
+    );
+    const evaluated = await first.evaluate(
+      async ({ selector, suffix }) => ({
+        text: document.querySelector(selector)?.textContent?.trim(),
+        suffix,
+        title: document.title,
+      }),
+      { selector: "h1", suffix: "ok" }
+    );
+    assertEqual(evaluated.text, "Helper e2e fixture", "function evaluate receives one JSON argument");
+    assertEqual(evaluated.suffix, "ok", "function evaluate preserves argument values");
+    assertEqual(evaluated.title, "ego-lite helper e2e", "function evaluate stays target-scoped");
+    await assertRejects(
+      () => first.evaluate(() => { throw new Error("page evaluate boom"); }),
+      "page evaluate boom",
+      "function evaluate surfaces page exceptions"
+    );
+
+    const screenshotPath = join(tempDir, "page-api-first.png");
+    assertEqual(
+      await first.screenshot(screenshotPath, { full: false }),
+      screenshotPath,
+      "page.screenshot returns its explicit path"
+    );
+    assert((await stat(screenshotPath)).size > 0, "page.screenshot writes a non-empty PNG");
+    assertEqual(
+      (await currentTab()).targetId,
+      second.targetId,
+      "target-scoped reads and screenshot do not activate another page"
+    );
+
+    await first.close();
+    await second.close();
+  `;
+}

@@ -61,8 +61,50 @@ function createFixture(rootDir) {
         return { frameId: "frame-1" };
       }
       if (method === "Runtime.evaluate") {
+        const targetId = sessionId?.slice("session:".length);
+        const tab = tabs.get(targetId);
+        if (params.expression === "globalThis") {
+          return {
+            result: {
+              type: "object",
+              objectId: `global:${targetId}`,
+            },
+          };
+        }
+        if (params.expression === "location.href") {
+          return { result: { type: "string", value: tab.url } };
+        }
+        if (params.expression === "document.title") {
+          return { result: { type: "string", value: tab.title } };
+        }
+        if (params.expression.includes("innerWidth")) {
+          return {
+            result: {
+              type: "object",
+              value: {
+                url: tab.url,
+                title: tab.title,
+                w: targetId === "target-1" ? 801 : 802,
+                h: 600,
+                sx: 0,
+                sy: 0,
+                pw: 1200,
+                ph: 900,
+              },
+            },
+          };
+        }
         return { result: { type: "string", value: "complete" } };
       }
+      if (method === "Runtime.callFunctionOn") {
+        return {
+          result: {
+            type: "object",
+            value: params.arguments?.[0]?.value ?? null,
+          },
+        };
+      }
+      if (method === "Runtime.releaseObject") return {};
       if (method === "Target.activateTarget") {
         activeTarget = params.targetId;
         return { success: true };
@@ -77,6 +119,13 @@ function createFixture(rootDir) {
     async snapshot() {
       const tab = tabs.get(activeTarget);
       return { content: `snapshot:${tab?.url}`, refs: [] };
+    },
+    async screenshot(path, options, sessionId) {
+      calls.push(["screenshot", path, options, sessionId]);
+      return path || "/tmp/generated-shot.png";
+    },
+    pendingDialog() {
+      return null;
     },
     ensureSession: ensureTargetSession,
     invalidateSession(targetId) {
@@ -146,6 +195,80 @@ test("snapshot activates the addressed page, not whichever tab was current", asy
     assert.equal(fixture.activeTarget(), "target-2");
     assert.equal(await first.snapshot(), "snapshot:https://example.test/first");
     assert.equal(fixture.activeTarget(), "target-1");
+  });
+});
+
+test("basic Page reads, evaluate, and screenshot stay on the addressed target", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a");
+    const first = await task.newPage("https://example.test/first");
+    await task.newPage("https://example.test/second");
+
+    assert.equal(fixture.activeTarget(), "target-2");
+    assert.equal(await first.url(), "https://example.test/first");
+    assert.equal(await first.title(), "https://example.test/first");
+    assert.deepEqual(await first.info(), {
+      url: "https://example.test/first",
+      title: "https://example.test/first",
+      w: 801,
+      h: 600,
+      sx: 0,
+      sy: 0,
+      pw: 1200,
+      ph: 900,
+    });
+    assert.deepEqual(
+      await first.evaluate((value) => value, { source: "first" }),
+      { source: "first" },
+    );
+    assert.equal(
+      await first.screenshot("/tmp/first.png", { full: true }),
+      "/tmp/first.png",
+    );
+    assert.equal(
+      fixture.activeTarget(),
+      "target-2",
+      "target-scoped reads must not activate the addressed page",
+    );
+
+    const pageCalls = fixture.calls.filter(
+      ([kind, , , sessionId]) =>
+        (kind === "cdp" || kind === "screenshot") &&
+        sessionId === "session:target-1",
+    );
+    assert(pageCalls.length >= 5);
+    assert(
+      pageCalls.every(([, , , sessionId]) => sessionId === "session:target-1"),
+    );
+    const callFunction = pageCalls.find(
+      ([kind, method]) => kind === "cdp" && method === "Runtime.callFunctionOn",
+    );
+    assert.deepEqual(callFunction[2].arguments, [
+      { value: { source: "first" } },
+    ]);
+    assert.match(callFunction[2].functionDeclaration, /value.*=> value/);
+  });
+});
+
+test("Page evaluate rejects ambiguous or non-serializable arguments", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a");
+    const page = await task.newPage("https://example.test/evaluate");
+    const cyclic = {};
+    cyclic.self = cyclic;
+
+    await assert.rejects(
+      () => page.evaluate("document.title", { ignored: true }),
+      /string expression does not accept an argument/,
+    );
+    await assert.rejects(
+      () => page.evaluate((value) => value, cyclic),
+      /argument must be JSON-serializable/,
+    );
+    await assert.rejects(
+      () => page.evaluate(42),
+      /expects a function or string expression/,
+    );
   });
 });
 

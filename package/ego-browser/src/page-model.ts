@@ -3,9 +3,15 @@ import {
   browserEgo,
   ensureSession,
   invalidateSession,
+  pendingDialog,
   setPreferredTarget,
 } from "./browser-runtime.js";
-import { snapshotRaw } from "./driver/observe.js";
+import { runtimeValue } from "./cdp-eval.js";
+import {
+  captureScreenshotForSession,
+  snapshotRaw,
+  type CaptureScreenshotOptions,
+} from "./driver/observe.js";
 import { assertNoEgoError } from "./ego-errors.js";
 import {
   withPage as defaultWithPage,
@@ -93,6 +99,12 @@ type PageModelServices = {
     timeoutMs?: number,
   ): Promise<any>;
   snapshot(options?: Record<string, unknown>): Promise<any>;
+  screenshot(
+    path: string | undefined,
+    options: CaptureScreenshotOptions,
+    sessionId: string,
+  ): Promise<string>;
+  pendingDialog(sessionId: string): Record<string, unknown> | null;
   ensureSession(targetId: string): Promise<string>;
   invalidateSession(targetId: string): void;
   setPreferredTarget(targetId: string): void;
@@ -157,6 +169,8 @@ const baseDefaultServices: Omit<PageModelServices, "ledger" | "pageBudget"> = {
     return response?.result || {};
   },
   snapshot: snapshotRaw,
+  screenshot: captureScreenshotForSession,
+  pendingDialog,
   ensureSession,
   invalidateSession,
   setPreferredTarget,
@@ -448,6 +462,49 @@ export class Page {
     });
   }
 
+  async url(): Promise<string> {
+    return this.#evaluate("location.href", false);
+  }
+
+  async title(): Promise<string> {
+    return this.#evaluate("document.title", false);
+  }
+
+  async info(): Promise<Record<string, unknown>> {
+    const page = await this.#resolve();
+    return this.#services.gate.withPage(page, async ({ sessionId }) => {
+      const dialog = this.#services.pendingDialog(sessionId);
+      if (dialog) return { dialog };
+      return evaluateInSession(
+        this.#services,
+        sessionId,
+        "({url:location.href,title:document.title,w:innerWidth,h:innerHeight,sx:scrollX,sy:scrollY,pw:document.documentElement.scrollWidth,ph:document.documentElement.scrollHeight})",
+        false,
+      );
+    });
+  }
+
+  async evaluate<T = unknown>(
+    expression: string | ((argument: any) => T),
+    argument?: unknown,
+  ): Promise<T> {
+    const hasArgument = arguments.length >= 2;
+    return this.#evaluate(expression, hasArgument, argument);
+  }
+
+  async screenshot(
+    path?: string,
+    options: CaptureScreenshotOptions = {},
+  ): Promise<string> {
+    if (path !== undefined && (typeof path !== "string" || path.length === 0)) {
+      throw new TypeError("page.screenshot path must be a non-empty string");
+    }
+    const page = await this.#resolve();
+    return this.#services.gate.withPage(page, ({ sessionId }) =>
+      this.#services.screenshot(path, options, sessionId),
+    );
+  }
+
   async close(): Promise<void> {
     const page = await this.#resolve();
     await this.#services.gate.withSpace(this.spaceId, async () => {
@@ -479,6 +536,130 @@ export class Page {
     this.#targetId = entry.targetId;
     this.#openedBy = entry.openedBy;
     return { spaceId: this.spaceId, targetId: entry.targetId };
+  }
+
+  async #evaluate<T>(
+    expression: string | ((argument: any) => T),
+    hasArgument: boolean,
+    argument?: unknown,
+  ): Promise<T> {
+    const serializedArgument = validateEvaluateInput(
+      expression,
+      hasArgument,
+      argument,
+    );
+    const page = await this.#resolve();
+    return this.#services.gate.withPage(page, ({ sessionId }) =>
+      evaluateInSession<T>(
+        this.#services,
+        sessionId,
+        expression,
+        hasArgument,
+        serializedArgument,
+      ),
+    );
+  }
+}
+
+async function evaluateInSession<T>(
+  services: PageModelServices,
+  sessionId: string,
+  expression: string | ((argument: any) => T),
+  hasArgument: boolean,
+  serializedArgument?: unknown,
+): Promise<T> {
+  if (typeof expression === "string") {
+    const response = await services.cdp(
+      "Runtime.evaluate",
+      {
+        expression,
+        returnByValue: true,
+        awaitPromise: true,
+      },
+      sessionId,
+    );
+    return runtimeValue(response, expression) as T;
+  }
+
+  const source = expression.toString();
+  const owner = await services.cdp(
+    "Runtime.evaluate",
+    {
+      expression: "globalThis",
+      returnByValue: false,
+    },
+    sessionId,
+  );
+  const objectId = owner?.result?.objectId;
+  if (typeof objectId !== "string" || objectId.length === 0) {
+    throw new Error("page.evaluate could not resolve the page global object");
+  }
+  try {
+    const response = await services.cdp(
+      "Runtime.callFunctionOn",
+      {
+        objectId,
+        functionDeclaration: hasArgument
+          ? `function(argument) { return (${source})(argument); }`
+          : `function() { return (${source})(); }`,
+        arguments: hasArgument ? [{ value: serializedArgument }] : [],
+        returnByValue: true,
+        awaitPromise: true,
+      },
+      sessionId,
+    );
+    return runtimeValue(response, source) as T;
+  } finally {
+    await services
+      .cdp("Runtime.releaseObject", { objectId }, sessionId)
+      .catch(() => {});
+  }
+}
+
+function validateEvaluateInput(
+  expression: unknown,
+  hasArgument: boolean,
+  argument: unknown,
+): unknown {
+  if (typeof expression !== "string" && typeof expression !== "function") {
+    throw new TypeError(
+      "page.evaluate expects a function or string expression",
+    );
+  }
+  if (typeof expression === "string") {
+    if (expression.length === 0) {
+      throw new TypeError("page.evaluate expression must not be empty");
+    }
+    if (hasArgument) {
+      throw new TypeError(
+        "page.evaluate string expression does not accept an argument",
+      );
+    }
+    return undefined;
+  }
+  return hasArgument ? serializeEvaluateArgument(argument) : undefined;
+}
+
+function serializeEvaluateArgument(argument: unknown): unknown {
+  try {
+    const json = JSON.stringify(argument, (_key, value) => {
+      if (
+        typeof value === "undefined" ||
+        typeof value === "function" ||
+        typeof value === "symbol" ||
+        typeof value === "bigint" ||
+        (typeof value === "number" && !Number.isFinite(value))
+      ) {
+        throw new TypeError("unsupported value");
+      }
+      return value;
+    });
+    if (json === undefined) throw new TypeError("unsupported value");
+    return JSON.parse(json);
+  } catch (error) {
+    throw new TypeError("page.evaluate argument must be JSON-serializable", {
+      cause: error,
+    });
   }
 }
 

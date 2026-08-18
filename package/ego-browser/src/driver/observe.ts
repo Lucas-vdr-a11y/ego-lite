@@ -2,8 +2,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { state } from "../state.js";
-import { cdp, js } from "../cdp-eval.js";
-import { pageInfo } from "./nav.js";
+import { cdp, runtimeValue } from "../cdp-eval.js";
 import {
   browserEgo,
   browserSnapshotRefsToRefMap,
@@ -34,7 +33,7 @@ type ScreenshotClip = {
   scale?: number;
 };
 
-type CaptureScreenshotOptions = {
+export type CaptureScreenshotOptions = {
   full?: boolean;
   raw?: boolean;
   clip?: ScreenshotClip;
@@ -95,12 +94,25 @@ export async function elementCenter(selectorOrRef) {
 let screenshotSeq = 0;
 
 export async function captureScreenshot(
-  path = join(
-    tmpdir(),
-    `ego-browser-shot-${process.pid}-${++screenshotSeq}.png`,
-  ),
+  path?: string,
   options: CaptureScreenshotOptions = {},
 ) {
+  const sessionId = isBrowserRuntime() ? await ensureSession() : undefined;
+  return captureScreenshotForSession(path, options, sessionId);
+}
+
+/**
+ * Capture a screenshot through one explicit target session. Page objects use
+ * this entry point so another active tab cannot affect evaluation or capture.
+ */
+export async function captureScreenshotForSession(
+  path?: string,
+  options: CaptureScreenshotOptions = {},
+  sessionId?: string,
+) {
+  const outputPath =
+    path ??
+    join(tmpdir(), `ego-browser-shot-${process.pid}-${++screenshotSeq}.png`);
   const full = options.full ?? false;
   const raw = options.raw ?? false;
   const params: any = {
@@ -112,20 +124,39 @@ export async function captureScreenshot(
       params.clip = { ...options.clip };
     }
   } else {
-    let sessionId;
-    if (isBrowserRuntime()) {
-      sessionId = await ensureSession();
-    }
     if (!pendingDialog(sessionId)) {
-      const dpr = Number(await js("window.devicePixelRatio")) || 1;
+      const dprExpression = "window.devicePixelRatio";
+      const dpr =
+        Number(
+          runtimeValue(
+            await cdp(
+              "Runtime.evaluate",
+              {
+                expression: dprExpression,
+                returnByValue: true,
+              },
+              sessionId,
+            ),
+            dprExpression,
+          ),
+        ) || 1;
       const cssScale = 1 / dpr;
       if (options.clip) {
         params.clip = { scale: cssScale, ...options.clip };
       } else {
-        const info = await pageInfo();
-        if ("dialog" in info) {
-          return captureScreenshot(path, { ...options, raw: true });
-        }
+        const infoExpression =
+          "({url:location.href,title:document.title,w:innerWidth,h:innerHeight,sx:scrollX,sy:scrollY,pw:document.documentElement.scrollWidth,ph:document.documentElement.scrollHeight})";
+        const info = runtimeValue(
+          await cdp(
+            "Runtime.evaluate",
+            {
+              expression: infoExpression,
+              returnByValue: true,
+            },
+            sessionId,
+          ),
+          infoExpression,
+        );
         params.clip = {
           x: 0,
           y: 0,
@@ -136,7 +167,7 @@ export async function captureScreenshot(
       }
     }
   }
-  const result = await cdp("Page.captureScreenshot", params);
-  await state.writeFile(path, Buffer.from(result.data, "base64"));
-  return path;
+  const result = await cdp("Page.captureScreenshot", params, sessionId);
+  await state.writeFile(outputPath, Buffer.from(result.data, "base64"));
+  return outputPath;
 }
