@@ -1,5 +1,6 @@
 import { cdp } from "../cdp-eval.js";
 import { browserCdp } from "../browser-runtime.js";
+import { state } from "../state.js";
 import { withHandle, resolveAndCall } from "./element-ops.js";
 import { waitForElement } from "./waits.js";
 
@@ -16,6 +17,7 @@ export type KeyboardServices = {
     timeoutMs?: number,
   ): Promise<any>;
   sleep(ms: number): Promise<void>;
+  platform?: string;
 };
 
 const KEYS = {
@@ -36,10 +38,50 @@ const KEYS = {
 };
 
 const PRINTABLE_CODE_RE = /^[A-Za-z0-9]$/;
+const ALT_MODIFIER = 1;
 const CTRL_MODIFIER = 2;
 const META_MODIFIER = 4;
+const SHIFT_MODIFIER = 8;
+const NON_TEXT_MODIFIERS = ALT_MODIFIER | CTRL_MODIFIER | META_MODIFIER;
 const INPUT_EVENT_DELAY_MS = 25;
 const INPUT_DISPATCH_TIMEOUT_MS = 1000;
+const MODIFIER_KEYS = [
+  {
+    bit: ALT_MODIFIER,
+    key: "Alt",
+    code: "AltLeft",
+    windowsVirtualKeyCode: 18,
+    location: 1,
+  },
+  {
+    bit: CTRL_MODIFIER,
+    key: "Control",
+    code: "ControlLeft",
+    windowsVirtualKeyCode: 17,
+    location: 1,
+  },
+  {
+    bit: META_MODIFIER,
+    key: "Meta",
+    code: "MetaLeft",
+    windowsVirtualKeyCode: 91,
+    location: 1,
+  },
+  {
+    bit: SHIFT_MODIFIER,
+    key: "Shift",
+    code: "ShiftLeft",
+    windowsVirtualKeyCode: 16,
+    location: 1,
+  },
+] as const;
+const NATIVE_ONLY_EDITING_COMMANDS = new Set([
+  "copy",
+  "cut",
+  "paste",
+  "redo",
+  "undo",
+]);
 
 const defaultKeyboardServices: KeyboardServices = {
   async cdp(method, params = {}, sessionId, timeoutMs) {
@@ -53,6 +95,9 @@ const defaultKeyboardServices: KeyboardServices = {
     return response?.result || {};
   },
   sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  get platform() {
+    return state.platform;
+  },
 };
 
 export function keyDefinition(key) {
@@ -70,18 +115,38 @@ export function keyDefinition(key) {
   return { vk, key, code, text: key };
 }
 
-function editingCommandsForKey(key, modifiers) {
-  if (
-    (modifiers === CTRL_MODIFIER || modifiers === META_MODIFIER) &&
-    key.toLowerCase() === "a"
-  ) {
-    return ["selectAll"];
-  }
+function editingCommandsForKey(key, modifiers, platform: string) {
+  const code = keyDefinition(key).code;
   if (modifiers === 0 && key === "Backspace") {
     return ["deleteBackward"];
   }
   if (modifiers === 0 && key === "Delete") {
     return ["deleteForward"];
+  }
+
+  // Chromium does not infer macOS editing commands merely from the Meta bit.
+  // These command names match Chromium's editor command registry and the
+  // corresponding Playwright mappings.
+  if (platform === "darwin") {
+    if (modifiers === META_MODIFIER) {
+      const command = {
+        KeyA: "selectAll",
+        KeyC: "copy",
+        KeyV: "paste",
+        KeyX: "cut",
+        KeyZ: "undo",
+      }[code];
+      return command ? [command] : undefined;
+    }
+    if (modifiers === (SHIFT_MODIFIER | META_MODIFIER) && code === "KeyZ") {
+      return ["redo"];
+    }
+    return undefined;
+  }
+
+  // Preserve select-all for the legacy numeric modifier API off macOS.
+  if (modifiers === CTRL_MODIFIER && code === "KeyA") {
+    return ["selectAll"];
   }
   return undefined;
 }
@@ -104,36 +169,113 @@ export async function pressKeyInPage(
   modifiers = 0,
 ) {
   const { vk, code, text } = keyDefinition(key);
+  const platform = services.platform ?? state.platform;
+  const commands = editingCommandsForKey(key, modifiers, platform);
+  const emittedText = modifiers & NON_TEXT_MODIFIERS ? "" : text;
   const base = {
     key,
     code,
     modifiers,
     windowsVirtualKeyCode: vk,
-    nativeVirtualKeyCode: vk,
   };
-  const commands = editingCommandsForKey(key, modifiers);
-  const probeId = await installKeyProbe(services, sessionId, key);
+  const probeId = await installKeyProbe(
+    services,
+    sessionId,
+    key,
+    expectedEditingEvent(commands),
+  );
   let dispatchError: unknown = null;
+  let activeModifiers = 0;
+  const pressedModifiers = MODIFIER_KEYS.filter((modifier) =>
+    Boolean(modifiers & modifier.bit),
+  );
+  let finalKeyDownAttempted = false;
   try {
+    for (const modifier of pressedModifiers) {
+      activeModifiers |= modifier.bit;
+      await dispatchKeyEvent(services, sessionId, {
+        type: "rawKeyDown",
+        key: modifier.key,
+        code: modifier.code,
+        modifiers: activeModifiers,
+        windowsVirtualKeyCode: modifier.windowsVirtualKeyCode,
+        location: modifier.location,
+      });
+    }
+
+    finalKeyDownAttempted = true;
     await dispatchKeyEvent(services, sessionId, {
-      type: "keyDown",
+      type: emittedText ? "keyDown" : "rawKeyDown",
       ...base,
-      ...(text ? { text, unmodifiedText: text } : {}),
+      ...(emittedText
+        ? { text: emittedText, unmodifiedText: emittedText }
+        : {}),
       ...(commands ? { commands } : {}),
     });
     await inputEventDelay(services);
     await dispatchKeyEvent(services, sessionId, { type: "keyUp", ...base });
+    finalKeyDownAttempted = false;
   } catch (error) {
     if (!isKeyDispatchTimeout(error)) throw error;
     dispatchError = error;
+  } finally {
+    // A timed-out send may still have reached Chromium. Release everything we
+    // attempted to press so the page cannot inherit a stuck modifier state.
+    if (finalKeyDownAttempted) {
+      try {
+        await dispatchKeyEvent(services, sessionId, { type: "keyUp", ...base });
+      } catch (error) {
+        dispatchError ||= error;
+      }
+    }
+    for (const modifier of [...pressedModifiers].reverse()) {
+      activeModifiers &= ~modifier.bit;
+      try {
+        await dispatchKeyEvent(services, sessionId, {
+          type: "keyUp",
+          key: modifier.key,
+          code: modifier.code,
+          modifiers: activeModifiers,
+          windowsVirtualKeyCode: modifier.windowsVirtualKeyCode,
+          location: modifier.location,
+        });
+      } catch (error) {
+        dispatchError ||= error;
+      }
+    }
   }
+  const requiresNativeEditing = Boolean(
+    commands?.some((command) => NATIVE_ONLY_EDITING_COMMANDS.has(command)),
+  );
   const completed = await finishKeyProbe(services, sessionId, probeId, {
     key,
     code,
-    text,
+    text: emittedText,
     commands,
+    modifiers,
+    allowSyntheticFallback: !requiresNativeEditing,
   });
+  if (requiresNativeEditing && probeId && !completed) {
+    if (dispatchError) throw dispatchError;
+    throw new Error(
+      `page.keyboard.press could not deliver native editing shortcut ${formatShortcut(key, modifiers)}`,
+    );
+  }
   if (dispatchError && !completed) throw dispatchError;
+}
+
+function expectedEditingEvent(commands?: string[]) {
+  if (commands?.includes("paste")) return "paste";
+  if (commands?.includes("copy")) return "copy";
+  if (commands?.includes("cut")) return "cut";
+  return "keydown";
+}
+
+function formatShortcut(key: string, modifiers: number) {
+  const names = MODIFIER_KEYS.filter(
+    (modifier) => modifiers & modifier.bit,
+  ).map((modifier) => modifier.key);
+  return [...names, key].join("+");
 }
 
 /**
@@ -256,6 +398,7 @@ async function installKeyProbe(
   services: KeyboardServices,
   sessionId: string | undefined,
   key: string,
+  eventType = "keydown",
 ) {
   if (!canProbeInputFallback()) return null;
   const id = `key_${Date.now()}_${Math.random().toString(16).slice(2)}`;
@@ -265,11 +408,14 @@ async function installKeyProbe(
       {
         expression: `(() => {
       window.__egoBrowserInputProbes ||= {};
-      const probe = { seen: false };
+      const probe = { seen: false, eventType: ${JSON.stringify(eventType)} };
       probe.handler = (event) => {
-        if (event.isTrusted && event.key === ${JSON.stringify(key)}) probe.seen = true;
+        if (
+          event.isTrusted &&
+          (probe.eventType !== "keydown" || event.key === ${JSON.stringify(key)})
+        ) probe.seen = true;
       };
-      document.addEventListener("keydown", probe.handler, true);
+      document.addEventListener(probe.eventType, probe.handler, true);
       window.__egoBrowserInputProbes[${JSON.stringify(id)}] = probe;
       return true;
     })()`,
@@ -288,7 +434,14 @@ async function finishKeyProbe(
   services: KeyboardServices,
   sessionId: string | undefined,
   id: string | null,
-  definition: { key: string; code: string; text: string; commands?: string[] },
+  definition: {
+    key: string;
+    code: string;
+    text: string;
+    commands?: string[];
+    modifiers: number;
+    allowSyntheticFallback: boolean;
+  },
 ) {
   if (!id) return false;
   await inputEventDelay(services);
@@ -300,18 +453,27 @@ async function finishKeyProbe(
       const probes = window.__egoBrowserInputProbes || {};
       const probe = probes[${JSON.stringify(id)}];
       if (!probe) return { seen: false, fallback: false };
-      document.removeEventListener("keydown", probe.handler, true);
+      document.removeEventListener(probe.eventType, probe.handler, true);
       delete probes[${JSON.stringify(id)}];
       if (probe.seen) return { seen: true, fallback: false };
+
+      if (!${JSON.stringify(definition.allowSyntheticFallback)}) {
+        return { seen: false, fallback: false };
+      }
 
       const target = document.activeElement || document.body;
       const key = ${JSON.stringify(definition.key)};
       const code = ${JSON.stringify(definition.code)};
       const text = ${JSON.stringify(definition.text)};
       const commands = ${JSON.stringify(definition.commands || [])};
+      const modifiers = ${JSON.stringify(definition.modifiers)};
       const keyboardInit = {
         key,
         code,
+        altKey: Boolean(modifiers & ${ALT_MODIFIER}),
+        ctrlKey: Boolean(modifiers & ${CTRL_MODIFIER}),
+        metaKey: Boolean(modifiers & ${META_MODIFIER}),
+        shiftKey: Boolean(modifiers & ${SHIFT_MODIFIER}),
         bubbles: true,
         cancelable: true,
         keyCode: ${JSON.stringify(keyDefinition(definition.key).vk)},

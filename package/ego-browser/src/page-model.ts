@@ -24,19 +24,21 @@ import {
   mouseButtonMask,
   moveMouseInPage,
   wheelInPage,
+  type MouseButton,
   type PageClickOptions,
   type PageDragAndDropOptions,
   type PageFillOptions,
   type PageHoverOptions,
   type PageMouseButtonOptions,
   type PageMouseClickOptions,
+  type PageMouseMoveOptions,
 } from "./driver/page-actions.js";
+import { dispatchKeyInPage, setInputFilesInPage } from "./driver/page-input.js";
 import {
-  dispatchKeyInPage,
-  parseKeyChord,
-  setInputFilesInPage,
-} from "./driver/page-input.js";
-import { pressKeyInPage, typeTextInPage } from "./driver/keyboard.js";
+  PageKeyboardController,
+  type PageKeyboardPressOptions,
+  type PageKeyboardTypeOptions,
+} from "./driver/page-keyboard.js";
 import {
   waitForLoadStateInPage,
   waitForSelectorInPage,
@@ -152,9 +154,15 @@ type LedgerPort = {
   getPage(spaceId: number, label: string): Promise<ManagedPage>;
   closePage(spaceId: number, label: string): Promise<ManagedPage>;
   releasePage(spaceId: number, label: string): Promise<ManagedPage>;
+  keepUnmanaged(
+    spaceId: number,
+    targetId: string,
+    openedBy?: PageOrigin,
+  ): Promise<void>;
   reconcile(
     spaceId: number,
     liveTargetIds: Iterable<string>,
+    options?: { autoAdoptNew?: boolean },
   ): Promise<PageLedger>;
 };
 
@@ -192,6 +200,7 @@ type PageModelServices = {
   setPreferredTarget(targetId: string): void;
   now(): number;
   sleep(ms: number): Promise<void>;
+  platform: string;
   pageBudget: number;
 };
 
@@ -211,6 +220,9 @@ export type PageActionReceipt = {
   domChanged?: true;
 };
 
+const PAGE_CLOSE_CONFIRM_TIMEOUT_MS = 2_000;
+const PAGE_CLOSE_CONFIRM_INTERVAL_MS = 50;
+
 type MouseActionRunner = (
   operation: (services: PageModelServices, sessionId: string) => Promise<void>,
 ) => Promise<PageActionReceipt>;
@@ -227,12 +239,15 @@ type KeyboardSelectorRunner = (
 /** Page-scoped mouse state and CDP Input primitives. */
 export class PageMouse {
   readonly #run: MouseActionRunner;
+  readonly #modifierMask: () => number;
   #x = 0;
   #y = 0;
   #buttons = 0;
+  #lastButton: MouseButton | "none" = "none";
 
-  constructor(run: MouseActionRunner) {
+  constructor(run: MouseActionRunner, modifierMask: () => number) {
     this.#run = run;
+    this.#modifierMask = modifierMask;
   }
 
   async click(
@@ -241,16 +256,34 @@ export class PageMouse {
     options: PageMouseClickOptions = {},
   ): Promise<PageActionReceipt> {
     const receipt = await this.#run((services, sessionId) =>
-      clickPointInPage(services, sessionId, x, y, options),
+      clickPointInPage(
+        services,
+        sessionId,
+        x,
+        y,
+        options,
+        this.#modifierMask(),
+        this.#buttons,
+      ),
     );
     this.#x = x;
     this.#y = y;
+    this.#lastButton = "none";
     return receipt;
   }
 
-  async move(x: number, y: number): Promise<PageActionReceipt> {
+  async move(
+    x: number,
+    y: number,
+    options: PageMouseMoveOptions = {},
+  ): Promise<PageActionReceipt> {
     const receipt = await this.#run((services, sessionId) =>
-      moveMouseInPage(services, sessionId, x, y, this.#buttons),
+      moveMouseInPage(services, sessionId, this.#x, this.#y, x, y, {
+        ...options,
+        button: this.#lastButton,
+        buttons: this.#buttons,
+        modifiers: this.#modifierMask(),
+      }),
     );
     this.#x = x;
     this.#y = y;
@@ -269,9 +302,11 @@ export class PageMouse {
         this.#y,
         nextButtons,
         options,
+        this.#modifierMask(),
       ).then(() => undefined),
     );
     this.#buttons = nextButtons;
+    this.#lastButton = button;
     return receipt;
   }
 
@@ -287,40 +322,73 @@ export class PageMouse {
         this.#y,
         nextButtons,
         options,
+        this.#modifierMask(),
       ).then(() => undefined),
     );
     this.#buttons = nextButtons;
+    this.#lastButton = "none";
     return receipt;
   }
 
   async wheel(deltaX: number, deltaY: number): Promise<PageActionReceipt> {
     return this.#run((services, sessionId) =>
-      wheelInPage(services, sessionId, this.#x, this.#y, deltaX, deltaY),
+      wheelInPage(
+        services,
+        sessionId,
+        this.#x,
+        this.#y,
+        deltaX,
+        deltaY,
+        this.#modifierMask(),
+      ),
     );
   }
 }
 
 /** Page-scoped keyboard input and low-level event dispatch. */
 export class PageKeyboard {
-  readonly #run: MouseActionRunner;
+  readonly #controller: PageKeyboardController;
   readonly #runForSelector: KeyboardSelectorRunner;
 
-  constructor(run: MouseActionRunner, runForSelector: KeyboardSelectorRunner) {
-    this.#run = run;
+  constructor(
+    services: PageModelServices,
+    run: MouseActionRunner,
+    runForSelector: KeyboardSelectorRunner,
+  ) {
+    this.#controller = new PageKeyboardController(services, (operation) =>
+      run((_services, sessionId) => operation(sessionId)),
+    );
     this.#runForSelector = runForSelector;
   }
 
-  async press(chord: string): Promise<PageActionReceipt> {
-    const { key, modifiers } = parseKeyChord(chord);
-    return this.#run((services, sessionId) =>
-      pressKeyInPage(services, sessionId, key, modifiers),
-    );
+  modifierMask(): number {
+    return this.#controller.modifierMask();
   }
 
-  async type(text: string): Promise<PageActionReceipt> {
-    return this.#run((services, sessionId) =>
-      typeTextInPage(services, sessionId, text),
-    );
+  async down(key: string): Promise<PageActionReceipt> {
+    return (await this.#controller.down(key)) as PageActionReceipt;
+  }
+
+  async up(key: string): Promise<PageActionReceipt> {
+    return (await this.#controller.up(key)) as PageActionReceipt;
+  }
+
+  async press(
+    chord: string,
+    options: PageKeyboardPressOptions = {},
+  ): Promise<PageActionReceipt> {
+    return (await this.#controller.press(chord, options)) as PageActionReceipt;
+  }
+
+  async insertText(text: string): Promise<PageActionReceipt> {
+    return (await this.#controller.insertText(text)) as PageActionReceipt;
+  }
+
+  async type(
+    text: string,
+    options: PageKeyboardTypeOptions = {},
+  ): Promise<PageActionReceipt> {
+    return (await this.#controller.type(text, options)) as PageActionReceipt;
   }
 
   async dispatch(
@@ -394,6 +462,9 @@ const baseDefaultServices: Omit<PageModelServices, "ledger" | "pageBudget"> = {
   now: () => state.now(),
   async sleep(ms) {
     await state.sleep(ms);
+  },
+  get platform() {
+    return state.platform;
   },
 };
 
@@ -604,6 +675,7 @@ export class TaskSpace {
     const ledger = await this.#services.ledger.reconcile(
       this.id,
       tabs.map((tab) => tab.targetId),
+      { autoAdoptNew: this.ownership === "agent" },
     );
     return { ledger, tabs };
   }
@@ -660,16 +732,19 @@ export class Page {
     this.#services = services;
     this.#targetId = entry?.targetId;
     this.#openedBy = entry?.openedBy;
-    this.mouse = new PageMouse((operation) =>
-      this.#runRawAction((sessionId) => operation(this.#services, sessionId)),
-    );
     this.keyboard = new PageKeyboard(
+      this.#services,
       (operation) =>
         this.#runRawAction((sessionId) => operation(this.#services, sessionId)),
       (selector, operation) =>
         this.#runAction(selector, (sessionId, refMap) =>
           operation(this.#services, sessionId, refMap),
         ),
+    );
+    this.mouse = new PageMouse(
+      (operation) =>
+        this.#runRawAction((sessionId) => operation(this.#services, sessionId)),
+      () => this.keyboard.modifierMask(),
     );
   }
 
@@ -884,7 +959,14 @@ export class Page {
     options: PageClickOptions = {},
   ): Promise<PageActionReceipt> {
     return this.#runAction(selector, (sessionId, refMap) =>
-      clickInPage(this.#services, sessionId, refMap, selector, options),
+      clickInPage(
+        this.#services,
+        sessionId,
+        refMap,
+        selector,
+        options,
+        this.keyboard.modifierMask(),
+      ),
     );
   }
 
@@ -893,10 +975,14 @@ export class Page {
     options: Omit<PageClickOptions, "clickCount"> = {},
   ): Promise<PageActionReceipt> {
     return this.#runAction(selector, (sessionId, refMap) =>
-      clickInPage(this.#services, sessionId, refMap, selector, {
-        ...options,
-        clickCount: 2,
-      }),
+      clickInPage(
+        this.#services,
+        sessionId,
+        refMap,
+        selector,
+        { ...options, clickCount: 2 },
+        this.keyboard.modifierMask(),
+      ),
     );
   }
 
@@ -905,7 +991,14 @@ export class Page {
     options: PageHoverOptions = {},
   ): Promise<PageActionReceipt> {
     return this.#runAction(selector, (sessionId, refMap) =>
-      hoverInPage(this.#services, sessionId, refMap, selector, options),
+      hoverInPage(
+        this.#services,
+        sessionId,
+        refMap,
+        selector,
+        options,
+        this.keyboard.modifierMask(),
+      ),
     );
   }
 
@@ -924,6 +1017,7 @@ export class Page {
           sourceSelector,
           targetSelector,
           options,
+          this.keyboard.modifierMask(),
         ),
     );
   }
@@ -995,13 +1089,39 @@ export class Page {
         throw new Error(`page ${this.label} was closed`);
       }
       if (tabs.length <= 1) {
-        await this.#services.createTab("about:blank");
+        const anchorTargetId = await this.#services.createTab("about:blank");
+        try {
+          await this.#services.ledger.keepUnmanaged(
+            this.spaceId,
+            anchorTargetId,
+            "unknown",
+          );
+        } catch (error) {
+          // The original page is still live, so a failed anchor bookkeeping
+          // write can safely roll the new anchor back before aborting close.
+          await this.#services
+            .cdp("Target.closeTarget", { targetId: anchorTargetId })
+            .catch(() => {});
+          throw error;
+        }
       }
       const result = await this.#services.cdp("Target.closeTarget", {
         targetId: page.targetId,
       });
-      if (result?.success === false) {
+      if (result?.success !== true) {
         throw new Error(`failed to close page ${this.label}`);
+      }
+      const disappeared = await waitForTargetToDisappear(
+        this.#services,
+        page.targetId,
+        PAGE_CLOSE_CONFIRM_TIMEOUT_MS,
+      );
+      if (!disappeared) {
+        // Keep the durable label while the native tab still exists. The caller
+        // can retry close safely instead of leaving an unmanaged orphan.
+        throw new Error(
+          `page ${this.label} did not close within ${PAGE_CLOSE_CONFIRM_TIMEOUT_MS}ms`,
+        );
       }
       this.#services.invalidateSession(page.targetId);
       this.#services.pageRefs.clear(page.targetId);
@@ -1680,6 +1800,21 @@ function assertCdpCall(
   if (options.timeout !== undefined) assertTimeout(options.timeout);
 }
 
+async function waitForTargetToDisappear(
+  services: PageModelServices,
+  targetId: string,
+  timeoutMs: number,
+): Promise<boolean> {
+  const deadline = services.now() + timeoutMs;
+  while (true) {
+    const tabs = await services.listTabs();
+    if (!tabs.some((tab) => tab.targetId === targetId)) return true;
+    const remaining = deadline - services.now();
+    if (remaining <= 0) return false;
+    await services.sleep(Math.min(PAGE_CLOSE_CONFIRM_INTERVAL_MS, remaining));
+  }
+}
+
 function pageInventory(
   task: TaskSpace,
   services: PageModelServices,
@@ -1695,18 +1830,19 @@ function pageInventory(
   return tabs.map((tab) => {
     const managed = managedByTarget.get(tab.targetId);
     if (!managed) {
+      const openedBy = ledger.unmanagedTargets[tab.targetId] || "unknown";
       return {
         targetId: tab.targetId,
         page: new UnmanagedPage(
           task,
           tab.targetId,
-          "unknown",
+          openedBy,
           unmanagedPageConstructorToken,
         ),
         title: tab.title || "",
         url: tab.url || "",
         active: Boolean(tab.active),
-        openedBy: "unknown",
+        openedBy,
       };
     }
     const entry = { label: managed.label, ...managed.entry };

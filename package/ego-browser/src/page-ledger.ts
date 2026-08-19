@@ -23,6 +23,8 @@ export type PageLedger = {
   nextLabel: number;
   usedLabels: string[];
   releasedLabels: string[];
+  initialized: boolean;
+  unmanagedTargets: Record<string, PageOrigin>;
   pages: Record<string, PageLedgerEntry>;
   touchedAt: number;
 };
@@ -36,6 +38,10 @@ type PageLedgerStoreOptions = {
 type AddPageOptions = {
   as?: string;
   openedBy?: PageOrigin;
+};
+
+type ReconcileOptions = {
+  autoAdoptNew?: boolean;
 };
 
 export class PageLedgerConflictError extends Error {
@@ -134,6 +140,8 @@ export class PageLedgerStore {
         openedAt: now,
         lastUsedAt: now,
       };
+      ledger.initialized = true;
+      delete ledger.unmanagedTargets[targetId];
       ledger.usedLabels.push(label);
       ledger.pages[label] = entry;
       added = { label, ...entry };
@@ -178,24 +186,104 @@ export class PageLedgerStore {
       removed = { label, ...entry };
       delete ledger.pages[label];
       ledger.releasedLabels.push(label);
+      ledger.unmanagedTargets[entry.targetId] = entry.openedBy;
     });
     return removed!;
+  }
+
+  async keepUnmanaged(
+    spaceId: number,
+    targetId: string,
+    openedBy: PageOrigin = "unknown",
+  ): Promise<void> {
+    assertTargetId(targetId);
+    if (!["agent", "user", "unknown"].includes(openedBy)) {
+      throw new TypeError(`invalid unmanaged page origin: ${openedBy}`);
+    }
+    await this.#update(spaceId, (ledger) => {
+      const existing = Object.entries(ledger.pages).find(
+        ([, page]) => page.targetId === targetId,
+      );
+      if (existing) {
+        throw new Error(`target ${targetId} is already page ${existing[0]}`);
+      }
+      ledger.initialized = true;
+      ledger.unmanagedTargets[targetId] = openedBy;
+    });
   }
 
   async reconcile(
     spaceId: number,
     liveTargetIds: Iterable<string>,
+    options: ReconcileOptions = {},
   ): Promise<PageLedger> {
     const live = new Set(liveTargetIds);
     const current = await this.read(spaceId);
     const hasMissingPage = Object.values(current.pages).some(
       (page) => !live.has(page.targetId),
     );
-    if (!hasMissingPage) return current;
+    const hasMissingUnmanaged = Object.keys(current.unmanagedTargets).some(
+      (targetId) => !live.has(targetId),
+    );
+    const knownTargets = new Set([
+      ...Object.values(current.pages).map((page) => page.targetId),
+      ...Object.keys(current.unmanagedTargets),
+    ]);
+    const newTargets = [...live].filter(
+      (targetId) => !knownTargets.has(targetId),
+    );
+    const needsInitialization = !current.initialized;
+    const shouldAdopt =
+      current.initialized && options.autoAdoptNew && newTargets.length > 0;
+    if (
+      !hasMissingPage &&
+      !hasMissingUnmanaged &&
+      !needsInitialization &&
+      !shouldAdopt
+    ) {
+      return current;
+    }
 
     return this.#update(spaceId, (ledger) => {
       for (const [label, page] of Object.entries(ledger.pages)) {
         if (!live.has(page.targetId)) delete ledger.pages[label];
+      }
+      for (const targetId of Object.keys(ledger.unmanagedTargets)) {
+        if (!live.has(targetId)) delete ledger.unmanagedTargets[targetId];
+      }
+
+      const managedTargets = new Set(
+        Object.values(ledger.pages).map((page) => page.targetId),
+      );
+      const untracked = [...live].filter(
+        (targetId) =>
+          !managedTargets.has(targetId) &&
+          !Object.hasOwn(ledger.unmanagedTargets, targetId),
+      );
+      if (!ledger.initialized) {
+        // The first observable tab set is the control boundary. It may contain
+        // user pages from before claim/takeover, so preserve it rather than
+        // guessing that those tabs were opened by the current agent.
+        for (const targetId of untracked) {
+          ledger.unmanagedTargets[targetId] = "unknown";
+        }
+        ledger.initialized = true;
+        return;
+      }
+      if (!options.autoAdoptNew) return;
+
+      const used = new Set(ledger.usedLabels);
+      const now = this.#now();
+      for (const targetId of untracked) {
+        const label = nextAutomaticLabel(ledger, used);
+        used.add(label);
+        ledger.usedLabels.push(label);
+        ledger.pages[label] = {
+          targetId,
+          openedBy: "agent",
+          openedAt: now,
+          lastUsedAt: now,
+        };
       }
     });
   }
@@ -275,6 +363,8 @@ function emptyLedger(spaceId: number): PageLedger {
     nextLabel: 1,
     usedLabels: [],
     releasedLabels: [],
+    initialized: false,
+    unmanagedTargets: {},
     pages: {},
     touchedAt: 0,
   };
@@ -300,11 +390,14 @@ function validateLedger(
     throw new Error(`invalid page ledger ${path}: expected an object`);
   }
   const stored = value as PageLedger;
-  // Ledgers written before release support did not have releasedLabels. An
-  // empty default keeps those labels readable without rewriting on read.
+  // Defaults keep ledgers written by earlier runtimes readable. They start
+  // uninitialized so the first new runtime observes a safe control baseline
+  // instead of silently adopting pre-existing user tabs.
   const ledger = {
     ...stored,
     releasedLabels: stored.releasedLabels ?? [],
+    initialized: stored.initialized ?? false,
+    unmanagedTargets: stored.unmanagedTargets ?? {},
   };
   if (
     ledger.spaceId !== expectedSpaceId ||
@@ -321,6 +414,15 @@ function validateLedger(
         typeof label !== "string" ||
         !ledger.usedLabels.includes(label) ||
         Object.hasOwn(ledger.pages || {}, label),
+    ) ||
+    typeof ledger.initialized !== "boolean" ||
+    !ledger.unmanagedTargets ||
+    typeof ledger.unmanagedTargets !== "object" ||
+    Array.isArray(ledger.unmanagedTargets) ||
+    Object.entries(ledger.unmanagedTargets).some(
+      ([targetId, openedBy]) =>
+        targetId.length === 0 ||
+        !["agent", "user", "unknown"].includes(openedBy),
     ) ||
     !ledger.pages ||
     typeof ledger.pages !== "object" ||
@@ -339,6 +441,11 @@ function validateLedger(
       typeof page.lastUsedAt !== "number"
     ) {
       throw new Error(`invalid page ledger ${path}: invalid page ${label}`);
+    }
+    if (Object.hasOwn(ledger.unmanagedTargets, page.targetId)) {
+      throw new Error(
+        `invalid page ledger ${path}: target ${page.targetId} is both managed and unmanaged`,
+      );
     }
   }
   return cloneLedger(ledger);

@@ -10,6 +10,7 @@ type PageActionServices = {
     timeoutMs?: number,
   ): Promise<any>;
   sleep(ms: number): Promise<void>;
+  platform?: string;
 };
 
 export type MouseButton = "left" | "middle" | "right";
@@ -17,6 +18,7 @@ export type MouseButton = "left" | "middle" | "right";
 export type PageClickOptions = {
   button?: MouseButton;
   clickCount?: number;
+  delay?: number;
   position?: { x: number; y: number };
 };
 
@@ -37,6 +39,7 @@ export type PageDragAndDropOptions = {
 export type PageMouseClickOptions = {
   button?: MouseButton;
   clickCount?: number;
+  delay?: number;
 };
 
 export type PageMouseButtonOptions = {
@@ -44,8 +47,17 @@ export type PageMouseButtonOptions = {
   clickCount?: number;
 };
 
+export type PageMouseMoveOptions = {
+  steps?: number;
+};
+
+type MouseMoveState = PageMouseMoveOptions & {
+  button: MouseButton | "none";
+  buttons: number;
+  modifiers: number;
+};
+
 const INPUT_EVENT_DELAY_MS = 25;
-const INPUT_DISPATCH_TIMEOUT_MS = 1_000;
 
 /** Click an element through one explicit target session and Page ref map. */
 export async function clickInPage(
@@ -54,6 +66,7 @@ export async function clickInPage(
   refMap: RefMap,
   selector: string,
   options: PageClickOptions = {},
+  modifiers = 0,
 ): Promise<void> {
   assertPageSelector(selector);
   const button = options.button ?? "left";
@@ -64,6 +77,7 @@ export async function clickInPage(
   if (!Number.isInteger(clickCount) || clickCount < 1) {
     throw new TypeError("page.click clickCount must be a positive integer");
   }
+  assertDelay(options.delay, "page.click");
   const target = await resolveElementObjectId(
     cdpAdapter(services),
     sessionId,
@@ -78,68 +92,38 @@ export async function clickInPage(
       options.position,
     );
     const buttons = pressedButtons(button);
-    const probeId = await installClickProbe(
-      services,
-      target.sessionId,
-      target.objectId,
-      button,
-    );
-    let dispatchError: unknown;
-    try {
-      await services.cdp(
-        "Input.dispatchMouseEvent",
-        {
-          type: "mouseMoved",
-          x: point.x,
-          y: point.y,
-          button: "none",
-          buttons: 0,
-        },
-        target.sessionId,
-        INPUT_DISPATCH_TIMEOUT_MS,
-      );
-      await services.sleep(INPUT_EVENT_DELAY_MS);
-      await services.cdp(
-        "Input.dispatchMouseEvent",
-        {
-          type: "mousePressed",
-          x: point.x,
-          y: point.y,
-          button,
-          buttons,
-          clickCount,
-        },
-        target.sessionId,
-        INPUT_DISPATCH_TIMEOUT_MS,
-      );
-      await services.sleep(INPUT_EVENT_DELAY_MS);
-      await services.cdp(
-        "Input.dispatchMouseEvent",
-        {
-          type: "mouseReleased",
-          x: point.x,
-          y: point.y,
-          button,
-          buttons: 0,
-          clickCount,
-        },
-        target.sessionId,
-        INPUT_DISPATCH_TIMEOUT_MS,
-      );
-    } catch (error) {
-      if (!isInputDispatchTimeout(error)) throw error;
-      dispatchError = error;
+    await dispatchMouseEvent(services, target.sessionId, {
+      type: "mouseMoved",
+      x: point.x,
+      y: point.y,
+      button: "none",
+      buttons: 0,
+      modifiers,
+    });
+    for (let count = 1; count <= clickCount; count += 1) {
+      await dispatchMouseEvent(services, target.sessionId, {
+        type: "mousePressed",
+        x: point.x,
+        y: point.y,
+        button,
+        buttons,
+        modifiers,
+        clickCount: count,
+      });
+      if (options.delay) await services.sleep(options.delay);
+      await dispatchMouseEvent(services, target.sessionId, {
+        type: "mouseReleased",
+        x: point.x,
+        y: point.y,
+        button,
+        buttons: 0,
+        modifiers,
+        clickCount: count,
+      });
+      if (options.delay && count < clickCount) {
+        await services.sleep(options.delay);
+      }
     }
-    const completed = await finishClickProbe(
-      services,
-      target.sessionId,
-      target.objectId,
-      point,
-      probeId,
-      button,
-      clickCount,
-    );
-    if (dispatchError && !completed) throw dispatchError;
   } finally {
     await services
       .cdp(
@@ -176,43 +160,95 @@ export async function fillInPage(
     selector,
   );
   try {
-    await services.cdp(
+    const preparationSource = `function fillPreparation(value, clearFirst) {
+      if (!this.isConnected) return { error: "element is not connected" };
+      const tag = this.nodeName.toLowerCase();
+      if (this.disabled) return { error: "element is disabled" };
+      if (this.readOnly) return { error: "element is read only" };
+
+      if (tag === "input") {
+        const type = this.type.toLowerCase();
+        const textTypes = new Set(["", "email", "number", "password", "search", "tel", "text", "url"]);
+        const directTypes = new Set(["color", "date", "time", "datetime-local", "month", "range", "week"]);
+        if (!textTypes.has(type) && !directTypes.has(type)) {
+          return { error: 'input type "' + type + '" cannot be filled' };
+        }
+        if (type === "number" && value.trim() !== "" && Number.isNaN(Number(value.trim()))) {
+          return { error: "cannot type non-numeric text into input[type=number]" };
+        }
+        if (directTypes.has(type)) {
+          const nextValue = value.trim();
+          this.focus();
+          this.value = nextValue;
+          if (this.value !== nextValue) return { error: "malformed value" };
+          this.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+          this.dispatchEvent(new Event("change", { bubbles: true }));
+          return "done";
+        }
+      } else if (tag !== "textarea" && !this.isContentEditable) {
+        return { error: "element is not an input, textarea, or contenteditable element" };
+      }
+
+      this.focus();
+      if (!clearFirst) return "needsinput";
+      if (tag === "input" || tag === "textarea") {
+        this.select();
+      } else {
+        const range = this.ownerDocument.createRange();
+        range.selectNodeContents(this);
+        const selection = this.ownerDocument.defaultView.getSelection();
+        selection?.removeAllRanges();
+        selection?.addRange(range);
+      }
+      return "needsinput";
+    }`;
+    const preparation = await services.cdp(
       "Runtime.callFunctionOn",
       {
-        functionDeclaration: clearFirst
-          ? "function(){this.focus(); if(typeof this.select==='function') this.select();}"
-          : "function(){this.focus();}",
+        functionDeclaration: preparationSource,
         objectId: resolved.objectId,
+        arguments: [{ value }, { value: clearFirst }],
         returnByValue: true,
         awaitPromise: false,
       },
       resolved.sessionId,
     );
-    if (clearFirst) {
+    const result = runtimeValue(preparation, preparationSource);
+    if (typeof result?.error === "string") {
+      throw new Error(`page.fill failed: ${result.error}`);
+    }
+    if (result === "done") return;
+
+    if (clearFirst && value.length === 0) {
+      const keyDown: Record<string, unknown> = {
+        type: "rawKeyDown",
+        key: "Delete",
+        code: "Delete",
+        modifiers: 0,
+        windowsVirtualKeyCode: 46,
+      };
+      if ((services.platform ?? process.platform) === "darwin") {
+        keyDown.commands = ["deleteForward"];
+      }
+      await services.cdp("Input.dispatchKeyEvent", keyDown, resolved.sessionId);
       await services.cdp(
-        "Runtime.callFunctionOn",
+        "Input.dispatchKeyEvent",
         {
-          functionDeclaration:
-            "function(){this.value=''; this.dispatchEvent(new Event('input',{bubbles:true}));}",
-          objectId: resolved.objectId,
-          returnByValue: true,
-          awaitPromise: false,
+          type: "keyUp",
+          key: "Delete",
+          code: "Delete",
+          modifiers: 0,
+          windowsVirtualKeyCode: 46,
         },
         resolved.sessionId,
       );
+    } else if (value.length > 0) {
+      await services.cdp(
+        "Input.insertText",
+        { text: value },
+        resolved.sessionId,
+      );
     }
-    await services.cdp("Input.insertText", { text: value }, resolved.sessionId);
-    await services.cdp(
-      "Runtime.callFunctionOn",
-      {
-        functionDeclaration:
-          "function(){this.dispatchEvent(new Event('input',{bubbles:true})); this.dispatchEvent(new Event('change',{bubbles:true}));}",
-        objectId: resolved.objectId,
-        returnByValue: true,
-        awaitPromise: false,
-      },
-      resolved.sessionId,
-    );
   } finally {
     await services
       .cdp(
@@ -231,6 +267,7 @@ export async function hoverInPage(
   refMap: RefMap,
   selector: string,
   options: PageHoverOptions = {},
+  modifiers = 0,
 ): Promise<void> {
   assertPageSelector(selector);
   const resolved = await resolveElementObjectId(
@@ -246,34 +283,14 @@ export async function hoverInPage(
       resolved.objectId,
       options.position,
     );
-    const probeId = await installElementEventProbe(
-      services,
-      resolved.sessionId,
-      resolved.objectId,
-      ["mousemove", "mouseover"],
-      "hover",
-    );
-    let dispatchError: unknown;
-    try {
-      await dispatchMouseEvent(services, resolved.sessionId, {
-        type: "mouseMoved",
-        x: point.x,
-        y: point.y,
-        button: "none",
-        buttons: 0,
-      });
-    } catch (error) {
-      if (!isInputDispatchTimeout(error)) throw error;
-      dispatchError = error;
-    }
-    const completed = await finishHoverProbe(
-      services,
-      resolved.sessionId,
-      resolved.objectId,
-      point,
-      probeId,
-    );
-    if (dispatchError && !completed) throw dispatchError;
+    await dispatchMouseEvent(services, resolved.sessionId, {
+      type: "mouseMoved",
+      x: point.x,
+      y: point.y,
+      button: "none",
+      buttons: 0,
+      modifiers,
+    });
   } finally {
     await releaseObject(services, resolved.sessionId, resolved.objectId);
   }
@@ -287,6 +304,7 @@ export async function dragAndDropInPage(
   sourceSelector: string,
   targetSelector: string,
   options: PageDragAndDropOptions = {},
+  modifiers = 0,
 ): Promise<void> {
   assertPageSelector(sourceSelector);
   assertPageSelector(targetSelector);
@@ -318,66 +336,43 @@ export async function dragAndDropInPage(
     );
     const button = assertMouseButton(options.button ?? "left");
     const buttons = pressedButtons(button);
-    const probeId = await installElementEventProbe(
-      services,
-      target.sessionId,
-      target.objectId,
-      ["mouseup"],
-      "drag",
-    );
-    let dispatchError: unknown;
-    const dispatch = async (params: Record<string, unknown>) => {
-      try {
-        await dispatchMouseEvent(services, source.sessionId, params);
-      } catch (error) {
-        if (!isInputDispatchTimeout(error)) throw error;
-        dispatchError ??= error;
-      }
-    };
-    await dispatch({
+    await dispatchMouseEvent(services, source.sessionId, {
       type: "mouseMoved",
       x: sourcePoint.x,
       y: sourcePoint.y,
       button: "none",
       buttons: 0,
+      modifiers,
     });
     await services.sleep(INPUT_EVENT_DELAY_MS);
-    await dispatch({
+    await dispatchMouseEvent(services, source.sessionId, {
       type: "mousePressed",
       x: sourcePoint.x,
       y: sourcePoint.y,
       button,
       buttons,
+      modifiers,
       clickCount: 1,
     });
     await services.sleep(INPUT_EVENT_DELAY_MS);
-    await dispatch({
+    await dispatchMouseEvent(services, source.sessionId, {
       type: "mouseMoved",
       x: targetPoint.x,
       y: targetPoint.y,
       button,
       buttons,
+      modifiers,
     });
     await services.sleep(INPUT_EVENT_DELAY_MS);
-    await dispatch({
+    await dispatchMouseEvent(services, source.sessionId, {
       type: "mouseReleased",
       x: targetPoint.x,
       y: targetPoint.y,
       button,
       buttons: 0,
+      modifiers,
       clickCount: 1,
     });
-    const completed = await finishDragProbe(
-      services,
-      source.sessionId,
-      source.objectId,
-      target.objectId,
-      sourcePoint,
-      targetPoint,
-      probeId,
-      button,
-    );
-    if (dispatchError && !completed) throw dispatchError;
   } finally {
     if (target) {
       await releaseObject(services, target.sessionId, target.objectId);
@@ -393,6 +388,8 @@ export async function clickPointInPage(
   x: number,
   y: number,
   options: PageMouseClickOptions = {},
+  modifiers = 0,
+  baseButtons = 0,
 ): Promise<void> {
   assertPoint(x, y, "page.mouse.click");
   const button = assertMouseButton(options.button ?? "left");
@@ -402,49 +399,66 @@ export async function clickPointInPage(
       "page.mouse.click clickCount must be a positive integer",
     );
   }
+  assertDelay(options.delay, "page.mouse.click");
   const buttons = pressedButtons(button);
   await dispatchMouseEvent(services, sessionId, {
     type: "mouseMoved",
     x,
     y,
     button: "none",
-    buttons: 0,
+    buttons: baseButtons,
+    modifiers,
   });
-  await services.sleep(INPUT_EVENT_DELAY_MS);
-  await dispatchMouseEvent(services, sessionId, {
-    type: "mousePressed",
-    x,
-    y,
-    button,
-    buttons,
-    clickCount,
-  });
-  await services.sleep(INPUT_EVENT_DELAY_MS);
-  await dispatchMouseEvent(services, sessionId, {
-    type: "mouseReleased",
-    x,
-    y,
-    button,
-    buttons: 0,
-    clickCount,
-  });
+  for (let count = 1; count <= clickCount; count += 1) {
+    await dispatchMouseEvent(services, sessionId, {
+      type: "mousePressed",
+      x,
+      y,
+      button,
+      buttons: baseButtons | buttons,
+      modifiers,
+      clickCount: count,
+    });
+    if (options.delay) await services.sleep(options.delay);
+    await dispatchMouseEvent(services, sessionId, {
+      type: "mouseReleased",
+      x,
+      y,
+      button,
+      buttons: baseButtons,
+      modifiers,
+      clickCount: count,
+    });
+    if (options.delay && count < clickCount) {
+      await services.sleep(options.delay);
+    }
+  }
 }
 
 export async function moveMouseInPage(
   services: PageActionServices,
   sessionId: string,
+  fromX: number,
+  fromY: number,
   x: number,
   y: number,
-  buttons = 0,
+  options: MouseMoveState,
 ): Promise<void> {
   assertPoint(x, y, "page.mouse.move");
-  await dispatchMouseEvent(services, sessionId, {
-    type: "mouseMoved",
-    x,
-    y,
-    button: "none",
-    buttons,
-  });
+  const steps = options.steps ?? 1;
+  if (!Number.isInteger(steps) || steps < 1) {
+    throw new TypeError("page.mouse.move steps must be a positive integer");
+  }
+  for (let step = 1; step <= steps; step += 1) {
+    await dispatchMouseEvent(services, sessionId, {
+      type: "mouseMoved",
+      x: fromX + (x - fromX) * (step / steps),
+      y: fromY + (y - fromY) * (step / steps),
+      button: options.button,
+      buttons: options.buttons,
+      modifiers: options.modifiers,
+    });
+  }
 }
 
 export async function mouseButtonInPage(
@@ -455,6 +469,7 @@ export async function mouseButtonInPage(
   y: number,
   buttons: number,
   options: PageMouseButtonOptions = {},
+  modifiers = 0,
 ): Promise<MouseButton> {
   assertPoint(x, y, `page.mouse.${type === "mousePressed" ? "down" : "up"}`);
   const button = assertMouseButton(options.button ?? "left");
@@ -468,6 +483,7 @@ export async function mouseButtonInPage(
     y,
     button,
     buttons,
+    modifiers,
     clickCount,
   });
   return button;
@@ -480,6 +496,7 @@ export async function wheelInPage(
   y: number,
   deltaX: number,
   deltaY: number,
+  modifiers = 0,
 ): Promise<void> {
   assertPoint(x, y, "page.mouse.wheel");
   if (!Number.isFinite(deltaX) || !Number.isFinite(deltaY)) {
@@ -489,6 +506,7 @@ export async function wheelInPage(
     type: "mouseWheel",
     x,
     y,
+    modifiers,
     deltaX,
     deltaY,
   });
@@ -554,257 +572,6 @@ async function resolveElementPoint(
   return point;
 }
 
-async function installClickProbe(
-  services: PageActionServices,
-  sessionId: string,
-  objectId: string,
-  button: MouseButton,
-): Promise<string | null> {
-  const id = `page_click_${Date.now()}_${Math.random().toString(16).slice(2)}`;
-  const eventName = clickEventName(button);
-  try {
-    const response = await services.cdp(
-      "Runtime.callFunctionOn",
-      {
-        functionDeclaration: `function(id, eventName) {
-          const target = this;
-          window.__egoBrowserInputProbes ||= {};
-          const probe = { seen: false, target };
-          probe.handler = (event) => {
-            if (event.isTrusted && target && (event.target === target || target.contains(event.target))) {
-              probe.seen = true;
-            }
-          };
-          document.addEventListener(eventName, probe.handler, true);
-          window.__egoBrowserInputProbes[id] = probe;
-          return true;
-        }`,
-        objectId,
-        arguments: [{ value: id }, { value: eventName }],
-        returnByValue: true,
-        awaitPromise: false,
-      },
-      sessionId,
-    );
-    return response.result?.value ? id : null;
-  } catch {
-    return null;
-  }
-}
-
-async function installElementEventProbe(
-  services: PageActionServices,
-  sessionId: string,
-  objectId: string,
-  eventNames: string[],
-  prefix: string,
-): Promise<string | null> {
-  const id = `page_${prefix}_${Date.now()}_${Math.random().toString(16).slice(2)}`;
-  try {
-    const response = await services.cdp(
-      "Runtime.callFunctionOn",
-      {
-        functionDeclaration: `function(id, eventNames) {
-          const target = this;
-          window.__egoBrowserInputProbes ||= {};
-          const probe = { seen: false, target, eventNames };
-          probe.handler = (event) => {
-            if (event.isTrusted && (event.target === target || target.contains(event.target))) {
-              probe.seen = true;
-            }
-          };
-          for (const eventName of eventNames) {
-            document.addEventListener(eventName, probe.handler, true);
-          }
-          window.__egoBrowserInputProbes[id] = probe;
-          return true;
-        }`,
-        objectId,
-        arguments: [{ value: id }, { value: eventNames }],
-        returnByValue: true,
-        awaitPromise: false,
-      },
-      sessionId,
-    );
-    return response.result?.value ? id : null;
-  } catch {
-    return null;
-  }
-}
-
-async function finishHoverProbe(
-  services: PageActionServices,
-  sessionId: string,
-  objectId: string,
-  point: { x: number; y: number },
-  id: string | null,
-): Promise<boolean> {
-  if (!id) return false;
-  await services.sleep(50);
-  try {
-    const response = await services.cdp(
-      "Runtime.callFunctionOn",
-      {
-        functionDeclaration: `function(id, point) {
-          const probes = window.__egoBrowserInputProbes || {};
-          const probe = probes[id];
-          if (!probe) return { seen: false, fallback: false };
-          for (const eventName of probe.eventNames) {
-            document.removeEventListener(eventName, probe.handler, true);
-          }
-          delete probes[id];
-          if (probe.seen) return { seen: true, fallback: false };
-          const init = {
-            bubbles: true,
-            cancelable: true,
-            view: window,
-            clientX: point.x,
-            clientY: point.y,
-            button: 0,
-            buttons: 0,
-          };
-          this.dispatchEvent(new MouseEvent("mousemove", init));
-          this.dispatchEvent(new MouseEvent("mouseover", init));
-          return { seen: false, fallback: true };
-        }`,
-        objectId,
-        arguments: [{ value: id }, { value: point }],
-        returnByValue: true,
-        awaitPromise: false,
-      },
-      sessionId,
-    );
-    const value = response.result?.value;
-    return Boolean(value?.seen || value?.fallback);
-  } catch {
-    return false;
-  }
-}
-
-async function finishDragProbe(
-  services: PageActionServices,
-  sessionId: string,
-  sourceObjectId: string,
-  targetObjectId: string,
-  sourcePoint: { x: number; y: number },
-  targetPoint: { x: number; y: number },
-  id: string | null,
-  button: MouseButton,
-): Promise<boolean> {
-  if (!id) return false;
-  await services.sleep(50);
-  const mouseButton = button === "left" ? 0 : button === "middle" ? 1 : 2;
-  const buttons = pressedButtons(button);
-  try {
-    const response = await services.cdp(
-      "Runtime.callFunctionOn",
-      {
-        functionDeclaration: `function(id, target, sourcePoint, targetPoint, mouseButton, buttons) {
-          const probes = window.__egoBrowserInputProbes || {};
-          const probe = probes[id];
-          if (probe) {
-            for (const eventName of probe.eventNames) {
-              document.removeEventListener(eventName, probe.handler, true);
-            }
-            delete probes[id];
-            if (probe.seen) return { seen: true, fallback: false };
-          }
-          const eventFor = (node, type, point, pressed) => {
-            node.dispatchEvent(new MouseEvent(type, {
-              bubbles: true,
-              cancelable: true,
-              view: window,
-              clientX: point.x,
-              clientY: point.y,
-              button: mouseButton,
-              buttons: pressed,
-              detail: type === "mousemove" ? 0 : 1,
-            }));
-          };
-          eventFor(this, "mousedown", sourcePoint, buttons);
-          eventFor(target, "mousemove", targetPoint, buttons);
-          eventFor(target, "mouseup", targetPoint, 0);
-          return { seen: false, fallback: true };
-        }`,
-        objectId: sourceObjectId,
-        arguments: [
-          { value: id },
-          { objectId: targetObjectId },
-          { value: sourcePoint },
-          { value: targetPoint },
-          { value: mouseButton },
-          { value: buttons },
-        ],
-        returnByValue: true,
-        awaitPromise: false,
-      },
-      sessionId,
-    );
-    const value = response.result?.value;
-    return Boolean(value?.seen || value?.fallback);
-  } catch {
-    return false;
-  }
-}
-
-async function finishClickProbe(
-  services: PageActionServices,
-  sessionId: string,
-  objectId: string,
-  point: { x: number; y: number },
-  id: string | null,
-  button: MouseButton,
-  clickCount: number,
-): Promise<boolean> {
-  if (!id) return false;
-  await services.sleep(50);
-  const mouseButton = button === "left" ? 0 : button === "middle" ? 1 : 2;
-  const buttons = pressedButtons(button);
-  const eventName = clickEventName(button);
-  try {
-    const response = await services.cdp(
-      "Runtime.callFunctionOn",
-      {
-        functionDeclaration: `function(id, eventName) {
-          const probes = window.__egoBrowserInputProbes || {};
-          const probe = probes[id];
-          if (probe) {
-            document.removeEventListener(eventName, probe.handler, true);
-            delete probes[id];
-            if (probe.seen) return { seen: true, fallback: false };
-          }
-          const target = probe?.target || this;
-          const init = {
-            bubbles: true,
-            cancelable: true,
-            view: window,
-            clientX: ${JSON.stringify(point.x)},
-            clientY: ${JSON.stringify(point.y)},
-            button: ${JSON.stringify(mouseButton)},
-          };
-          target.dispatchEvent(new MouseEvent("mousemove", { ...init, buttons: 0, detail: 0 }));
-          target.dispatchEvent(new MouseEvent("mousedown", { ...init, buttons: ${JSON.stringify(buttons)}, detail: ${JSON.stringify(clickCount)} }));
-          target.dispatchEvent(new MouseEvent("mouseup", { ...init, buttons: 0, detail: ${JSON.stringify(clickCount)} }));
-          target.dispatchEvent(new MouseEvent(eventName, { ...init, buttons: 0, detail: ${JSON.stringify(clickCount)} }));
-          if (eventName === "click" && ${JSON.stringify(clickCount)} > 1) {
-            target.dispatchEvent(new MouseEvent("dblclick", { ...init, buttons: 0, detail: 2 }));
-          }
-          return { seen: false, fallback: true };
-        }`,
-        objectId,
-        arguments: [{ value: id }, { value: eventName }],
-        returnByValue: true,
-        awaitPromise: false,
-      },
-      sessionId,
-    );
-    const value = response.result?.value;
-    return Boolean(value?.seen || value?.fallback);
-  } catch {
-    return false;
-  }
-}
-
 function assertPageSelector(selector: unknown): asserts selector is string {
   if (typeof selector !== "string" || selector.trim().length === 0) {
     throw new TypeError("Page actions require a non-empty selector string");
@@ -824,12 +591,7 @@ async function dispatchMouseEvent(
   sessionId: string,
   params: Record<string, unknown>,
 ): Promise<void> {
-  await services.cdp(
-    "Input.dispatchMouseEvent",
-    params,
-    sessionId,
-    INPUT_DISPATCH_TIMEOUT_MS,
-  );
+  await services.cdp("Input.dispatchMouseEvent", params, sessionId);
 }
 
 async function releaseObject(
@@ -848,6 +610,12 @@ function assertPoint(x: number, y: number, operation: string): void {
   }
 }
 
+function assertDelay(value: unknown, operation: string): void {
+  if (value !== undefined && (!Number.isFinite(value) || Number(value) < 0)) {
+    throw new TypeError(`${operation} delay must be a non-negative number`);
+  }
+}
+
 function assertMouseButton(button: string): MouseButton {
   if (!(<string[]>["left", "middle", "right"]).includes(button)) {
     throw new TypeError(`unsupported mouse button: ${button}`);
@@ -863,17 +631,4 @@ function pressedButtons(button: MouseButton): number {
   if (button === "left") return 1;
   if (button === "right") return 2;
   return 4;
-}
-
-function clickEventName(
-  button: MouseButton,
-): "click" | "auxclick" | "contextmenu" {
-  if (button === "left") return "click";
-  if (button === "middle") return "auxclick";
-  return "contextmenu";
-}
-
-function isInputDispatchTimeout(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error ?? "");
-  return /CDP request timed out: Input\.dispatchMouseEvent/.test(message);
 }

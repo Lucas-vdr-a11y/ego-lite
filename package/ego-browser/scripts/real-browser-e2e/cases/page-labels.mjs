@@ -148,15 +148,10 @@ export function pageBudgetCase() {
 export function pageAdoptionCase() {
   return `
     const task = await taskSpace(taskName);
-    const source = await openOrReuseTab(baseUrl + "/?adopt=source", {
-      wait: true,
-      timeout: 10,
-    });
     const beforeAdopt = await task.listPages();
-    const untracked = beforeAdopt.find(
-      (item) => item.targetId === source.targetId && item.label === undefined
-    );
-    assert(Boolean(untracked), "listPages reports the source tab as untracked");
+    const untracked = beforeAdopt.find((item) => item.label === undefined);
+    assert(Boolean(untracked), "listPages preserves a tab from before the control boundary");
+    const source = untracked.page;
     assertEqual(untracked.page.targetId, source.targetId, "untracked handle keeps the target id");
     assertEqual(untracked.page.snapshot, undefined, "untracked handle cannot snapshot directly");
     assertEqual(untracked.page.goto, undefined, "untracked handle cannot navigate directly");
@@ -165,6 +160,7 @@ export function pageAdoptionCase() {
     const adopted = await task.adopt(untracked.page, { as: "borrowed" });
     assertEqual(adopted.label, "borrowed", "adopt assigns the requested durable label");
     assertEqual(adopted.openedBy, "unknown", "adopt preserves conservative origin attribution");
+    await adopted.goto(baseUrl + "/?adopt=source");
     assertIncludes(await adopted.snapshot(), "Helper e2e fixture", "adopted page supports Page operations");
 
     const released = await task.release(adopted.label);
@@ -341,13 +337,10 @@ export function pageBasicOperationsCase() {
 export function pageActionsAndPopupCase() {
   return `
     const task = await taskSpace(taskName);
-    await openOrReuseTab(baseUrl + "/?page-actions=unknown", {
-      wait: true,
-      timeout: 10,
-    });
     const unknownBefore = (await task.listPages())
       .filter((item) => item.label === undefined)
       .map((item) => item.targetId);
+    assert(unknownBefore.length > 0, "the control-boundary inventory keeps pre-existing tabs untracked");
     const source = await task.newPage(baseUrl + "/?page-actions=source", {
       as: "page-actions-source",
     });
@@ -359,9 +352,21 @@ export function pageActionsAndPopupCase() {
     });
 
     assertEqual((await currentTab()).targetId, budgetFiller.targetId, "the budget page starts active");
+    await source.evaluate(() => {
+      window.__pageFillEvents = [];
+      document.querySelector("#text-input").addEventListener("input", (event) => {
+        window.__pageFillEvents.push({ data: event.data, trusted: event.isTrusted });
+      });
+    });
     const fillReceipt = await source.fill("#text-input", "page-filled");
     assertEqual(fillReceipt.domChanged, true, "page.fill reports its form-state change");
     assertEqual(await source.evaluate("document.querySelector('#text-input').value"), "page-filled", "page.fill writes into the addressed page");
+    assert(
+      (await source.evaluate("window.__pageFillEvents")).some(
+        (event) => event.data === "page-filled" && event.trusted === true
+      ),
+      "page.fill uses native text input without synthetic duplicate events"
+    );
     assertEqual((await currentTab()).targetId, source.targetId, "page.fill activates and keeps its page current");
 
     await source.evaluate((popupUrl) => {
@@ -372,6 +377,7 @@ export function pageActionsAndPopupCase() {
         <div id="page-drag-source" style="position:fixed;left:120px;top:80px;width:40px;height:40px;background:red"></div>
         <div id="page-drag-target" style="position:fixed;left:240px;top:80px;width:40px;height:40px;background:blue"></div>
         <div id="page-raw-mouse" style="position:fixed;left:340px;top:80px;width:80px;height:80px;background:green"></div>
+        <input id="page-keyboard-input" style="position:fixed;left:450px;top:80px;width:180px" />
       \`;
       document.body.append(area);
       window.__pagePointer = {};
@@ -398,6 +404,23 @@ export function pageActionsAndPopupCase() {
       raw.addEventListener("click", (event) => {
         window.__pagePointer.rawClickTrusted = event.isTrusted;
       });
+      raw.addEventListener("mousemove", (event) => {
+        window.__pagePointer.moveCount = (window.__pagePointer.moveCount || 0) + 1;
+        window.__pagePointer.moveShiftKey = event.shiftKey;
+      });
+      const input = area.querySelector("#page-keyboard-input");
+      window.__pageKeyboard = { events: [] };
+      for (const type of ["keydown", "keyup", "beforeinput", "input"]) {
+        input.addEventListener(type, (event) => {
+          window.__pageKeyboard.events.push({
+            type,
+            key: event.key,
+            data: event.data,
+            shiftKey: event.shiftKey,
+            trusted: event.isTrusted,
+          });
+        });
+      }
     }, baseUrl + "/secondary?page-actions=dblclick-popup");
 
     const dblclickReceipt = await source.dblclick("#page-dblclick");
@@ -415,6 +438,34 @@ export function pageActionsAndPopupCase() {
     assertEqual(pointerState.hoverTrusted, true, "page.hover uses trusted mouse input");
     assertEqual(pointerState.dragStartTrusted, true, "page.dragAndDrop starts with trusted input");
     assertEqual(pointerState.dragEndTrusted, true, "page.dragAndDrop ends on the target");
+
+    await source.click("#page-keyboard-input");
+    await source.mouse.move(350, 90);
+    await source.keyboard.down("Shift");
+    await source.keyboard.type("a");
+    await source.mouse.move(380, 120, { steps: 3 });
+    await source.keyboard.up("Shift");
+    await source.keyboard.insertText("世界");
+    const keyboardState = await source.evaluate("window.__pageKeyboard");
+    assert(
+      keyboardState.events.some(
+        (event) =>
+          event.type === "keydown" &&
+          event.key === "A" &&
+          event.shiftKey === true &&
+          event.trusted === true
+      ),
+      "page.keyboard keeps physical Shift state and emits trusted key events"
+    );
+    assert(
+      keyboardState.events.some(
+        (event) => event.type === "input" && event.data === "世界" && event.trusted === true
+      ),
+      "page.keyboard.insertText reaches the page as native text input"
+    );
+    const modifiedPointer = await source.evaluate("window.__pagePointer");
+    assert(modifiedPointer.moveCount >= 3, "page.mouse.move dispatches every requested step");
+    assertEqual(modifiedPointer.moveShiftKey, true, "mouse events carry held keyboard modifiers");
 
     await source.mouse.move(360, 100);
     await source.mouse.down();

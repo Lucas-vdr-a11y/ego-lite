@@ -73,6 +73,8 @@ test("writes use a complete atomic ledger document", async () => {
       nextLabel: 2,
       usedLabels: ["p1"],
       releasedLabels: [],
+      initialized: true,
+      unmanagedTargets: {},
       pages: {
         p1: {
           targetId: "target-a",
@@ -101,6 +103,20 @@ test("release removes a managed page without making its label reusable", async (
 
     const next = await store.addPage(3, "target-next");
     assert.equal(next.label, "p2");
+
+    const reconciled = await store.reconcile(
+      3,
+      ["target-user", "target-next"],
+      { autoAdoptNew: true },
+    );
+    assert.equal(
+      Object.values(reconciled.pages).some(
+        (page) => page.targetId === "target-user",
+      ),
+      false,
+      "a released user page must not be silently adopted again",
+    );
+    assert.equal(reconciled.unmanagedTargets["target-user"], "unknown");
   });
 });
 
@@ -169,5 +185,41 @@ test("reconciliation does not write a new version when every target is live", as
 
     assert.equal(after.version, before.version);
     assert.deepEqual(after.pages, before.pages);
+  });
+});
+
+test("reconciliation protects the first control baseline and adopts later agent tabs", async () => {
+  await withTempLedger(async (rootDir) => {
+    const store = new PageLedgerStore({ rootDir, roundId: "round-a" });
+
+    const baseline = await store.reconcile(8, ["target-user"], {
+      autoAdoptNew: true,
+    });
+    assert.deepEqual(baseline.pages, {});
+    assert.equal(baseline.unmanagedTargets["target-user"], "unknown");
+
+    const reconciled = await store.reconcile(
+      8,
+      ["target-user", "target-popup"],
+      { autoAdoptNew: true },
+    );
+    assert.equal(reconciled.pages.p1.targetId, "target-popup");
+    assert.equal(reconciled.pages.p1.openedBy, "agent");
+    assert.equal(reconciled.unmanagedTargets["target-user"], "unknown");
+  });
+});
+
+test("an explicitly unmanaged anchor is not adopted during reconciliation", async () => {
+  await withTempLedger(async (rootDir) => {
+    const store = new PageLedgerStore({ rootDir, roundId: "round-a" });
+    await store.reconcile(10, [], { autoAdoptNew: true });
+    await store.keepUnmanaged(10, "target-anchor", "unknown");
+
+    const reconciled = await store.reconcile(10, ["target-anchor"], {
+      autoAdoptNew: true,
+    });
+
+    assert.deepEqual(reconciled.pages, {});
+    assert.equal(reconciled.unmanagedTargets["target-anchor"], "unknown");
   });
 });

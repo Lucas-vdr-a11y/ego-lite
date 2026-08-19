@@ -3,10 +3,65 @@ import assert from "node:assert/strict";
 
 import { setOverrides } from "../../dist/src/state.js";
 import { pressKey } from "../../dist/src/driver/keyboard.js";
+import { parseKeyChord } from "../../dist/src/driver/page-input.js";
+
+test("pressKey emits the macOS paste shortcut as a native editing sequence", async () => {
+  const calls = [];
+  const restore = setOverrides({
+    platform: "darwin",
+    cdpOverride(method, params, sessionId) {
+      calls.push({ method, params, sessionId });
+      return {};
+    },
+  });
+  try {
+    await pressKey("V", 4);
+  } finally {
+    restore();
+  }
+
+  assert.equal(calls.length, 4);
+  assert.deepEqual(calls[0], {
+    method: "Input.dispatchKeyEvent",
+    sessionId: undefined,
+    params: {
+      type: "rawKeyDown",
+      key: "Meta",
+      code: "MetaLeft",
+      modifiers: 4,
+      windowsVirtualKeyCode: 91,
+      location: 1,
+    },
+  });
+  assert.deepEqual(calls[1].params, {
+    type: "rawKeyDown",
+    key: "V",
+    code: "KeyV",
+    modifiers: 4,
+    windowsVirtualKeyCode: 86,
+    commands: ["paste"],
+  });
+  assert.deepEqual(calls[2].params, {
+    type: "keyUp",
+    key: "V",
+    code: "KeyV",
+    modifiers: 4,
+    windowsVirtualKeyCode: 86,
+  });
+  assert.deepEqual(calls[3].params, {
+    type: "keyUp",
+    key: "Meta",
+    code: "MetaLeft",
+    modifiers: 0,
+    windowsVirtualKeyCode: 91,
+    location: 1,
+  });
+});
 
 test("pressKey maps Command+A to the selectAll editing command", async () => {
   const calls = [];
   const restore = setOverrides({
+    platform: "darwin",
     cdpOverride(method, params, sessionId) {
       calls.push({ method, params, sessionId });
       return {};
@@ -18,35 +73,13 @@ test("pressKey maps Command+A to the selectAll editing command", async () => {
     restore();
   }
 
-  assert.equal(calls.length, 2);
-  assert.deepEqual(calls[0], {
-    method: "Input.dispatchKeyEvent",
-    sessionId: undefined,
-    params: {
-      type: "keyDown",
-      key: "a",
-      code: "KeyA",
-      modifiers: 4,
-      windowsVirtualKeyCode: 65,
-      nativeVirtualKeyCode: 65,
-      text: "a",
-      unmodifiedText: "a",
-      commands: ["selectAll"],
-    },
-  });
-  assert.deepEqual(calls[1].params, {
-    type: "keyUp",
-    key: "a",
-    code: "KeyA",
-    modifiers: 4,
-    windowsVirtualKeyCode: 65,
-    nativeVirtualKeyCode: 65,
-  });
+  assert.deepEqual(calls[1].params.commands, ["selectAll"]);
 });
 
 test("pressKey maps Control+A to the selectAll editing command", async () => {
   const calls = [];
   const restore = setOverrides({
+    platform: "linux",
     cdpOverride(method, params, sessionId) {
       calls.push({ method, params, sessionId });
       return {};
@@ -58,7 +91,7 @@ test("pressKey maps Control+A to the selectAll editing command", async () => {
     restore();
   }
 
-  assert.deepEqual(calls[0].params.commands, ["selectAll"]);
+  assert.deepEqual(calls[1].params.commands, ["selectAll"]);
 });
 
 test("pressKey does not map modified Command+A variants to selectAll", async () => {
@@ -75,7 +108,10 @@ test("pressKey does not map modified Command+A variants to selectAll", async () 
     restore();
   }
 
-  assert.equal(calls[0].params.commands, undefined);
+  const keyDown = calls.find(
+    (call) => call.params.code === "KeyA" && call.params.type === "rawKeyDown",
+  );
+  assert.equal(keyDown.params.commands, undefined);
 });
 
 test("pressKey leaves ordinary printable keys unchanged", async () => {
@@ -99,7 +135,6 @@ test("pressKey leaves ordinary printable keys unchanged", async () => {
     code: "KeyX",
     modifiers: 0,
     windowsVirtualKeyCode: 88,
-    nativeVirtualKeyCode: 88,
     text: "x",
     unmodifiedText: "x",
   });
@@ -109,7 +144,6 @@ test("pressKey leaves ordinary printable keys unchanged", async () => {
     code: "KeyX",
     modifiers: 0,
     windowsVirtualKeyCode: 88,
-    nativeVirtualKeyCode: 88,
   });
 });
 
@@ -130,6 +164,48 @@ test("pressKey maps Backspace and Delete to editing commands", async () => {
 
   assert.deepEqual(calls[0].params.commands, ["deleteBackward"]);
   assert.deepEqual(calls[2].params.commands, ["deleteForward"]);
+  assert.equal(calls[0].params.type, "rawKeyDown");
+  assert.equal(calls[2].params.type, "rawKeyDown");
+});
+
+test("parseKeyChord resolves ControlOrMeta for the host platform", () => {
+  assert.deepEqual(parseKeyChord("ControlOrMeta+V", "darwin"), {
+    key: "V",
+    modifiers: 4,
+  });
+  assert.deepEqual(parseKeyChord("ControlOrMeta+V", "linux"), {
+    key: "V",
+    modifiers: 2,
+  });
+});
+
+test("pressKey does not synthesize a successful paste when native input is absent", async () => {
+  const originalEgo = globalThis.ego;
+  globalThis.ego = { sendCDPMessage: () => {} };
+  let evaluateCallCount = 0;
+  const restore = setOverrides({
+    platform: "darwin",
+    cdpOverride(method) {
+      if (method === "Runtime.evaluate") {
+        evaluateCallCount++;
+        if (evaluateCallCount === 1) {
+          return { result: { value: true } };
+        }
+        return { result: { value: { seen: false, fallback: false } } };
+      }
+      return {};
+    },
+  });
+  try {
+    await assert.rejects(
+      pressKey("V", 4),
+      /could not deliver native editing shortcut/i,
+    );
+  } finally {
+    restore();
+    if (originalEgo === undefined) delete globalThis.ego;
+    else globalThis.ego = originalEgo;
+  }
 });
 
 test("pressKey triggers probe fallback when CDP dispatch is not trusted", async () => {

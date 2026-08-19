@@ -15,8 +15,11 @@ const MODIFIER_BITS: Record<string, number> = {
   shift: 8,
 };
 
-/** Parse Playwright-style key chords such as Meta+A or Control+Shift+P. */
-export function parseKeyChord(chord: string): {
+/** Parse Playwright-style key chords such as Meta+A or ControlOrMeta+P. */
+export function parseKeyChord(
+  chord: string,
+  platform: string = process.platform,
+): {
   key: string;
   modifiers: number;
 } {
@@ -31,7 +34,12 @@ export function parseKeyChord(chord: string): {
   let modifiers = 0;
   for (const rawModifier of parts) {
     const modifier = rawModifier.trim().toLowerCase();
-    const bit = MODIFIER_BITS[modifier];
+    const bit =
+      modifier === "controlormeta"
+        ? platform === "darwin"
+          ? MODIFIER_BITS.meta
+          : MODIFIER_BITS.control
+        : MODIFIER_BITS[modifier];
     if (!bit) {
       throw new TypeError(
         `page.keyboard.press received unsupported modifier: ${rawModifier}`,

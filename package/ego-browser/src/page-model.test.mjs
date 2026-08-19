@@ -155,6 +155,9 @@ function createFixture(rootDir) {
         return { result: { type: "string", value: "complete" } };
       }
       if (method === "Runtime.callFunctionOn") {
+        if (params.functionDeclaration.includes("fillPreparation")) {
+          return { result: { type: "string", value: "needsinput" } };
+        }
         if (params.functionDeclaration.includes("checkVisibility")) {
           return { result: { type: "boolean", value: true } };
         }
@@ -659,25 +662,24 @@ test("Page fetch validates its JSON options and millisecond timeout", async () =
   });
 });
 
-test("Page click stays target-scoped and adopts only tabs opened by the action", async () => {
+test("Page click fails closed when native mouse dispatch times out", async () => {
   await withFixture(async (fixture) => {
-    const task = taskForRound(fixture, "round-a", { pageBudget: 2 });
-    const first = await task.newPage("https://example.test/first");
-    await task.newPage("https://example.test/second");
     fixture.tabs.set("target-user", {
       targetId: "target-user",
       url: "https://example.test/user",
       title: "Existing user page",
       active: false,
     });
+    const task = taskForRound(fixture, "round-a", { pageBudget: 2 });
+    const first = await task.newPage("https://example.test/first");
+    await task.newPage("https://example.test/second");
     fixture.openPopupOnNextClick("https://example.test/popup");
     fixture.timeoutNextMouseDispatch();
 
-    const receipt = await first.click("#open-popup");
-
-    assert.deepEqual(receipt, {
-      popups: [{ label: "p3", targetId: "target-3" }],
-    });
+    await assert.rejects(
+      () => first.click("#open-popup"),
+      /CDP request timed out: Input\.dispatchMouseEvent/,
+    );
     const inventory = await task.listPages();
     assert.equal(
       inventory.find((item) => item.targetId === "target-user").label,
@@ -685,9 +687,8 @@ test("Page click stays target-scoped and adopts only tabs opened by the action",
       "a tab that existed before the action must remain untracked",
     );
     assert.equal(
-      inventory.find((item) => item.targetId === "target-3").label,
-      "p3",
-      "a popup opened by the action is managed even above the budget",
+      inventory.some((item) => item.targetId === "target-3"),
+      false,
     );
     assert(
       fixture.calls.some(
@@ -701,10 +702,6 @@ test("Page click stays target-scoped and adopts only tabs opened by the action",
       fixture.activeTarget(),
       "target-1",
       "click must leave its Page active",
-    );
-    await assert.rejects(
-      () => task.newPage("https://example.test/blocked"),
-      /Page budget reached \(3\/2\)/,
     );
   });
 });
@@ -725,6 +722,25 @@ test("Page fill uses its target session and reports no popup when none opened", 
       { text: "filled" },
       "session:target-1",
     ]);
+    const fillPreparation = fixture.calls.find(
+      ([kind, method, params]) =>
+        kind === "cdp" &&
+        method === "Runtime.callFunctionOn" &&
+        params.functionDeclaration.includes("fillPreparation"),
+    );
+    assert(fillPreparation, "fill must validate and select the target element");
+    assert.equal(
+      fixture.calls.some(
+        ([kind, method, params]) =>
+          kind === "cdp" &&
+          method === "Runtime.callFunctionOn" &&
+          params.functionDeclaration.includes(
+            "dispatchEvent(new Event('change'",
+          ),
+      ),
+      false,
+      "ordinary text fill must rely on native input instead of duplicate synthetic events",
+    );
     assert.equal(
       fixture.activeTarget(),
       "target-1",
@@ -769,11 +785,30 @@ test("Page pointer methods dispatch through the addressed target session", async
       "all pointer events must use the addressed Page session",
     );
     assert(
-      pointerCalls.some(
+      pointerCalls.every((call) => call.length === 4),
+      "Page pointer input must use the runtime CDP timeout instead of a 1s action timeout",
+    );
+    assert.equal(
+      fixture.calls.some(
+        ([kind, method, params]) =>
+          kind === "cdp" &&
+          method === "Runtime.callFunctionOn" &&
+          params.functionDeclaration.includes("__egoBrowserInputProbes"),
+      ),
+      false,
+      "Page pointer input must not inject timeout probes into the site",
+    );
+    assert(
+      pointerCalls.filter(
         ([, , params]) =>
           params.type === "mousePressed" && params.clickCount === 2,
-      ),
-      "dblclick must preserve the double-click count",
+      ).length === 1,
+      "dblclick must finish with the second native press",
+    );
+    assert(
+      pointerCalls.filter(([, , params]) => params.type === "mousePressed")
+        .length >= 3,
+      "dblclick must dispatch two press/release cycles before drag starts",
     );
     assert.equal(fixture.activeTarget(), first.targetId);
   });
@@ -818,6 +853,63 @@ test("Page mouse primitives preserve button state on one target", async () => {
   });
 });
 
+test("Page mouse mirrors Playwright state, steps, and keyboard modifiers", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a", { platform: "darwin" });
+    const page = await task.newPage("https://example.test/first");
+
+    await page.keyboard.down("Shift");
+    await page.mouse.move(30, 20, { steps: 3 });
+    await page.mouse.down({ button: "right" });
+    await page.mouse.move(60, 50, { steps: 2 });
+    await page.mouse.wheel(5, 10);
+    await page.mouse.up({ button: "right" });
+    await page.mouse.click(80, 70, { clickCount: 2 });
+    await page.keyboard.up("Shift");
+
+    const pointerCalls = fixture.calls.filter(
+      ([kind, method]) =>
+        kind === "cdp" && method === "Input.dispatchMouseEvent",
+    );
+    const moves = pointerCalls.filter(
+      ([, , params]) => params.type === "mouseMoved",
+    );
+    assert.deepEqual(
+      moves.slice(0, 3).map(([, , params]) => params.x),
+      [10, 20, 30],
+    );
+    assert(
+      moves
+        .slice(0, 3)
+        .every(
+          ([, , params], index) =>
+            Math.abs(params.y - (20 * (index + 1)) / 3) < 1e-9,
+        ),
+    );
+    assert(
+      pointerCalls.every(([, , params]) => params.modifiers === 8),
+      "mouse input must carry the keyboard modifier state",
+    );
+    assert(
+      moves
+        .slice(3, 5)
+        .every(
+          ([, , params]) => params.button === "right" && params.buttons === 2,
+        ),
+      "mouse moves must retain the last pressed button",
+    );
+    assert.deepEqual(
+      pointerCalls
+        .filter(
+          ([, , params]) => params.type === "mousePressed" && params.x === 80,
+        )
+        .map(([, , params]) => params.clickCount),
+      [1, 2],
+      "a double click must be two native click cycles",
+    );
+  });
+});
+
 test("Page scrollBy evaluates in the addressed page", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
@@ -854,22 +946,107 @@ test("Page keyboard press and type use the addressed target session", async () =
     assert(keyCalls.length >= 3);
     assert(keyCalls.every((call) => call[3] === `session:${first.targetId}`));
     assert(
+      keyCalls.every((call) => call.length === 4),
+      "Page keyboard input must use the runtime CDP timeout instead of a 1s action timeout",
+    );
+    assert(
       keyCalls.some(
         ([, method, params]) =>
           method === "Input.dispatchKeyEvent" &&
-          params.type === "keyDown" &&
+          params.type === "rawKeyDown" &&
+          params.code === "KeyA" &&
           params.modifiers === 4 &&
           params.commands?.includes("selectAll"),
       ),
       "Meta+A must retain the native selectAll editing command",
     );
-    assert(
-      keyCalls.some(
-        ([, method, params]) =>
-          method === "Input.insertText" && params.text === "hello 世界",
-      ),
+    assert.deepEqual(
+      keyCalls
+        .filter(([, method]) => method === "Input.insertText")
+        .map(([, , params]) => params.text),
+      ["世", "界"],
+      "characters outside the physical US layout use insertText",
     );
     assert.equal(fixture.activeTarget(), first.targetId);
+  });
+});
+
+test("Page keyboard mirrors Playwright key state and the US layout", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a", { platform: "darwin" });
+    const page = await task.newPage("https://example.test/first");
+
+    await page.keyboard.down("Shift");
+    await page.keyboard.down("a");
+    await page.keyboard.down("a");
+    await page.keyboard.up("a");
+    await page.keyboard.up("Shift");
+    await page.keyboard.press("Meta+V");
+    await page.keyboard.press("Control++");
+    await page.keyboard.insertText("世界");
+
+    const keyEvents = fixture.calls
+      .filter(
+        ([kind, method]) =>
+          kind === "cdp" && method === "Input.dispatchKeyEvent",
+      )
+      .map(([, , params]) => params);
+    const aDowns = keyEvents.filter(
+      (params) => params.type === "keyDown" && params.code === "KeyA",
+    );
+    assert.equal(aDowns[0].key, "A");
+    assert.equal(aDowns[0].text, "A");
+    assert.equal(aDowns[0].modifiers, 8);
+    assert.equal(aDowns[0].autoRepeat, false);
+    assert.equal(aDowns[1].autoRepeat, true);
+
+    const paste = keyEvents.find(
+      (params) => params.code === "KeyV" && params.type === "rawKeyDown",
+    );
+    assert.deepEqual(paste.commands, ["paste"]);
+    const plus = keyEvents.find(
+      (params) => params.key === "+" && params.type === "rawKeyDown",
+    );
+    assert.equal(plus.code, "Equal");
+    assert.equal(plus.modifiers, 2);
+    assert(
+      fixture.calls.some(
+        ([kind, method, params]) =>
+          kind === "cdp" &&
+          method === "Input.insertText" &&
+          params.text === "世界",
+      ),
+    );
+  });
+});
+
+test("Page keyboard type emits physical keys when possible and inserts unsupported text", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a", { platform: "darwin" });
+    const page = await task.newPage("https://example.test/first");
+
+    await page.keyboard.type("Aé", { delay: 12 });
+
+    const inputCalls = fixture.calls.filter(
+      ([kind, method]) =>
+        kind === "cdp" &&
+        (method === "Input.dispatchKeyEvent" || method === "Input.insertText"),
+    );
+    assert(
+      inputCalls.some(
+        ([, method, params]) =>
+          method === "Input.dispatchKeyEvent" &&
+          params.type === "keyDown" &&
+          params.code === "KeyA" &&
+          params.text === "A",
+      ),
+    );
+    assert(
+      inputCalls.some(
+        ([, method, params]) =>
+          method === "Input.insertText" && params.text === "é",
+      ),
+    );
   });
 });
 
@@ -1145,6 +1322,56 @@ test("close leaves an anchor tab and the next page gets a new label", async () =
   });
 });
 
+test("close waits for the target to disappear before retiring its label", async () => {
+  await withFixture(async (fixture) => {
+    let closeRequested = false;
+    let postCloseReads = 0;
+    const task = taskForRound(fixture, "round-a", {
+      async cdp(method, params, sessionId, timeoutMs) {
+        if (method === "Target.closeTarget") {
+          closeRequested = true;
+          return { success: true };
+        }
+        return fixture.services.cdp(method, params, sessionId, timeoutMs);
+      },
+      async listTabs() {
+        await fixture.services.listTabs();
+        if (closeRequested && ++postCloseReads === 3) {
+          fixture.tabs.delete("target-1");
+        }
+        return [...fixture.tabs.values()];
+      },
+    });
+    const page = await task.newPage("https://example.test/first");
+
+    await page.close();
+
+    assert.equal(postCloseReads, 3);
+    await assert.rejects(
+      () => task.page(page.label).title(),
+      /page p1 was closed/,
+    );
+  });
+});
+
+test("close keeps the page managed when the target never disappears", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a", {
+      async cdp(method, params, sessionId, timeoutMs) {
+        if (method === "Target.closeTarget") return { success: true };
+        return fixture.services.cdp(method, params, sessionId, timeoutMs);
+      },
+    });
+    const page = await task.newPage("https://example.test/first");
+
+    await assert.rejects(() => page.close(), /did not close within 2000ms/);
+
+    const inventory = await task.listPages();
+    assert.equal(inventory[0].label, page.label);
+    assert.equal(await page.title(), "https://example.test/first");
+  });
+});
+
 test("a ledger failure closes the newly created uncommitted tab", async () => {
   await withFixture(async (fixture) => {
     const task = createTaskSpaceHandle(
@@ -1177,14 +1404,14 @@ test("a ledger failure closes the newly created uncommitted tab", async () => {
 
 test("listPages combines managed labels with live browser information", async () => {
   await withFixture(async (fixture) => {
-    const task = taskForRound(fixture, "round-a");
-    const managed = await task.newPage("https://example.test/managed");
     fixture.tabs.set("target-user", {
       targetId: "target-user",
       url: "https://example.test/user",
       title: "User page",
       active: false,
     });
+    const task = taskForRound(fixture, "round-a");
+    const managed = await task.newPage("https://example.test/managed");
 
     const pages = await task.listPages();
     const managedItem = pages.find((item) => item.label === "p1");
@@ -1203,6 +1430,27 @@ test("listPages combines managed labels with live browser information", async ()
     assert.equal(unknownItem.page.close, undefined);
     assert.equal(unknownItem.title, "User page");
     assert.equal(unknownItem.openedBy, "unknown");
+  });
+});
+
+test("listPages automatically manages a tab created during agent control", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a");
+    await task.newPage("https://example.test/managed");
+    fixture.tabs.set("target-popup", {
+      targetId: "target-popup",
+      url: "https://example.test/popup",
+      title: "Late popup",
+      active: false,
+    });
+
+    const popup = (await task.listPages()).find(
+      (item) => item.targetId === "target-popup",
+    );
+
+    assert.equal(popup.label, "p2");
+    assert.equal(popup.openedBy, "agent");
+    assert.equal(popup.page.label, "p2");
   });
 });
 
@@ -1281,14 +1529,14 @@ test("adopt rejects stale, cross-space, and already managed handles", async () =
 
 test("adopt applies the managed-page budget before changing the ledger", async () => {
   await withFixture(async (fixture) => {
-    const task = taskForRound(fixture, "round-a", { pageBudget: 1 });
-    await task.newPage("https://example.test/managed");
     fixture.tabs.set("target-user", {
       targetId: "target-user",
       url: "https://example.test/user",
       title: "User page",
       active: false,
     });
+    const task = taskForRound(fixture, "round-a", { pageBudget: 1 });
+    await task.newPage("https://example.test/managed");
     const untracked = (await task.listPages()).find(
       (item) => item.targetId === "target-user",
     ).page;
