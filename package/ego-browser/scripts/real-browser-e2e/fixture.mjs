@@ -173,6 +173,11 @@ export async function startFixtureServer(taskName) {
       res.end(pointerWorkbenchHtml());
       return;
     }
+    if (url.pathname === "/media-workbench") {
+      res.writeHead(200, { "content-type": "text/html" });
+      res.end(mediaWorkbenchHtml());
+      return;
+    }
     if (url.pathname === "/slow-page") {
       const delayMs = Number(url.searchParams.get("ms") || 250);
       setTimeout(() => {
@@ -764,6 +769,261 @@ function pointerWorkbenchHtml() {
           },
         };
       };
+    </script>
+  </body>
+</html>`;
+}
+
+function mediaWorkbenchHtml() {
+  return `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>ego-lite media workbench</title>
+    <style>
+      * { box-sizing: border-box; }
+      body {
+        background: #eef2ff;
+        color: #172033;
+        font-family: system-ui, sans-serif;
+        margin: 0;
+        padding: 24px;
+      }
+      main { display: grid; gap: 20px; grid-template-columns: 520px 300px; }
+      section {
+        background: #fff;
+        border: 1px solid #cbd5e1;
+        border-radius: 12px;
+        padding: 16px;
+      }
+      video {
+        background: #111827;
+        display: block;
+        height: 270px;
+        margin-bottom: 12px;
+        width: 480px;
+      }
+      button { margin: 4px 6px 4px 0; padding: 8px 12px; }
+      output { display: block; font-family: monospace; margin-top: 12px; }
+    </style>
+  </head>
+  <body data-media-ready="false">
+    <h1>Media workbench</h1>
+    <main>
+      <section>
+        <h2>Generated video</h2>
+        <video id="test-video" playsinline></video>
+        <button id="video-play">Play video</button>
+        <button id="video-pause">Pause video</button>
+        <button id="video-rate">Set video to 1.5×</button>
+        <button id="video-mute">Toggle video mute</button>
+      </section>
+      <section>
+        <h2>Generated audio</h2>
+        <audio id="test-audio"></audio>
+        <button id="audio-play">Play audio</button>
+        <button id="audio-pause">Pause audio</button>
+        <button id="audio-seek">Seek audio</button>
+        <button id="audio-volume">Set audio volume</button>
+        <output id="media-status">Preparing media…</output>
+      </section>
+    </main>
+    <script>
+      const video = document.querySelector("#test-video");
+      const audio = document.querySelector("#test-audio");
+      const status = document.querySelector("#media-status");
+      const state = {
+        errors: [],
+        ready: false,
+        trustedControls: true,
+        videoEvents: {},
+        audioEvents: {},
+      };
+
+      function observeMedia(element, events) {
+        for (const name of [
+          "play",
+          "playing",
+          "pause",
+          "timeupdate",
+          "seeking",
+          "seeked",
+          "ratechange",
+          "volumechange",
+          "ended",
+        ]) {
+          events[name] = 0;
+          element.addEventListener(name, () => {
+            events[name] += 1;
+            element.dataset.playing = String(!element.paused);
+            if (element.currentTime >= 0.15) {
+              element.dataset.progressed = "true";
+            }
+          });
+        }
+      }
+
+      function bindControl(selector, action) {
+        document.querySelector(selector).addEventListener("click", async (event) => {
+          state.trustedControls &&= event.isTrusted;
+          try {
+            await action();
+          } catch (error) {
+            state.errors.push(String(error?.message || error));
+          }
+        });
+      }
+
+      function createWaveUrl() {
+        const duration = 3;
+        const sampleRate = 8000;
+        const sampleCount = duration * sampleRate;
+        const dataLength = sampleCount * 2;
+        const buffer = new ArrayBuffer(44 + dataLength);
+        const view = new DataView(buffer);
+        const writeText = (offset, text) => {
+          for (let index = 0; index < text.length; index += 1) {
+            view.setUint8(offset + index, text.charCodeAt(index));
+          }
+        };
+        writeText(0, "RIFF");
+        view.setUint32(4, 36 + dataLength, true);
+        writeText(8, "WAVE");
+        writeText(12, "fmt ");
+        view.setUint32(16, 16, true);
+        view.setUint16(20, 1, true);
+        view.setUint16(22, 1, true);
+        view.setUint32(24, sampleRate, true);
+        view.setUint32(28, sampleRate * 2, true);
+        view.setUint16(32, 2, true);
+        view.setUint16(34, 16, true);
+        writeText(36, "data");
+        view.setUint32(40, dataLength, true);
+        for (let index = 0; index < sampleCount; index += 1) {
+          const sample = Math.sin((index / sampleRate) * Math.PI * 2 * 440);
+          view.setInt16(44 + index * 2, sample * 5000, true);
+        }
+        return URL.createObjectURL(new Blob([buffer], { type: "audio/wav" }));
+      }
+
+      async function createVideoUrl() {
+        const canvas = document.createElement("canvas");
+        canvas.width = 480;
+        canvas.height = 270;
+        const context = canvas.getContext("2d");
+        const stream = canvas.captureStream(20);
+        const mimeType = [
+          "video/webm;codecs=vp8",
+          "video/webm;codecs=vp9",
+          "video/webm",
+        ].find((candidate) => MediaRecorder.isTypeSupported(candidate));
+        const recorder = new MediaRecorder(
+          stream,
+          mimeType ? { mimeType } : undefined,
+        );
+        const chunks = [];
+        const stopped = new Promise((resolve, reject) => {
+          recorder.addEventListener("dataavailable", (event) => {
+            if (event.data.size > 0) chunks.push(event.data);
+          });
+          recorder.addEventListener("stop", resolve, { once: true });
+          recorder.addEventListener("error", () => reject(recorder.error), {
+            once: true,
+          });
+        });
+        recorder.start();
+        const startedAt = performance.now();
+        await new Promise((resolve) => {
+          const draw = (now) => {
+            const elapsed = (now - startedAt) / 1000;
+            const hue = Math.round((elapsed * 140) % 360);
+            context.fillStyle = "hsl(" + hue + " 70% 45%)";
+            context.fillRect(0, 0, canvas.width, canvas.height);
+            context.fillStyle = "#ffffff";
+            context.font = "bold 34px sans-serif";
+            context.fillText("FRAME " + elapsed.toFixed(1), 130, 145);
+            if (elapsed >= 2.5) {
+              resolve();
+              return;
+            }
+            requestAnimationFrame(draw);
+          };
+          requestAnimationFrame(draw);
+        });
+        recorder.stop();
+        await stopped;
+        for (const track of stream.getTracks()) track.stop();
+        return URL.createObjectURL(new Blob(chunks, { type: mimeType }));
+      }
+
+      function waitForMetadata(element) {
+        if (element.readyState >= HTMLMediaElement.HAVE_METADATA) {
+          return Promise.resolve();
+        }
+        return new Promise((resolve, reject) => {
+          element.addEventListener("loadedmetadata", resolve, { once: true });
+          element.addEventListener("error", () => reject(element.error), {
+            once: true,
+          });
+        });
+      }
+
+      observeMedia(video, state.videoEvents);
+      observeMedia(audio, state.audioEvents);
+      bindControl("#video-play", () => video.play());
+      bindControl("#video-pause", () => video.pause());
+      bindControl("#video-rate", () => {
+        video.playbackRate = 1.5;
+      });
+      bindControl("#video-mute", () => {
+        video.muted = !video.muted;
+      });
+      bindControl("#audio-play", () => audio.play());
+      bindControl("#audio-pause", () => audio.pause());
+      bindControl("#audio-seek", () => {
+        audio.currentTime = 1.2;
+      });
+      bindControl("#audio-volume", () => {
+        audio.volume = 0.25;
+      });
+
+      window.__mediaWorkbench = {
+        read() {
+          const describe = (element, events) => ({
+            currentTime: element.currentTime,
+            duration: Number.isFinite(element.duration) ? element.duration : null,
+            events: { ...events },
+            muted: element.muted,
+            paused: element.paused,
+            playbackRate: element.playbackRate,
+            progressed: element.dataset.progressed === "true",
+            readyState: element.readyState,
+            volume: element.volume,
+          });
+          return {
+            errors: [...state.errors],
+            ready: state.ready,
+            trustedControls: state.trustedControls,
+            video: describe(video, state.videoEvents),
+            audio: describe(audio, state.audioEvents),
+          };
+        },
+      };
+
+      (async () => {
+        try {
+          audio.src = createWaveUrl();
+          video.src = await createVideoUrl();
+          await Promise.all([waitForMetadata(video), waitForMetadata(audio)]);
+          state.ready = true;
+          document.body.dataset.mediaReady = "true";
+          status.textContent = "Media ready";
+        } catch (error) {
+          state.errors.push(String(error?.message || error));
+          document.body.dataset.mediaError = "true";
+          status.textContent = "Media setup failed";
+        }
+      })();
     </script>
   </body>
 </html>`;
