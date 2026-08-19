@@ -134,6 +134,11 @@ Page actions accept these selectors:
 - `xpath=...`
 - raw CSS selectors
 
+Snapshot node labels such as `button` and `textbox` are accessibility roles,
+not necessarily HTML tag names. Use the current `@N` for an immediate action,
+prefer a generated `loc=role:` for semantic reuse, and use CSS only when the
+actual DOM structure is known.
+
 Use an `@N` ref only with the Page that produced it. Take another snapshot after navigation, a substantial DOM change, or raw CDP, and before using refs in a later round. Prefer a stable locator for long-lived reuse.
 
 ### 2. Visual path: screenshot + mouse/keyboard
@@ -229,7 +234,7 @@ await page.close();
 - `evaluate()` accepts a function with at most one JSON-serializable argument, or a string expression with no argument. Its return value must also be JSON-serializable.
 - Raw `page.cdp()` invalidates existing refs.
 - `waitForSelector()` defaults to `timeout: 10_000`.
-- `waitForLoadState()` accepts only `"load"` and `"networkidle"`, defaults to `timeout: 10_000`, and uses `idleMs: 500` for network idle.
+- `waitForLoadState()` accepts `"domcontentloaded"`, `"load"`, and `"networkidle"`, defaults to `timeout: 10_000`, and uses `idleMs: 500` for network idle.
 - Use `setInputFiles()` with an existing file input, its label, or a container around it. It accepts absolute paths; `[]` clears the selection without opening a system dialog.
 - If the site creates the file input only after a click, call `waitForFileChooser()` before the click, as shown above. `chooser.isMultiple()` reports whether it accepts multiple files. A chooser opened unexpectedly by `click()`, `dblclick()`, `mouse.click()`, or `keyboard.press()` is cancelled before the system dialog appears.
 - `scrollBy()` defaults to `{ deltaX: 0, behavior: "auto" }`. `behavior` is `"auto"`, `"instant"`, or `"smooth"`.

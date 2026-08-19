@@ -1127,7 +1127,7 @@ class Page {
   }
 
   async waitForLoadState(
-    state: "load" | "networkidle",
+    state: "domcontentloaded" | "load" | "networkidle",
     options: PageWaitForLoadStateOptions = {},
   ): Promise<void> {
     validatePublicApiOptions("Page.waitForLoadState", options);

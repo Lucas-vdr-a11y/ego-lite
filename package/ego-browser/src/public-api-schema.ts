@@ -279,7 +279,7 @@ export const PUBLIC_API_SCHEMA: readonly PublicApiEntry[] = [
   {
     name: "Page.waitForLoadState",
     signature: "await page.waitForLoadState(state, { timeout?, idleMs? })",
-    summary: "Wait for load or network-idle state.",
+    summary: "Wait for DOM content, load, or network-idle state.",
     options: {
       timeout,
       idleMs: option(

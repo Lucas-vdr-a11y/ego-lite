@@ -254,7 +254,7 @@ await page.evaluate(fnOrString, arg?)
 await page.fetch(url, options)
 await page.cdp(method, params, { timeout })
 await page.waitForSelector(selector, { timeout, state })
-await page.waitForLoadState('load' | 'networkidle', { timeout, idleMs })
+await page.waitForLoadState('domcontentloaded' | 'load' | 'networkidle', { timeout, idleMs })
 await page.events()
 
 await page.click(selector, options)

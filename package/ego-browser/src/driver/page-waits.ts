@@ -103,42 +103,81 @@ export async function waitForSelectorInPage(
 export async function waitForLoadStateInPage(
   services: PageWaitServices,
   sessionId: string,
-  state: "load" | "networkidle",
+  state: "domcontentloaded" | "load" | "networkidle",
   options: PageWaitForLoadStateOptions = {},
 ): Promise<void> {
-  if (state !== "load" && state !== "networkidle") {
+  if (
+    state !== "domcontentloaded" &&
+    state !== "load" &&
+    state !== "networkidle"
+  ) {
     throw new TypeError(
-      'page.waitForLoadState supports only "load" and "networkidle"',
+      'page.waitForLoadState supports only "domcontentloaded", "load", and "networkidle"',
     );
   }
   const timeoutMs = options.timeout ?? 10_000;
-  if (state === "load") {
-    await waitForDocumentLoad(services, sessionId, timeoutMs);
+  if (state !== "networkidle") {
+    await waitForDocumentReadyState(services, sessionId, state, timeoutMs);
     return;
   }
   const idleMs = options.idleMs ?? 500;
   await waitForNetworkIdle(services, sessionId, timeoutMs, idleMs);
 }
 
-async function waitForDocumentLoad(
+async function waitForDocumentReadyState(
   services: PageWaitServices,
   sessionId: string,
+  state: "domcontentloaded" | "load",
   timeoutMs: number,
 ): Promise<void> {
+  const expression =
+    state === "domcontentloaded"
+      ? `(() => {
+          const navigation = performance.getEntriesByType("navigation")[0];
+          const modernEnd = Number(navigation?.domContentLoadedEventEnd || 0);
+          const legacyEnd = Number(performance.timing?.domContentLoadedEventEnd || 0);
+          return {
+            readyState: document.readyState,
+            domContentLoaded:
+              document.readyState === "complete" || modernEnd > 0 || legacyEnd > 0,
+          };
+        })()`
+      : "document.readyState";
   const deadline = services.now() + timeoutMs;
   while (services.now() <= deadline) {
     const remaining = Math.max(1, deadline - services.now());
-    const response = await services.cdp(
-      "Runtime.evaluate",
-      { expression: "document.readyState", returnByValue: true },
-      sessionId,
-      Math.min(1_000, remaining),
-    );
-    if (response?.result?.value === "complete") return;
+    let response;
+    try {
+      response = await services.cdp(
+        "Runtime.evaluate",
+        { expression, returnByValue: true },
+        sessionId,
+        Math.min(1_000, remaining),
+      );
+    } catch (error) {
+      // The final probe uses the remaining wait budget as its CDP timeout. If
+      // that probe consumes the budget, expose the stable Page-level timeout
+      // instead of leaking an implementation-detail Runtime.evaluate error.
+      if (isRuntimeEvaluateTimeout(error) && services.now() >= deadline) break;
+      throw error;
+    }
+    const value = response?.result?.value;
+    if (state === "load" && value === "complete") return;
+    if (state === "domcontentloaded" && value?.domContentLoaded === true)
+      return;
     if (remaining <= 1) break;
     await services.sleep(Math.min(100, remaining));
   }
-  throw new Error(`page.waitForLoadState(load) timed out after ${timeoutMs}ms`);
+  throw new Error(
+    `page.waitForLoadState(${state}) timed out after ${timeoutMs}ms`,
+  );
+}
+
+function isRuntimeEvaluateTimeout(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    error.message.includes("CDP request timed out: Runtime.evaluate")
+  );
 }
 
 async function waitForNetworkIdle(

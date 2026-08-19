@@ -37,6 +37,9 @@ function createFixture(rootDir) {
   let navigateOnNextClickUrl = null;
   let elementPresent = true;
   let elementVisible = true;
+  let documentReadyState = "complete";
+  let domContentLoaded = true;
+  let timeoutNextLifecycleEvaluate = false;
   let nowMs = 1_000;
   const pageEvents = new Map();
   const networkSessions = new Set();
@@ -102,6 +105,15 @@ function createFixture(rootDir) {
       if (method === "Runtime.evaluate") {
         const targetId = targetForSession(sessionId);
         const tab = tabs.get(targetId);
+        if (
+          timeoutNextLifecycleEvaluate &&
+          (params.expression === "document.readyState" ||
+            params.expression.includes("domContentLoadedEventEnd"))
+        ) {
+          timeoutNextLifecycleEvaluate = false;
+          nowMs += timeoutMs ?? 0;
+          throw new Error("CDP request timed out: Runtime.evaluate");
+        }
         if (params.expression === "globalThis") {
           return {
             result: {
@@ -115,6 +127,20 @@ function createFixture(rootDir) {
         }
         if (params.expression === "document.title") {
           return { result: { type: "string", value: tab.title } };
+        }
+        if (params.expression === "document.readyState") {
+          return { result: { type: "string", value: documentReadyState } };
+        }
+        if (params.expression.includes("domContentLoadedEventEnd")) {
+          return {
+            result: {
+              type: "object",
+              value: {
+                readyState: documentReadyState,
+                domContentLoaded,
+              },
+            },
+          };
         }
         if (params.expression.includes("performance.timeOrigin")) {
           return {
@@ -426,6 +452,13 @@ function createFixture(rootDir) {
     setElementState({ present = true, visible = true }) {
       elementPresent = present;
       elementVisible = visible;
+    },
+    setDocumentLifecycle({ readyState, domContentLoaded: loaded }) {
+      documentReadyState = readyState;
+      domContentLoaded = loaded;
+    },
+    timeoutNextLifecycleEvaluation() {
+      timeoutNextLifecycleEvaluate = true;
     },
     setSession(targetId, sessionId) {
       sessionOverrides.set(targetId, sessionId);
@@ -1771,6 +1804,15 @@ test("Page waits and events remain isolated to the addressed target", async () =
       }),
       true,
     );
+    fixture.setDocumentLifecycle({
+      readyState: "interactive",
+      domContentLoaded: true,
+    });
+    await first.waitForLoadState("domcontentloaded", { timeout: 250 });
+    fixture.setDocumentLifecycle({
+      readyState: "complete",
+      domContentLoaded: true,
+    });
     await first.waitForLoadState("load", { timeout: 250 });
     fixture.emitPageEvent(first.targetId, "Network.requestWillBeSent", {
       requestId: "request-first",
@@ -1848,9 +1890,29 @@ test("Page wait methods reject invalid states and millisecond timeouts", async (
     const task = taskForRound(fixture, "round-a");
     const page = await task.openPage("https://example.test/first");
 
+    fixture.setDocumentLifecycle({
+      readyState: "interactive",
+      domContentLoaded: false,
+    });
     await assert.rejects(
-      () => page.waitForLoadState("domcontentloaded"),
-      /supports only "load" and "networkidle"/,
+      () => page.waitForLoadState("domcontentloaded", { timeout: 1 }),
+      /waitForLoadState\(domcontentloaded\) timed out/,
+    );
+    fixture.setDocumentLifecycle({
+      readyState: "interactive",
+      domContentLoaded: true,
+    });
+    await page.waitForLoadState("domcontentloaded", { timeout: 1 });
+
+    fixture.timeoutNextLifecycleEvaluation();
+    await assert.rejects(
+      () => page.waitForLoadState("load", { timeout: 10 }),
+      /waitForLoadState\(load\) timed out after 10ms/,
+    );
+
+    await assert.rejects(
+      () => page.waitForLoadState("commit"),
+      /supports only "domcontentloaded", "load", and "networkidle"/,
     );
     await assert.rejects(
       () => page.waitForSelector("#ready", { timeout: 0 }),

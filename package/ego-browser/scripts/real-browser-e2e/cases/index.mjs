@@ -9,6 +9,8 @@ import { keyboardRegressionCase } from "./keyboard-regression.mjs";
 import { pageKeyboardInterfaceCase } from "./page-keyboard.mjs";
 import { pageClickHitTargetCase } from "./page-click-hit-target.mjs";
 import { pageScrolledScreenshotCase } from "./page-screenshot.mjs";
+import { pageSnapshotLocatorCase } from "./page-snapshot-locators.mjs";
+import { pageLoadStatesCase } from "./page-load-states.mjs";
 import { runtimeCase } from "./runtime.mjs";
 import { runtimeRegressionCase } from "./runtime-regression.mjs";
 import { eventIsolationCase } from "./event-isolation.mjs";
@@ -67,6 +69,8 @@ export const e2eCases = [
   { name: "page actions and popup adoption", body: pageActionsAndPopupCase },
   { name: "Page click hit target", body: pageClickHitTargetCase },
   { name: "Page scrolled screenshot", body: pageScrolledScreenshotCase },
+  { name: "Page snapshot locator quality", body: pageSnapshotLocatorCase },
+  { name: "Page load states", body: pageLoadStatesCase },
   { name: "v1 and v2 action parity", body: v1V2ActionParityCase },
   { name: "portable keyboard workflow", body: portableKeyboardWorkflowCase },
   { name: "Page keyboard interface", body: pageKeyboardInterfaceCase },

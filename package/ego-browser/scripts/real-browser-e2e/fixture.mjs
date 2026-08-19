@@ -179,6 +179,24 @@ export async function startFixtureServer(taskName) {
       }, delayMs);
       return;
     }
+    if (url.pathname === "/domcontentloaded-page") {
+      const delayMs = Number(url.searchParams.get("ms") || 1500);
+      res.writeHead(200, { "content-type": "text/html" });
+      res.end(`<!doctype html>
+        <html>
+          <head><title>DOMContentLoaded fixture</title></head>
+          <body>
+            <h1 id="dcl-marker">parsed before slow image</h1>
+            <img src="/api/slow?ms=${delayMs}" alt="slow resource">
+            <script>
+              addEventListener("DOMContentLoaded", () => {
+                document.documentElement.dataset.domContentLoaded = "true";
+              });
+            </script>
+          </body>
+        </html>`);
+      return;
+    }
     if (url.pathname === "/favicon.ico") {
       res.writeHead(204);
       res.end();
