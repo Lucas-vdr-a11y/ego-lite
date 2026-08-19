@@ -88,7 +88,6 @@ export class PageKeyboardController {
     chord: string,
     options: PageKeyboardPressOptions = {},
   ): Promise<unknown> {
-    assertDelay(options.delay, "page.keyboard.press");
     const tokens = splitChord(chord);
     return this.#runObserved(async (sessionId) => {
       const pressed: string[] = [];
@@ -128,7 +127,6 @@ export class PageKeyboardController {
     options: PageKeyboardTypeOptions = {},
   ): Promise<unknown> {
     assertText(text, "page.keyboard.type");
-    assertDelay(options.delay, "page.keyboard.type");
     return this.#run(async (sessionId) => {
       for (const character of text) {
         if (keyboardLayout.has(character)) {
@@ -274,12 +272,6 @@ function assertText(
 ): asserts value is string {
   if (typeof value !== "string") {
     throw new TypeError(`${operation} text must be a string`);
-  }
-}
-
-function assertDelay(value: unknown, operation: string): void {
-  if (value !== undefined && (!Number.isFinite(value) || Number(value) < 0)) {
-    throw new TypeError(`${operation} delay must be a non-negative number`);
   }
 }
 

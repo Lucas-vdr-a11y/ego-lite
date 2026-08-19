@@ -288,7 +288,10 @@ function pageHtml(kind, { iframeUrl = "/frame.html" } = {}) {
       <label>Text input <input id="text-input" value="initial"></label>
       <label>Append input <input id="append-input" value="base"></label>
       <label>Text area <textarea id="text-area">seed</textarea></label>
-      <label>File input <input id="file-input" type="file" multiple></label>
+      <label for="file-input">File input</label>
+      <input id="file-input" type="file" multiple hidden>
+      <button id="dynamic-file-button" type="button">Choose files dynamically</button>
+      <div id="dynamic-file-container"></div>
       <div id="file-name"></div>
       <div id="key-log"></div>
       <label>Dropdown <select id="dropdown">
@@ -397,6 +400,14 @@ function pageHtml(kind, { iframeUrl = "/frame.html" } = {}) {
       document.querySelector("#file-input").addEventListener("change", (event) => {
         document.querySelector("#file-name").textContent =
           Array.from(event.target.files).map((file) => file.name).join(",");
+      });
+      document.querySelector("#dynamic-file-button").addEventListener("click", () => {
+        const input = document.createElement("input");
+        input.type = "file";
+        input.multiple = true;
+        input.dataset.dynamicUpload = "true";
+        document.querySelector("#dynamic-file-container").replaceChildren(input);
+        input.click();
       });
 
       /* value inputs (email/number) — track input/change for fillInput regressions */

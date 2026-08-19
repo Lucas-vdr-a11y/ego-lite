@@ -8,7 +8,7 @@ description: ego-browser (ego lite) is a real Chromium browser designed from the
 ego lite is a real desktop browser based on Chromium. Agents operate real pages in isolated task spaces; pages use the user's actual login state and cookies and produce real downloads, dialogs, and new tabs. Obtain a `TaskSpace` with `taskSpace()`, then obtain or create a `Page` from it. Start every page operation from its `Page`. Page methods address their own page and activate it automatically when interaction requires it, so do not maintain a "current tab" or switch tabs manually.
 
 For installation, connection, or runtime problems, read `references/install.md`.
-For exact v2 signatures and option fields, read `references/api.md`.
+For exact signatures and option fields, read `references/api.md`.
 
 ## Run browser scripts
 
@@ -52,7 +52,7 @@ console.log({ taskSpaceId: task.spaceId, page: page.label });
 // Later round
 const task = await taskSpace(7);
 const page = task.page("source");
-await page.goto("https://example.com/releases", { timeout: 15_000 });
+await page.goto("https://example.com/releases");
 ```
 
 ## Manage pages
@@ -83,8 +83,23 @@ Follow these page-management rules:
 - Pages receive permanent `p1`, `p2`, and similar labels automatically. Pass `{ as }` to choose a label. Closed labels are never reused.
 - Each space manages at most eight pages by default. On `EGO_PAGE_BUDGET_REACHED`, close temporary pages or reuse an existing Page with `goto()`; do not bypass the budget.
 - `task.listPages()` returns managed and unmanaged tabs. An `UnmanagedPage` without a `label` exposes identity information only. Call `task.adopt(item.page, { as })` before observing or operating it.
-- Use `task.release(label)` only to return a user-created or unknown-origin page to the user while keeping its tab open. Close Agent-created pages with `page.close()`.
+- Use `task.release(label)` only to return an unknown-origin page to the user while keeping its tab open. Close Agent-created pages with `page.close()`.
 - `page.close()` resolves only after the tab has actually disappeared. If close fails, the Page label remains valid and the operation can be retried safely.
+
+`openPage()` defaults to a `15_000` ms timeout. A custom `as` label must start with a letter and may contain letters, numbers, `_`, or `-`, up to 64 characters. `waitForControl()` defaults to `{ interval: 20_000, timeout: 600_000 }`; it waits but never takes control.
+
+`task.ownership` is the ownership captured when the TaskSpace handle was created. `page.openedBy` is `"agent"` or `"unknown"`; treat `"unknown"` as user-owned for lifecycle decisions.
+
+Each `listPages()` item has `{ label?, page, targetId, title, url, active, openedBy }`. Use `task.page(label)` to resume a known Page; use `listPages()` to discover active or unmanaged tabs:
+
+```js
+const items = await task.listPages();
+const active = items.find((item) => item.active);
+if (active && !active.label) {
+  const adopted = await task.adopt(active.page, { as: "user" });
+  console.log({ page: adopted.label, url: await adopted.url() });
+}
+```
 
 New tabs opened by high-level actions receive labels automatically and may appear in the action receipt:
 
@@ -126,10 +141,7 @@ Use an `@N` ref only with the Page that produced it. Take another snapshot after
 Use the visual path first for canvas, rich-text editors, spreadsheets, maps, and virtualized interfaces. Load and inspect the screenshot with an image-viewing tool. Before entering a large amount of content, perform one tiny write probe and inspect another screenshot to confirm that it landed in the correct place.
 
 ```js
-const path = await page.screenshot({
-  path: "/absolute/path/before.png",
-  fullPage: false,
-});
+const path = await page.screenshot({ path: "/absolute/path/before.png" });
 
 await page.mouse.move(420, 260);
 await page.mouse.click(420, 260);
@@ -137,7 +149,7 @@ await page.keyboard.type("hello");
 console.log({ screenshot: path });
 ```
 
-Coordinates use CSS pixels. A Page object starts with mouse position `(0, 0)` in each round. Call `mouse.move()` to place the mouse over the intended scroll area before calling `mouse.wheel()`.
+Coordinates use CSS pixels. A Page object starts with mouse position `(0, 0)` in each round.
 
 Use `ControlOrMeta+A/C/V/Z` for portable editing shortcuts. For document start and end, use `Meta+ArrowUp` / `Meta+ArrowDown` on macOS and `Control+Home` / `Control+End` on Windows.
 
@@ -160,21 +172,35 @@ Use CDP only for capabilities missing from the Page API:
 
 - `page.cdp()` sends Page, Runtime, DOM, Network, Input, and similar commands to that Page's session.
 - `task.cdp()` is only for the Target and Browser domains.
-- Every CDP call returns a Promise. Set `{ timeout }` and handle rejection.
+- Every CDP call returns a Promise and defaults to `timeout: 15_000`. Set another millisecond timeout when needed and handle rejection.
 
 `page.targetId` is the browser's internal tab identifier. Read it only when directly calling a `Target.*` CDP command that requires `targetId`. Use Page objects and labels for ordinary page operations, and do not save a target ID across rounds.
 
 Raw CDP may change document or session state. Do not reuse refs created before the call; take another snapshot first.
 
-## Page API
+## Page methods and options
 
-Common Page APIs:
+Unknown option fields are rejected. All time values are milliseconds.
+
+Page identity and inspection:
 
 ```js
 page.label;
 page.spaceId;
 page.openedBy;
+page.targetId;
 
+await page.url();
+await page.title();
+await page.info();
+await page.events();
+```
+
+`page.info()` returns `{ url, title, w, h, sx, sy, pw, ph }`, or `{ dialog }` while a JavaScript dialog is pending. `page.events()` reads and clears pending CDP events for this Page only.
+
+Navigation, observation, JavaScript, waits, files, and CDP:
+
+```js
 await page.goto(url, { timeout });
 await page.snapshot({ scope, includeActionMarks, includeStableLocator });
 await page.screenshot({
@@ -183,29 +209,34 @@ await page.screenshot({
   clip: { x, y, width, height, scale },
   raw,
 });
-await page.url();
-await page.title();
-await page.info();
-await page.evaluate(fnOrString, arg);
-await page.fetch(url, {
-  timeout,
-  method,
-  headers,
-  body,
-  cache,
-  credentials,
-  integrity,
-  keepalive,
-  mode,
-  redirect,
-  referrer,
-  referrerPolicy,
-});
+await page.evaluate(fnOrString, argument);
+await page.fetch(url, options);
 await page.cdp(method, params, { timeout });
 await page.waitForSelector(selector, { timeout, state });
-await page.waitForLoadState("load" | "networkidle", { timeout, idleMs });
-await page.events();
+await page.waitForLoadState(state, { timeout, idleMs });
+await page.setInputFiles(selector, pathOrPaths);
+const chooserPromise = page.waitForFileChooser({ timeout });
+await page.click(selector);
+const chooser = await chooserPromise;
+await chooser.setFiles(pathOrPaths);
+await page.scrollBy(deltaY, { deltaX, behavior });
+await page.close();
+```
 
+- `goto()` defaults to `timeout: 15_000`.
+- `snapshot()` defaults to `{ scope: "full_page", includeActionMarks: true, includeStableLocator: true }`. `scope` is `"full_page"` or `"only_within_viewport"`; there is no `diff` option.
+- Omit `screenshot()`'s `path` to receive a temporary PNG path; provided paths should be absolute. `clip.scale` is optional and positive. `raw` defaults to `false`; set it only for uncorrected device-pixel output.
+- `evaluate()` accepts a function with at most one JSON-serializable argument, or a string expression with no argument. Its return value must also be JSON-serializable.
+- Raw `page.cdp()` invalidates existing refs.
+- `waitForSelector()` defaults to `timeout: 10_000`.
+- `waitForLoadState()` accepts only `"load"` and `"networkidle"`, defaults to `timeout: 10_000`, and uses `idleMs: 500` for network idle.
+- Use `setInputFiles()` with an existing file input, its label, or a container around it. It accepts absolute paths; `[]` clears the selection without opening a system dialog.
+- If the site creates the file input only after a click, call `waitForFileChooser()` before the click, as shown above. `chooser.isMultiple()` reports whether it accepts multiple files. A chooser opened unexpectedly by `click()`, `dblclick()`, `mouse.click()`, or `keyboard.press()` is cancelled before the system dialog appears.
+- `scrollBy()` defaults to `{ deltaX: 0, behavior: "auto" }`. `behavior` is `"auto"`, `"instant"`, or `"smooth"`.
+
+Element actions:
+
+```js
 await page.click(selector, { button, clickCount, delay, position: { x, y } });
 await page.dblclick(selector, { button, delay, position: { x, y } });
 await page.hover(selector, { position: { x, y } });
@@ -215,33 +246,18 @@ await page.dragAndDrop(source, target, {
   targetPosition: { x, y },
 });
 await page.fill(selector, value, { clearFirst });
-await page.setInputFiles(selector, pathOrPaths);
-await page.scrollBy(deltaY, { deltaX, behavior });
-await page.close();
 ```
-
-Every option field is optional. `snapshot()` defaults to the full page with action marks and stable locators; `scope` accepts `full_page` or `only_within_viewport`. `screenshot()` defaults to the current viewport. `clip` uses CSS pixels. `raw` bypasses device-pixel-ratio correction and should normally remain `false`.
-
-Element actions default to the element center, the left mouse button, and one click. `position`, `sourcePosition`, and `targetPosition` are CSS-pixel offsets from the element's top-left corner. `button` accepts `left`, `middle`, or `right`. `fill()` clears the existing value by default. `scrollBy()` behavior accepts `auto`, `instant`, or `smooth`.
-
-`waitForSelector()` state accepts `attached`, `detached`, `visible`, or `hidden` and defaults to `visible`. A timed-out wait rejects.
-
-`page.events()` reads and clears pending events for that Page only.
 
 High-level `goto()`, selector actions, `mouse.click()`, and `keyboard.press()` return lightweight receipts:
 
 ```js
 const receipt = await page.click("#submit");
-console.log({
-  navigatedTo: receipt.navigation?.to,
-  domChanged: receipt.domChanged === true,
-  popups: receipt.popups ?? [],
-});
+console.log(receipt.popups ?? []);
 ```
 
-Receipts are supporting evidence, not final verification. After an action, confirm the intended result with `url()`, `info()`, `snapshot()`, a screenshot, an export, or a readback.
+Receipts only report newly opened Pages. After an action, confirm navigation and page changes with `url()`, `waitForSelector()`, `info()`, `snapshot()`, a screenshot, an export, or a readback.
 
-Mouse and keyboard APIs:
+Mouse and keyboard primitives:
 
 ```js
 await page.mouse.click(x, y, { button, clickCount, delay });
@@ -257,7 +273,16 @@ await page.keyboard.type(text, { delay });
 await page.keyboard.insertText(text);
 ```
 
-Mouse and keyboard coordinates use CSS pixels, and `delay` uses milliseconds. Mouse actions default to a single left click, and `steps` defaults to `1`. Keyboard `delay` is the interval between key down and key up, or between characters.
+Keyboard key names and `+`-separated chords follow Playwright syntax. Use `ControlOrMeta` for portable shortcuts.
+
+Low-level `mouse.move/down/up/wheel`, `keyboard.down/up/type/insertText`, and `scrollBy()` do not return an action receipt; verify their effect explicitly.
+
+For exact details of one method, use runtime help. Read `references/api.md` for the generated complete reference. Do not invent methods or options.
+
+```js
+console.log(help("Page.click"));
+console.log(help("TaskSpace.openPage"));
+```
 
 ## Requests
 
@@ -279,7 +304,9 @@ console.log({
 });
 ```
 
-Non-2xx responses do not reject automatically; check `ok` and `status`. Use the standard Node.js `fetch()` for background requests that do not need Page cookies or CORS semantics.
+`page.fetch()` defaults to `timeout: 20_000` and does not accept `signal`. `headers` must map strings to strings, and `body` must be a string. It supports `method`, `headers`, `body`, `cache`, `credentials`, `mode`, `redirect`, `integrity`, `keepalive`, `referrer`, and `referrerPolicy`; read `references/api.md` for their accepted values.
+
+Use the standard Node.js `fetch()` for background requests that do not need Page cookies or CORS semantics.
 
 ## Wait, recover, and verify
 
@@ -313,4 +340,4 @@ const spaceId = 7;
 const task = await claimTaskSpace(spaceId);
 ```
 
-Call `task.close()` by default when the task is complete. Call `task.finish()` only when the user asks to keep the pages, must continue on the result page, or the result cannot be delivered through a URL, file, or summary. Run completion in its own round after verifying the final result. Do not claim that the space ended or closed until the method resolves.
+After verifying the final result, call `task.close()` at the end of the current round by default. Call `task.finish()` only when the user asks to keep the pages, must continue on the result page, or the result cannot be delivered through a URL, file, or summary. Use a separate completion round only when the choice depends on user confirmation. Do not claim that the space ended or closed until the method resolves.

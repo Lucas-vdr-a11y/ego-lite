@@ -3,7 +3,6 @@ export type PublicApiOptionKind =
   | "clip"
   | "finiteNumber"
   | "nonNegativeNumber"
-  | "object"
   | "positiveInteger"
   | "positiveMilliseconds"
   | "string"
@@ -112,7 +111,7 @@ export const PUBLIC_API_SCHEMA: readonly PublicApiEntry[] = [
   {
     name: "TaskSpace.release",
     signature: "await task.release(label)",
-    summary: "Stop managing a user or unknown-origin Page without closing it.",
+    summary: "Stop managing an unknown-origin Page without closing it.",
   },
   {
     name: "TaskSpace.waitForControl",
@@ -340,7 +339,23 @@ export const PUBLIC_API_SCHEMA: readonly PublicApiEntry[] = [
   {
     name: "Page.setInputFiles",
     signature: "await page.setInputFiles(selector, pathOrPaths)",
-    summary: "Set files on a file input.",
+    summary: "Set files on a file input without opening the system chooser.",
+  },
+  {
+    name: "Page.waitForFileChooser",
+    signature: "page.waitForFileChooser({ timeout? })",
+    summary: "Wait for a dynamically created file chooser.",
+    options: { timeout },
+  },
+  {
+    name: "FileChooser.isMultiple",
+    signature: "fileChooser.isMultiple()",
+    summary: "Report whether the chooser accepts multiple files.",
+  },
+  {
+    name: "FileChooser.setFiles",
+    signature: "await fileChooser.setFiles(pathOrPaths)",
+    summary: "Set files on an intercepted chooser without a system dialog.",
   },
   {
     name: "Page.scrollBy",
@@ -533,10 +548,6 @@ function validateOptionValue(
       break;
     case "nonNegativeNumber":
       valid = typeof value === "number" && Number.isFinite(value) && value >= 0;
-      break;
-    case "object":
-      valid =
-        Boolean(value) && typeof value === "object" && !Array.isArray(value);
       break;
     case "positiveInteger":
       valid = Number.isInteger(value) && (value as number) > 0;

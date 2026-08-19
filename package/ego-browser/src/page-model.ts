@@ -6,7 +6,10 @@ import {
   invalidateSession,
   isNetworkDomainEnabled,
   pendingDialog,
+  prepareFileChooser,
   setPreferredTarget,
+  type FileChooserInterception,
+  type FileChooserOpenedEvent,
 } from "./browser-runtime.js";
 import { runtimeValue } from "./cdp-eval.js";
 import {
@@ -34,7 +37,11 @@ import {
   type PageMouseClickOptions,
   type PageMouseMoveOptions,
 } from "./driver/page-actions.js";
-import { setInputFilesInPage } from "./driver/page-input.js";
+import {
+  normalizeFilePaths,
+  setFilesOnBackendNode,
+  setInputFilesInPage,
+} from "./driver/page-input.js";
 import {
   PageKeyboardController,
   type PageKeyboardPressOptions,
@@ -98,6 +105,10 @@ type CdpOptions = {
 
 type WaitForControlOptions = {
   interval?: number;
+  timeout?: number;
+};
+
+type PageWaitForFileChooserOptions = {
   timeout?: number;
 };
 
@@ -173,10 +184,7 @@ type LedgerPort = {
     targetId: string,
     openedBy?: PageOrigin,
   ): Promise<void>;
-  beginUserControl(
-    spaceId: number,
-    liveTargetIds: Iterable<string>,
-  ): Promise<void>;
+  beginUserControl(spaceId: number): Promise<void>;
   cancelUserControl(spaceId: number): Promise<void>;
   reconcile(
     spaceId: number,
@@ -216,6 +224,10 @@ type PageModelServices = {
     sessionId: string,
   ): Promise<string>;
   pendingDialog(sessionId: string): Record<string, unknown> | null;
+  prepareFileChooser(
+    sessionId: string,
+    options: { timeoutMs: number; cancel: boolean },
+  ): FileChooserInterception;
   drainEvents(sessionId: string): any[];
   isNetworkDomainEnabled(sessionId: string): boolean;
   ensureSession(targetId: string): Promise<string>;
@@ -239,8 +251,6 @@ export type PageInventoryItem = {
 
 export type PageActionReceipt = {
   popups?: Array<{ label: string; targetId: string }>;
-  navigation?: { from: string; to: string };
-  domChanged?: true;
 };
 
 const PAGE_CLOSE_CONFIRM_TIMEOUT_MS = 2_000;
@@ -510,6 +520,7 @@ const baseDefaultServices: Omit<PageModelServices, "ledger" | "pageBudget"> = {
   snapshot: snapshotRaw,
   screenshot: captureScreenshotForSession,
   pendingDialog,
+  prepareFileChooser,
   drainEvents: drainPageEvents,
   isNetworkDomainEnabled,
   ensureSession,
@@ -634,8 +645,6 @@ class TaskSpace {
     validatePublicApiOptions("TaskSpace.waitForControl", options);
     const intervalMs = options.interval ?? CONTROL_POLL_INTERVAL_MS;
     const timeoutMs = options.timeout ?? CONTROL_WAIT_TIMEOUT_MS;
-    assertPositiveMilliseconds(intervalMs, "interval");
-    assertPositiveMilliseconds(timeoutMs, "timeout");
     const deadline = this.#services.now() + timeoutMs;
 
     while (true) {
@@ -655,11 +664,8 @@ class TaskSpace {
   /** Give control of this task space to the user while keeping Page state. */
   async handOff(): Promise<void> {
     await this.#services.gate.withSpace(this.spaceId, async () => {
-      const { tabs } = await this.#reconcilePages();
-      await this.#services.ledger.beginUserControl(
-        this.spaceId,
-        tabs.map((tab) => tab.targetId),
-      );
+      await this.#reconcilePages();
+      await this.#services.ledger.beginUserControl(this.spaceId);
       try {
         await this.#services.handOffTaskSpace();
       } catch (error) {
@@ -747,7 +753,7 @@ class TaskSpace {
   }
 
   /**
-   * Stop managing a user or unknown-origin page without closing its browser tab.
+   * Stop managing an unknown-origin page without closing its browser tab.
    * Agent-created pages must be closed so they cannot become untracked orphans.
    */
   async release(label: string): Promise<UnmanagedPage> {
@@ -776,7 +782,6 @@ class TaskSpace {
     assertUrl(url);
     validatePublicApiOptions("TaskSpace.openPage", options);
     const timeoutMs = options.timeout ?? 15_000;
-    assertTimeout(timeoutMs);
     return this.#services.gate.withSpace(this.id, async () => {
       const { ledger, tabs } = await this.#reconcilePages();
       const managedCount = Object.keys(ledger.pages).length;
@@ -876,6 +881,57 @@ class UnmanagedPage {
   }
 }
 
+type ArmedFileChooser = {
+  page: PageTarget;
+  interception: FileChooserInterception;
+};
+
+type PendingFileChooser = {
+  arm: Promise<ArmedFileChooser>;
+};
+
+/** A file chooser intercepted before Chromium can open a native dialog. */
+class FileChooser {
+  readonly #services: PageModelServices;
+  readonly #page: PageTarget;
+  readonly #event: FileChooserOpenedEvent;
+  readonly #interception: FileChooserInterception;
+  #handled = false;
+
+  constructor(
+    services: PageModelServices,
+    armed: ArmedFileChooser,
+    event: FileChooserOpenedEvent,
+  ) {
+    this.#services = services;
+    this.#page = armed.page;
+    this.#interception = armed.interception;
+    this.#event = event;
+  }
+
+  isMultiple(): boolean {
+    return this.#event.mode === "selectMultiple";
+  }
+
+  async setFiles(path: string | string[]): Promise<void> {
+    if (this.#handled) throw new Error("this file chooser was already handled");
+    const files = normalizeFilePaths(path, "fileChooser.setFiles");
+    this.#handled = true;
+    try {
+      await this.#services.gate.withPage(this.#page, async ({ sessionId }) => {
+        await setFilesOnBackendNode(
+          this.#services,
+          sessionId,
+          files,
+          this.#event.backendNodeId,
+        );
+      });
+    } finally {
+      await this.#interception.dispose();
+    }
+  }
+}
+
 class Page {
   readonly label: string;
   readonly spaceId: number;
@@ -885,7 +941,7 @@ class Page {
   readonly #spaceName: string;
   #targetId?: string;
   #openedBy?: PageOrigin;
-  #closed = false;
+  #pendingFileChooser?: PendingFileChooser;
 
   constructor(
     task: TaskSpace,
@@ -934,7 +990,6 @@ class Page {
     assertUrl(url);
     validatePublicApiOptions("Page.goto", options);
     const timeoutMs = options.timeout ?? 15_000;
-    assertTimeout(timeoutMs);
     const page = await this.#resolve();
     const { receipt } = await this.#runActionBoundary(
       page,
@@ -955,14 +1010,6 @@ class Page {
   }
 
   async snapshot(options: PageSnapshotOptions = {}): Promise<string> {
-    if (
-      options &&
-      typeof options === "object" &&
-      !Array.isArray(options) &&
-      Object.hasOwn(options, "diff")
-    ) {
-      throw new TypeError("page.snapshot does not support diff");
-    }
     validatePublicApiOptions("Page.snapshot", options);
     const page = await this.#resolve();
     return this.#services.gate.withPage(page, async () => {
@@ -1065,7 +1112,6 @@ class Page {
     options: PageWaitForSelectorOptions = {},
   ): Promise<true> {
     validatePublicApiOptions("Page.waitForSelector", options);
-    if (options.timeout !== undefined) assertTimeout(options.timeout);
     const page = await this.#resolve();
     return this.#services.gate.withPage(page, async ({ sessionId }) => {
       await this.#activate(page.targetId);
@@ -1085,7 +1131,6 @@ class Page {
     options: PageWaitForLoadStateOptions = {},
   ): Promise<void> {
     validatePublicApiOptions("Page.waitForLoadState", options);
-    if (options.timeout !== undefined) assertTimeout(options.timeout);
     const page = await this.#resolve();
     return this.#services.gate.withPage(page, async ({ sessionId }) => {
       await this.#activate(page.targetId);
@@ -1106,23 +1151,10 @@ class Page {
   }
 
   async screenshot(options: PageScreenshotOptions = {}): Promise<string> {
-    if (
-      options &&
-      typeof options === "object" &&
-      !Array.isArray(options) &&
-      Object.hasOwn(options, "full")
-    ) {
-      throw new TypeError(
-        "page.screenshot uses fullPage instead of the v1 full option",
-      );
-    }
     validatePublicApiOptions("Page.screenshot", options);
     const { path, fullPage, ...captureOptions } = options;
     if (path !== undefined && (typeof path !== "string" || path.length === 0)) {
       throw new TypeError("page.screenshot path must be a non-empty string");
-    }
-    if (fullPage !== undefined && typeof fullPage !== "boolean") {
-      throw new TypeError("page.screenshot fullPage must be a boolean");
     }
     const page = await this.#resolve();
     return this.#services.gate.withPage(page, async ({ sessionId }) => {
@@ -1142,15 +1174,18 @@ class Page {
     options: PageClickOptions = {},
   ): Promise<PageActionReceipt> {
     validatePublicApiOptions("Page.click", options);
-    return this.#runAction(selector, (sessionId, refMap) =>
-      clickInPage(
-        this.#services,
-        sessionId,
-        refMap,
-        selector,
-        options,
-        this.keyboard.modifierMask(),
-      ),
+    return this.#runAction(
+      selector,
+      (sessionId, refMap) =>
+        clickInPage(
+          this.#services,
+          sessionId,
+          refMap,
+          selector,
+          options,
+          this.keyboard.modifierMask(),
+        ),
+      true,
     );
   }
 
@@ -1159,15 +1194,18 @@ class Page {
     options: Omit<PageClickOptions, "clickCount"> = {},
   ): Promise<PageActionReceipt> {
     validatePublicApiOptions("Page.dblclick", options);
-    return this.#runAction(selector, (sessionId, refMap) =>
-      clickInPage(
-        this.#services,
-        sessionId,
-        refMap,
-        selector,
-        { ...options, clickCount: 2 },
-        this.keyboard.modifierMask(),
-      ),
+    return this.#runAction(
+      selector,
+      (sessionId, refMap) =>
+        clickInPage(
+          this.#services,
+          sessionId,
+          refMap,
+          selector,
+          { ...options, clickCount: 2 },
+          this.keyboard.modifierMask(),
+        ),
+      true,
     );
   }
 
@@ -1229,19 +1267,54 @@ class Page {
     );
   }
 
+  waitForFileChooser(
+    options: PageWaitForFileChooserOptions = {},
+  ): Promise<FileChooser> {
+    validatePublicApiOptions("Page.waitForFileChooser", options);
+    const timeoutMs = options.timeout ?? 10_000;
+    if (this.#pendingFileChooser) {
+      throw new Error("this Page is already waiting for a file chooser");
+    }
+
+    const pending: PendingFileChooser = {
+      arm: (async () => {
+        const page = await this.#resolve();
+        return this.#services.gate.withPage(page, async ({ sessionId }) => {
+          await this.#activate(page.targetId);
+          const interception = this.#services.prepareFileChooser(sessionId, {
+            timeoutMs,
+            cancel: false,
+          });
+          await interception.ready;
+          return { page, interception };
+        });
+      })(),
+    };
+    this.#pendingFileChooser = pending;
+    return (async () => {
+      let armed: ArmedFileChooser | undefined;
+      try {
+        armed = await pending.arm;
+        const event = await armed.interception.event;
+        return new FileChooser(this.#services, armed, event);
+      } catch (error) {
+        if (armed) await armed.interception.dispose(asError(error));
+        throw error;
+      } finally {
+        if (this.#pendingFileChooser === pending) {
+          this.#pendingFileChooser = undefined;
+        }
+      }
+    })();
+  }
+
   async scrollBy(
     deltaY: number,
     options: { deltaX?: number; behavior?: ScrollBehavior } = {},
   ): Promise<{ x: number; y: number }> {
     validatePublicApiOptions("Page.scrollBy", options);
-    if (!Number.isFinite(deltaY) || !Number.isFinite(options.deltaX ?? 0)) {
-      throw new TypeError("page.scrollBy requires finite pixel deltas");
-    }
-    if (
-      options.behavior !== undefined &&
-      !["auto", "instant", "smooth"].includes(options.behavior)
-    ) {
-      throw new TypeError(`page.scrollBy received unsupported behavior`);
+    if (!Number.isFinite(deltaY)) {
+      throw new TypeError("page.scrollBy requires a finite deltaY");
     }
     return this.#runValueAction((sessionId) =>
       evaluateInSession<{ x: number; y: number }>(
@@ -1273,7 +1346,6 @@ class Page {
       if (!live) {
         await this.#services.ledger.closePage(this.spaceId, this.label);
         this.#services.pageRefs.clear(page.targetId);
-        this.#closed = true;
         throw new Error(`page ${this.label} was closed`);
       }
       if (tabs.length <= 1) {
@@ -1314,12 +1386,10 @@ class Page {
       this.#services.invalidateSession(page.targetId);
       this.#services.pageRefs.clear(page.targetId);
       await this.#services.ledger.closePage(this.spaceId, this.label);
-      this.#closed = true;
     });
   }
 
   async #resolve(): Promise<PageTarget> {
-    if (this.#closed) throw new Error(`page ${this.label} was closed`);
     const entry = await this.#services.ledger.getPage(this.spaceId, this.label);
     this.#targetId = entry.targetId;
     this.#openedBy = entry.openedBy;
@@ -1357,6 +1427,7 @@ class Page {
   async #runAction(
     selector: string | string[],
     operation: (sessionId: string, refMap: RefMap) => Promise<void>,
+    guardFileChooser = false,
   ): Promise<PageActionReceipt> {
     const page = await this.#resolve();
     const selectors = Array.isArray(selector) ? selector : [selector];
@@ -1366,6 +1437,7 @@ class Page {
         const refMap = await this.#refMapForAction(page, ...selectors);
         await operation(sessionId, refMap);
       },
+      guardFileChooser,
     );
     return receipt;
   }
@@ -1388,7 +1460,7 @@ class Page {
     operation: (sessionId: string) => Promise<void>,
   ): Promise<PageActionReceipt> {
     const page = await this.#resolve();
-    const { receipt } = await this.#runActionBoundary(page, operation);
+    const { receipt } = await this.#runActionBoundary(page, operation, true);
     return receipt;
   }
 
@@ -1409,16 +1481,30 @@ class Page {
   async #runActionBoundary<T>(
     page: PageTarget,
     operation: (sessionId: string) => Promise<T>,
+    guardFileChooser = false,
   ): Promise<{ value: T; receipt: PageActionReceipt }> {
+    const explicitFileChooser = guardFileChooser
+      ? this.#pendingFileChooser
+      : undefined;
+    if (explicitFileChooser) {
+      const armed = await explicitFileChooser.arm;
+      if (armed.page.targetId !== page.targetId) {
+        throw new Error("file chooser waiter belongs to a different Page");
+      }
+    }
     return this.#services.gate.withPage(page, async ({ sessionId }) => {
       await this.#activate(page.targetId);
+      const fileChooserGuard =
+        guardFileChooser && !explicitFileChooser
+          ? this.#services.prepareFileChooser(sessionId, {
+              timeoutMs: 1_000,
+              cancel: true,
+            })
+          : undefined;
       try {
+        await fileChooserGuard?.ready;
         const before = new Set(
           (await this.#services.listTabs()).map((tab) => tab.targetId),
-        );
-        const observation = await startActionObservation(
-          this.#services,
-          sessionId,
         );
         let actionError: unknown;
         let value: T | undefined;
@@ -1432,11 +1518,6 @@ class Page {
         // settle covers native tab-list propagation without turning this into a
         // navigation wait or silently changing the page's active state.
         await this.#services.sleep(50);
-        const observedAfter = await finishActionObservation(
-          this.#services,
-          sessionId,
-          observation,
-        );
         let popupError: unknown;
         const popups: Array<{ label: string; targetId: string }> = [];
         try {
@@ -1454,13 +1535,18 @@ class Page {
           popupError = error;
         }
 
+        if (fileChooserGuard?.peek()) {
+          throw unhandledFileChooserError();
+        }
+
         if (actionError) throw actionError;
         if (popupError) throw popupError;
         return {
           value: value as T,
-          receipt: actionReceipt(observation, observedAfter, popups),
+          receipt: popups.length > 0 ? { popups } : {},
         };
       } finally {
+        await fileChooserGuard?.dispose();
         this.#services.pageRefs.clear(page.targetId);
       }
     });
@@ -1510,144 +1596,6 @@ class Page {
     await this.#services.cdp("Target.activateTarget", { targetId });
     this.#services.setPreferredTarget(targetId);
   }
-}
-
-type ActionObservation = {
-  id: string;
-  url: string;
-  documentToken: string;
-  controlHash: number;
-  mutations?: number;
-};
-
-async function startActionObservation(
-  services: PageModelServices,
-  sessionId: string,
-): Promise<ActionObservation | undefined> {
-  const id = `action_${services.now()}_${Math.random().toString(16).slice(2)}`;
-  try {
-    const response = await services.cdp(
-      "Runtime.evaluate",
-      {
-        expression: `(() => {
-          const id = ${JSON.stringify(id)};
-          const hashControls = () => {
-            let hash = 2166136261;
-            const values = Array.from(document.querySelectorAll('input,textarea,select'))
-              .map((element) => [element.value, element.checked, element.selectedIndex].join(':'))
-              .join('|');
-            for (let index = 0; index < values.length; index += 1) {
-              hash = Math.imul(hash ^ values.charCodeAt(index), 16777619);
-            }
-            return hash >>> 0;
-          };
-          const probe = { mutations: 0 };
-          probe.observer = new MutationObserver((records) => {
-            probe.mutations += records.length;
-          });
-          if (document.documentElement) {
-            probe.observer.observe(document.documentElement, {
-              attributes: true,
-              childList: true,
-              characterData: true,
-              subtree: true,
-            });
-          }
-          globalThis.__egoBrowserActionProbes ||= Object.create(null);
-          globalThis.__egoBrowserActionProbes[id] = probe;
-          return {
-            url: location.href,
-            documentToken: String(performance.timeOrigin),
-            controlHash: hashControls(),
-          };
-        })()`,
-        returnByValue: true,
-        awaitPromise: false,
-      },
-      sessionId,
-    );
-    const value = response?.result?.value;
-    if (!value || typeof value.url !== "string") return undefined;
-    return { id, ...value };
-  } catch {
-    // Receipts are feedback only. A page that blocks observation must not make
-    // the requested action fail.
-    return undefined;
-  }
-}
-
-async function finishActionObservation(
-  services: PageModelServices,
-  sessionId: string,
-  before: ActionObservation | undefined,
-): Promise<ActionObservation | undefined> {
-  if (!before) return undefined;
-  try {
-    const response = await services.cdp(
-      "Runtime.evaluate",
-      {
-        expression: `(() => {
-          const id = ${JSON.stringify(before.id)};
-          const hashControls = () => {
-            let hash = 2166136261;
-            const values = Array.from(document.querySelectorAll('input,textarea,select'))
-              .map((element) => [element.value, element.checked, element.selectedIndex].join(':'))
-              .join('|');
-            for (let index = 0; index < values.length; index += 1) {
-              hash = Math.imul(hash ^ values.charCodeAt(index), 16777619);
-            }
-            return hash >>> 0;
-          };
-          const probes = globalThis.__egoBrowserActionProbes;
-          const probe = probes?.[id];
-          let mutations = 0;
-          if (probe) {
-            mutations = probe.mutations + probe.observer.takeRecords().length;
-            probe.observer.disconnect();
-            delete probes[id];
-          }
-          return {
-            url: location.href,
-            documentToken: String(performance.timeOrigin),
-            controlHash: hashControls(),
-            mutations,
-          };
-        })()`,
-        returnByValue: true,
-        awaitPromise: false,
-      },
-      sessionId,
-    );
-    const value = response?.result?.value;
-    if (!value || typeof value.url !== "string") return undefined;
-    return { id: before.id, ...value };
-  } catch {
-    return undefined;
-  }
-}
-
-function actionReceipt(
-  before: ActionObservation | undefined,
-  after: ActionObservation | undefined,
-  popups: Array<{ label: string; targetId: string }>,
-): PageActionReceipt {
-  const receipt: PageActionReceipt = {};
-  if (before && after) {
-    const navigated =
-      before.url !== after.url || before.documentToken !== after.documentToken;
-    if (navigated) {
-      receipt.navigation = { from: before.url, to: after.url };
-    }
-    if (
-      navigated ||
-      (after.mutations ?? 0) > 0 ||
-      before.controlHash !== after.controlHash
-    ) {
-      receipt.domChanged = true;
-    }
-  }
-  if (popups.length > 0) receipt.popups = popups;
-  return receipt;
 }
 
 function snapshotSourceHeader(input: {
@@ -1799,19 +1747,8 @@ function pageFetchPayload(
   url: string,
   options: PageFetchOptions,
 ): PageFetchPayload {
-  if (
-    options &&
-    typeof options === "object" &&
-    !Array.isArray(options) &&
-    Object.hasOwn(options, "signal")
-  ) {
-    throw new TypeError(
-      "page.fetch does not accept options.signal; use timeout in milliseconds",
-    );
-  }
   validatePublicApiOptions("Page.fetch", options);
   const { timeout = 20_000, ...requestOptions } = options;
-  assertTimeout(timeout);
   return {
     url,
     options: serializeJsonValue(
@@ -1950,14 +1887,18 @@ function assertUrl(url: string): void {
   }
 }
 
-function assertTimeout(timeout: number | undefined): void {
-  if (timeout !== undefined) assertPositiveMilliseconds(timeout, "timeout");
+function asError(value: unknown): Error {
+  return value instanceof Error ? value : new Error(String(value));
 }
 
-function assertPositiveMilliseconds(value: number, name: string): void {
-  if (!Number.isFinite(value) || value <= 0) {
-    throw new TypeError(`${name} must be a positive number of milliseconds`);
-  }
+function unhandledFileChooserError(): Error & { code: string } {
+  const error = new Error(
+    "This action opened a file chooser, which was cancelled before the system dialog appeared. " +
+      "Use page.setInputFiles() for an existing file input, or call " +
+      "page.waitForFileChooser() before the action when the input is created dynamically.",
+  ) as Error & { code: string };
+  error.code = "EGO_FILE_CHOOSER_OPENED";
+  return error;
 }
 
 function assertCdpCall(
@@ -1973,7 +1914,6 @@ function assertCdpCall(
     throw new TypeError("cdp params must be an object");
   }
   validatePublicApiOptions(apiName, options);
-  if (options.timeout !== undefined) assertTimeout(options.timeout);
 }
 
 async function waitForTargetToDisappear(

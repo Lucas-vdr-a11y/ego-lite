@@ -102,13 +102,16 @@ export function installEgoSdk(
     target.ego.helpers = installed;
     target.ego.learnings = {};
     if (!(target.ego as Record<symbol, unknown>)[EGO_WRAPPED]) {
+      const taskSelection: { spaceId?: unknown } = {};
       wrapCreateTab(target.ego);
-      wrapInvalidating(target.ego, [
-        "useTaskSpace",
-        "closeTaskSpace",
-        "createTaskSpace",
-        "claimTaskSpace",
-      ]);
+      wrapUseTaskSpace(target.ego, taskSelection);
+      wrapInvalidating(
+        target.ego,
+        ["closeTaskSpace", "createTaskSpace", "claimTaskSpace"],
+        () => {
+          taskSelection.spaceId = undefined;
+        },
+      );
       Object.defineProperty(target.ego, EGO_WRAPPED, {
         value: true,
         enumerable: false,
@@ -144,11 +147,16 @@ function isDirectCli() {
   );
 }
 
-function wrapInvalidating(ego: EgoRuntime, methodNames: string[]) {
+function wrapInvalidating(
+  ego: EgoRuntime,
+  methodNames: string[],
+  resetSelection: () => void = () => {},
+) {
   for (const name of methodNames) {
     const original = ego[name];
     if (typeof original !== "function") continue;
     const after = () => {
+      resetSelection();
       invalidateSession();
       clearPreferredTarget();
     };
@@ -164,6 +172,32 @@ function wrapInvalidating(ego: EgoRuntime, methodNames: string[]) {
       return result;
     };
   }
+}
+
+function wrapUseTaskSpace(ego: EgoRuntime, selection: { spaceId?: unknown }) {
+  // File chooser waits and other event subscriptions span multiple Page calls.
+  // Re-selecting the same space must preserve their CDP session; changing the
+  // space still invalidates every session because native routing is global.
+  const original = ego.useTaskSpace;
+  if (typeof original !== "function") return;
+  const after = (spaceId: unknown, value: unknown) => {
+    if (value && typeof value === "object" && Object.hasOwn(value, "error")) {
+      return value;
+    }
+    if (selection.spaceId !== spaceId) {
+      invalidateSession();
+      clearPreferredTarget();
+      selection.spaceId = spaceId;
+    }
+    return value;
+  };
+  ego.useTaskSpace = function (...args: unknown[]) {
+    const result = original.apply(this, args);
+    if (result && typeof result.then === "function") {
+      return result.then((value) => after(args[0], value));
+    }
+    return after(args[0], result);
+  };
 }
 
 function wrapCreateTab(ego: EgoRuntime) {

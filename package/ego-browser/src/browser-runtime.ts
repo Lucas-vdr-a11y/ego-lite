@@ -17,11 +17,23 @@ const targetStates = new Map();
 const sessionTargets = new Map();
 let defaultTargetId = null;
 
+export type FileChooserOpenedEvent = {
+  backendNodeId: number;
+  frameId?: string;
+  mode?: "selectSingle" | "selectMultiple";
+};
+
+export type FileChooserInterception = {
+  ready: Promise<void>;
+  event: Promise<FileChooserOpenedEvent>;
+  peek(): FileChooserOpenedEvent | undefined;
+  dispose(reason?: Error): Promise<void>;
+};
+
 function targetState(targetId) {
   let target = targetStates.get(targetId);
   if (!target) {
     target = {
-      targetId,
       sessionId: null,
       sessionAt: 0,
       sessionInflight: null,
@@ -29,6 +41,7 @@ function targetState(targetId) {
       pageEventsEnabled: false,
       networkDomainEnabled: false,
       pendingDialog: null,
+      fileChooserInterception: null,
     };
     targetStates.set(targetId, target);
   }
@@ -40,7 +53,7 @@ function registerSession(targetId, sessionId) {
   if (target.sessionId === sessionId) {
     target.sessionAt = Date.now();
     sessionTargets.set(sessionId, targetId);
-    return target;
+    return;
   }
   if (target.sessionId && target.sessionId !== sessionId) {
     sessionTargets.delete(target.sessionId);
@@ -51,12 +64,15 @@ function registerSession(targetId, sessionId) {
   target.networkDomainEnabled = false;
   target.pendingDialog = null;
   sessionTargets.set(sessionId, targetId);
-  return target;
 }
 
 function clearTargetSession(targetId, { remove = false } = {}) {
   const target = targetStates.get(targetId);
   if (!target) return;
+  rejectFileChooserInterception(
+    target,
+    new Error("file chooser session was detached"),
+  );
   if (target.sessionId) {
     sessionTargets.delete(target.sessionId);
   }
@@ -72,6 +88,7 @@ function clearTargetSession(targetId, { remove = false } = {}) {
   target.pageEventsEnabled = false;
   target.networkDomainEnabled = false;
   target.pendingDialog = null;
+  target.fileChooserInterception = null;
 }
 
 function capEvents(events) {
@@ -297,6 +314,104 @@ export function isNetworkDomainEnabled(sessionId) {
     : false;
 }
 
+/**
+ * Suppress the operating-system file picker and observe the next chooser in
+ * one Page session. The caller owns the short-lived interception and must
+ * dispose it after setting files or completing an input action.
+ */
+export function prepareFileChooser(
+  sessionId: string,
+  { timeoutMs, cancel }: { timeoutMs: number; cancel: boolean },
+): FileChooserInterception {
+  const targetId = sessionTargets.get(sessionId);
+  const target = targetId ? targetStates.get(targetId) : undefined;
+  if (!target) {
+    throw new Error("cannot intercept a file chooser without a Page session");
+  }
+  if (target.fileChooserInterception) {
+    throw new Error("this Page is already waiting for a file chooser");
+  }
+
+  let observed: FileChooserOpenedEvent | undefined;
+  let resolveEvent!: (event: FileChooserOpenedEvent) => void;
+  let rejectEvent!: (error: Error) => void;
+  const event = new Promise<FileChooserOpenedEvent>((resolve, reject) => {
+    resolveEvent = resolve;
+    rejectEvent = reject;
+  });
+  // A safety interceptor normally consumes peek() instead of awaiting event.
+  // Attach a rejection observer so disposal never creates an unhandled promise.
+  void event.catch(() => {});
+
+  const interception: any = {
+    cancelPromise: undefined,
+    event,
+    reject: rejectEvent,
+    resolve(value: FileChooserOpenedEvent) {
+      if (observed) return;
+      observed = value;
+      clearTimeout(interception.timer);
+      resolveEvent(value);
+      if (cancel) {
+        // An empty file list completes the intercepted chooser without opening
+        // the native picker or changing the input's current selection.
+        interception.cancelPromise = rawCdp(
+          "DOM.setFileInputFiles",
+          { files: [], backendNodeId: value.backendNodeId },
+          sessionId,
+        ).catch(() => {});
+      }
+    },
+    peek() {
+      return observed;
+    },
+    async dispose(reason?: Error) {
+      if (target.fileChooserInterception !== interception) return;
+      target.fileChooserInterception = null;
+      clearTimeout(interception.timer);
+      if (!observed && reason) rejectEvent(reason);
+      await interception.ready.catch(() => {});
+      await interception.cancelPromise;
+      await rawCdp(
+        "Page.setInterceptFileChooserDialog",
+        { enabled: false },
+        sessionId,
+      ).catch(() => {});
+    },
+  };
+  target.fileChooserInterception = interception;
+  interception.ready = rawCdp(
+    "Page.setInterceptFileChooserDialog",
+    { enabled: true },
+    sessionId,
+  )
+    .then(() => {
+      interception.timer = setTimeout(() => {
+        const error: any = new Error(
+          `page.waitForFileChooser timed out after ${timeoutMs}ms`,
+        );
+        error.code = "EGO_FILE_CHOOSER_TIMEOUT";
+        if (target.fileChooserInterception === interception) {
+          target.fileChooserInterception = null;
+          rejectEvent(error);
+          void rawCdp(
+            "Page.setInterceptFileChooserDialog",
+            { enabled: false },
+            sessionId,
+          ).catch(() => {});
+        }
+      }, timeoutMs);
+    })
+    .catch((error) => {
+      if (target.fileChooserInterception === interception) {
+        target.fileChooserInterception = null;
+      }
+      rejectEvent(error);
+      throw error;
+    });
+  return interception;
+}
+
 async function enablePageEvents(sessionId) {
   const targetId = sessionId ? sessionTargets.get(sessionId) : undefined;
   const target = targetId ? targetStates.get(targetId) : undefined;
@@ -372,10 +487,20 @@ function handleMessage(message) {
     if (target) target.pendingDialog = data.params || {};
   } else if (data.method === "Page.javascriptDialogClosed") {
     if (target) target.pendingDialog = null;
+  } else if (data.method === "Page.fileChooserOpened") {
+    target?.fileChooserInterception?.resolve(data.params || {});
   }
   const events = target ? target.events : browserEvents;
   events.push(data);
   capEvents(events);
+}
+
+function rejectFileChooserInterception(target, error: Error) {
+  const interception = target.fileChooserInterception;
+  if (!interception) return;
+  target.fileChooserInterception = null;
+  clearTimeout(interception.timer);
+  interception.reject(error);
 }
 
 export function browserSnapshotRefsToRefMap(refMap, refs = []) {

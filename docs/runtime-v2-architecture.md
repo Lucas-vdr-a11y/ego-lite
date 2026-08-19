@@ -90,7 +90,7 @@ CDP session、事件缓冲、dialog 状态和 Network domain 状态都按 target
   "usedLabels": ["p1", "p2"],
   "releasedLabels": [],
   "initialized": true,
-  "handoffBaseline": null,
+  "userControlPending": false,
   "unmanagedTargets": {
     "USER_TARGET": "unknown"
   },
@@ -110,8 +110,8 @@ CDP session、事件缓冲、dialog 状态和 Network domain 状态都按 target
 `openPage()`、`adopt()`、`release()` 和 `close()` 在 await 返回前完成写入。写入
 使用临时文件和 atomic rename，避免留下半个 JSON 文件。
 
-旧开发版本写入的 `version`、`writerRound`、`openedAt`、`lastUsedAt` 和
-`touchedAt` 会被读取兼容，并在下一次写入时删除。
+旧开发版本写入的 `version`、`writerRound`、`handoffBaseline`、`openedAt`、
+`lastUsedAt` 和 `touchedAt` 会被读取兼容，并在下一次写入时删除。
 
 ### 4.2 标签
 
@@ -131,8 +131,9 @@ CDP session、事件缓冲、dialog 状态和 Network domain 状态都按 target
 - 第一次观察一个 space 时，已有 tab 记为 `unknown`，不会猜测它们由谁创建。
 - 在 Agent 持续控制该 space 时，后来出现的新 tab 会自动加入账本。
 - 用户控制期间不做自动收编。
-- `handOff()` 在交出控制前记录当时的 tab 集合。claim/takeover 后第一次盘点把
-  用户期间新增的 tab 记为 `unknown`，然后恢复 Agent 新 tab 的自动收编。
+- `handOff()` 在交出控制前记录一个待处理的用户控制边界。claim/takeover 后
+  第一次盘点把尚未登记的 tab 记为 `unknown`，然后恢复 Agent 新 tab 的自动
+  收编。
 
 不同 space 使用不同文件。多个进程同时写同一 space 不受支持，可能
 last-writer-wins。如果未来需要支持，必须使用文件锁或 CAS；不维护只能发现
@@ -177,7 +178,7 @@ const adopted = await task.adopt(unknown.page, { as: "reference" });
 `UnmanagedPage` 只有身份信息，不能直接导航、点击或关闭。调用 `adopt()` 后才
 获得完整 Page。
 
-`release(label)` 只允许归还 user/unknown 页面，并保持浏览器 tab 打开。
+`release(label)` 只允许归还来源为 `unknown` 的页面，并保持浏览器 tab 打开。
 Agent 创建的页面不能 release，必须显式 close，避免制造无人管理的 tab。
 
 ### 5.4 Popup
@@ -262,6 +263,10 @@ await page.hover(selector, options)
 await page.dragAndDrop(source, target, options)
 await page.fill(selector, value, options)
 await page.setInputFiles(selector, path)
+const chooserPromise = page.waitForFileChooser({ timeout })
+await page.click(selector)
+const chooser = await chooserPromise
+await chooser.setFiles(path)
 await page.scrollBy(deltaY, { deltaX, behavior })
 await page.close()
 ```
@@ -269,6 +274,11 @@ await page.close()
 `screenshot()` 和 `waitForSelector()` 使用 Playwright 风格的参数。截图路径放在
 options 中；`fullPage` 表示捕获完整页面。`waitForSelector()` 的 `state` 支持
 `attached`、`detached`、`visible` 和 `hidden`，默认是 `visible`。
+
+文件上传不操作系统文件选择器。已有 file input 时，`setInputFiles()` 直接设置
+文件；网站点击后才创建 input 时，先建立 `waitForFileChooser()`，再点击并通过
+返回的 chooser 设置文件。普通输入动作意外打开 chooser 时，runtime 会在系统
+弹窗出现前取消，并提示改用这两个接口。
 
 `page.fetch()` 是 Ego 提供的便利扩展，不是 Playwright 方法。它在目标页面内
 执行 `window.fetch()`，因此使用该页面的相对 URL、Cookie、CORS 和 service
@@ -340,18 +350,16 @@ Page 对象只在当前脚本轮次内存在，因此鼠标位置不会跨轮保
 ### 7.2 高层动作回执
 
 `goto()`、selector action、`mouse.click()` 和 `keyboard.press()` 返回轻量
-回执：
+popup 回执：
 
 ```js
 {
-  navigation?: { from, to },
-  domChanged?: true,
   popups?: [{ label, targetId }]
 }
 ```
 
-为了生成回执，高层动作会短暂观察 URL、表单状态、DOM mutation 和 tab
-变化。观察失败不会阻止实际动作。
+高层动作只比较动作前后的 tab 列表，不向页面安装观察脚本。导航、表单和 DOM
+结果应通过 `url()`、`waitForSelector()`、`snapshot()` 或读取页面状态确认。
 
 底层原语不安装动作探针，也不等待 50ms 反馈窗口：
 
@@ -468,7 +476,7 @@ surface，不属于本阶段。
 - popup 可由动作回执立即收编；即使动作回执漏记，后续盘点也会补回账本。
 - `Page.close()` 确认 tab 消失后才删除标签，最后 tab 有 anchor。
 - screenshot、evaluate、fetch、键盘和鼠标都操作并激活指定 Page。
-- 底层键鼠不安装动作探针，高层动作仍能返回导航和 popup 回执。
+- 页面动作不安装观察探针；高层动作仍能返回 popup 回执。
 - `keyboard.press()` 产生 native/trusted 输入；新版不暴露 synthetic dispatch。
 - snapshot 始终返回全量并标明来源，不接受 `diff`。
 - 旧格式账本能读取，并在下一次写入时删掉过期字段。

@@ -65,7 +65,7 @@ test("writes use a complete atomic ledger document", async () => {
       usedLabels: ["p1"],
       releasedLabels: [],
       initialized: true,
-      handoffBaseline: null,
+      userControlPending: false,
       unmanagedTargets: {},
       pages: {
         p1: {
@@ -117,6 +117,64 @@ test("old ledger metadata is accepted and removed on the next write", async () =
     assert.equal(Object.hasOwn(persisted, "touchedAt"), false);
     assert.equal(Object.hasOwn(persisted.pages.p1, "openedAt"), false);
     assert.equal(Object.hasOwn(persisted.pages.p1, "lastUsedAt"), false);
+  });
+});
+
+test("old handoff baselines migrate to a pending user-control boundary", async () => {
+  await withTempLedger(async (rootDir) => {
+    const path = join(rootDir, "space-13.json");
+    await writeFile(
+      path,
+      JSON.stringify({
+        spaceId: 13,
+        nextLabel: 2,
+        usedLabels: ["p1"],
+        releasedLabels: [],
+        initialized: true,
+        handoffBaseline: ["target-agent"],
+        unmanagedTargets: {},
+        pages: {
+          p1: { targetId: "target-agent", openedBy: "agent" },
+        },
+      }),
+    );
+    const store = new PageLedgerStore({ rootDir });
+
+    const restored = await store.read(13);
+    assert.equal(restored.userControlPending, true);
+
+    await store.reconcile(13, ["target-agent", "target-user"], {
+      autoAdoptNew: true,
+    });
+    const persisted = JSON.parse(await readFile(path, "utf8"));
+    assert.equal(persisted.userControlPending, false);
+    assert.equal(Object.hasOwn(persisted, "handoffBaseline"), false);
+    assert.equal(persisted.unmanagedTargets["target-user"], "unknown");
+  });
+});
+
+test("legacy user origins are read conservatively as unknown", async () => {
+  await withTempLedger(async (rootDir) => {
+    const path = join(rootDir, "space-14.json");
+    await writeFile(
+      path,
+      JSON.stringify({
+        spaceId: 14,
+        nextLabel: 2,
+        usedLabels: ["p1"],
+        releasedLabels: [],
+        initialized: true,
+        unmanagedTargets: { "target-unmanaged": "user" },
+        pages: {
+          p1: { targetId: "target-managed", openedBy: "user" },
+        },
+      }),
+    );
+
+    const restored = await new PageLedgerStore({ rootDir }).read(14);
+
+    assert.equal(restored.pages.p1.openedBy, "unknown");
+    assert.equal(restored.unmanagedTargets["target-unmanaged"], "unknown");
   });
 });
 
@@ -235,7 +293,7 @@ test("tabs opened during handoff remain unknown after takeover", async () => {
   await withTempLedger(async (rootDir) => {
     const firstRound = new PageLedgerStore({ rootDir });
     await firstRound.addPage(8, "target-agent");
-    await firstRound.beginUserControl(8, ["target-agent"]);
+    await firstRound.beginUserControl(8);
 
     const secondRound = new PageLedgerStore({ rootDir });
     const afterTakeover = await secondRound.reconcile(
@@ -244,7 +302,7 @@ test("tabs opened during handoff remain unknown after takeover", async () => {
       { autoAdoptNew: true },
     );
 
-    assert.equal(afterTakeover.handoffBaseline, null);
+    assert.equal(afterTakeover.userControlPending, false);
     assert.equal(afterTakeover.unmanagedTargets["target-user"], "unknown");
     assert.deepEqual(afterTakeover.pages, {
       p1: { targetId: "target-agent", openedBy: "agent" },

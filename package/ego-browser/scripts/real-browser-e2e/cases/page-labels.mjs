@@ -310,6 +310,34 @@ export function pageBasicOperationsCase() {
       "fixture-upload.txt,fixture-upload-two.txt",
       "page.setInputFiles attaches multiple files in the addressed page"
     );
+    await first.setInputFiles("label[for=file-input]", uploadPath);
+    assertEqual(
+      await first.evaluate("document.querySelector('#file-input').files[0].name"),
+      "fixture-upload.txt",
+      "page.setInputFiles follows a label to its file input"
+    );
+
+    await assertRejects(
+      () => first.click("#dynamic-file-button"),
+      "page.waitForFileChooser",
+      "an unhandled file chooser is cancelled before a system dialog opens"
+    );
+    assertEqual(
+      await first.evaluate("document.querySelector('[data-dynamic-upload]').files.length"),
+      0,
+      "cancelling an unhandled chooser does not select a file"
+    );
+
+    const chooserPromise = first.waitForFileChooser({ timeout: 2_000 });
+    await first.click("#dynamic-file-button");
+    const chooser = await chooserPromise;
+    assertEqual(chooser.isMultiple(), true, "dynamic file chooser reports multiple mode");
+    await chooser.setFiles([uploadPath, uploadPathTwo]);
+    assertEqual(
+      await first.evaluate("Array.from(document.querySelector('[data-dynamic-upload]').files).map(file => file.name).join(',')"),
+      "fixture-upload.txt,fixture-upload-two.txt",
+      "page.waitForFileChooser uploads without a system dialog"
+    );
     assertEqual((await currentTab()).targetId, first.targetId, "Page keyboard and file methods keep their Page active");
 
     const screenshotPath = join(tempDir, "page-api-first.png");
@@ -326,9 +354,8 @@ export function pageBasicOperationsCase() {
     );
 
     const navigationReceipt = await first.click("#nav-link");
-    assertIncludes(navigationReceipt.navigation.from, "page-api=first", "click receipt reports the source URL");
-    assertIncludes(navigationReceipt.navigation.to, "/nav-target", "click receipt reports the destination URL");
-    assertEqual(navigationReceipt.domChanged, true, "navigation is reported as a document change");
+    assertEqual(Object.keys(navigationReceipt).length, 0, "an action without a popup returns an empty receipt");
+    assertIncludes(await first.url(), "/nav-target", "the navigation is verified from page state");
 
     await first.close();
     await second.close();
@@ -360,7 +387,7 @@ export function pageActionsAndPopupCase() {
       });
     });
     const fillReceipt = await source.fill("#text-input", "page-filled");
-    assertEqual(fillReceipt.domChanged, true, "page.fill reports its form-state change");
+    assertEqual(Object.keys(fillReceipt).length, 0, "page.fill returns no receipt without a popup");
     assertEqual(await source.evaluate("document.querySelector('#text-input').value"), "page-filled", "page.fill writes into the addressed page");
     assert(
       (await source.evaluate("window.__pageFillEvents")).some(

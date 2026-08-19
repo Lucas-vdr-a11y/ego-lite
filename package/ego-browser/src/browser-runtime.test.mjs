@@ -5,6 +5,7 @@ import {
   browserCdp,
   drainBrowserEvents,
   drainPageEvents,
+  prepareFileChooser,
 } from "../dist/src/browser-runtime.js";
 
 // Gap A: ensureSession() calls the raw listTabs binding to attach a session.
@@ -164,6 +165,80 @@ test("page event drains exclude unscoped browser events", async () => {
       drainBrowserEvents(sessionId).map((event) => event.method),
       ["Target.targetCreated"],
       "legacy drain still exposes unscoped browser events",
+    );
+  } finally {
+    if (previous === undefined) delete globalThis.ego;
+    else globalThis.ego = previous;
+  }
+});
+
+test("file chooser interception suppresses the native picker and returns its input", async () => {
+  const previous = globalThis.ego;
+  const calls = [];
+  const runtime = {
+    sendCDPMessage(payload) {
+      const request = JSON.parse(payload);
+      calls.push(request);
+      const result =
+        request.method === "Target.attachToTarget"
+          ? { sessionId: "session-upload" }
+          : {};
+      queueMicrotask(() => {
+        runtime.onCDPMessage(JSON.stringify({ id: request.id, result }));
+      });
+    },
+    emit(event) {
+      runtime.onCDPMessage(JSON.stringify(event));
+    },
+  };
+  globalThis.ego = runtime;
+
+  try {
+    const attached = await browserCdp("Target.attachToTarget", {
+      targetId: "target-upload",
+      flatten: true,
+    });
+    const sessionId = attached.result.sessionId;
+    const interception = prepareFileChooser(sessionId, {
+      timeoutMs: 1_000,
+      cancel: true,
+    });
+    await interception.ready;
+
+    runtime.emit({
+      sessionId,
+      method: "Page.fileChooserOpened",
+      params: {
+        backendNodeId: 42,
+        frameId: "frame-upload",
+        mode: "selectMultiple",
+      },
+    });
+    assert.equal((await interception.event).backendNodeId, 42);
+    await interception.dispose();
+
+    assert(
+      calls.some(
+        (call) =>
+          call.method === "Page.setInterceptFileChooserDialog" &&
+          call.params.enabled === true,
+      ),
+    );
+    assert(
+      calls.some(
+        (call) =>
+          call.method === "DOM.setFileInputFiles" &&
+          call.params.backendNodeId === 42 &&
+          call.params.files.length === 0,
+      ),
+      "the safety interceptor cancels the chooser with an empty file list",
+    );
+    assert(
+      calls.some(
+        (call) =>
+          call.method === "Page.setInterceptFileChooserDialog" &&
+          call.params.enabled === false,
+      ),
     );
   } finally {
     if (previous === undefined) delete globalThis.ego;

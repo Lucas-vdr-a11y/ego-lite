@@ -71,14 +71,7 @@ export async function clickInPage(
 ): Promise<void> {
   assertPageSelector(selector);
   const button = options.button ?? "left";
-  if (!(["left", "middle", "right"] as string[]).includes(button)) {
-    throw new TypeError(`page.click received unsupported button: ${button}`);
-  }
   const clickCount = options.clickCount ?? 1;
-  if (!Number.isInteger(clickCount) || clickCount < 1) {
-    throw new TypeError("page.click clickCount must be a positive integer");
-  }
-  assertDelay(options.delay, "page.click");
   const target = await resolveElementObjectId(
     cdpAdapter(services),
     sessionId,
@@ -150,9 +143,6 @@ export async function fillInPage(
     throw new TypeError("page.fill value must be a string");
   }
   const clearFirst = options.clearFirst ?? true;
-  if (typeof clearFirst !== "boolean") {
-    throw new TypeError("page.fill clearFirst must be a boolean");
-  }
 
   const resolved = await resolveElementObjectId(
     cdpAdapter(services),
@@ -335,7 +325,7 @@ export async function dragAndDropInPage(
       target.objectId,
       options.targetPosition,
     );
-    const button = assertMouseButton(options.button ?? "left");
+    const button = options.button ?? "left";
     const buttons = pressedButtons(button);
     await dispatchMouseEvent(services, source.sessionId, {
       type: "mouseMoved",
@@ -393,14 +383,8 @@ export async function clickPointInPage(
   baseButtons = 0,
 ): Promise<void> {
   assertPoint(x, y, "page.mouse.click");
-  const button = assertMouseButton(options.button ?? "left");
+  const button = options.button ?? "left";
   const clickCount = options.clickCount ?? 1;
-  if (!Number.isInteger(clickCount) || clickCount < 1) {
-    throw new TypeError(
-      "page.mouse.click clickCount must be a positive integer",
-    );
-  }
-  assertDelay(options.delay, "page.mouse.click");
   const buttons = pressedButtons(button);
   await dispatchMouseEvent(services, sessionId, {
     type: "mouseMoved",
@@ -447,9 +431,6 @@ export async function moveMouseInPage(
 ): Promise<void> {
   assertPoint(x, y, "page.mouse.move");
   const steps = options.steps ?? 1;
-  if (!Number.isInteger(steps) || steps < 1) {
-    throw new TypeError("page.mouse.move steps must be a positive integer");
-  }
   for (let step = 1; step <= steps; step += 1) {
     await dispatchMouseEvent(services, sessionId, {
       type: "mouseMoved",
@@ -473,11 +454,8 @@ export async function mouseButtonInPage(
   modifiers = 0,
 ): Promise<MouseButton> {
   assertPoint(x, y, `page.mouse.${type === "mousePressed" ? "down" : "up"}`);
-  const button = assertMouseButton(options.button ?? "left");
+  const button = options.button ?? "left";
   const clickCount = options.clickCount ?? 1;
-  if (!Number.isInteger(clickCount) || clickCount < 1) {
-    throw new TypeError("page.mouse clickCount must be a positive integer");
-  }
   await dispatchMouseEvent(services, sessionId, {
     type,
     x,
@@ -627,19 +605,6 @@ function assertPoint(x: number, y: number, operation: string): void {
   if (!Number.isFinite(x) || !Number.isFinite(y)) {
     throw new TypeError(`${operation} requires finite x and y coordinates`);
   }
-}
-
-function assertDelay(value: unknown, operation: string): void {
-  if (value !== undefined && (!Number.isFinite(value) || Number(value) < 0)) {
-    throw new TypeError(`${operation} delay must be a non-negative number`);
-  }
-}
-
-function assertMouseButton(button: string): MouseButton {
-  if (!(<string[]>["left", "middle", "right"]).includes(button)) {
-    throw new TypeError(`unsupported mouse button: ${button}`);
-  }
-  return button as MouseButton;
 }
 
 export function mouseButtonMask(button: MouseButton): number {

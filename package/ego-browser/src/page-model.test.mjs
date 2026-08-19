@@ -28,6 +28,9 @@ function createFixture(rootDir) {
   let selectedSpace = null;
   let activeTarget = null;
   let popupOnNextClick = null;
+  let fileChooserOnNextClick = null;
+  let activeFileChooserWaiter = null;
+  let systemFileChooserOpened = false;
   let timeoutNextMouseDispatch = false;
   let rejectNextClickPoint = false;
   let navigateOnNextClickUrl = null;
@@ -36,6 +39,8 @@ function createFixture(rootDir) {
   let nowMs = 1_000;
   const pageEvents = new Map();
   const networkSessions = new Set();
+  const sessionOverrides = new Map();
+  const sessionTargets = new Map();
 
   function openPendingPopup() {
     if (!popupOnNextClick) return;
@@ -51,7 +56,12 @@ function createFixture(rootDir) {
   async function ensureTargetSession(targetId) {
     assert(tabs.has(targetId), `unknown target ${targetId}`);
     calls.push(["ensureSession", targetId]);
-    return `session:${targetId}`;
+    const sessionId = sessionOverrides.get(targetId) || `session:${targetId}`;
+    sessionTargets.set(sessionId, targetId);
+    return sessionId;
+  }
+  function targetForSession(sessionId) {
+    return sessionTargets.get(sessionId) || sessionId?.slice("session:".length);
   }
   const gate = new NativeOperationGate({
     async selectSpace(spaceId) {
@@ -83,27 +93,14 @@ function createFixture(rootDir) {
       if (timeoutMs !== undefined) call.push(timeoutMs);
       calls.push(call);
       if (method === "Page.navigate") {
-        const targetId = sessionId.slice("session:".length);
+        const targetId = targetForSession(sessionId);
         tabs.get(targetId).url = params.url;
         tabs.get(targetId).title = params.url;
         return { frameId: "frame-1" };
       }
       if (method === "Runtime.evaluate") {
-        const targetId = sessionId?.slice("session:".length);
+        const targetId = targetForSession(sessionId);
         const tab = tabs.get(targetId);
-        if (params.expression.includes("__egoBrowserActionProbes")) {
-          return {
-            result: {
-              type: "object",
-              value: {
-                url: tab.url,
-                documentToken: `document:${tab.url}`,
-                controlHash: "controls",
-                mutations: 0,
-              },
-            },
-          };
-        }
         if (params.expression === "globalThis") {
           return {
             result: {
@@ -161,6 +158,15 @@ function createFixture(rootDir) {
         return { result: { type: "string", value: "complete" } };
       }
       if (method === "Runtime.callFunctionOn") {
+        if (params.functionDeclaration.includes("resolveFileInputForUpload")) {
+          const targetId = targetForSession(sessionId);
+          return {
+            result: {
+              type: "object",
+              objectId: `file-input:${targetId}`,
+            },
+          };
+        }
         if (params.functionDeclaration.includes("fillPreparation")) {
           return { result: { type: "string", value: "needsinput" } };
         }
@@ -230,7 +236,7 @@ function createFixture(rootDir) {
         };
       }
       if (method === "DOM.resolveNode") {
-        const targetId = sessionId.slice("session:".length);
+        const targetId = targetForSession(sessionId);
         return {
           object: {
             type: "object",
@@ -259,8 +265,16 @@ function createFixture(rootDir) {
           throw new Error("CDP request timed out: Input.dispatchMouseEvent");
         }
         if (params.type === "mouseReleased") {
+          if (fileChooserOnNextClick) {
+            if (activeFileChooserWaiter) {
+              activeFileChooserWaiter.emit(fileChooserOnNextClick);
+            } else {
+              systemFileChooserOpened = true;
+            }
+            fileChooserOnNextClick = null;
+          }
           if (navigateOnNextClickUrl) {
-            const targetId = sessionId.slice("session:".length);
+            const targetId = targetForSession(sessionId);
             tabs.get(targetId).url = navigateOnNextClickUrl;
             tabs.get(targetId).title = navigateOnNextClickUrl;
             navigateOnNextClickUrl = null;
@@ -304,6 +318,34 @@ function createFixture(rootDir) {
     pendingDialog() {
       return null;
     },
+    prepareFileChooser(sessionId, { timeoutMs, cancel }) {
+      calls.push(["prepareFileChooser", sessionId, { timeoutMs, cancel }]);
+      let observed;
+      let resolveEvent;
+      let rejectEvent;
+      const event = new Promise((resolve, reject) => {
+        resolveEvent = resolve;
+        rejectEvent = reject;
+      });
+      const waiter = {
+        ready: Promise.resolve(),
+        event,
+        peek: () => observed,
+        emit(value) {
+          observed = value;
+          resolveEvent(value);
+        },
+        async dispose(reason) {
+          calls.push(["disposeFileChooser", sessionId, reason?.message]);
+          if (activeFileChooserWaiter === waiter) {
+            activeFileChooserWaiter = null;
+          }
+          if (!observed && reason) rejectEvent(reason);
+        },
+      };
+      activeFileChooserWaiter = waiter;
+      return waiter;
+    },
     drainEvents(sessionId) {
       const events = pageEvents.get(sessionId) || [];
       pageEvents.set(sessionId, []);
@@ -338,6 +380,14 @@ function createFixture(rootDir) {
     openPopupOnNextClick(url) {
       popupOnNextClick = url;
     },
+    openFileChooserOnNextClick(options = {}) {
+      fileChooserOnNextClick = {
+        backendNodeId: options.backendNodeId ?? 71,
+        frameId: options.frameId ?? "frame-1",
+        mode: options.mode ?? "selectSingle",
+      };
+    },
+    systemFileChooserOpened: () => systemFileChooserOpened,
     timeoutNextMouseDispatch() {
       timeoutNextMouseDispatch = true;
     },
@@ -350,6 +400,9 @@ function createFixture(rootDir) {
     setElementState({ present = true, visible = true }) {
       elementPresent = present;
       elementVisible = visible;
+    },
+    setSession(targetId, sessionId) {
+      sessionOverrides.set(targetId, sessionId);
     },
     emitPageEvent(targetId, method, params = {}) {
       const sessionId = `session:${targetId}`;
@@ -364,7 +417,7 @@ function taskForRound(fixture, roundId, overrides = {}) {
   return createTaskSpaceHandle(
     { id: 7, name: "research", ownership: "agent" },
     {
-      ledger: new PageLedgerStore({ rootDir: fixture.rootDir, roundId }),
+      ledger: new PageLedgerStore({ rootDir: fixture.rootDir }),
       ...fixture.services,
       ...overrides,
     },
@@ -450,10 +503,7 @@ test("v2 methods reject option fields that are absent from the public schema", a
 test("TaskSpace uses spaceId and owns handoff, finish, and close", async () => {
   await withFixture(async (fixture) => {
     const lifecycleCalls = [];
-    const ledger = new PageLedgerStore({
-      rootDir: fixture.rootDir,
-      roundId: "lifecycle",
-    });
+    const ledger = new PageLedgerStore({ rootDir: fixture.rootDir });
     const services = {
       ledger,
       async handOffTaskSpace() {
@@ -538,7 +588,7 @@ test("failed native handoff removes the pending user-control boundary", async ()
     await task.openPage("https://example.test/agent");
 
     await assert.rejects(() => task.handOff(), /native handoff failed/);
-    assert.equal((await ledger.read(7)).handoffBaseline, null);
+    assert.equal((await ledger.read(7)).userControlPending, false);
   });
 });
 
@@ -582,13 +632,7 @@ test("a page label restores in a new round and goto reuses its target", async ()
       fixture.tabs.get("target-1").url,
       "https://example.test/second",
     );
-    assert.deepEqual(receipt, {
-      navigation: {
-        from: "https://example.test/first",
-        to: "https://example.test/second",
-      },
-      domChanged: true,
-    });
+    assert.deepEqual(receipt, {});
     assert.match(
       await restored.snapshot(),
       /\[p1 .*space "research"\(7\).*\]\nsnapshot:https:\/\/example\.test\/second/,
@@ -663,7 +707,7 @@ test("snapshot activates the addressed page, not whichever tab was current", asy
   });
 });
 
-test("snapshot reports its source and rejects the removed round-local diff option", async () => {
+test("snapshot reports its source and rejects options absent from the schema", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
     const page = await task.openPage("https://example.test/before");
@@ -674,7 +718,7 @@ test("snapshot reports its source and rejects the removed round-local diff optio
     );
     await assert.rejects(
       () => page.snapshot({ diff: true }),
-      /page\.snapshot does not support diff/,
+      /page\.snapshot received unknown option: diff/,
     );
   });
 });
@@ -867,7 +911,7 @@ test("Page fetch validates its JSON options and millisecond timeout", async () =
     );
     await assert.rejects(
       () => page.fetch("/api/text", { signal: {} }),
-      /does not accept options.signal/,
+      /page\.fetch received unknown option: signal/,
     );
     await assert.rejects(
       () => page.fetch("/api/text", { headers: cyclic }),
@@ -963,19 +1007,24 @@ test("Page fill uses its target session and reports no popup when none opened", 
   });
 });
 
-test("Page action receipts report navigation and obvious document changes", async () => {
+test("Page action receipts do not inject observation probes", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
     const page = await task.openPage("https://example.test/before");
     fixture.navigateOnNextClick("https://example.test/after");
+    fixture.calls.length = 0;
 
-    assert.deepEqual(await page.click("#navigate"), {
-      navigation: {
-        from: "https://example.test/before",
-        to: "https://example.test/after",
-      },
-      domChanged: true,
-    });
+    assert.deepEqual(await page.click("#navigate"), {});
+    assert.equal(await page.url(), "https://example.test/after");
+    assert.equal(
+      fixture.calls.some(
+        ([kind, method, params]) =>
+          kind === "cdp" &&
+          method === "Runtime.evaluate" &&
+          params.expression.includes("__egoBrowserActionProbes"),
+      ),
+      false,
+    );
   });
 });
 
@@ -1457,6 +1506,121 @@ test("Page keyboard omits synthetic dispatch while file input stays target-scope
     assert.deepEqual(uploadCall[2].files, ["/tmp/one.txt", "/tmp/two.txt"]);
     assert.equal(uploadCall[3], `session:${first.targetId}`);
     assert.equal(fixture.activeTarget(), first.targetId);
+  });
+});
+
+test("Page.setInputFiles resolves labels without opening a system chooser", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a");
+    const page = await task.openPage("https://example.test/upload");
+
+    await page.setInputFiles("label[for=upload]", [
+      "/tmp/one.txt",
+      "/tmp/two.txt",
+    ]);
+
+    const resolveCall = fixture.calls.find(
+      ([kind, method, params]) =>
+        kind === "cdp" &&
+        method === "Runtime.callFunctionOn" &&
+        params.functionDeclaration.includes("resolveFileInputForUpload"),
+    );
+    assert(resolveCall, "the resolved element is normalized to its file input");
+    const uploadCall = fixture.calls.find(
+      ([kind, method]) => kind === "cdp" && method === "DOM.setFileInputFiles",
+    );
+    assert.deepEqual(uploadCall[2], {
+      files: ["/tmp/one.txt", "/tmp/two.txt"],
+      objectId: `file-input:${page.targetId}`,
+    });
+    assert.equal(fixture.systemFileChooserOpened(), false);
+
+    await page.setInputFiles("#upload", []);
+    const uploadCalls = fixture.calls.filter(
+      ([kind, method]) => kind === "cdp" && method === "DOM.setFileInputFiles",
+    );
+    assert.deepEqual(uploadCalls.at(-1)[2].files, []);
+  });
+});
+
+test("Page.waitForFileChooser handles a dynamically created file input", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a");
+    const page = await task.openPage("https://example.test/dynamic-upload");
+    fixture.openFileChooserOnNextClick({
+      backendNodeId: 91,
+      mode: "selectMultiple",
+    });
+
+    const chooserPromise = page.waitForFileChooser({ timeout: 1_234 });
+    await page.click("#open-upload");
+    const chooser = await chooserPromise;
+    assert.equal(chooser.isMultiple(), true);
+    await chooser.setFiles(["/tmp/one.txt", "/tmp/two.txt"]);
+
+    const prepared = fixture.calls.find(
+      ([kind]) => kind === "prepareFileChooser",
+    );
+    assert.deepEqual(prepared, [
+      "prepareFileChooser",
+      `session:${page.targetId}`,
+      { timeoutMs: 1_234, cancel: false },
+    ]);
+    const uploadCall = fixture.calls.find(
+      ([kind, method, params]) =>
+        kind === "cdp" &&
+        method === "DOM.setFileInputFiles" &&
+        params.backendNodeId === 91,
+    );
+    assert.deepEqual(uploadCall[2].files, ["/tmp/one.txt", "/tmp/two.txt"]);
+    assert.equal(fixture.systemFileChooserOpened(), false);
+  });
+});
+
+test("FileChooser.setFiles uses the current Page session after reconnect", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a");
+    const page = await task.openPage("https://example.test/dynamic-upload");
+    fixture.openFileChooserOnNextClick({ backendNodeId: 92 });
+
+    const chooserPromise = page.waitForFileChooser();
+    await page.click("#open-upload");
+    const chooser = await chooserPromise;
+    fixture.setSession(page.targetId, "fresh-upload-session");
+
+    await chooser.setFiles("/tmp/fresh.txt");
+
+    const uploadCall = fixture.calls.find(
+      ([kind, method, params]) =>
+        kind === "cdp" &&
+        method === "DOM.setFileInputFiles" &&
+        params.backendNodeId === 92,
+    );
+    assert.equal(uploadCall[3], "fresh-upload-session");
+  });
+});
+
+test("unhandled file choosers are cancelled before a system dialog appears", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a");
+    const page = await task.openPage("https://example.test/upload-guard");
+    fixture.openFileChooserOnNextClick();
+
+    await assert.rejects(
+      () => page.click("#open-upload"),
+      (error) => {
+        assert.equal(error.code, "EGO_FILE_CHOOSER_OPENED");
+        assert.match(error.message, /page\.setInputFiles/);
+        assert.match(error.message, /page\.waitForFileChooser/);
+        return true;
+      },
+    );
+
+    const prepared = fixture.calls.find(
+      ([kind]) => kind === "prepareFileChooser",
+    );
+    assert.equal(prepared[2].cancel, true);
+    assert.equal(fixture.systemFileChooserOpened(), false);
   });
 });
 

@@ -3,7 +3,7 @@ import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-export type PageOrigin = "agent" | "user" | "unknown";
+export type PageOrigin = "agent" | "unknown";
 
 export type PageLedgerEntry = {
   targetId: string;
@@ -20,7 +20,7 @@ export type PageLedger = {
   usedLabels: string[];
   releasedLabels: string[];
   initialized: boolean;
-  handoffBaseline: string[] | null;
+  userControlPending: boolean;
   unmanagedTargets: Record<string, PageOrigin>;
   pages: Record<string, PageLedgerEntry>;
 };
@@ -164,7 +164,7 @@ export class PageLedgerStore {
     openedBy: PageOrigin = "unknown",
   ): Promise<void> {
     assertTargetId(targetId);
-    if (!["agent", "user", "unknown"].includes(openedBy)) {
+    if (!["agent", "unknown"].includes(openedBy)) {
       throw new TypeError(`invalid unmanaged page origin: ${openedBy}`);
     }
     await this.#update(spaceId, (ledger) => {
@@ -179,25 +179,17 @@ export class PageLedgerStore {
     });
   }
 
-  /**
-   * Persist the tab set visible immediately before control is handed to the
-   * user. A later process can then preserve newly observed tabs as unknown.
-   */
-  async beginUserControl(
-    spaceId: number,
-    liveTargetIds: Iterable<string>,
-  ): Promise<void> {
-    const targetIds = [...new Set(liveTargetIds)];
-    targetIds.forEach(assertTargetId);
+  /** Mark the next reconciliation as crossing a user-control boundary. */
+  async beginUserControl(spaceId: number): Promise<void> {
     await this.#update(spaceId, (ledger) => {
-      ledger.handoffBaseline = targetIds;
+      ledger.userControlPending = true;
     });
   }
 
   /** Roll back a boundary marker when the native handoff itself fails. */
   async cancelUserControl(spaceId: number): Promise<void> {
     await this.#update(spaceId, (ledger) => {
-      ledger.handoffBaseline = null;
+      ledger.userControlPending = false;
     });
   }
 
@@ -223,7 +215,7 @@ export class PageLedgerStore {
     );
     const needsInitialization = !current.initialized;
     const protectsUserTabs =
-      options.afterUserControl || current.handoffBaseline !== null;
+      options.afterUserControl || current.userControlPending;
     const shouldAdopt =
       current.initialized &&
       options.autoAdoptNew &&
@@ -263,14 +255,14 @@ export class PageLedgerStore {
           ledger.unmanagedTargets[targetId] = "unknown";
         }
         ledger.initialized = true;
-        ledger.handoffBaseline = null;
+        ledger.userControlPending = false;
         return;
       }
       if (protectsUserTabs) {
         for (const targetId of untracked) {
           ledger.unmanagedTargets[targetId] = "unknown";
         }
-        ledger.handoffBaseline = null;
+        ledger.userControlPending = false;
         return;
       }
       if (!options.autoAdoptNew) return;
@@ -344,7 +336,7 @@ function emptyLedger(spaceId: number): PageLedger {
     usedLabels: [],
     releasedLabels: [],
     initialized: false,
-    handoffBaseline: null,
+    userControlPending: false,
     unmanagedTargets: {},
     pages: {},
   };
@@ -369,13 +361,16 @@ function validateLedger(
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error(`invalid page ledger ${path}: expected an object`);
   }
-  const stored = value as PageLedger;
+  const stored = value as PageLedger & { handoffBaseline?: unknown };
   // Defaults keep ledgers written by earlier runtimes readable. They start
   // uninitialized so the first new runtime observes a safe control baseline
   // instead of silently adopting pre-existing user tabs.
   const releasedLabels = stored.releasedLabels ?? [];
   const initialized = stored.initialized ?? false;
-  const handoffBaseline = stored.handoffBaseline ?? null;
+  const legacyHandoffBaseline = stored.handoffBaseline;
+  const userControlPending =
+    stored.userControlPending ??
+    (legacyHandoffBaseline !== undefined && legacyHandoffBaseline !== null);
   const unmanagedTargets = stored.unmanagedTargets ?? {};
   if (
     stored.spaceId !== expectedSpaceId ||
@@ -391,9 +386,11 @@ function validateLedger(
         Object.hasOwn(stored.pages || {}, label),
     ) ||
     typeof initialized !== "boolean" ||
-    (handoffBaseline !== null &&
-      (!Array.isArray(handoffBaseline) ||
-        handoffBaseline.some(
+    typeof userControlPending !== "boolean" ||
+    (legacyHandoffBaseline !== undefined &&
+      legacyHandoffBaseline !== null &&
+      (!Array.isArray(legacyHandoffBaseline) ||
+        legacyHandoffBaseline.some(
           (targetId) => typeof targetId !== "string" || targetId.length === 0,
         ))) ||
     !unmanagedTargets ||
@@ -425,19 +422,31 @@ function validateLedger(
         `invalid page ledger ${path}: target ${page.targetId} is both managed and unmanaged`,
       );
     }
-    pages[label] = { targetId: page.targetId, openedBy: page.openedBy };
+    pages[label] = {
+      targetId: page.targetId,
+      openedBy: normalizePageOrigin(page.openedBy),
+    };
   }
+  const normalizedUnmanagedTargets = Object.fromEntries(
+    Object.entries(unmanagedTargets).map(([targetId, openedBy]) => [
+      targetId,
+      normalizePageOrigin(openedBy),
+    ]),
+  );
   return {
     spaceId: stored.spaceId,
     nextLabel: stored.nextLabel,
     usedLabels: [...stored.usedLabels],
     releasedLabels: [...releasedLabels],
     initialized,
-    handoffBaseline:
-      handoffBaseline === null ? null : [...new Set(handoffBaseline)],
-    unmanagedTargets: { ...unmanagedTargets },
+    userControlPending,
+    unmanagedTargets: normalizedUnmanagedTargets,
     pages,
   };
+}
+
+function normalizePageOrigin(value: unknown): PageOrigin {
+  return value === "agent" ? "agent" : "unknown";
 }
 
 function cloneLedger(ledger: PageLedger): PageLedger {

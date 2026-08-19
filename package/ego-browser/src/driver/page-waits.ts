@@ -44,13 +44,7 @@ export async function waitForSelectorInPage(
     );
   }
   const timeoutMs = options.timeout ?? 10_000;
-  assertPositiveMilliseconds(timeoutMs);
   const state = options.state ?? "visible";
-  if (!["attached", "detached", "visible", "hidden"].includes(state)) {
-    throw new TypeError(
-      "page.waitForSelector state must be one of attached, detached, visible, or hidden",
-    );
-  }
 
   const deadline = services.now() + timeoutMs;
   while (services.now() <= deadline) {
@@ -118,13 +112,11 @@ export async function waitForLoadStateInPage(
     );
   }
   const timeoutMs = options.timeout ?? 10_000;
-  assertPositiveMilliseconds(timeoutMs);
   if (state === "load") {
     await waitForDocumentLoad(services, sessionId, timeoutMs);
     return;
   }
   const idleMs = options.idleMs ?? 500;
-  assertPositiveMilliseconds(idleMs, "idleMs");
   await waitForNetworkIdle(services, sessionId, timeoutMs, idleMs);
 }
 
@@ -202,10 +194,4 @@ function cdpAdapter(services: PageWaitServices) {
       return services.cdp(method, params, sessionId);
     },
   };
-}
-
-function assertPositiveMilliseconds(value: number, name = "timeout"): void {
-  if (!Number.isFinite(value) || value <= 0) {
-    throw new TypeError(`${name} must be a positive number of milliseconds`);
-  }
 }
