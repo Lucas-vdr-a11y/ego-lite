@@ -67,7 +67,7 @@ type TaskSpaceDescriptor = {
   ownership?: string;
 };
 
-type NewPageOptions = {
+type OpenPageOptions = {
   as?: string;
   timeout?: number;
 };
@@ -81,6 +81,11 @@ type PageGotoOptions = {
 };
 
 type PageSnapshotOptions = Record<string, unknown>;
+
+type PageScreenshotOptions = Omit<CaptureScreenshotOptions, "full"> & {
+  path?: string;
+  fullPage?: boolean;
+};
 
 type CdpOptions = {
   timeout?: number;
@@ -417,11 +422,11 @@ const baseDefaultServices: Omit<PageModelServices, "ledger" | "pageBudget"> = {
   async createTab(url) {
     const result = assertNoEgoError(
       await browserEgo().createTab(url),
-      "task.newPage",
+      "task.openPage",
     );
     const targetId = result?.targetId || result?.result?.targetId;
     if (typeof targetId !== "string" || targetId.length === 0) {
-      throw new Error("task.newPage returned no targetId");
+      throw new Error("task.openPage returned no targetId");
     }
     return targetId;
   },
@@ -593,9 +598,9 @@ class TaskSpace {
     });
   }
 
-  async newPage(
+  async openPage(
     url = "about:blank",
-    options: NewPageOptions = {},
+    options: OpenPageOptions = {},
   ): Promise<Page> {
     assertUrl(url);
     const timeoutMs = options.timeout ?? 15_000;
@@ -614,7 +619,7 @@ class TaskSpace {
       );
       if (existingManaged) {
         throw new Error(
-          `task.newPage did not create a distinct tab; target ${targetId} is already page ${existingManaged[0]}`,
+          `task.openPage did not create a distinct tab; target ${targetId} is already page ${existingManaged[0]}`,
         );
       }
       const existedBeforeCreate = tabs.some((tab) => tab.targetId === targetId);
@@ -922,17 +927,32 @@ class Page {
     );
   }
 
-  async screenshot(
-    path?: string,
-    options: CaptureScreenshotOptions = {},
-  ): Promise<string> {
+  async screenshot(options: PageScreenshotOptions = {}): Promise<string> {
+    if (!options || typeof options !== "object" || Array.isArray(options)) {
+      throw new TypeError("page.screenshot options must be an object");
+    }
+    if (Object.hasOwn(options, "full")) {
+      throw new TypeError(
+        "page.screenshot uses fullPage instead of the v1 full option",
+      );
+    }
+    const { path, fullPage, ...captureOptions } = options;
     if (path !== undefined && (typeof path !== "string" || path.length === 0)) {
       throw new TypeError("page.screenshot path must be a non-empty string");
+    }
+    if (fullPage !== undefined && typeof fullPage !== "boolean") {
+      throw new TypeError("page.screenshot fullPage must be a boolean");
     }
     const page = await this.#resolve();
     return this.#services.gate.withPage(page, async ({ sessionId }) => {
       await this.#activate(page.targetId);
-      return this.#services.screenshot(path, options, sessionId);
+      return this.#services.screenshot(
+        path,
+        fullPage === undefined
+          ? captureOptions
+          : { ...captureOptions, full: fullPage },
+        sessionId,
+      );
     });
   }
 
@@ -1661,7 +1681,7 @@ async function waitForCreatedDocument(
       {
         // createTab() can return while the target still exposes an already
         // complete Chrome placeholder document. Read all three values in one
-        // evaluation so newPage resolves only after the requested navigation
+        // evaluation so openPage resolves only after the requested navigation
         // has committed a document created during this call.
         expression:
           "({readyState:document.readyState,url:location.href,timeOrigin:performance.timeOrigin})",
@@ -1678,7 +1698,7 @@ async function waitForCreatedDocument(
     }
     await services.sleep(Math.min(100, remaining));
   }
-  throw new Error(`task.newPage timed out after ${timeoutMs}ms`);
+  throw new Error(`task.openPage timed out after ${timeoutMs}ms`);
 }
 
 function isCreatedDocumentReady(

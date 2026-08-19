@@ -101,7 +101,7 @@ export async function runRealBrowserE2e() {
       if (!commandError) {
         throw new Error("the browser script completed instead of terminating");
       }
-      // The marker is written only after newPage() has returned. Its presence
+      // The marker is written only after openPage() has returned. Its presence
       // distinguishes the intended hard stop from an unrelated startup error.
       await stat(join(tempDir, markerName));
       recordResult(name, "pass", durationMs, 1);

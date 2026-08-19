@@ -106,7 +106,7 @@ CDP session、事件缓冲、dialog 状态和 Network domain 状态都按 target
 }
 ```
 
-`newPage()`、`adopt()`、`release()` 和 `close()` 在 await 返回前完成写入。写入
+`openPage()`、`adopt()`、`release()` 和 `close()` 在 await 返回前完成写入。写入
 使用临时文件和 atomic rename，避免留下半个 JSON 文件。
 
 旧开发版本写入的 `version`、`writerRound`、`openedAt`、`lastUsedAt` 和
@@ -115,7 +115,7 @@ CDP session、事件缓冲、dialog 状态和 Network domain 状态都按 target
 ### 4.2 标签
 
 - 自动标签依次为 `p1`、`p2`……
-- `newPage(url, { as })` 和 `adopt(page, { as })` 可以指定标签。
+- `openPage(url, { as })` 和 `adopt(page, { as })` 可以指定标签。
 - 标签在一个 space 的生命周期内永不复用。
 - 已关闭标签报 `page pN was closed`。
 - 已 release 标签报 `page pN was released`。
@@ -124,7 +124,7 @@ CDP session、事件缓冲、dialog 状态和 Network domain 状态都按 target
 ### 4.3 浏览器事实与账本事实
 
 浏览器决定一个 tab 是否仍存在；账本决定它是否受 Page 模型管理。
-`listPages()`、`newPage()` 等盘点入口会用 `listTabs()` 对账：
+`listPages()`、`openPage()` 等盘点入口会用 `listTabs()` 对账：
 
 - 浏览器中已经消失的受管页面从账本移除，但标签仍保持已使用状态。
 - 第一次观察一个 space 时，已有 tab 记为 `unknown`，不会猜测它们由谁创建。
@@ -140,22 +140,22 @@ last-writer-wins。如果未来需要支持，必须使用文件锁或 CAS；不
 ### 5.1 创建与复用
 
 ```js
-const task = await taskSpace('research')
-const page = await task.newPage('https://example.com')
+const task = await taskSpace("research");
+const page = await task.openPage("https://example.com");
 
 // 下一轮
-const samePage = (await taskSpace('research')).page(page.label)
-await samePage.goto('https://example.org')
+const samePage = (await taskSpace("research")).page(page.label);
+await samePage.goto("https://example.org");
 ```
 
-`newPage()` 在返回前确认请求的页面文档已经创建，避免把 Ego Lite 暂时复用的
+`openPage()` 在返回前确认请求的页面文档已经创建，避免把 Ego Lite 暂时复用的
 placeholder 文档当成新页面。创建成功但文档仍未稳定时，标签仍然保留，错误
 会提示调用方下一轮如何取回页面。
 
 ### 5.2 预算
 
 每个 space 默认最多管理 8 个页面，可用 `EGO_BROWSER_PAGE_BUDGET` 调整。
-达到上限时，`newPage()` 和 `adopt()` 在改变浏览器前抛出
+达到上限时，`openPage()` 和 `adopt()` 在改变浏览器前抛出
 `EGO_PAGE_BUDGET_REACHED`，错误中列出已有标签，并给出 `close()` 和
 `goto()` 示例。
 
@@ -166,9 +166,9 @@ placeholder 文档当成新页面。创建成功但文档仍未稳定时，标�
 `task.listPages()` 同时返回受管 Page 和只读 `UnmanagedPage`：
 
 ```js
-const pages = await task.listPages()
-const unknown = pages.find(item => !item.label)
-const adopted = await task.adopt(unknown.page, { as: 'reference' })
+const pages = await task.listPages();
+const unknown = pages.find((item) => !item.label);
+const adopted = await task.adopt(unknown.page, { as: "reference" });
 ```
 
 `UnmanagedPage` 只有身份信息，不能直接导航、点击或关闭。调用 `adopt()` 后才
@@ -180,7 +180,7 @@ Agent 创建的页面不能 release，必须显式 close，避免制造无人管
 ### 5.4 Popup
 
 高层页面动作会在动作前后比较 tab 列表。立即出现的新 tab 会自动获得标签，
-并进入动作回执。传播较慢的 popup 会在下一次 `listPages()`、`newPage()` 或
+并进入动作回执。传播较慢的 popup 会在下一次 `listPages()`、`openPage()` 或
 下一轮盘点时收编。
 
 当 space 从未交给用户控制时，新出现的 tab 可以归因于 Agent 或 Agent 触发的
@@ -204,18 +204,18 @@ Agent 创建的页面不能 release，必须显式 close，避免制造无人管
 ### 6.1 TaskSpace
 
 ```js
-const task = await taskSpace(nameOrId)
+const task = await taskSpace(nameOrId);
 
-task.id
-task.name
-task.ownership
-task.page(label)
+task.id;
+task.name;
+task.ownership;
+task.page(label);
 
-await task.listPages()
-await task.newPage(url, { as, timeout })
-await task.adopt(unmanagedPage, { as })
-await task.release(label)
-await task.cdp(method, params, { timeout })
+await task.listPages();
+await task.openPage(url, { as, timeout });
+await task.adopt(unmanagedPage, { as });
+await task.release(label);
+await task.cdp(method, params, { timeout });
 ```
 
 `task.cdp()` 只接受 Target 和 Browser domain 命令。Page domain 命令应通过
@@ -231,14 +231,14 @@ page.openedBy
 
 await page.goto(url, { timeout })
 await page.snapshot(options)
-await page.screenshot(path?, options)
+await page.screenshot({ path, fullPage, clip, raw })
 await page.url()
 await page.title()
 await page.info()
 await page.evaluate(fnOrString, arg?)
 await page.fetch(url, options)
 await page.cdp(method, params, { timeout })
-await page.waitForSelector(selector, { timeout, visible })
+await page.waitForSelector(selector, { timeout, state })
 await page.waitForLoadState('load' | 'networkidle', { timeout, idleMs })
 await page.events()
 
@@ -252,12 +252,18 @@ await page.scrollBy(deltaY, { deltaX, behavior })
 await page.close()
 ```
 
+`screenshot()` 和 `waitForSelector()` 使用 Playwright 风格的参数。截图路径放在
+options 中；`fullPage` 表示捕获完整页面。`waitForSelector()` 的 `state` 支持
+`attached`、`detached`、`visible` 和 `hidden`，默认是 `visible`。
+
 `page.fetch()` 是 Ego 提供的便利扩展，不是 Playwright 方法。它在目标页面内
 执行 `window.fetch()`，因此使用该页面的相对 URL、Cookie、CORS 和 service
 worker。返回值为：
 
 ```js
-{ ok, status, statusText, url, headers, body }
+{
+  (ok, status, statusText, url, headers, body);
+}
 ```
 
 后台 Node 请求直接使用标准 `fetch()`；旧 `serverFetch()` 只为 v1 脚本保留。
@@ -265,17 +271,17 @@ worker。返回值为：
 ### 6.3 Mouse 和 keyboard
 
 ```js
-await page.mouse.click(x, y, options)
-await page.mouse.move(x, y, { steps })
-await page.mouse.down(options)
-await page.mouse.up(options)
-await page.mouse.wheel(deltaX, deltaY)
+await page.mouse.click(x, y, options);
+await page.mouse.move(x, y, { steps });
+await page.mouse.down(options);
+await page.mouse.up(options);
+await page.mouse.wheel(deltaX, deltaY);
 
-await page.keyboard.down(key)
-await page.keyboard.up(key)
-await page.keyboard.press(chord, { delay })
-await page.keyboard.type(text, { delay })
-await page.keyboard.insertText(text)
+await page.keyboard.down(key);
+await page.keyboard.up(key);
+await page.keyboard.press(chord, { delay });
+await page.keyboard.type(text, { delay });
+await page.keyboard.insertText(text);
 ```
 
 键盘和鼠标状态保存在 Page 对象中。`ControlOrMeta` 会按当前平台映射；macOS
@@ -351,10 +357,13 @@ snapshot 每次返回全量内容。当前不提供 `diff`：一轮一个短进�
 `page.evaluate()` 接受字符串表达式，或者函数和一个可选 JSON 参数：
 
 ```js
-await page.evaluate(({ selector, value }) => {
-  document.querySelector(selector).textContent = value
-  return document.title
-}, { selector: '#status', value: 'done' })
+await page.evaluate(
+  ({ selector, value }) => {
+    document.querySelector(selector).textContent = value;
+    return document.title;
+  },
+  { selector: "#status", value: "done" },
+);
 ```
 
 函数参数和返回值限定为 JSON 可序列化子集。函数通过

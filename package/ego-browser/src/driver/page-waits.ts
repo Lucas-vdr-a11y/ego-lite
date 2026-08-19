@@ -19,7 +19,7 @@ type PageWaitServices = {
 
 export type PageWaitForSelectorOptions = {
   timeout?: number;
-  visible?: boolean;
+  state?: "attached" | "detached" | "visible" | "hidden";
 };
 
 export type PageWaitForLoadStateOptions = {
@@ -45,8 +45,11 @@ export async function waitForSelectorInPage(
   }
   const timeoutMs = options.timeout ?? 10_000;
   assertPositiveMilliseconds(timeoutMs);
-  if (options.visible !== undefined && typeof options.visible !== "boolean") {
-    throw new TypeError("page.waitForSelector visible must be a boolean");
+  const state = options.state ?? "visible";
+  if (!["attached", "detached", "visible", "hidden"].includes(state)) {
+    throw new TypeError(
+      "page.waitForSelector state must be one of attached, detached, visible, or hidden",
+    );
   }
 
   const deadline = services.now() + timeoutMs;
@@ -59,18 +62,21 @@ export async function waitForSelectorInPage(
         refMap,
         selector,
       );
-      if (!options.visible) return true;
-      const response = await services.cdp(
-        "Runtime.callFunctionOn",
-        {
-          functionDeclaration: VISIBILITY_FUNCTION,
-          objectId: resolved.objectId,
-          returnByValue: true,
-          awaitPromise: false,
-        },
-        resolved.sessionId,
-      );
-      if (response?.result?.value) return true;
+      if (state === "attached") return true;
+      if (state !== "detached") {
+        const response = await services.cdp(
+          "Runtime.callFunctionOn",
+          {
+            functionDeclaration: VISIBILITY_FUNCTION,
+            objectId: resolved.objectId,
+            returnByValue: true,
+            awaitPromise: false,
+          },
+          resolved.sessionId,
+        );
+        const visible = response?.result?.value === true;
+        if (state === "visible" ? visible : !visible) return true;
+      }
     } catch (error) {
       if (
         !(error instanceof ElementResolutionError) ||
@@ -78,6 +84,7 @@ export async function waitForSelectorInPage(
       ) {
         throw error;
       }
+      if (state === "detached" || state === "hidden") return true;
     } finally {
       if (resolved?.objectId) {
         await services

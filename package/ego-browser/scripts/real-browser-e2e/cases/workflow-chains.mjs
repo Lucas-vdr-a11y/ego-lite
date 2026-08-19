@@ -1,7 +1,7 @@
 export function v1V2ActionParityCase() {
   return `
     const task = await taskSpace(taskName);
-    const page = await task.newPage(baseUrl + "/?workflow=parity", {
+    const page = await task.openPage(baseUrl + "/?workflow=parity", {
       as: "workflow-parity",
     });
 
@@ -111,7 +111,7 @@ export function v1V2ActionParityCase() {
 export function portableKeyboardWorkflowCase() {
   return `
     const task = await taskSpace(taskName);
-    const page = await task.newPage(baseUrl + "/?workflow=keyboard", {
+    const page = await task.openPage(baseUrl + "/?workflow=keyboard", {
       as: "workflow-keyboard",
     });
 
@@ -165,7 +165,7 @@ export function portableKeyboardWorkflowCase() {
 export function pureCdpWorkflowCase() {
   return `
     const task = await taskSpace(taskName);
-    const page = await task.newPage("about:blank", { as: "workflow-cdp" });
+    const page = await task.openPage("about:blank", { as: "workflow-cdp" });
     const destination = baseUrl + "/?workflow=cdp";
 
     await page.cdp("Page.navigate", { url: destination }, { timeout: 5_000 });
@@ -249,10 +249,10 @@ export function pureCdpWorkflowCase() {
 export function snapshotWorkflowCase() {
   return `
     const task = await taskSpace(taskName);
-    const first = await task.newPage(baseUrl + "/?workflow=snapshot-a", {
+    const first = await task.openPage(baseUrl + "/?workflow=snapshot-a", {
       as: "workflow-snapshot-a",
     });
-    const second = await task.newPage(baseUrl + "/?workflow=snapshot-b", {
+    const second = await task.openPage(baseUrl + "/?workflow=snapshot-b", {
       as: "workflow-snapshot-b",
     });
 
@@ -287,7 +287,7 @@ export function snapshotWorkflowCase() {
 export function visualWorkflowCase() {
   return `
     const task = await taskSpace(taskName);
-    const page = await task.newPage(baseUrl + "/visual", { as: "workflow-visual" });
+    const page = await task.openPage(baseUrl + "/visual", { as: "workflow-visual" });
     const snapshot = await page.snapshot();
     assert(
       !snapshot.includes("CLICK") && !snapshot.includes("DONE"),
@@ -296,10 +296,10 @@ export function visualWorkflowCase() {
 
     const beforePath = join(artifactDir, "visual-before.png");
     const afterPath = join(artifactDir, "visual-after.png");
-    await page.screenshot(beforePath, { full: false });
+    await page.screenshot({ path: beforePath, fullPage: false });
     await page.mouse.move(160, 150);
     await page.mouse.click(160, 150);
-    await page.screenshot(afterPath, { full: false });
+    await page.screenshot({ path: afterPath, fullPage: false });
 
     const before = await readFile(beforePath);
     const after = await readFile(afterPath);

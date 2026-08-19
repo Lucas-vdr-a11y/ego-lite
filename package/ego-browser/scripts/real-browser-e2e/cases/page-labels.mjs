@@ -2,7 +2,7 @@ export function pageLabelCreateCase() {
   return `
     const task = await taskSpace(taskName);
     await openOrReuseTab(baseUrl + "/?inventory=unknown", { wait: true, timeout: 10 });
-    const page = await task.newPage(baseUrl + "/?managed=p1");
+    const page = await task.openPage(baseUrl + "/?managed=p1");
     assertEqual(page.label, "p1", "first managed page receives p1");
     assertEqual(page.spaceId, task.id, "page carries its task-space id");
     assertEqual(typeof page.targetId, "string", "new page exposes its target id");
@@ -66,7 +66,7 @@ export function pageLabelCloseCase() {
       "a closed label fails closed"
     );
 
-    const next = await task.newPage(baseUrl + "/secondary?managed=p2");
+    const next = await task.openPage(baseUrl + "/secondary?managed=p2");
     assertEqual(next.label, "p2", "closed labels are never reused");
     await closeTab(next.targetId);
     for (let attempt = 0; attempt < 20; attempt += 1) {
@@ -83,7 +83,7 @@ export function pageLabelCloseCase() {
       "page p2 was closed",
       "reconciliation permanently retires an externally closed label"
     );
-    const afterExternalClose = await task.newPage(baseUrl + "/secondary?managed=p3");
+    const afterExternalClose = await task.openPage(baseUrl + "/secondary?managed=p3");
     assertEqual(afterExternalClose.label, "p3", "reconciliation frees budget without reusing labels");
     await afterExternalClose.close();
   `;
@@ -92,7 +92,7 @@ export function pageLabelCloseCase() {
 export function pageLabelHardStopCase() {
   return `
     const task = await taskSpace(taskName);
-    const page = await task.newPage(baseUrl + "/secondary?managed=hard-stop");
+    const page = await task.openPage(baseUrl + "/secondary?managed=hard-stop");
     await writeFile(
       join(tempDir, "hard-stop-page.json"),
       JSON.stringify({ label: page.label, targetId: page.targetId })
@@ -119,19 +119,19 @@ export function pageBudgetCase() {
     const task = await taskSpace(taskName);
     const managed = [];
     for (let index = 0; index < 3; index += 1) {
-      managed.push(await task.newPage(baseUrl + "/secondary?budget=" + index));
+      managed.push(await task.openPage(baseUrl + "/secondary?budget=" + index));
       const inventory = await task.listPages();
       assertEqual(
         inventory.filter((item) => item.label !== undefined).length,
         index + 1,
-        "each newPage is visible to managed-page inventory"
+        "each openPage is visible to managed-page inventory"
       );
     }
     const beforeReject = await listTabs();
     await assertRejects(
-      () => task.newPage(baseUrl + "/secondary?budget=blocked"),
+      () => task.openPage(baseUrl + "/secondary?budget=blocked"),
       "Page budget reached (3/3)",
-      "newPage applies managed-page backpressure"
+      "openPage applies managed-page backpressure"
     );
     const afterReject = await listTabs();
     assertEqual(afterReject.length, beforeReject.length, "budget rejects before creating a browser tab");
@@ -184,7 +184,7 @@ export function pageAdoptionCase() {
     assertEqual(adoptedAgain.targetId, source.targetId, "a released tab can be adopted again");
     await task.release(adoptedAgain.label);
 
-    const agentPage = await task.newPage(baseUrl + "/secondary?release=agent", {
+    const agentPage = await task.openPage(baseUrl + "/secondary?release=agent", {
       as: "agent-owned",
     });
     await assertRejects(
@@ -199,10 +199,10 @@ export function pageAdoptionCase() {
 export function pageBasicOperationsCase() {
   return `
     const task = await taskSpace(taskName);
-    const first = await task.newPage(baseUrl + "/?page-api=first", {
+    const first = await task.openPage(baseUrl + "/?page-api=first", {
       as: "page-api-first",
     });
-    const second = await task.newPage(baseUrl + "/secondary?page-api=second", {
+    const second = await task.openPage(baseUrl + "/secondary?page-api=second", {
       as: "page-api-second",
     });
     assertEqual((await currentTab()).targetId, second.targetId, "second page starts active");
@@ -264,7 +264,10 @@ export function pageBasicOperationsCase() {
       }, 75);
     });
     assertEqual(
-      await first.waitForSelector("#page-wait-ready", { timeout: 2_000, visible: true }),
+      await first.waitForSelector("#page-wait-ready", {
+        timeout: 2_000,
+        state: "visible",
+      }),
       true,
       "page.waitForSelector uses milliseconds and the addressed Page"
     );
@@ -311,7 +314,7 @@ export function pageBasicOperationsCase() {
 
     const screenshotPath = join(tempDir, "page-api-first.png");
     assertEqual(
-      await first.screenshot(screenshotPath, { full: false }),
+      await first.screenshot({ path: screenshotPath, fullPage: false }),
       screenshotPath,
       "page.screenshot returns its explicit path"
     );
@@ -339,13 +342,13 @@ export function pageActionsAndPopupCase() {
       .filter((item) => item.label === undefined)
       .map((item) => item.targetId);
     assert(unknownBefore.length > 0, "the control-boundary inventory keeps pre-existing tabs untracked");
-    const source = await task.newPage(baseUrl + "/?page-actions=source", {
+    const source = await task.openPage(baseUrl + "/?page-actions=source", {
       as: "page-actions-source",
     });
-    const comparison = await task.newPage(baseUrl + "/secondary?page-actions=comparison", {
+    const comparison = await task.openPage(baseUrl + "/secondary?page-actions=comparison", {
       as: "page-actions-comparison",
     });
-    const budgetFiller = await task.newPage(baseUrl + "/secondary?page-actions=budget", {
+    const budgetFiller = await task.openPage(baseUrl + "/secondary?page-actions=budget", {
       as: "page-actions-budget",
     });
 
@@ -554,9 +557,9 @@ export function pageActionsAndPopupCase() {
       "tabs that existed before the action remain untracked"
     );
     await assertRejects(
-      () => task.newPage(baseUrl + "/secondary?page-actions=blocked"),
+      () => task.openPage(baseUrl + "/secondary?page-actions=blocked"),
       "Page budget reached (4/3)",
-      "an adopted popup can exceed the budget and backpressure later newPage calls"
+      "an adopted popup can exceed the budget and backpressure later openPage calls"
     );
 
     await task.page(popup.label).close();
@@ -569,10 +572,10 @@ export function pageActionsAndPopupCase() {
 export function pageComplexEvaluateCase() {
   return `
     const task = await taskSpace(taskName);
-    const source = await task.newPage(baseUrl + "/?page-evaluate=complex", {
+    const source = await task.openPage(baseUrl + "/?page-evaluate=complex", {
       as: "complex-evaluate-source",
     });
-    const comparison = await task.newPage(baseUrl + "/secondary?page-evaluate=comparison", {
+    const comparison = await task.openPage(baseUrl + "/secondary?page-evaluate=comparison", {
       as: "complex-evaluate-comparison",
     });
     assertEqual((await currentTab()).targetId, comparison.targetId, "comparison page starts active");
@@ -746,10 +749,10 @@ export function pageComplexEvaluateCase() {
 export function pageFetchCase() {
   return `
     const task = await taskSpace(taskName);
-    const source = await task.newPage(baseUrl + "/nested/page-fetch/source", {
+    const source = await task.openPage(baseUrl + "/nested/page-fetch/source", {
       as: "page-fetch-source",
     });
-    const comparison = await task.newPage(baseUrl + "/secondary?page-fetch=comparison", {
+    const comparison = await task.openPage(baseUrl + "/secondary?page-fetch=comparison", {
       as: "page-fetch-comparison",
     });
     await source.evaluate(() => {
