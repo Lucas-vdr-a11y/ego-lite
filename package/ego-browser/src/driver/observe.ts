@@ -19,7 +19,7 @@ import {
   registerSnapshotForRefRefresh,
 } from "../ref-state.js";
 
-type SnapshotOptions = {
+export type SnapshotOptions = {
   scope?: "only_within_viewport" | "full_page";
   includeActionMarks?: boolean;
   includeStableLocator?: boolean;

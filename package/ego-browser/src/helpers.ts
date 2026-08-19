@@ -199,11 +199,12 @@ export async function taskSpace(nameOrId) {
  * for the current Node invocation. Resolves the space by id/name, claims it via
  * ego.claimTaskSpace, then selects it.
  * @param {string|number} nameOrId Task space id or name.
- * @returns {Promise<{taskId:string,id:number,name:string,createdBy?:string,ownership?:string,recentTabTitles?:string[]}>}
+ * @returns {Promise<import('./page-model.js').TaskSpace>}
  */
 export async function claimTaskSpace(nameOrId) {
   const space = await findTaskSpace(nameOrId);
-  return claimResolvedTaskSpace(space, "claimTaskSpace");
+  const claimed = await claimResolvedTaskSpace(space, "claimTaskSpace");
+  return createTaskSpaceHandle({ ...claimed, ownership: "agent" });
 }
 
 async function claimResolvedTaskSpace(space, op = "claimTaskSpace") {
@@ -322,15 +323,22 @@ export async function handOffTaskSpace(nameOrId?: string | number) {
 /**
  * Take over a task space, showing the agent overlay to indicate work has resumed.
  * @param {string|number} [nameOrId] Task space id or name. If provided, switches to that space first.
- * @returns {Promise<void>}
+ * @returns {Promise<import('./page-model.js').TaskSpace|void>} A TaskSpace when a name or id is provided; otherwise preserves the selected-space form's void result.
  */
 export async function takeOverTaskSpace(nameOrId?: string | number) {
   const ego = globalThis.ego;
   if (!ego || typeof ego.takeOverTaskSpace !== "function") {
     throw new Error("takeOverTaskSpace requires ego.takeOverTaskSpace");
   }
-  await selectTaskSpaceIfProvided(ego, nameOrId, "takeOverTaskSpace");
+  let descriptor;
+  if (nameOrId !== undefined) {
+    descriptor = await findTaskSpace(nameOrId);
+    await selectTaskSpace(ego, descriptor, "takeOverTaskSpace");
+  }
   assertNoEgoError(await ego.takeOverTaskSpace(), "takeOverTaskSpace");
+  if (descriptor) {
+    return createTaskSpaceHandle({ ...descriptor, ownership: "agent" });
+  }
 }
 
 /**

@@ -13,13 +13,18 @@ ego-browser 2.x 会为 Agent 提供新的 `TaskSpace` / `Page` API，但不会�
 
 ## 兼容承诺
 
-1. 1.2.3 已有 helper 保持原来的参数、返回值、错误语义和副作用。
+1. 1.2.3 已有 helper 保持原来的参数、错误语义和副作用。
 2. 旧接口继续使用原单位约定，包括以秒为单位的 `wait` 和旧 timeout。
-3. 兼容层不新增能力；新功能只进入 `TaskSpace` / `Page` API。
+3. 兼容 helper 不改变已有浏览器操作；新功能通过返回的 `TaskSpace` / `Page`
+   使用。
 4. 不对旧脚本逐次打印弃用警告，避免污染机器读取的输出。
 5. 2.x 不单独移除兼容层。将来若要删除，必须通过新的大版本、迁移说明和提
    前通知。
 6. 显式 `help('legacyName')` 继续返回旧说明，但默认帮助不会推荐这些名字。
+
+`claimTaskSpace(id)` 的原有描述字段保持不变，同时返回值增加 TaskSpace 方法；
+`takeOverTaskSpace(id)` 成功后也会返回 TaskSpace。已有脚本忽略返回值或读取原
+字段时行为不变，新脚本可以直接继续调用对象接口。
 
 兼容范围以 1.2.3 的 `helperContext()` 全局表面为准，包括原 task space、导
 航、观察、鼠标键盘、文件、等待、请求、CDP、site skills 和输出 helper。

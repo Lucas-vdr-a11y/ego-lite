@@ -13,6 +13,7 @@ import {
   captureScreenshotForSession,
   snapshotRaw,
   type CaptureScreenshotOptions,
+  type SnapshotOptions,
 } from "./driver/observe.js";
 import {
   clickPointInPage,
@@ -45,7 +46,7 @@ import {
   type PageWaitForLoadStateOptions,
   type PageWaitForSelectorOptions,
 } from "./driver/page-waits.js";
-import { assertNoEgoError } from "./ego-errors.js";
+import { assertNoEgoError, isEgoUserControlError } from "./ego-errors.js";
 import {
   withPage as defaultWithPage,
   withSpace as defaultWithSpace,
@@ -62,9 +63,12 @@ import { parseRef, type RefMap } from "./ref-map.js";
 import { state } from "./state.js";
 
 type TaskSpaceDescriptor = {
+  taskId?: string | number;
   id: number;
   name: string;
+  createdBy?: string;
   ownership?: string;
+  recentTabTitles?: string[];
 };
 
 type OpenPageOptions = {
@@ -80,7 +84,7 @@ type PageGotoOptions = {
   timeout?: number;
 };
 
-type PageSnapshotOptions = Record<string, unknown>;
+type PageSnapshotOptions = SnapshotOptions;
 
 type PageScreenshotOptions = Omit<CaptureScreenshotOptions, "full"> & {
   path?: string;
@@ -88,6 +92,11 @@ type PageScreenshotOptions = Omit<CaptureScreenshotOptions, "full"> & {
 };
 
 type CdpOptions = {
+  timeout?: number;
+};
+
+type WaitForControlOptions = {
+  interval?: number;
   timeout?: number;
 };
 
@@ -149,6 +158,7 @@ type OperationGate = {
 
 type LedgerPort = {
   read(spaceId: number): Promise<PageLedger>;
+  discard(spaceId: number): Promise<void>;
   addPage(
     spaceId: number,
     targetId: string,
@@ -182,6 +192,10 @@ type PageModelServices = {
   gate: OperationGate;
   createTab(url: string): Promise<string>;
   listTabs(): Promise<RuntimeTab[]>;
+  probeAgentControl(): Promise<boolean>;
+  handOffTaskSpace(): Promise<void>;
+  completeTaskSpace(): Promise<void>;
+  closeTaskSpace(): Promise<void>;
   cdp(
     method: string,
     params?: Record<string, unknown>,
@@ -189,7 +203,7 @@ type PageModelServices = {
     timeoutMs?: number,
   ): Promise<any>;
   showAgentMousePosition(x: number, y: number): Promise<void>;
-  snapshot(options?: Record<string, unknown>): Promise<any>;
+  snapshot(options?: SnapshotOptions): Promise<any>;
   screenshot(
     path: string | undefined,
     options: CaptureScreenshotOptions,
@@ -225,6 +239,8 @@ export type PageActionReceipt = {
 
 const PAGE_CLOSE_CONFIRM_TIMEOUT_MS = 2_000;
 const PAGE_CLOSE_CONFIRM_INTERVAL_MS = 50;
+const CONTROL_POLL_INTERVAL_MS = 20_000;
+const CONTROL_WAIT_TIMEOUT_MS = 600_000;
 
 type RawActionRunner = (
   operation: (services: PageModelServices, sessionId: string) => Promise<void>,
@@ -437,6 +453,38 @@ const baseDefaultServices: Omit<PageModelServices, "ledger" | "pageBudget"> = {
     );
     return result?.tabs || result?.targetInfos || [];
   },
+  async probeAgentControl() {
+    try {
+      // Use the native probe directly. snapshotRaw turns user control into a
+      // hard-stop output signal, while waiting for that state is intentional.
+      await browserEgo().snapshot({ maxResultLength: 1 });
+      return true;
+    } catch (error) {
+      if (isEgoUserControlError(error)) return false;
+      throw error;
+    }
+  },
+  async handOffTaskSpace() {
+    const ego = browserEgo();
+    if (typeof ego.handOffTaskSpace !== "function") {
+      throw new Error("task.handOff requires ego.handOffTaskSpace");
+    }
+    assertNoEgoError(await ego.handOffTaskSpace(), "task.handOff");
+  },
+  async completeTaskSpace() {
+    const ego = browserEgo();
+    if (typeof ego.completeTaskSpace !== "function") {
+      throw new Error("task.finish requires ego.completeTaskSpace");
+    }
+    assertNoEgoError(await ego.completeTaskSpace(), "task.finish");
+  },
+  async closeTaskSpace() {
+    const ego = browserEgo();
+    if (typeof ego.closeTaskSpace !== "function") {
+      throw new Error("task.close requires ego.closeTaskSpace");
+    }
+    assertNoEgoError(await ego.closeTaskSpace(), "task.close");
+  },
   async cdp(method, params = {}, sessionId, timeoutMs) {
     const response = await browserCdp(method, params, sessionId, timeoutMs);
     return response?.result || {};
@@ -492,16 +540,27 @@ export function createTaskSpaceHandle(
 }
 
 class TaskSpace {
+  readonly taskId?: string | number;
   readonly id: number;
   readonly name: string;
+  readonly createdBy?: string;
   readonly ownership?: string;
+  readonly recentTabTitles?: string[];
   readonly #services: PageModelServices;
 
   constructor(descriptor: TaskSpaceDescriptor, services: PageModelServices) {
+    this.taskId = descriptor.taskId;
     this.id = descriptor.id;
     this.name = descriptor.name;
+    this.createdBy = descriptor.createdBy;
     this.ownership = descriptor.ownership;
+    this.recentTabTitles = descriptor.recentTabTitles;
     this.#services = services;
+  }
+
+  /** Stable task-space identifier. `id` remains as a compatibility alias. */
+  get spaceId(): number {
+    return this.id;
   }
 
   page(label: string): Page {
@@ -512,6 +571,52 @@ class TaskSpace {
     return this.#services.gate.withSpace(this.id, async () => {
       const { ledger, tabs } = await this.#reconcilePages();
       return pageInventory(this, this.#services, ledger, tabs);
+    });
+  }
+
+  /** Wait until this space is controllable without taking control from the user. */
+  async waitForControl(options: WaitForControlOptions = {}): Promise<void> {
+    assertPlainOptions(options, "task.waitForControl");
+    const intervalMs = options.interval ?? CONTROL_POLL_INTERVAL_MS;
+    const timeoutMs = options.timeout ?? CONTROL_WAIT_TIMEOUT_MS;
+    assertPositiveMilliseconds(intervalMs, "interval");
+    assertPositiveMilliseconds(timeoutMs, "timeout");
+    const deadline = this.#services.now() + timeoutMs;
+
+    while (true) {
+      const available = await this.#services.gate.withSpace(this.id, () =>
+        this.#services.probeAgentControl(),
+      );
+      if (available) return;
+
+      const remainingMs = deadline - this.#services.now();
+      if (remainingMs <= 0) {
+        throw new Error(`task.waitForControl timed out after ${timeoutMs}ms`);
+      }
+      await this.#services.sleep(Math.min(intervalMs, remainingMs));
+    }
+  }
+
+  /** Give control of this task space to the user while keeping Page state. */
+  async handOff(): Promise<void> {
+    await this.#services.gate.withSpace(this.spaceId, () =>
+      this.#services.handOffTaskSpace(),
+    );
+  }
+
+  /** Finish the task, keep its browser space for the user, and drop Page state. */
+  async finish(): Promise<void> {
+    await this.#services.gate.withSpace(this.spaceId, async () => {
+      await this.#services.completeTaskSpace();
+      await this.#services.ledger.discard(this.spaceId);
+    });
+  }
+
+  /** Close the task space and drop its Page state. */
+  async close(): Promise<void> {
+    await this.#services.gate.withSpace(this.spaceId, async () => {
+      await this.#services.closeTaskSpace();
+      await this.#services.ledger.discard(this.spaceId);
     });
   }
 
@@ -1761,8 +1866,18 @@ function assertUrl(url: string): void {
 }
 
 function assertTimeout(timeout: number | undefined): void {
-  if (timeout !== undefined && (!Number.isFinite(timeout) || timeout <= 0)) {
-    throw new TypeError("timeout must be a positive number of milliseconds");
+  if (timeout !== undefined) assertPositiveMilliseconds(timeout, "timeout");
+}
+
+function assertPositiveMilliseconds(value: number, name: string): void {
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new TypeError(`${name} must be a positive number of milliseconds`);
+  }
+}
+
+function assertPlainOptions(value: unknown, name: string): void {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError(`${name} options must be an object`);
   }
 }
 

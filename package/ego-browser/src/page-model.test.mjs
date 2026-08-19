@@ -364,6 +364,130 @@ function taskForRound(fixture, roundId, overrides = {}) {
   );
 }
 
+test("TaskSpace.waitForControl polls in milliseconds without taking control", async () => {
+  await withFixture(async (fixture) => {
+    let elapsedMs = 0;
+    let probes = 0;
+    const task = taskForRound(fixture, "round-a", {
+      now: () => elapsedMs,
+      async sleep(ms) {
+        elapsedMs += ms;
+      },
+      async probeAgentControl() {
+        probes += 1;
+        return probes >= 3;
+      },
+    });
+
+    await task.waitForControl({ interval: 25, timeout: 100 });
+
+    assert.equal(probes, 3);
+    assert.equal(elapsedMs, 50);
+    assert.deepEqual(
+      fixture.calls.filter(([name]) => name === "selectSpace"),
+      [
+        ["selectSpace", 7],
+        ["selectSpace", 7],
+        ["selectSpace", 7],
+      ],
+    );
+  });
+});
+
+test("TaskSpace.waitForControl times out in milliseconds and validates options", async () => {
+  await withFixture(async (fixture) => {
+    let elapsedMs = 0;
+    const task = taskForRound(fixture, "round-a", {
+      now: () => elapsedMs,
+      async sleep(ms) {
+        elapsedMs += ms;
+      },
+      async probeAgentControl() {
+        return false;
+      },
+    });
+
+    await assert.rejects(
+      () => task.waitForControl({ interval: 40, timeout: 90 }),
+      /task\.waitForControl timed out after 90ms/,
+    );
+    assert.equal(elapsedMs, 90);
+    await assert.rejects(
+      () => task.waitForControl({ interval: 0 }),
+      /interval must be a positive number of milliseconds/,
+    );
+    await assert.rejects(
+      () => task.waitForControl({ timeout: 0 }),
+      /timeout must be a positive number of milliseconds/,
+    );
+  });
+});
+
+test("TaskSpace uses spaceId and owns handoff, finish, and close", async () => {
+  await withFixture(async (fixture) => {
+    const lifecycleCalls = [];
+    const ledger = new PageLedgerStore({
+      rootDir: fixture.rootDir,
+      roundId: "lifecycle",
+    });
+    const services = {
+      ledger,
+      async handOffTaskSpace() {
+        lifecycleCalls.push("handOff");
+      },
+      async completeTaskSpace() {
+        lifecycleCalls.push("finish");
+      },
+      async closeTaskSpace() {
+        lifecycleCalls.push("close");
+      },
+    };
+    const task = taskForRound(fixture, "round-a", services);
+
+    assert.equal(task.spaceId, 7);
+    assert.equal(task.id, 7, "id remains a compatibility alias");
+    await task.handOff();
+
+    const finishTask = taskForRound(fixture, "round-b", services);
+    await finishTask.openPage("https://example.test/managed");
+    await finishTask.finish();
+    assert.deepEqual((await ledger.read(7)).pages, {});
+
+    const closeTask = taskForRound(fixture, "round-c", services);
+    await closeTask.close();
+
+    assert.deepEqual(lifecycleCalls, ["handOff", "finish", "close"]);
+    assert.deepEqual(
+      fixture.calls.filter(([name]) => name === "selectSpace"),
+      [
+        ["selectSpace", 7],
+        ["selectSpace", 7],
+        ["selectSpace", 7],
+        ["selectSpace", 7],
+      ],
+    );
+  });
+});
+
+test("TaskSpace keeps Page state when native finish fails", async () => {
+  await withFixture(async (fixture) => {
+    const ledger = new PageLedgerStore({ rootDir: fixture.rootDir });
+    const task = taskForRound(fixture, "round-a", {
+      ledger,
+      async completeTaskSpace() {
+        throw new Error("native finish failed");
+      },
+    });
+    await task.openPage("https://example.test/managed");
+
+    await assert.rejects(() => task.finish(), /native finish failed/);
+
+    assert.deepEqual((await ledger.read(7)).pages, {
+      p1: { targetId: "target-1", openedBy: "agent" },
+    });
+  });
+});
+
 test("a page label restores in a new round and goto reuses its target", async () => {
   await withFixture(async (fixture) => {
     const firstRound = taskForRound(fixture, "round-a");

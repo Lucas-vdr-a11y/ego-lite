@@ -26,7 +26,7 @@ test("browserCdp surfaces the owned message and error_code when ensureSession is
       (err) => {
         assert.equal(err.error_code, "EGO_TASK_SPACE_INACTIVE");
         // Owned guidance block, not the native "Task space 10 ..." text.
-        assert.match(err.message, /claimTaskSpace\(id\)/);
+        assert.match(err.message, /claimTaskSpace\(spaceId\)/);
         assert.doesNotMatch(err.message, /\b10\b/);
         return true;
       },
@@ -59,7 +59,7 @@ test("browserCdp rejects the in-flight request via onSendCDPMessageError", async
       (err) => {
         assert.equal(err.error_code, "EGO_TASK_SPACE_INACTIVE");
         // Owned guidance block, not the native reconstructed text.
-        assert.match(err.message, /claimTaskSpace\(id\)/);
+        assert.match(err.message, /claimTaskSpace\(spaceId\)/);
         assert.doesNotMatch(err.message, /native reconstructed text/);
         return true;
       },

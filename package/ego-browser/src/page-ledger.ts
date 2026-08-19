@@ -60,6 +60,12 @@ export class PageLedgerStore {
     return cloneLedger(ledger);
   }
 
+  /** Remove all Page-model state after its task space is finished or closed. */
+  async discard(spaceId: number): Promise<void> {
+    assertSpaceId(spaceId);
+    await rm(this.#path(spaceId), { force: true });
+  }
+
   async getPage(spaceId: number, label: string): Promise<ManagedPage> {
     assertLabel(label);
     const ledger = await this.read(spaceId);

@@ -48,7 +48,7 @@ test("resolveEgoError overrides the native error message with the owned wording 
   });
   assert.equal(code, "EGO_TASK_SPACE_INACTIVE");
   // Owned id-less guidance replaces the native "Task space 7 ..." text.
-  assert.match(message, /claimTaskSpace\(id\)/);
+  assert.match(message, /claimTaskSpace\(spaceId\)/);
   assert.doesNotMatch(message, /\b7\b/);
 });
 
@@ -93,7 +93,7 @@ test("resolveEgoError uses the id-less guidance block for a bare user-control co
   const { code, message } = resolveEgoError("EGO_TASK_SPACE_USER_IN_CONTROL");
   assert.equal(code, "EGO_TASK_SPACE_USER_IN_CONTROL");
   assert.match(message, /taken control of this task space/);
-  assert.match(message, /takeOverTaskSpace\(\)/);
+  assert.match(message, /takeOverTaskSpace\(spaceId\)/);
   assert.doesNotMatch(message, /<id>/);
 });
 
@@ -154,7 +154,7 @@ test("assertNoEgoError omits the prefix when no op is given", () => {
   } catch (err) {
     // No op given, so no "<op>: " prefix — the owned block starts the message.
     assert.match(err.message, /^The user has taken control/);
-    assert.match(err.message, /claimTaskSpace\(id\)/);
+    assert.match(err.message, /claimTaskSpace\(spaceId\)/);
     assert.doesNotMatch(err.message, /\b10\b/);
     assert.equal(err.error_code, "EGO_TASK_SPACE_INACTIVE");
   }

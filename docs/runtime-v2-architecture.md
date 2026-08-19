@@ -206,7 +206,7 @@ Agent 创建的页面不能 release，必须显式 close，避免制造无人管
 ```js
 const task = await taskSpace(nameOrId);
 
-task.id;
+task.spaceId;
 task.name;
 task.ownership;
 task.page(label);
@@ -215,8 +215,16 @@ await task.listPages();
 await task.openPage(url, { as, timeout });
 await task.adopt(unmanagedPage, { as });
 await task.release(label);
+await task.waitForControl({ interval, timeout });
+await task.handOff();
+await task.finish();
+await task.close();
 await task.cdp(method, params, { timeout });
 ```
+
+`spaceId` 是新版名称。`id` 仅作为已有脚本的兼容别名保留，不进入新版 Skill。
+`finish()` 保留浏览器空间给用户，`close()` 关闭空间；两者成功后都会删除该
+space 的 Page 标签状态。
 
 `task.cdp()` 只接受 Target 和 Browser domain 命令。Page domain 命令应通过
 具体 Page 发送。
@@ -378,8 +386,14 @@ await page.evaluate(
 - 不把 unknown 页面推断成 Agent 页面。
 - 错误由统一 hard-stop 输出处理，避免循环脚本反复打印同一接管提示。
 
-TaskSpace 上的 handoff、takeover、wait、finish 和 close 对象方法还未完成，
-列在剩余工作中。在它们落地前，旧全局 task-space helper 继续可用。
+TaskSpace 提供 `handOff()` 和毫秒制 `waitForControl()`。用户明确要求恢复后，
+`takeOverTaskSpace(spaceId)` 直接返回新的 TaskSpace；接管 user-owned 或
+inactive space 时，`claimTaskSpace(spaceId)` 也直接返回 TaskSpace。
+
+结束时调用 `task.finish()` 保留浏览器空间，或调用 `task.close()` 关闭空间。
+`claimTaskSpace()` 和 `takeOverTaskSpace()` 是取得对象前的入口。旧的
+`handOffTaskSpace()`、`completeTaskSpace()` 和 `waitForAgentControl()` 只为兼容
+保留，不进入新版 Skill。
 
 ## 9. 输出
 
@@ -395,11 +409,13 @@ SDK 路径不经过 CLI 的 execute 包装，因此在进程生命周期事件�
 
 ## 10. v1 兼容
 
-2.x 继续注入 1.2.3 的旧全局 helper。已有用户脚本不需要改写，参数、返回值和
-秒制时间语义保持不变。
+2.x 继续注入 1.2.3 的旧全局 helper。已有用户脚本不需要改写，参数、错误、
+副作用和秒制时间语义保持不变。claim/takeover 的成功返回值只增加 TaskSpace
+能力，原有描述字段仍保留。
 
-新版 SKILL 和默认 `help()` 只展示 TaskSpace/Page API；旧名称只对已有脚本
-和显式 legacy 查询可见。不要为了复用新版实现而悄悄改变旧 helper 行为。
+新版 SKILL 和默认 `help()` 展示 TaskSpace/Page API，以及取得 TaskSpace 所需的
+claim/takeover 入口；其余旧名称只对已有脚本和显式 legacy 查询可见。不要为了
+复用新版实现而悄悄改变旧 helper 行为。
 
 站点 site skills 暂时继续使用 legacy surface，后续再按 Page 能力注入方式
 迁移。
@@ -412,8 +428,7 @@ SDK 路径不经过 CLI 的 execute 包装，因此在进程生命周期事件�
    参考。
 2. 默认 help/SKILL 隐藏旧全局 helper，同时保留运行时兼容层和显式 legacy
    help。
-3. 完成 TaskSpace 的 handoff、takeover、wait、finish、close 和用户页面边界
-   API。
+3. 完成用户页面边界 API。
 4. 更新 site skills，再补完整的 v2 真实任务回归。
 
 不在当前范围内：

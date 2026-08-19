@@ -12,6 +12,7 @@ import {
   taskSpace,
   useOrCreateTaskSpace,
   switchTaskSpace,
+  takeOverTaskSpace,
   waitForAgentControl,
 } from "../dist/src/helpers.js";
 
@@ -132,6 +133,7 @@ test("taskSpace returns the new object model for a resolved space", async () => 
     async () => {
       const task = await taskSpace("research");
       assert.equal(task.id, 7);
+      assert.equal(task.spaceId, 7);
       assert.equal(task.name, "Research");
       assert.equal(task.ownership, "agent");
       assert.equal(typeof task.openPage, "function");
@@ -140,6 +142,9 @@ test("taskSpace returns the new object model for a resolved space", async () => 
       assert.equal(typeof task.listPages, "function");
       assert.equal(typeof task.adopt, "function");
       assert.equal(typeof task.release, "function");
+      assert.equal(typeof task.handOff, "function");
+      assert.equal(typeof task.finish, "function");
+      assert.equal(typeof task.close, "function");
     },
   );
 });
@@ -394,7 +399,7 @@ test("useOrCreateTaskSpace selects user-owned spaces without claiming and surfac
   assert.deepEqual(calls, [["listTaskSpaces"], ["useTaskSpace", 7]]);
 });
 
-test("claimTaskSpace claims and selects an existing user-owned space", async () => {
+test("claimTaskSpace returns a TaskSpace after claiming and selecting", async () => {
   const calls = [];
   await withEgo(
     {
@@ -413,7 +418,7 @@ test("claimTaskSpace claims and selects an existing user-owned space", async () 
       },
       async claimTaskSpace(id, name) {
         calls.push(["claimTaskSpace", id, name]);
-        return { taskId: name, id, name, ownership: "agent" };
+        return { taskId: name, id, name };
       },
       useTaskSpace(taskId) {
         calls.push(["useTaskSpace", taskId]);
@@ -421,18 +426,59 @@ test("claimTaskSpace claims and selects an existing user-owned space", async () 
       },
     },
     async () => {
-      assert.deepEqual(await claimTaskSpace("checkout-flow"), {
+      const task = await claimTaskSpace("checkout-flow");
+      assert.deepEqual(JSON.parse(JSON.stringify(task)), {
         taskId: "checkout-flow",
         id: 7,
         name: "checkout-flow",
         ownership: "agent",
       });
+      assert.equal(task.spaceId, 7);
+      assert.equal(typeof task.openPage, "function");
     },
   );
   assert.deepEqual(calls, [
     ["listTaskSpaces"],
     ["claimTaskSpace", 7, "checkout-flow"],
     ["useTaskSpace", 7],
+  ]);
+});
+
+test("takeOverTaskSpace returns a TaskSpace when a space is specified", async () => {
+  const calls = [];
+  await withEgo(
+    {
+      async listTaskSpaces() {
+        calls.push(["listTaskSpaces"]);
+        return {
+          taskSpaces: [
+            {
+              taskId: "checkout-flow",
+              id: 7,
+              name: "checkout-flow",
+              ownership: "agentDelegatedToUser",
+            },
+          ],
+        };
+      },
+      async useTaskSpace(id) {
+        calls.push(["useTaskSpace", id]);
+      },
+      async takeOverTaskSpace() {
+        calls.push(["takeOverTaskSpace"]);
+      },
+    },
+    async () => {
+      const task = await takeOverTaskSpace(7);
+      assert.equal(task.spaceId, 7);
+      assert.equal(task.ownership, "agent");
+      assert.equal(typeof task.openPage, "function");
+    },
+  );
+  assert.deepEqual(calls, [
+    ["listTaskSpaces"],
+    ["useTaskSpace", 7],
+    ["takeOverTaskSpace"],
   ]);
 });
 

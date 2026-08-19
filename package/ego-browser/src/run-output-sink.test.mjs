@@ -137,10 +137,10 @@ test("a swallowed user-control hard stop discards all output and prints the guid
   assert.equal(result.exitCode, 0);
   // Only the owned guidance survives — none of the script's own logging.
   assert.match(result.stdout, /taken control of this task space/);
-  assert.match(result.stdout, /takeOverTaskSpace\(\)/);
+  assert.match(result.stdout, /takeOverTaskSpace\(spaceId\)/);
   assert.doesNotMatch(result.stdout, /visiting|failed|ok |summary/);
   // Printed exactly once, even though every loop iteration re-reported the hard stop.
-  assert.equal(result.stdout.match(/takeOverTaskSpace\(\)/g).length, 1);
+  assert.equal(result.stdout.match(/takeOverTaskSpace\(spaceId\)/g).length, 1);
   assert.ok(ego.calls >= 3, "every iteration should have hit the hard stop");
 });
 
@@ -160,7 +160,7 @@ test("an inactive / unassigned task space is also a hard stop", async () => {
 
   assert.equal(result.exitCode, 0);
   assert.match(result.stdout, /no longer assigned to the agent/);
-  assert.match(result.stdout, /claimTaskSpace\(id\)/);
+  assert.match(result.stdout, /claimTaskSpace\(spaceId\)/);
   assert.doesNotMatch(result.stdout, /swallowed|business/);
 });
 
@@ -187,10 +187,10 @@ test("a swallowed snapshot hard stop (rejected, not resolved) also collapses to 
   assert.equal(result.exitCode, 0);
   // The owned guidance survives once; the native wording and business logs are dropped.
   assert.match(result.stdout, /taken control of this task space/);
-  assert.match(result.stdout, /takeOverTaskSpace\(\)/);
+  assert.match(result.stdout, /takeOverTaskSpace\(spaceId\)/);
   assert.doesNotMatch(result.stdout, /native wording/);
   assert.doesNotMatch(result.stdout, /visiting|failed|ok |summary/);
-  assert.equal(result.stdout.match(/takeOverTaskSpace\(\)/g).length, 1);
+  assert.equal(result.stdout.match(/takeOverTaskSpace\(spaceId\)/g).length, 1);
   assert.ok(
     ego.calls >= 3,
     "every iteration should have hit the snapshot hard stop",

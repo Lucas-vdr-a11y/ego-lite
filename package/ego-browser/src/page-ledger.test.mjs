@@ -166,6 +166,21 @@ test("different spaces update independently", async () => {
   });
 });
 
+test("discard removes one completed space without affecting another", async () => {
+  await withTempLedger(async (rootDir) => {
+    const store = new PageLedgerStore({ rootDir });
+    await store.addPage(7, "target-7");
+    await store.addPage(8, "target-8");
+
+    await store.discard(7);
+
+    assert.deepEqual((await store.read(7)).pages, {});
+    assert.deepEqual((await store.read(8)).pages, {
+      p1: { targetId: "target-8", openedBy: "agent" },
+    });
+  });
+});
+
 test("reconciliation removes missing targets but permanently retires their labels", async () => {
   await withTempLedger(async (rootDir) => {
     const store = new PageLedgerStore({ rootDir });
