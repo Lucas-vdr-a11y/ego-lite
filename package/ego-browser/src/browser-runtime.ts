@@ -80,13 +80,6 @@ function capEvents(events) {
   }
 }
 
-function clearLegacySessionMirror(targetId = undefined) {
-  if (targetId && state.sessionTargetId !== targetId) return;
-  state.sessionId = null;
-  state.sessionTargetId = null;
-  state.sessionAt = 0;
-  state.sessionInflight = null;
-}
 export function isBrowserRuntime() {
   return Boolean(
     globalThis.ego && typeof globalThis.ego.sendCDPMessage === "function",
@@ -242,11 +235,6 @@ export async function ensureSession(requestedTargetId = undefined) {
       }
       await enablePageEvents(target.sessionId);
       target.sessionAt = Date.now();
-      // Keep the old singleton fields as a read-only compatibility mirror while
-      // existing helpers and tests migrate to target-scoped runtime state.
-      state.sessionId = target.sessionId;
-      state.sessionTargetId = targetId;
-      state.sessionAt = target.sessionAt;
       return target.sessionId;
     } finally {
       target.sessionInflight = null;
@@ -258,7 +246,6 @@ export async function ensureSession(requestedTargetId = undefined) {
 export function invalidateSession(targetId = undefined) {
   if (targetId) {
     clearTargetSession(targetId, { remove: true });
-    clearLegacySessionMirror(targetId);
     return;
   }
   for (const knownTargetId of [...targetStates.keys()]) {
@@ -266,7 +253,6 @@ export function invalidateSession(targetId = undefined) {
   }
   browserEvents.length = 0;
   defaultTargetId = null;
-  clearLegacySessionMirror();
 }
 
 export function setPreferredTarget(targetId) {

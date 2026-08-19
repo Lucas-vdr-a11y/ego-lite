@@ -29,10 +29,6 @@ export const state = {
   platform: process.platform,
   agentWorkspace: () => agentWorkspace(),
   writeFile,
-  sessionId: null,
-  sessionTargetId: null,
-  sessionAt: 0,
-  sessionInflight: null,
   preferredTargetId: null,
   // Last observed Network domain state on the default session (tracked in cdp()).
   networkDomainEnabled: false,

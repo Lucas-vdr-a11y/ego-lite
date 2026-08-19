@@ -213,18 +213,16 @@ export function pageBasicOperationsCase() {
     assertIncludes(info.url, "page-api=first", "page.info reads its own URL");
     assert(info.w > 0 && info.h > 0, "page.info reports a usable viewport");
     assertEqual((await currentTab()).targetId, second.targetId, "metadata reads do not activate their page");
-    const baselineSnapshot = await first.snapshot({ diff: true });
+    const baselineSnapshot = await first.snapshot();
     assertIncludes(baselineSnapshot, 'page-api-first', "snapshot identifies its source Page");
     assertIncludes(baselineSnapshot, 'space "' + taskName + '"', "snapshot identifies its task space");
-    assertIncludes(baselineSnapshot, "diff: full (baseline unavailable)", "first diff snapshot reports its full fallback");
     await first.evaluate(() => {
       const marker = document.createElement("p");
       marker.textContent = "Snapshot diff marker";
       document.body.append(marker);
     });
-    const changedSnapshot = await first.snapshot({ diff: true });
-    assertIncludes(changedSnapshot, "diff: changes from previous snapshot", "second diff snapshot reports its baseline");
-    assertIncludes(changedSnapshot, "Snapshot diff marker", "snapshot diff contains the new page content");
+    const changedSnapshot = await first.snapshot();
+    assertIncludes(changedSnapshot, "Snapshot diff marker", "snapshot contains new page content");
     assertEqual(
       await first.evaluate("document.querySelector('h1').textContent"),
       "Helper e2e fixture",
@@ -297,11 +295,11 @@ export function pageBasicOperationsCase() {
       "replaced",
       "page.keyboard.press accepts platform shortcut chords"
     );
-    await first.keyboard.dispatch("#text-input", "Escape", "keydown");
+    await first.keyboard.press("Escape");
     assertIncludes(
       await first.evaluate("window.__fixtureState.keys.join(',')"),
       "Escape",
-      "page.keyboard.dispatch targets an element in the addressed page"
+      "page.keyboard.press delivers a native key event to the focused element"
     );
     await first.setInputFiles("#file-input", [uploadPath, uploadPathTwo]);
     assertEqual(

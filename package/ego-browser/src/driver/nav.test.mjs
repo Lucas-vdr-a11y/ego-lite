@@ -184,15 +184,10 @@ test("closeTab closes the current tab and invalidates matching session state", a
           calls.push({ method, params, sessionId });
           return { success: true };
         },
-        sessionId: "session-1",
-        sessionTargetId: "target-1",
-        sessionAt: Date.now(),
         preferredTargetId: "target-1",
       });
       try {
         assert.equal(await closeTab(), "target-1");
-        assert.equal(state.sessionId, null);
-        assert.equal(state.sessionTargetId, null);
         assert.equal(state.preferredTargetId, null);
       } finally {
         restore();

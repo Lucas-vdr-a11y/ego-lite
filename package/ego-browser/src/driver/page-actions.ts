@@ -9,6 +9,7 @@ type PageActionServices = {
     sessionId?: string,
     timeoutMs?: number,
   ): Promise<any>;
+  showAgentMousePosition(x: number, y: number): Promise<void>;
   sleep(ms: number): Promise<void>;
   platform?: string;
 };
@@ -592,6 +593,24 @@ async function dispatchMouseEvent(
   params: Record<string, unknown>,
 ): Promise<void> {
   await services.cdp("Input.dispatchMouseEvent", params, sessionId);
+  if (
+    params.type !== "mouseMoved" ||
+    typeof params.x !== "number" ||
+    typeof params.y !== "number"
+  ) {
+    return;
+  }
+  try {
+    // Ego Lite's visible agent cursor is separate from renderer input. Update
+    // it only after the page accepted the move, and start the native request
+    // while the Page gate still owns the correct task space. Do not wait for
+    // the animation: the legacy helpers also treat this as display-only work,
+    // and a completed website action must never look retryable because its
+    // cursor animation is slow or unavailable.
+    void services.showAgentMousePosition(params.x, params.y).catch(() => {});
+  } catch {
+    // Also tolerate an invalid test adapter that throws before returning a Promise.
+  }
 }
 
 async function releaseObject(

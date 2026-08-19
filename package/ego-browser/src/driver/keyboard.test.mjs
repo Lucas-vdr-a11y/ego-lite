@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 
 import { setOverrides } from "../../dist/src/state.js";
 import { pressKey } from "../../dist/src/driver/keyboard.js";
-import { parseKeyChord } from "../../dist/src/driver/page-input.js";
 
 test("pressKey emits the macOS paste shortcut as a native editing sequence", async () => {
   const calls = [];
@@ -166,17 +165,6 @@ test("pressKey maps Backspace and Delete to editing commands", async () => {
   assert.deepEqual(calls[2].params.commands, ["deleteForward"]);
   assert.equal(calls[0].params.type, "rawKeyDown");
   assert.equal(calls[2].params.type, "rawKeyDown");
-});
-
-test("parseKeyChord resolves ControlOrMeta for the host platform", () => {
-  assert.deepEqual(parseKeyChord("ControlOrMeta+V", "darwin"), {
-    key: "V",
-    modifiers: 4,
-  });
-  assert.deepEqual(parseKeyChord("ControlOrMeta+V", "linux"), {
-    key: "V",
-    modifiers: 2,
-  });
 });
 
 test("pressKey does not synthesize a successful paste when native input is absent", async () => {

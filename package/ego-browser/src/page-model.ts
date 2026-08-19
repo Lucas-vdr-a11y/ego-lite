@@ -33,7 +33,7 @@ import {
   type PageMouseClickOptions,
   type PageMouseMoveOptions,
 } from "./driver/page-actions.js";
-import { dispatchKeyInPage, setInputFilesInPage } from "./driver/page-input.js";
+import { setInputFilesInPage } from "./driver/page-input.js";
 import {
   PageKeyboardController,
   type PageKeyboardPressOptions,
@@ -80,9 +80,7 @@ type PageGotoOptions = {
   timeout?: number;
 };
 
-type PageSnapshotOptions = Record<string, unknown> & {
-  diff?: boolean;
-};
+type PageSnapshotOptions = Record<string, unknown>;
 
 type CdpOptions = {
   timeout?: number;
@@ -176,7 +174,6 @@ type RuntimeTab = {
 type PageModelServices = {
   ledger: LedgerPort;
   pageRefs: PageRefRegistry;
-  snapshotBaselines: Map<string, string>;
   gate: OperationGate;
   createTab(url: string): Promise<string>;
   listTabs(): Promise<RuntimeTab[]>;
@@ -186,6 +183,7 @@ type PageModelServices = {
     sessionId?: string,
     timeoutMs?: number,
   ): Promise<any>;
+  showAgentMousePosition(x: number, y: number): Promise<void>;
   snapshot(options?: Record<string, unknown>): Promise<any>;
   screenshot(
     path: string | undefined,
@@ -223,30 +221,31 @@ export type PageActionReceipt = {
 const PAGE_CLOSE_CONFIRM_TIMEOUT_MS = 2_000;
 const PAGE_CLOSE_CONFIRM_INTERVAL_MS = 50;
 
-type MouseActionRunner = (
+type RawActionRunner = (
+  operation: (services: PageModelServices, sessionId: string) => Promise<void>,
+) => Promise<void>;
+
+type ObservedActionRunner = (
   operation: (services: PageModelServices, sessionId: string) => Promise<void>,
 ) => Promise<PageActionReceipt>;
 
-type KeyboardSelectorRunner = (
-  selector: string,
-  operation: (
-    services: PageModelServices,
-    sessionId: string,
-    refMap: RefMap,
-  ) => Promise<void>,
-) => Promise<PageActionReceipt>;
-
 /** Page-scoped mouse state and CDP Input primitives. */
-export class PageMouse {
-  readonly #run: MouseActionRunner;
+class PageMouse {
+  readonly #run: RawActionRunner;
+  readonly #runObserved: ObservedActionRunner;
   readonly #modifierMask: () => number;
   #x = 0;
   #y = 0;
   #buttons = 0;
   #lastButton: MouseButton | "none" = "none";
 
-  constructor(run: MouseActionRunner, modifierMask: () => number) {
+  constructor(
+    run: RawActionRunner,
+    runObserved: ObservedActionRunner,
+    modifierMask: () => number,
+  ) {
     this.#run = run;
+    this.#runObserved = runObserved;
     this.#modifierMask = modifierMask;
   }
 
@@ -255,7 +254,7 @@ export class PageMouse {
     y: number,
     options: PageMouseClickOptions = {},
   ): Promise<PageActionReceipt> {
-    const receipt = await this.#run((services, sessionId) =>
+    const receipt = await this.#runObserved((services, sessionId) =>
       clickPointInPage(
         services,
         sessionId,
@@ -276,8 +275,8 @@ export class PageMouse {
     x: number,
     y: number,
     options: PageMouseMoveOptions = {},
-  ): Promise<PageActionReceipt> {
-    const receipt = await this.#run((services, sessionId) =>
+  ): Promise<void> {
+    await this.#run((services, sessionId) =>
       moveMouseInPage(services, sessionId, this.#x, this.#y, x, y, {
         ...options,
         button: this.#lastButton,
@@ -287,13 +286,12 @@ export class PageMouse {
     );
     this.#x = x;
     this.#y = y;
-    return receipt;
   }
 
-  async down(options: PageMouseButtonOptions = {}): Promise<PageActionReceipt> {
+  async down(options: PageMouseButtonOptions = {}): Promise<void> {
     const button = options.button ?? "left";
     const nextButtons = this.#buttons | mouseButtonMask(button);
-    const receipt = await this.#run((services, sessionId) =>
+    await this.#run((services, sessionId) =>
       mouseButtonInPage(
         services,
         sessionId,
@@ -307,13 +305,12 @@ export class PageMouse {
     );
     this.#buttons = nextButtons;
     this.#lastButton = button;
-    return receipt;
   }
 
-  async up(options: PageMouseButtonOptions = {}): Promise<PageActionReceipt> {
+  async up(options: PageMouseButtonOptions = {}): Promise<void> {
     const button = options.button ?? "left";
     const nextButtons = this.#buttons & ~mouseButtonMask(button);
-    const receipt = await this.#run((services, sessionId) =>
+    await this.#run((services, sessionId) =>
       mouseButtonInPage(
         services,
         sessionId,
@@ -327,10 +324,9 @@ export class PageMouse {
     );
     this.#buttons = nextButtons;
     this.#lastButton = "none";
-    return receipt;
   }
 
-  async wheel(deltaX: number, deltaY: number): Promise<PageActionReceipt> {
+  async wheel(deltaX: number, deltaY: number): Promise<void> {
     return this.#run((services, sessionId) =>
       wheelInPage(
         services,
@@ -345,32 +341,33 @@ export class PageMouse {
   }
 }
 
-/** Page-scoped keyboard input and low-level event dispatch. */
-export class PageKeyboard {
+/** Page-scoped keyboard input with Playwright-style key state. */
+class PageKeyboard {
   readonly #controller: PageKeyboardController;
-  readonly #runForSelector: KeyboardSelectorRunner;
 
   constructor(
     services: PageModelServices,
-    run: MouseActionRunner,
-    runForSelector: KeyboardSelectorRunner,
+    run: RawActionRunner,
+    runObserved: ObservedActionRunner,
   ) {
-    this.#controller = new PageKeyboardController(services, (operation) =>
-      run((_services, sessionId) => operation(sessionId)),
+    this.#controller = new PageKeyboardController(
+      services,
+      (operation) => run((_services, sessionId) => operation(sessionId)),
+      (operation) =>
+        runObserved((_services, sessionId) => operation(sessionId)),
     );
-    this.#runForSelector = runForSelector;
   }
 
   modifierMask(): number {
     return this.#controller.modifierMask();
   }
 
-  async down(key: string): Promise<PageActionReceipt> {
-    return (await this.#controller.down(key)) as PageActionReceipt;
+  async down(key: string): Promise<void> {
+    await this.#controller.down(key);
   }
 
-  async up(key: string): Promise<PageActionReceipt> {
-    return (await this.#controller.up(key)) as PageActionReceipt;
+  async up(key: string): Promise<void> {
+    await this.#controller.up(key);
   }
 
   async press(
@@ -380,29 +377,19 @@ export class PageKeyboard {
     return (await this.#controller.press(chord, options)) as PageActionReceipt;
   }
 
-  async insertText(text: string): Promise<PageActionReceipt> {
-    return (await this.#controller.insertText(text)) as PageActionReceipt;
+  async insertText(text: string): Promise<void> {
+    await this.#controller.insertText(text);
   }
 
   async type(
     text: string,
     options: PageKeyboardTypeOptions = {},
-  ): Promise<PageActionReceipt> {
-    return (await this.#controller.type(text, options)) as PageActionReceipt;
-  }
-
-  async dispatch(
-    selector: string,
-    key = "Enter",
-    event = "keypress",
-  ): Promise<PageActionReceipt> {
-    return this.#runForSelector(selector, (services, sessionId, refMap) =>
-      dispatchKeyInPage(services, sessionId, refMap, selector, key, event),
-    );
+  ): Promise<void> {
+    await this.#controller.type(text, options);
   }
 }
 
-export class PageBudgetError extends Error {
+class PageBudgetError extends Error {
   readonly code = "EGO_PAGE_BUDGET_REACHED";
   readonly spaceId: number;
   readonly limit: number;
@@ -417,7 +404,6 @@ export class PageBudgetError extends Error {
 
 let defaultLedger: PageLedgerStore | undefined;
 const defaultPageRefs = new PageRefRegistry();
-const defaultSnapshotBaselines = new Map<string, string>();
 const unmanagedPageConstructorToken = Symbol("UnmanagedPage");
 
 const defaultGate: OperationGate = {
@@ -428,7 +414,6 @@ const defaultGate: OperationGate = {
 const baseDefaultServices: Omit<PageModelServices, "ledger" | "pageBudget"> = {
   gate: defaultGate,
   pageRefs: defaultPageRefs,
-  snapshotBaselines: defaultSnapshotBaselines,
   async createTab(url) {
     const result = assertNoEgoError(
       await browserEgo().createTab(url),
@@ -450,6 +435,11 @@ const baseDefaultServices: Omit<PageModelServices, "ledger" | "pageBudget"> = {
   async cdp(method, params = {}, sessionId, timeoutMs) {
     const response = await browserCdp(method, params, sessionId, timeoutMs);
     return response?.result || {};
+  },
+  async showAgentMousePosition(x, y) {
+    const ego = browserEgo();
+    if (typeof ego.animationHighlightMouseToPosition !== "function") return;
+    await ego.animationHighlightMouseToPosition(x, y);
   },
   snapshot: snapshotRaw,
   screenshot: captureScreenshotForSession,
@@ -496,7 +486,7 @@ export function createTaskSpaceHandle(
   return new TaskSpace(descriptor, services);
 }
 
-export class TaskSpace {
+class TaskSpace {
   readonly id: number;
   readonly name: string;
   readonly ownership?: string;
@@ -686,7 +676,7 @@ export class TaskSpace {
  * Obtain one from TaskSpace.listPages(), then call TaskSpace.adopt() before
  * navigating, observing, or closing the tab.
  */
-export class UnmanagedPage {
+class UnmanagedPage {
   readonly spaceId: number;
   readonly targetId: string;
   readonly openedBy: PageOrigin;
@@ -709,7 +699,7 @@ export class UnmanagedPage {
   }
 }
 
-export class Page {
+class Page {
   readonly label: string;
   readonly spaceId: number;
   readonly mouse: PageMouse;
@@ -736,14 +726,18 @@ export class Page {
       this.#services,
       (operation) =>
         this.#runRawAction((sessionId) => operation(this.#services, sessionId)),
-      (selector, operation) =>
-        this.#runAction(selector, (sessionId, refMap) =>
-          operation(this.#services, sessionId, refMap),
+      (operation) =>
+        this.#runObservedAction((sessionId) =>
+          operation(this.#services, sessionId),
         ),
     );
     this.mouse = new PageMouse(
       (operation) =>
         this.#runRawAction((sessionId) => operation(this.#services, sessionId)),
+      (operation) =>
+        this.#runObservedAction((sessionId) =>
+          operation(this.#services, sessionId),
+        ),
       () => this.keyboard.modifierMask(),
     );
   }
@@ -786,9 +780,8 @@ export class Page {
     if (!options || typeof options !== "object" || Array.isArray(options)) {
       throw new TypeError("page.snapshot options must be an object");
     }
-    const { diff = false, ...nativeOptions } = options;
-    if (typeof diff !== "boolean") {
-      throw new TypeError("page.snapshot diff must be a boolean");
+    if (Object.hasOwn(options, "diff")) {
+      throw new TypeError("page.snapshot does not support diff");
     }
     const page = await this.#resolve();
     return this.#services.gate.withPage(page, async () => {
@@ -797,23 +790,12 @@ export class Page {
         scope: "full_page",
         includeActionMarks: true,
         includeStableLocator: true,
-        ...nativeOptions,
+        ...options,
       });
       this.#services.pageRefs.replace(page.targetId, result?.refs || []);
       const content = result?.content || "";
-      const previous = this.#services.snapshotBaselines.get(page.targetId);
-      this.#services.snapshotBaselines.set(page.targetId, content);
-      const projection =
-        diff && previous !== undefined
-          ? snapshotLineDiff(previous, content)
-          : content;
-      const diffStatus = !diff
-        ? undefined
-        : previous === undefined
-          ? "full (baseline unavailable)"
-          : "changes from previous snapshot";
-      const header = await this.#snapshotHeader(page, diffStatus);
-      return `${header}\n${projection}`;
+      const header = await this.#snapshotHeader(page);
+      return `${header}\n${content}`;
     });
   }
 
@@ -1084,7 +1066,6 @@ export class Page {
       if (!live) {
         await this.#services.ledger.closePage(this.spaceId, this.label);
         this.#services.pageRefs.clear(page.targetId);
-        this.#services.snapshotBaselines.delete(page.targetId);
         this.#closed = true;
         throw new Error(`page ${this.label} was closed`);
       }
@@ -1125,7 +1106,6 @@ export class Page {
       }
       this.#services.invalidateSession(page.targetId);
       this.#services.pageRefs.clear(page.targetId);
-      this.#services.snapshotBaselines.delete(page.targetId);
       await this.#services.ledger.closePage(this.spaceId, this.label);
       this.#closed = true;
     });
@@ -1185,18 +1165,38 @@ export class Page {
 
   async #runRawAction(
     operation: (sessionId: string) => Promise<void>,
-  ): Promise<PageActionReceipt> {
+  ): Promise<void> {
     const page = await this.#resolve();
-    const { receipt } = await this.#runActionBoundary(page, operation);
-    return receipt;
+    await this.#runInputBoundary(page, operation);
   }
 
   async #runValueAction<T>(
     operation: (sessionId: string) => Promise<T>,
   ): Promise<T> {
     const page = await this.#resolve();
-    const { value } = await this.#runActionBoundary(page, operation);
-    return value;
+    return this.#runInputBoundary(page, operation);
+  }
+
+  async #runObservedAction(
+    operation: (sessionId: string) => Promise<void>,
+  ): Promise<PageActionReceipt> {
+    const page = await this.#resolve();
+    const { receipt } = await this.#runActionBoundary(page, operation);
+    return receipt;
+  }
+
+  async #runInputBoundary<T>(
+    page: PageTarget,
+    operation: (sessionId: string) => Promise<T>,
+  ): Promise<T> {
+    return this.#services.gate.withPage(page, async ({ sessionId }) => {
+      await this.#activate(page.targetId);
+      try {
+        return await operation(sessionId);
+      } finally {
+        this.#services.pageRefs.clear(page.targetId);
+      }
+    });
   }
 
   async #runActionBoundary<T>(
@@ -1279,10 +1279,7 @@ export class Page {
     return refs;
   }
 
-  async #snapshotHeader(
-    page: PageTarget,
-    diffStatus?: string,
-  ): Promise<string> {
+  async #snapshotHeader(page: PageTarget): Promise<string> {
     try {
       const [tabs, ledger] = await Promise.all([
         this.#services.listTabs(),
@@ -1291,7 +1288,6 @@ export class Page {
       return snapshotSourceHeader({
         currentLabel: this.label,
         currentTargetId: page.targetId,
-        diffStatus,
         ledger,
         pageBudget: this.#services.pageBudget,
         spaceId: this.spaceId,
@@ -1299,8 +1295,7 @@ export class Page {
         tabs,
       });
     } catch {
-      const diffPart = diffStatus ? ` | diff: ${diffStatus}` : "";
-      return `[${this.label} | space ${JSON.stringify(this.#spaceName)}(${this.spaceId})${diffPart}]`;
+      return `[${this.label} | space ${JSON.stringify(this.#spaceName)}(${this.spaceId})]`;
     }
   }
 
@@ -1451,7 +1446,6 @@ function actionReceipt(
 function snapshotSourceHeader(input: {
   currentLabel: string;
   currentTargetId: string;
-  diffStatus?: string;
   ledger: PageLedger;
   pageBudget: number;
   spaceId: number;
@@ -1479,39 +1473,8 @@ function snapshotSourceHeader(input: {
     managed >= input.pageBudget - 1
       ? ` | budget ${managed}/${input.pageBudget}`
       : "";
-  const diff = input.diffStatus ? ` | diff: ${input.diffStatus}` : "";
   const inventory = pages.length > 0 ? ` — ${pages.join(", ")}` : "";
-  return `[${input.currentLabel} ${JSON.stringify(currentTitle)} | space ${JSON.stringify(input.spaceName)}(${input.spaceId}): ${managed} managed, ${untracked} untracked${inventory}${budget}${diff}]`;
-}
-
-function snapshotLineDiff(previous: string, current: string): string {
-  if (previous === current) return "[no snapshot changes]";
-  const oldLines = previous.split("\n");
-  const newLines = current.split("\n");
-  let prefix = 0;
-  while (
-    prefix < oldLines.length &&
-    prefix < newLines.length &&
-    oldLines[prefix] === newLines[prefix]
-  ) {
-    prefix += 1;
-  }
-  let suffix = 0;
-  while (
-    suffix < oldLines.length - prefix &&
-    suffix < newLines.length - prefix &&
-    oldLines[oldLines.length - 1 - suffix] ===
-      newLines[newLines.length - 1 - suffix]
-  ) {
-    suffix += 1;
-  }
-  const removed = oldLines.slice(prefix, oldLines.length - suffix);
-  const added = newLines.slice(prefix, newLines.length - suffix);
-  return [
-    `@@ line ${prefix + 1} @@`,
-    ...removed.map((line) => `-${line}`),
-    ...added.map((line) => `+${line}`),
-  ].join("\n");
+  return `[${input.currentLabel} ${JSON.stringify(currentTitle)} | space ${JSON.stringify(input.spaceName)}(${input.spaceId}): ${managed} managed, ${untracked} untracked${inventory}${budget}]`;
 }
 
 async function evaluateInSession<T>(

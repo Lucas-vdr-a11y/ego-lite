@@ -31,7 +31,6 @@ function createFixture(rootDir) {
   let nowMs = 1_000;
   const pageEvents = new Map();
   const networkSessions = new Set();
-  const snapshotOptions = [];
 
   function openPendingPopup() {
     if (!popupOnNextClick) return;
@@ -59,7 +58,6 @@ function createFixture(rootDir) {
   const services = {
     gate,
     pageRefs: new PageRefRegistry(),
-    snapshotBaselines: new Map(),
     async createTab(url) {
       assert.equal(selectedSpace, 7);
       const targetId = `target-${nextTarget++}`;
@@ -274,10 +272,12 @@ function createFixture(rootDir) {
       }
       throw new Error(`unexpected CDP method ${method}`);
     },
+    async showAgentMousePosition(x, y) {
+      calls.push(["showAgentMousePosition", x, y]);
+    },
     async snapshot(options = {}) {
       const tab = tabs.get(activeTarget);
       calls.push(["snapshot", activeTarget]);
-      snapshotOptions.push(options);
       return {
         content: `snapshot:${tab?.url}`,
         refs: [
@@ -322,7 +322,6 @@ function createFixture(rootDir) {
     gate,
     rootDir,
     services,
-    snapshotOptions,
     tabs,
     openPopupOnNextClick(url) {
       popupOnNextClick = url;
@@ -458,24 +457,18 @@ test("snapshot activates the addressed page, not whichever tab was current", asy
   });
 });
 
-test("snapshot reports its source and returns a line diff after the baseline", async () => {
+test("snapshot reports its source and rejects the removed round-local diff option", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
     const page = await task.newPage("https://example.test/before");
 
-    const first = await page.snapshot({ diff: true });
-    assert.match(first, /diff: full \(baseline unavailable\)/);
-    assert.match(first, /snapshot:https:\/\/example\.test\/before/);
-
-    await page.goto("https://example.test/after");
-    const second = await page.snapshot({ diff: true });
-    assert.match(second, /diff: changes from previous snapshot/);
-    assert.match(second, /-snapshot:https:\/\/example\.test\/before/);
-    assert.match(second, /\+snapshot:https:\/\/example\.test\/after/);
-    assert.equal(
-      Object.hasOwn(fixture.snapshotOptions.at(-1), "diff"),
-      false,
-      "diff is a JS option and must not leak into the native snapshot call",
+    assert.match(
+      await page.snapshot(),
+      /snapshot:https:\/\/example\.test\/before/,
+    );
+    await assert.rejects(
+      () => page.snapshot({ diff: true }),
+      /page\.snapshot does not support diff/,
     );
   });
 });
@@ -814,6 +807,84 @@ test("Page pointer methods dispatch through the addressed target session", async
   });
 });
 
+test("Page mouse movement updates the Ego Lite agent cursor", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a");
+    const page = await task.newPage("https://example.test/first");
+
+    await page.click("button.primary");
+    await page.hover("button.primary");
+    await page.dragAndDrop("#source", "#destination");
+    await page.mouse.move(80, 100, { steps: 2 });
+
+    const pageMoves = fixture.calls
+      .filter(
+        ([kind, method, params]) =>
+          kind === "cdp" &&
+          method === "Input.dispatchMouseEvent" &&
+          params.type === "mouseMoved",
+      )
+      .map(([, , params]) => [params.x, params.y]);
+    const visibleMoves = fixture.calls
+      .filter(([kind]) => kind === "showAgentMousePosition")
+      .map(([, x, y]) => [x, y]);
+
+    assert.deepEqual(
+      visibleMoves,
+      pageMoves,
+      "every successful page mouse move must update the visible agent cursor",
+    );
+  });
+});
+
+test("agent cursor rendering failures do not make successful page input retryable", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a", {
+      async showAgentMousePosition() {
+        throw new Error("agent cursor overlay unavailable");
+      },
+    });
+    const page = await task.newPage("https://example.test/first");
+
+    await page.click("button.primary");
+
+    assert(
+      fixture.calls.some(
+        ([kind, method, params]) =>
+          kind === "cdp" &&
+          method === "Input.dispatchMouseEvent" &&
+          params.type === "mouseReleased",
+      ),
+      "the website action still completes when only the visual cursor fails",
+    );
+  });
+});
+
+test("agent cursor animation does not delay page input completion", async () => {
+  await withFixture(async (fixture) => {
+    let finishAnimation;
+    const animation = new Promise((resolve) => {
+      finishAnimation = resolve;
+    });
+    const task = taskForRound(fixture, "round-a", {
+      showAgentMousePosition() {
+        return animation;
+      },
+    });
+    const page = await task.newPage("https://example.test/first");
+
+    const outcome = await Promise.race([
+      page.mouse.move(20, 30).then(() => "action-complete"),
+      new Promise((resolve) =>
+        setTimeout(() => resolve("animation-blocked"), 100),
+      ),
+    ]);
+    finishAnimation();
+
+    assert.equal(outcome, "action-complete");
+  });
+});
+
 test("Page mouse primitives preserve button state on one target", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
@@ -1050,22 +1121,44 @@ test("Page keyboard type emits physical keys when possible and inserts unsupport
   });
 });
 
-test("Page keyboard dispatch and file input resolve inside the addressed page", async () => {
+test("low-level Page input skips action observers and returns no receipt", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a", { platform: "darwin" });
+    const page = await task.newPage("https://example.test/first");
+    fixture.calls.length = 0;
+
+    assert.equal(await page.mouse.move(10, 20), undefined);
+    assert.equal(await page.mouse.down(), undefined);
+    assert.equal(await page.mouse.up(), undefined);
+    assert.equal(await page.mouse.wheel(0, 30), undefined);
+    assert.equal(await page.keyboard.down("Shift"), undefined);
+    assert.equal(await page.keyboard.up("Shift"), undefined);
+    assert.equal(await page.keyboard.type("a"), undefined);
+    assert.equal(await page.keyboard.insertText("é"), undefined);
+    assert.deepEqual(await page.scrollBy(50), { x: 0, y: 50 });
+
+    assert.equal(
+      fixture.calls.some(
+        ([kind, method, params]) =>
+          kind === "cdp" &&
+          method === "Runtime.evaluate" &&
+          params.expression.includes("__egoBrowserActionProbes"),
+      ),
+      false,
+      "low-level input must not inject action-observation state into the page",
+    );
+  });
+});
+
+test("Page keyboard omits synthetic dispatch while file input stays target-scoped", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
     const first = await task.newPage("https://example.test/first");
     await task.newPage("https://example.test/second");
 
-    await first.keyboard.dispatch("#editor", "Enter", "keydown");
+    assert.equal(first.keyboard.dispatch, undefined);
     await first.setInputFiles("#upload", ["/tmp/one.txt", "/tmp/two.txt"]);
 
-    const dispatchCall = fixture.calls.find(
-      ([kind, method, params]) =>
-        kind === "cdp" &&
-        method === "Runtime.callFunctionOn" &&
-        params.functionDeclaration.includes("KeyboardEvent"),
-    );
-    assert.equal(dispatchCall[3], `session:${first.targetId}`);
     const uploadCall = fixture.calls.find(
       ([kind, method]) => kind === "cdp" && method === "DOM.setFileInputFiles",
     );
@@ -1497,10 +1590,7 @@ test("adopt rejects stale, cross-space, and already managed handles", async () =
     const otherTask = createTaskSpaceHandle(
       { id: 8, name: "other", ownership: "agent" },
       {
-        ledger: new PageLedgerStore({
-          rootDir: fixture.rootDir,
-          roundId: "round-a",
-        }),
+        ledger: new PageLedgerStore({ rootDir: fixture.rootDir }),
         ...fixture.services,
       },
     );

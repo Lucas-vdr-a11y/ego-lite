@@ -1,13 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import {
-  PageLedgerConflictError,
-  PageLedgerStore,
-} from "../dist/src/page-ledger.js";
+import { PageLedgerStore } from "../dist/src/page-ledger.js";
 
 async function withTempLedger(fn) {
   const rootDir = await mkdtemp(join(tmpdir(), "ego-page-ledger-test-"));
@@ -20,13 +17,13 @@ async function withTempLedger(fn) {
 
 test("page labels survive a new process and are never reused", async () => {
   await withTempLedger(async (rootDir) => {
-    const firstRound = new PageLedgerStore({ rootDir, roundId: "round-a" });
+    const firstRound = new PageLedgerStore({ rootDir });
     const first = await firstRound.addPage(7, "target-a");
 
     assert.equal(first.label, "p1");
     assert.equal(first.targetId, "target-a");
 
-    const secondRound = new PageLedgerStore({ rootDir, roundId: "round-b" });
+    const secondRound = new PageLedgerStore({ rootDir });
     assert.deepEqual(await secondRound.getPage(7, "p1"), first);
 
     await secondRound.closePage(7, "p1");
@@ -42,7 +39,7 @@ test("page labels survive a new process and are never reused", async () => {
 
 test("custom labels share the permanent used-label namespace", async () => {
   await withTempLedger(async (rootDir) => {
-    const store = new PageLedgerStore({ rootDir, roundId: "round-a" });
+    const store = new PageLedgerStore({ rootDir });
     const page = await store.addPage(2, "target-login", { as: "login" });
 
     assert.equal(page.label, "login");
@@ -56,11 +53,7 @@ test("custom labels share the permanent used-label namespace", async () => {
 
 test("writes use a complete atomic ledger document", async () => {
   await withTempLedger(async (rootDir) => {
-    const store = new PageLedgerStore({
-      rootDir,
-      roundId: "round-a",
-      now: () => 1234,
-    });
+    const store = new PageLedgerStore({ rootDir });
     await store.addPage(5, "target-a");
 
     const parsed = JSON.parse(
@@ -68,8 +61,6 @@ test("writes use a complete atomic ledger document", async () => {
     );
     assert.deepEqual(parsed, {
       spaceId: 5,
-      version: 1,
-      writerRound: "round-a",
       nextLabel: 2,
       usedLabels: ["p1"],
       releasedLabels: [],
@@ -79,18 +70,58 @@ test("writes use a complete atomic ledger document", async () => {
         p1: {
           targetId: "target-a",
           openedBy: "agent",
-          openedAt: 1234,
-          lastUsedAt: 1234,
         },
       },
-      touchedAt: 1234,
     });
+  });
+});
+
+test("old ledger metadata is accepted and removed on the next write", async () => {
+  await withTempLedger(async (rootDir) => {
+    const path = join(rootDir, "space-12.json");
+    await writeFile(
+      path,
+      JSON.stringify({
+        spaceId: 12,
+        version: 4,
+        writerRound: "old-round",
+        nextLabel: 2,
+        usedLabels: ["p1"],
+        releasedLabels: [],
+        initialized: true,
+        unmanagedTargets: {},
+        pages: {
+          p1: {
+            targetId: "target-old",
+            openedBy: "agent",
+            openedAt: 100,
+            lastUsedAt: 200,
+          },
+        },
+        touchedAt: 200,
+      }),
+    );
+    const store = new PageLedgerStore({ rootDir });
+
+    assert.deepEqual(await store.getPage(12, "p1"), {
+      label: "p1",
+      targetId: "target-old",
+      openedBy: "agent",
+    });
+    await store.addPage(12, "target-new");
+
+    const persisted = JSON.parse(await readFile(path, "utf8"));
+    assert.equal(Object.hasOwn(persisted, "version"), false);
+    assert.equal(Object.hasOwn(persisted, "writerRound"), false);
+    assert.equal(Object.hasOwn(persisted, "touchedAt"), false);
+    assert.equal(Object.hasOwn(persisted.pages.p1, "openedAt"), false);
+    assert.equal(Object.hasOwn(persisted.pages.p1, "lastUsedAt"), false);
   });
 });
 
 test("release removes a managed page without making its label reusable", async () => {
   await withTempLedger(async (rootDir) => {
-    const store = new PageLedgerStore({ rootDir, roundId: "round-a" });
+    const store = new PageLedgerStore({ rootDir });
     const released = await store.addPage(3, "target-user", {
       openedBy: "unknown",
     });
@@ -120,34 +151,10 @@ test("release removes a managed page without making its label reusable", async (
   });
 });
 
-test("a stale round detects another writer instead of overwriting it", async () => {
-  await withTempLedger(async (rootDir) => {
-    const stale = new PageLedgerStore({ rootDir, roundId: "round-stale" });
-    const winner = new PageLedgerStore({ rootDir, roundId: "round-winner" });
-
-    await stale.read(9);
-    await winner.addPage(9, "target-winner");
-
-    await assert.rejects(
-      () => stale.addPage(9, "target-stale"),
-      (error) => {
-        assert(error instanceof PageLedgerConflictError);
-        assert.equal(error.spaceId, 9);
-        assert.equal(error.expectedVersion, 0);
-        assert.equal(error.actualVersion, 1);
-        return true;
-      },
-    );
-
-    const verifier = new PageLedgerStore({ rootDir, roundId: "round-c" });
-    assert.equal((await verifier.getPage(9, "p1")).targetId, "target-winner");
-  });
-});
-
 test("different spaces update independently", async () => {
   await withTempLedger(async (rootDir) => {
-    const first = new PageLedgerStore({ rootDir, roundId: "round-a" });
-    const second = new PageLedgerStore({ rootDir, roundId: "round-b" });
+    const first = new PageLedgerStore({ rootDir });
+    const second = new PageLedgerStore({ rootDir });
 
     const [pageA, pageB] = await Promise.all([
       first.addPage(1, "target-a"),
@@ -161,7 +168,7 @@ test("different spaces update independently", async () => {
 
 test("reconciliation removes missing targets but permanently retires their labels", async () => {
   await withTempLedger(async (rootDir) => {
-    const store = new PageLedgerStore({ rootDir, roundId: "round-a" });
+    const store = new PageLedgerStore({ rootDir });
     await store.addPage(4, "target-live");
     await store.addPage(4, "target-closed");
 
@@ -175,22 +182,21 @@ test("reconciliation removes missing targets but permanently retires their label
   });
 });
 
-test("reconciliation does not write a new version when every target is live", async () => {
+test("reconciliation leaves the ledger unchanged when every target is live", async () => {
   await withTempLedger(async (rootDir) => {
-    const store = new PageLedgerStore({ rootDir, roundId: "round-a" });
+    const store = new PageLedgerStore({ rootDir });
     await store.addPage(6, "target-live");
     const before = await store.read(6);
 
     const after = await store.reconcile(6, ["target-live", "target-unknown"]);
 
-    assert.equal(after.version, before.version);
     assert.deepEqual(after.pages, before.pages);
   });
 });
 
 test("reconciliation protects the first control baseline and adopts later agent tabs", async () => {
   await withTempLedger(async (rootDir) => {
-    const store = new PageLedgerStore({ rootDir, roundId: "round-a" });
+    const store = new PageLedgerStore({ rootDir });
 
     const baseline = await store.reconcile(8, ["target-user"], {
       autoAdoptNew: true,
@@ -211,7 +217,7 @@ test("reconciliation protects the first control baseline and adopts later agent 
 
 test("an explicitly unmanaged anchor is not adopted during reconciliation", async () => {
   await withTempLedger(async (rootDir) => {
-    const store = new PageLedgerStore({ rootDir, roundId: "round-a" });
+    const store = new PageLedgerStore({ rootDir });
     await store.reconcile(10, [], { autoAdoptNew: true });
     await store.keepUnmanaged(10, "target-anchor", "unknown");
 

@@ -56,15 +56,20 @@ export class PageKeyboardController {
   readonly #run: (
     operation: (sessionId: string) => Promise<void>,
   ) => Promise<unknown>;
+  readonly #runObserved: (
+    operation: (sessionId: string) => Promise<void>,
+  ) => Promise<unknown>;
   readonly #pressedCodes = new Set<string>();
   readonly #pressedModifiers = new Set<string>();
 
   constructor(
     services: PageKeyboardServices,
     run: (operation: (sessionId: string) => Promise<void>) => Promise<unknown>,
+    runObserved = run,
   ) {
     this.#services = services;
     this.#run = run;
+    this.#runObserved = runObserved;
   }
 
   modifierMask(): number {
@@ -85,7 +90,7 @@ export class PageKeyboardController {
   ): Promise<unknown> {
     assertDelay(options.delay, "page.keyboard.press");
     const tokens = splitChord(chord);
-    return this.#run(async (sessionId) => {
+    return this.#runObserved(async (sessionId) => {
       const pressed: string[] = [];
       let actionError: unknown;
       try {

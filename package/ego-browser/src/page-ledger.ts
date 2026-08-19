@@ -8,8 +8,6 @@ export type PageOrigin = "agent" | "user" | "unknown";
 export type PageLedgerEntry = {
   targetId: string;
   openedBy: PageOrigin;
-  openedAt: number;
-  lastUsedAt: number;
 };
 
 export type ManagedPage = PageLedgerEntry & {
@@ -18,21 +16,16 @@ export type ManagedPage = PageLedgerEntry & {
 
 export type PageLedger = {
   spaceId: number;
-  version: number;
-  writerRound: string;
   nextLabel: number;
   usedLabels: string[];
   releasedLabels: string[];
   initialized: boolean;
   unmanagedTargets: Record<string, PageOrigin>;
   pages: Record<string, PageLedgerEntry>;
-  touchedAt: number;
 };
 
 type PageLedgerStoreOptions = {
   rootDir?: string;
-  roundId?: string;
-  now?: () => number;
 };
 
 type AddPageOptions = {
@@ -44,30 +37,6 @@ type ReconcileOptions = {
   autoAdoptNew?: boolean;
 };
 
-export class PageLedgerConflictError extends Error {
-  readonly spaceId: number;
-  readonly expectedVersion: number;
-  readonly actualVersion: number;
-  readonly writerRound: string;
-
-  constructor(
-    spaceId: number,
-    expectedVersion: number,
-    actualVersion: number,
-    writerRound: string,
-  ) {
-    super(
-      `another process changed page state for space ${spaceId} ` +
-        `(expected version ${expectedVersion}, found ${actualVersion})`,
-    );
-    this.name = "PageLedgerConflictError";
-    this.spaceId = spaceId;
-    this.expectedVersion = expectedVersion;
-    this.actualVersion = actualVersion;
-    this.writerRound = writerRound;
-  }
-}
-
 /**
  * Stores durable page labels in one JSON document per task space. Each update
  * replaces the complete document with an atomic rename so readers never see a
@@ -75,9 +44,7 @@ export class PageLedgerConflictError extends Error {
  */
 export class PageLedgerStore {
   readonly rootDir: string;
-  readonly roundId: string;
-  readonly #now: () => number;
-  readonly #expectedVersions = new Map<number, number>();
+  readonly #writeToken = randomUUID();
   #temporarySequence = 0;
 
   constructor(options: PageLedgerStoreOptions = {}) {
@@ -85,16 +52,11 @@ export class PageLedgerStore {
       options.rootDir ||
       process.env.EGO_BROWSER_STATE_DIR ||
       join(homedir(), ".ego-browser", "state");
-    this.roundId = options.roundId || randomUUID();
-    this.#now = options.now || (() => Date.now());
   }
 
   async read(spaceId: number): Promise<PageLedger> {
     assertSpaceId(spaceId);
     const ledger = await this.#readCurrent(spaceId);
-    if (!this.#expectedVersions.has(spaceId)) {
-      this.#expectedVersions.set(spaceId, ledger.version);
-    }
     return cloneLedger(ledger);
   }
 
@@ -119,7 +81,6 @@ export class PageLedgerStore {
   ): Promise<ManagedPage> {
     assertTargetId(targetId);
     if (options.as !== undefined) assertLabel(options.as);
-    const now = this.#now();
     let added: ManagedPage;
     await this.#update(spaceId, (ledger) => {
       const existing = Object.entries(ledger.pages).find(
@@ -137,8 +98,6 @@ export class PageLedgerStore {
       const entry: PageLedgerEntry = {
         targetId,
         openedBy: options.openedBy || "agent",
-        openedAt: now,
-        lastUsedAt: now,
       };
       ledger.initialized = true;
       delete ledger.unmanagedTargets[targetId];
@@ -273,7 +232,6 @@ export class PageLedgerStore {
       if (!options.autoAdoptNew) return;
 
       const used = new Set(ledger.usedLabels);
-      const now = this.#now();
       for (const targetId of untracked) {
         const label = nextAutomaticLabel(ledger, used);
         used.add(label);
@@ -281,8 +239,6 @@ export class PageLedgerStore {
         ledger.pages[label] = {
           targetId,
           openedBy: "agent",
-          openedAt: now,
-          lastUsedAt: now,
         };
       }
     });
@@ -293,27 +249,9 @@ export class PageLedgerStore {
     mutate: (ledger: PageLedger) => void,
   ): Promise<PageLedger> {
     assertSpaceId(spaceId);
-    const current = await this.#readCurrent(spaceId);
-    const expected = this.#expectedVersions.get(spaceId);
-    if (expected !== undefined && current.version !== expected) {
-      throw new PageLedgerConflictError(
-        spaceId,
-        expected,
-        current.version,
-        current.writerRound,
-      );
-    }
-    if (expected === undefined) {
-      this.#expectedVersions.set(spaceId, current.version);
-    }
-
-    const next = cloneLedger(current);
+    const next = await this.#readCurrent(spaceId);
     mutate(next);
-    next.version = current.version + 1;
-    next.writerRound = this.roundId;
-    next.touchedAt = this.#now();
     await this.#writeAtomic(spaceId, next);
-    this.#expectedVersions.set(spaceId, next.version);
     return cloneLedger(next);
   }
 
@@ -338,7 +276,7 @@ export class PageLedgerStore {
   async #writeAtomic(spaceId: number, ledger: PageLedger): Promise<void> {
     await mkdir(this.rootDir, { recursive: true, mode: 0o700 });
     const path = this.#path(spaceId);
-    const temporary = `${path}.${process.pid}.${this.roundId}.${++this.#temporarySequence}.tmp`;
+    const temporary = `${path}.${process.pid}.${this.#writeToken}.${++this.#temporarySequence}.tmp`;
     try {
       await writeFile(temporary, `${JSON.stringify(ledger, null, 2)}\n`, {
         encoding: "utf8",
@@ -358,15 +296,12 @@ export class PageLedgerStore {
 function emptyLedger(spaceId: number): PageLedger {
   return {
     spaceId,
-    version: 0,
-    writerRound: "",
     nextLabel: 1,
     usedLabels: [],
     releasedLabels: [],
     initialized: false,
     unmanagedTargets: {},
     pages: {},
-    touchedAt: 0,
   };
 }
 
@@ -393,62 +328,63 @@ function validateLedger(
   // Defaults keep ledgers written by earlier runtimes readable. They start
   // uninitialized so the first new runtime observes a safe control baseline
   // instead of silently adopting pre-existing user tabs.
-  const ledger = {
-    ...stored,
-    releasedLabels: stored.releasedLabels ?? [],
-    initialized: stored.initialized ?? false,
-    unmanagedTargets: stored.unmanagedTargets ?? {},
-  };
+  const releasedLabels = stored.releasedLabels ?? [];
+  const initialized = stored.initialized ?? false;
+  const unmanagedTargets = stored.unmanagedTargets ?? {};
   if (
-    ledger.spaceId !== expectedSpaceId ||
-    !Number.isInteger(ledger.version) ||
-    ledger.version < 0 ||
-    typeof ledger.writerRound !== "string" ||
-    !Number.isInteger(ledger.nextLabel) ||
-    ledger.nextLabel < 1 ||
-    !Array.isArray(ledger.usedLabels) ||
-    ledger.usedLabels.some((label) => typeof label !== "string") ||
-    !Array.isArray(ledger.releasedLabels) ||
-    ledger.releasedLabels.some(
+    stored.spaceId !== expectedSpaceId ||
+    !Number.isInteger(stored.nextLabel) ||
+    stored.nextLabel < 1 ||
+    !Array.isArray(stored.usedLabels) ||
+    stored.usedLabels.some((label) => typeof label !== "string") ||
+    !Array.isArray(releasedLabels) ||
+    releasedLabels.some(
       (label) =>
         typeof label !== "string" ||
-        !ledger.usedLabels.includes(label) ||
-        Object.hasOwn(ledger.pages || {}, label),
+        !stored.usedLabels.includes(label) ||
+        Object.hasOwn(stored.pages || {}, label),
     ) ||
-    typeof ledger.initialized !== "boolean" ||
-    !ledger.unmanagedTargets ||
-    typeof ledger.unmanagedTargets !== "object" ||
-    Array.isArray(ledger.unmanagedTargets) ||
-    Object.entries(ledger.unmanagedTargets).some(
+    typeof initialized !== "boolean" ||
+    !unmanagedTargets ||
+    typeof unmanagedTargets !== "object" ||
+    Array.isArray(unmanagedTargets) ||
+    Object.entries(unmanagedTargets).some(
       ([targetId, openedBy]) =>
         targetId.length === 0 ||
         !["agent", "user", "unknown"].includes(openedBy),
     ) ||
-    !ledger.pages ||
-    typeof ledger.pages !== "object" ||
-    Array.isArray(ledger.pages) ||
-    typeof ledger.touchedAt !== "number"
+    !stored.pages ||
+    typeof stored.pages !== "object" ||
+    Array.isArray(stored.pages)
   ) {
     throw new Error(`invalid page ledger ${path}: schema mismatch`);
   }
-  for (const [label, page] of Object.entries(ledger.pages)) {
+  const pages: Record<string, PageLedgerEntry> = {};
+  for (const [label, page] of Object.entries(stored.pages)) {
     if (
-      !ledger.usedLabels.includes(label) ||
+      !stored.usedLabels.includes(label) ||
       !page ||
       typeof page.targetId !== "string" ||
-      !["agent", "user", "unknown"].includes(page.openedBy) ||
-      typeof page.openedAt !== "number" ||
-      typeof page.lastUsedAt !== "number"
+      !["agent", "user", "unknown"].includes(page.openedBy)
     ) {
       throw new Error(`invalid page ledger ${path}: invalid page ${label}`);
     }
-    if (Object.hasOwn(ledger.unmanagedTargets, page.targetId)) {
+    if (Object.hasOwn(unmanagedTargets, page.targetId)) {
       throw new Error(
         `invalid page ledger ${path}: target ${page.targetId} is both managed and unmanaged`,
       );
     }
+    pages[label] = { targetId: page.targetId, openedBy: page.openedBy };
   }
-  return cloneLedger(ledger);
+  return {
+    spaceId: stored.spaceId,
+    nextLabel: stored.nextLabel,
+    usedLabels: [...stored.usedLabels],
+    releasedLabels: [...releasedLabels],
+    initialized,
+    unmanagedTargets: { ...unmanagedTargets },
+    pages,
+  };
 }
 
 function cloneLedger(ledger: PageLedger): PageLedger {
