@@ -13,7 +13,10 @@ import * as observe from "./driver/observe.js";
 import * as waits from "./driver/waits.js";
 import * as files from "./driver/files.js";
 import { browserFetch, serverFetch } from "./http.js";
-import { createTaskSpaceHandle } from "./page-model.js";
+import {
+  captureTaskSpaceUserBoundary,
+  createTaskSpaceHandle,
+} from "./page-model.js";
 import {
   loadBrowserToolSource,
   loadLearnedContext,
@@ -149,7 +152,13 @@ export async function newTaskSpace(name) {
     throw new Error("newTaskSpace returned an invalid task space");
   }
   taskSpaceNumericId(created, "newTaskSpace");
-  return selectTaskSpace(ego, created, "newTaskSpace");
+  // The native create response currently omits ownership on some Ego Lite
+  // builds. Creation through this Agent API is itself authoritative.
+  return selectTaskSpace(
+    ego,
+    { ...created, ownership: created.ownership || "agent" },
+    "newTaskSpace",
+  );
 }
 
 /**
@@ -204,7 +213,9 @@ export async function taskSpace(nameOrId) {
 export async function claimTaskSpace(nameOrId) {
   const space = await findTaskSpace(nameOrId);
   const claimed = await claimResolvedTaskSpace(space, "claimTaskSpace");
-  return createTaskSpaceHandle({ ...claimed, ownership: "agent" });
+  const task = createTaskSpaceHandle({ ...claimed, ownership: "agent" });
+  await captureTaskSpaceUserBoundary(task);
+  return task;
 }
 
 async function claimResolvedTaskSpace(space, op = "claimTaskSpace") {
@@ -337,7 +348,14 @@ export async function takeOverTaskSpace(nameOrId?: string | number) {
   }
   assertNoEgoError(await ego.takeOverTaskSpace(), "takeOverTaskSpace");
   if (descriptor) {
-    return createTaskSpaceHandle({ ...descriptor, ownership: "agent" });
+    const task = createTaskSpaceHandle({ ...descriptor, ownership: "agent" });
+    // Repeatedly ensuring control over an already agent-controlled space is a
+    // no-op, not a user interaction boundary. Only delegated spaces can have
+    // gained tabs through user activity since the Agent last controlled them.
+    if (descriptor.ownership === "agentDelegatedToUser") {
+      await captureTaskSpaceUserBoundary(task);
+    }
+    return task;
   }
 }
 

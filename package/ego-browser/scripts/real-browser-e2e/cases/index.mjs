@@ -1,6 +1,6 @@
 import { environmentCase } from "./environment.mjs";
 import { helperSurfaceCase } from "./helper-surface.mjs";
-import { taskSpaceCase } from "./task-space.mjs";
+import { crossSpaceV2Case, taskSpaceCase } from "./task-space.mjs";
 import { navigationCase } from "./navigation.mjs";
 import { observationCase } from "./observation.mjs";
 import { pointerCase } from "./pointer.mjs";
@@ -34,6 +34,7 @@ export const e2eCases = [
   { name: "environment initialization", body: environmentCase },
   { name: "helper surface", body: helperSurfaceCase },
   { name: "task spaces and control", body: taskSpaceCase },
+  { name: "v2 cross-space routing", body: crossSpaceV2Case },
   { name: "navigation helpers", body: navigationCase },
   { name: "observation helpers", body: observationCase },
   { name: "pointer and scroll helpers", body: pointerCase },

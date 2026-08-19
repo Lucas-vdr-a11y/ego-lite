@@ -21,7 +21,7 @@ export function taskSpaceCase() {
     assertEqual(switchedByNumericString.id, task.id, "switchTaskSpace selects by numeric string id");
 
     await waitForAgentControl(taskName, { interval: 0.1, timeout: 3 });
-    await takeOverTaskSpace(taskName);
+    await takeOverTaskSpace();
     await waitForAgentControl(taskName, { interval: 0.1, timeout: 3 });
 
     const scratch = await newTaskSpace(taskName + " scratch");
@@ -82,8 +82,52 @@ export function taskSpaceCase() {
     await handOffTaskSpace();
     await takeOverTaskSpace();
     await waitForAgentControl(taskName, { interval: 0.1, timeout: 5 });
-    await handOffTaskSpace(taskName);
-    await takeOverTaskSpace(taskName);
-    await waitForAgentControl(taskName, { interval: 0.1, timeout: 5 });
+    const v2Task = await taskSpace(taskName + " v2 lifecycle");
+    await v2Task.openPage(baseUrl + "/secondary?v2-lifecycle=handoff");
+    await v2Task.handOff();
+    const resumedTask = await takeOverTaskSpace(v2Task.spaceId);
+    await resumedTask.waitForControl({ interval: 100, timeout: 5_000 });
+    const boundaryPage = resumedTask.userPage();
+    assert(Boolean(boundaryPage), "takeover captures the tab active at the user boundary");
+    const closeSpaceId = resumedTask.spaceId;
+    await resumedTask.close();
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      if (!(await listTaskSpaces()).some((space) => space.id === closeSpaceId)) break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert(
+      !(await listTaskSpaces()).some((space) => space.id === closeSpaceId),
+      "task.close removes the v2 task space"
+    );
+
+    const finishTask = await taskSpace(taskName + " v2 finish");
+    await finishTask.openPage(baseUrl + "/secondary?v2-lifecycle=finish");
+    const finishSpaceId = finishTask.spaceId;
+    await finishTask.finish();
+    assert(
+      (await listTaskSpaces()).some((space) => space.id === finishSpaceId),
+      "task.finish keeps the browser space for the user"
+    );
+    const reclaimedFinishedTask = await claimTaskSpace(finishSpaceId);
+    await reclaimedFinishedTask.close();
+  `;
+}
+
+export function crossSpaceV2Case() {
+  return `
+    const firstTask = await taskSpace(taskName + " gate first");
+    const firstPage = await firstTask.openPage(baseUrl + "/?space=first");
+    const secondTask = await taskSpace(taskName + " gate second");
+    const secondPage = await secondTask.openPage(baseUrl + "/secondary?space=second");
+
+    const [firstInfo, secondInfo] = await Promise.all([
+      firstPage.info(),
+      secondPage.info(),
+    ]);
+    assertIncludes(firstInfo.url, "space=first", "cross-space gate keeps the first request in its space");
+    assertIncludes(secondInfo.url, "space=second", "cross-space gate keeps the second request in its space");
+
+    await firstTask.close();
+    await secondTask.close();
   `;
 }

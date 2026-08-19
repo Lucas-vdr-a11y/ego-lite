@@ -73,8 +73,8 @@ test("scroll defaults to scrolling down (positive deltaY, DOM wheel convention)"
   // scroll, matching scrollBy / scrollToBottomUntil.
   const calls = [];
   const restore = setOverrides({
-    cdpOverride(method, params) {
-      calls.push({ method, params });
+    cdpOverride(method, params, sessionId, timeoutMs) {
+      calls.push({ method, params, sessionId, timeoutMs });
       return {};
     },
   });
@@ -87,6 +87,11 @@ test("scroll defaults to scrolling down (positive deltaY, DOM wheel convention)"
   assert.equal(calls[0].method, "Input.dispatchMouseEvent");
   assert.equal(calls[0].params.deltaY, 300);
   assert.equal(calls[0].params.deltaX, 0);
+  assert.equal(
+    calls[0].timeoutMs,
+    15_000,
+    "wheel dispatch uses the normal CDP timeout instead of a fragile one-second deadline",
+  );
 });
 
 test("scroll falls back to DOM scrolling only when wheel dispatch is unsupported", async () => {

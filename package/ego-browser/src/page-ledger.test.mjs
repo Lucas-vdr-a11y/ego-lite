@@ -65,6 +65,7 @@ test("writes use a complete atomic ledger document", async () => {
       usedLabels: ["p1"],
       releasedLabels: [],
       initialized: true,
+      handoffBaseline: null,
       unmanagedTargets: {},
       pages: {
         p1: {
@@ -227,6 +228,35 @@ test("reconciliation protects the first control baseline and adopts later agent 
     assert.equal(reconciled.pages.p1.targetId, "target-popup");
     assert.equal(reconciled.pages.p1.openedBy, "agent");
     assert.equal(reconciled.unmanagedTargets["target-user"], "unknown");
+  });
+});
+
+test("tabs opened during handoff remain unknown after takeover", async () => {
+  await withTempLedger(async (rootDir) => {
+    const firstRound = new PageLedgerStore({ rootDir });
+    await firstRound.addPage(8, "target-agent");
+    await firstRound.beginUserControl(8, ["target-agent"]);
+
+    const secondRound = new PageLedgerStore({ rootDir });
+    const afterTakeover = await secondRound.reconcile(
+      8,
+      ["target-agent", "target-user"],
+      { autoAdoptNew: true },
+    );
+
+    assert.equal(afterTakeover.handoffBaseline, null);
+    assert.equal(afterTakeover.unmanagedTargets["target-user"], "unknown");
+    assert.deepEqual(afterTakeover.pages, {
+      p1: { targetId: "target-agent", openedBy: "agent" },
+    });
+
+    const laterAgentPopup = await secondRound.reconcile(
+      8,
+      ["target-agent", "target-user", "target-popup"],
+      { autoAdoptNew: true },
+    );
+    assert.equal(laterAgentPopup.pages.p2.targetId, "target-popup");
+    assert.equal(laterAgentPopup.pages.p2.openedBy, "agent");
   });
 });
 

@@ -6,7 +6,10 @@ import { join } from "node:path";
 
 import { NativeOperationGate } from "../dist/src/native-gate.js";
 import { PageLedgerStore } from "../dist/src/page-ledger.js";
-import { createTaskSpaceHandle } from "../dist/src/page-model.js";
+import {
+  captureTaskSpaceUserBoundary,
+  createTaskSpaceHandle,
+} from "../dist/src/page-model.js";
 import { PageRefRegistry } from "../dist/src/page-ref-registry.js";
 
 async function withFixture(fn) {
@@ -328,6 +331,10 @@ function createFixture(rootDir) {
     rootDir,
     services,
     tabs,
+    addExternalTab(targetId, url, { active = false } = {}) {
+      tabs.set(targetId, { targetId, url, title: url, active });
+      if (active) activeTarget = targetId;
+    },
     openPopupOnNextClick(url) {
       popupOnNextClick = url;
     },
@@ -423,6 +430,23 @@ test("TaskSpace.waitForControl times out in milliseconds and validates options",
   });
 });
 
+test("v2 methods reject option fields that are absent from the public schema", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a");
+    await assert.rejects(
+      () => task.openPage("https://example.test/unknown", { reuse: true }),
+      /task\.openPage received unknown option: reuse/,
+    );
+    assert.equal(fixture.tabs.size, 0, "validation runs before creating a tab");
+
+    const page = await task.openPage("https://example.test/options");
+    await assert.rejects(
+      () => page.click("button", { force: true }),
+      /page\.click received unknown option: force/,
+    );
+  });
+});
+
 test("TaskSpace uses spaceId and owns handoff, finish, and close", async () => {
   await withFixture(async (fixture) => {
     const lifecycleCalls = [];
@@ -466,6 +490,55 @@ test("TaskSpace uses spaceId and owns handoff, finish, and close", async () => {
         ["selectSpace", 7],
       ],
     );
+  });
+});
+
+test("handoff preserves user-created tabs as unknown and captures the active user page", async () => {
+  await withFixture(async (fixture) => {
+    const firstRound = taskForRound(fixture, "round-a", {
+      async handOffTaskSpace() {},
+    });
+    const agentPage = await firstRound.openPage("https://example.test/agent");
+    await firstRound.handOff();
+    assert.equal(agentPage.label, "p1");
+    fixture.addExternalTab("target-user", "https://example.test/user-created", {
+      active: true,
+    });
+
+    const afterTakeover = taskForRound(fixture, "round-b");
+    await captureTaskSpaceUserBoundary(afterTakeover);
+    const userPage = afterTakeover.userPage();
+    assert(userPage, "takeover captures the tab the user was viewing");
+    assert.equal(userPage.targetId, "target-user");
+    assert.equal(userPage.openedBy, "unknown");
+
+    const inventory = await afterTakeover.listPages();
+    const userItem = inventory.find((item) => item.targetId === "target-user");
+    assert.equal(userItem.label, undefined);
+    assert.equal(userItem.openedBy, "unknown");
+
+    fixture.addExternalTab("target-popup", "https://example.test/agent-popup");
+    const reconciled = await afterTakeover.listPages();
+    assert.equal(
+      reconciled.find((item) => item.targetId === "target-popup").openedBy,
+      "agent",
+    );
+  });
+});
+
+test("failed native handoff removes the pending user-control boundary", async () => {
+  await withFixture(async (fixture) => {
+    const ledger = new PageLedgerStore({ rootDir: fixture.rootDir });
+    const task = taskForRound(fixture, "round-a", {
+      ledger,
+      async handOffTaskSpace() {
+        throw new Error("native handoff failed");
+      },
+    });
+    await task.openPage("https://example.test/agent");
+
+    await assert.rejects(() => task.handOff(), /native handoff failed/);
+    assert.equal((await ledger.read(7)).handoffBaseline, null);
   });
 });
 
@@ -797,8 +870,8 @@ test("Page fetch validates its JSON options and millisecond timeout", async () =
       /does not accept options.signal/,
     );
     await assert.rejects(
-      () => page.fetch("/api/text", cyclic),
-      /options must be JSON-serializable/,
+      () => page.fetch("/api/text", { headers: cyclic }),
+      /headers must be an object with string values/,
     );
   });
 });

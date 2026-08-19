@@ -84,16 +84,11 @@ export function pointerCase() {
         "return el?.closest?.('#inner-scroll')?.id || el?.id || '';"
     );
     assertEqual(innerHit, "inner-scroll", "nested scroll container is under the wheel target");
-    const innerWheelDispatched = await allowWheelDispatch(
-      "scroll nested container",
-      () => scroll(innerCenter.x, innerCenter.y, { dy: 350 })
+    await scroll(innerCenter.x, innerCenter.y, { dy: 350 });
+    await waitForJsCondition(
+      "document.querySelector('#inner-scroll').scrollTop > 0",
+      "scroll targets nested scroll containers"
     );
-    if (innerWheelDispatched) {
-      await waitForJsCondition(
-        "document.querySelector('#inner-scroll').scrollTop > 0",
-        "scroll targets nested scroll containers"
-      );
-    }
 
     cliLog(JSON.stringify({ pointerStep: "page wheel" }));
     await resetHome();
@@ -102,17 +97,13 @@ export function pointerCase() {
         "return { x: Math.min(Math.max(rect.left + 20, 10), innerWidth - 10), y: Math.min(Math.max(rect.top + 20, 10), innerHeight - 10) };"
     );
     const beforeWheel = await pageInfo();
-    const wheelDispatched = await allowWheelDispatch("scroll wheel", () =>
-      scroll(wheelPoint.x, wheelPoint.y, { dy: 300 })
+    await scroll(wheelPoint.x, wheelPoint.y, { dy: 300 });
+    await waitForJsCondition(
+      "scrollY > " + JSON.stringify(beforeWheel.sy),
+      "scroll wheel moves the page down"
     );
-    if (wheelDispatched) {
-      await waitForJsCondition(
-        "scrollY > " + JSON.stringify(beforeWheel.sy),
-        "scroll wheel moves the page down"
-      );
-      const afterWheel = await pageInfo();
-      assert(afterWheel.sy > beforeWheel.sy, "scroll wheel moves the page down");
-    }
+    const afterWheel = await pageInfo();
+    assert(afterWheel.sy > beforeWheel.sy, "scroll wheel moves the page down");
 
     await resetHome();
     const objectWheelPoint = await js(
@@ -120,17 +111,13 @@ export function pointerCase() {
         "return { x: Math.min(Math.max(rect.left + 30, 10), innerWidth - 10), y: Math.min(Math.max(rect.top + 30, 10), innerHeight - 10) };"
     );
     const beforeObjectWheel = await pageInfo();
-    const objectWheelDispatched = await allowWheelDispatch("scroll object options", () =>
-      scroll({ x: objectWheelPoint.x, y: objectWheelPoint.y, dy: 120 })
+    await scroll({ x: objectWheelPoint.x, y: objectWheelPoint.y, dy: 120 });
+    await waitForJsCondition(
+      "scrollY > " + JSON.stringify(beforeObjectWheel.sy),
+      "scroll object options move the page down"
     );
-    if (objectWheelDispatched) {
-      await waitForJsCondition(
-        "scrollY > " + JSON.stringify(beforeObjectWheel.sy),
-        "scroll object options move the page down"
-      );
-      const afterObjectWheel = await pageInfo();
-      assert(afterObjectWheel.sy > beforeObjectWheel.sy, "scroll object options move the page down");
-    }
+    const afterObjectWheel = await pageInfo();
+    assert(afterObjectWheel.sy > beforeObjectWheel.sy, "scroll object options move the page down");
 
     cliLog(JSON.stringify({ pointerStep: "dom scroll helpers" }));
     await resetHome();

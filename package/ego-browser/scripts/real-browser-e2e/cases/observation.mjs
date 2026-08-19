@@ -124,18 +124,21 @@ export function observationCase() {
 
     /* iframe interaction — evaluate JS inside the iframe */
     cliLog(JSON.stringify({ observationStep: "iframe" }));
-    const frameTarget = await iframeTarget("/frame.html");
-    if (frameTarget) {
-      const iframeMarkerText = await js(
-        "return document.querySelector('#iframe-marker')?.textContent",
-        frameTarget
-      );
-      assertEqual(iframeMarkerText, "iframe target", "js evaluates inside iframe using targetId");
-
-      const iframeTitle = await js("return document.title", frameTarget);
-      assertEqual(iframeTitle, "ego-lite iframe", "js reads iframe page title via targetId");
-    } else {
-      cliLog(JSON.stringify({ iframeWarning: "iframe target not available, skipping iframe tests" }));
+    let frameTarget = null;
+    const iframeDeadline = Date.now() + 3_000;
+    while (!frameTarget && Date.now() <= iframeDeadline) {
+      frameTarget = await iframeTarget("/frame.html");
+      if (!frameTarget) await wait(0.05);
     }
+    assert(frameTarget, "iframeTarget discovers the cross-site iframe target");
+
+    const iframeMarkerText = await js(
+      "return document.querySelector('#iframe-marker')?.textContent",
+      frameTarget
+    );
+    assertEqual(iframeMarkerText, "iframe target", "js evaluates inside iframe using targetId");
+
+    const iframeTitle = await js("return document.title", frameTarget);
+    assertEqual(iframeTitle, "ego-lite iframe", "js reads iframe page title via targetId");
   `;
 }

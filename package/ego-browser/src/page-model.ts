@@ -59,6 +59,7 @@ import {
   type PageOrigin,
 } from "./page-ledger.js";
 import { PageRefRegistry } from "./page-ref-registry.js";
+import { validatePublicApiOptions } from "./public-api-schema.js";
 import { parseRef, type RefMap } from "./ref-map.js";
 import { state } from "./state.js";
 
@@ -172,10 +173,15 @@ type LedgerPort = {
     targetId: string,
     openedBy?: PageOrigin,
   ): Promise<void>;
+  beginUserControl(
+    spaceId: number,
+    liveTargetIds: Iterable<string>,
+  ): Promise<void>;
+  cancelUserControl(spaceId: number): Promise<void>;
   reconcile(
     spaceId: number,
     liveTargetIds: Iterable<string>,
-    options?: { autoAdoptNew?: boolean },
+    options?: { autoAdoptNew?: boolean; afterUserControl?: boolean },
   ): Promise<PageLedger>;
 };
 
@@ -275,6 +281,7 @@ class PageMouse {
     y: number,
     options: PageMouseClickOptions = {},
   ): Promise<PageActionReceipt> {
+    validatePublicApiOptions("Page.mouse.click", options);
     const receipt = await this.#runObserved((services, sessionId) =>
       clickPointInPage(
         services,
@@ -297,6 +304,7 @@ class PageMouse {
     y: number,
     options: PageMouseMoveOptions = {},
   ): Promise<void> {
+    validatePublicApiOptions("Page.mouse.move", options);
     await this.#run((services, sessionId) =>
       moveMouseInPage(services, sessionId, this.#x, this.#y, x, y, {
         ...options,
@@ -310,6 +318,7 @@ class PageMouse {
   }
 
   async down(options: PageMouseButtonOptions = {}): Promise<void> {
+    validatePublicApiOptions("Page.mouse.down", options);
     const button = options.button ?? "left";
     const nextButtons = this.#buttons | mouseButtonMask(button);
     await this.#run((services, sessionId) =>
@@ -329,6 +338,7 @@ class PageMouse {
   }
 
   async up(options: PageMouseButtonOptions = {}): Promise<void> {
+    validatePublicApiOptions("Page.mouse.up", options);
     const button = options.button ?? "left";
     const nextButtons = this.#buttons & ~mouseButtonMask(button);
     await this.#run((services, sessionId) =>
@@ -395,6 +405,7 @@ class PageKeyboard {
     chord: string,
     options: PageKeyboardPressOptions = {},
   ): Promise<PageActionReceipt> {
+    validatePublicApiOptions("Page.keyboard.press", options);
     return (await this.#controller.press(chord, options)) as PageActionReceipt;
   }
 
@@ -406,6 +417,7 @@ class PageKeyboard {
     text: string,
     options: PageKeyboardTypeOptions = {},
   ): Promise<void> {
+    validatePublicApiOptions("Page.keyboard.type", options);
     await this.#controller.type(text, options);
   }
 }
@@ -426,6 +438,7 @@ class PageBudgetError extends Error {
 let defaultLedger: PageLedgerStore | undefined;
 const defaultPageRefs = new PageRefRegistry();
 const unmanagedPageConstructorToken = Symbol("UnmanagedPage");
+const captureUserBoundaryToken = Symbol("captureUserBoundary");
 
 const defaultGate: OperationGate = {
   withSpace: defaultWithSpace,
@@ -539,6 +552,16 @@ export function createTaskSpaceHandle(
   return new TaskSpace(descriptor, services);
 }
 
+/**
+ * Capture the active tab at a claim/takeover boundary before Agent actions can
+ * change it. This is called by the helper layer and is not injected directly.
+ */
+export async function captureTaskSpaceUserBoundary(
+  task: TaskSpace,
+): Promise<void> {
+  await task.captureUserBoundary(captureUserBoundaryToken);
+}
+
 class TaskSpace {
   readonly taskId?: string | number;
   readonly id: number;
@@ -547,6 +570,7 @@ class TaskSpace {
   readonly ownership?: string;
   readonly recentTabTitles?: string[];
   readonly #services: PageModelServices;
+  #userPage?: Page | UnmanagedPage;
 
   constructor(descriptor: TaskSpaceDescriptor, services: PageModelServices) {
     this.taskId = descriptor.taskId;
@@ -567,6 +591,37 @@ class TaskSpace {
     return new Page(this, label, this.#services);
   }
 
+  /** The tab active at the most recent claim/takeover boundary, if any. */
+  userPage(): Page | UnmanagedPage | undefined {
+    return this.#userPage;
+  }
+
+  async captureUserBoundary(token: symbol): Promise<void> {
+    if (token !== captureUserBoundaryToken) {
+      throw new TypeError(
+        "the user-page boundary is captured automatically by claim/takeover",
+      );
+    }
+    await this.#services.gate.withSpace(this.id, async () => {
+      const tabs = await this.#services.listTabs();
+      if (tabs.length === 0) {
+        this.#userPage = undefined;
+        return;
+      }
+      const ledger = await this.#services.ledger.reconcile(
+        this.id,
+        tabs.map((tab) => tab.targetId),
+        { autoAdoptNew: false, afterUserControl: true },
+      );
+      const active = tabs.find((tab) => tab.active);
+      this.#userPage = active
+        ? pageInventory(this, this.#services, ledger, tabs).find(
+            (item) => item.targetId === active.targetId,
+          )?.page
+        : undefined;
+    });
+  }
+
   async listPages(): Promise<PageInventoryItem[]> {
     return this.#services.gate.withSpace(this.id, async () => {
       const { ledger, tabs } = await this.#reconcilePages();
@@ -576,7 +631,7 @@ class TaskSpace {
 
   /** Wait until this space is controllable without taking control from the user. */
   async waitForControl(options: WaitForControlOptions = {}): Promise<void> {
-    assertPlainOptions(options, "task.waitForControl");
+    validatePublicApiOptions("TaskSpace.waitForControl", options);
     const intervalMs = options.interval ?? CONTROL_POLL_INTERVAL_MS;
     const timeoutMs = options.timeout ?? CONTROL_WAIT_TIMEOUT_MS;
     assertPositiveMilliseconds(intervalMs, "interval");
@@ -599,9 +654,19 @@ class TaskSpace {
 
   /** Give control of this task space to the user while keeping Page state. */
   async handOff(): Promise<void> {
-    await this.#services.gate.withSpace(this.spaceId, () =>
-      this.#services.handOffTaskSpace(),
-    );
+    await this.#services.gate.withSpace(this.spaceId, async () => {
+      const { tabs } = await this.#reconcilePages();
+      await this.#services.ledger.beginUserControl(
+        this.spaceId,
+        tabs.map((tab) => tab.targetId),
+      );
+      try {
+        await this.#services.handOffTaskSpace();
+      } catch (error) {
+        await this.#services.ledger.cancelUserControl(this.spaceId);
+        throw error;
+      }
+    });
   }
 
   /** Finish the task, keep its browser space for the user, and drop Page state. */
@@ -626,7 +691,7 @@ class TaskSpace {
     params: Record<string, unknown> = {},
     options: CdpOptions = {},
   ): Promise<any> {
-    assertCdpCall(method, params, options);
+    assertCdpCall("TaskSpace.cdp", method, params, options);
     if (!method.startsWith("Target.") && !method.startsWith("Browser.")) {
       throw new TypeError(
         "task.cdp only supports Target. and Browser. commands",
@@ -645,6 +710,7 @@ class TaskSpace {
     page: UnmanagedPage,
     options: AdoptPageOptions = {},
   ): Promise<Page> {
+    validatePublicApiOptions("TaskSpace.adopt", options);
     assertUnmanagedPage(page);
     if (page.spaceId !== this.id) {
       throw new Error(
@@ -708,6 +774,7 @@ class TaskSpace {
     options: OpenPageOptions = {},
   ): Promise<Page> {
     assertUrl(url);
+    validatePublicApiOptions("TaskSpace.openPage", options);
     const timeoutMs = options.timeout ?? 15_000;
     assertTimeout(timeoutMs);
     return this.#services.gate.withSpace(this.id, async () => {
@@ -865,6 +932,7 @@ class Page {
     options: PageGotoOptions = {},
   ): Promise<PageActionReceipt> {
     assertUrl(url);
+    validatePublicApiOptions("Page.goto", options);
     const timeoutMs = options.timeout ?? 15_000;
     assertTimeout(timeoutMs);
     const page = await this.#resolve();
@@ -887,12 +955,15 @@ class Page {
   }
 
   async snapshot(options: PageSnapshotOptions = {}): Promise<string> {
-    if (!options || typeof options !== "object" || Array.isArray(options)) {
-      throw new TypeError("page.snapshot options must be an object");
-    }
-    if (Object.hasOwn(options, "diff")) {
+    if (
+      options &&
+      typeof options === "object" &&
+      !Array.isArray(options) &&
+      Object.hasOwn(options, "diff")
+    ) {
       throw new TypeError("page.snapshot does not support diff");
     }
+    validatePublicApiOptions("Page.snapshot", options);
     const page = await this.#resolve();
     return this.#services.gate.withPage(page, async () => {
       await this.#activate(page.targetId);
@@ -970,7 +1041,7 @@ class Page {
     params: Record<string, unknown> = {},
     options: CdpOptions = {},
   ): Promise<any> {
-    assertCdpCall(method, params, options);
+    assertCdpCall("Page.cdp", method, params, options);
     const page = await this.#resolve();
     return this.#services.gate.withPage(page, async ({ sessionId }) => {
       await this.#activate(page.targetId);
@@ -993,6 +1064,7 @@ class Page {
     selector: string,
     options: PageWaitForSelectorOptions = {},
   ): Promise<true> {
+    validatePublicApiOptions("Page.waitForSelector", options);
     if (options.timeout !== undefined) assertTimeout(options.timeout);
     const page = await this.#resolve();
     return this.#services.gate.withPage(page, async ({ sessionId }) => {
@@ -1012,6 +1084,7 @@ class Page {
     state: "load" | "networkidle",
     options: PageWaitForLoadStateOptions = {},
   ): Promise<void> {
+    validatePublicApiOptions("Page.waitForLoadState", options);
     if (options.timeout !== undefined) assertTimeout(options.timeout);
     const page = await this.#resolve();
     return this.#services.gate.withPage(page, async ({ sessionId }) => {
@@ -1033,14 +1106,17 @@ class Page {
   }
 
   async screenshot(options: PageScreenshotOptions = {}): Promise<string> {
-    if (!options || typeof options !== "object" || Array.isArray(options)) {
-      throw new TypeError("page.screenshot options must be an object");
-    }
-    if (Object.hasOwn(options, "full")) {
+    if (
+      options &&
+      typeof options === "object" &&
+      !Array.isArray(options) &&
+      Object.hasOwn(options, "full")
+    ) {
       throw new TypeError(
         "page.screenshot uses fullPage instead of the v1 full option",
       );
     }
+    validatePublicApiOptions("Page.screenshot", options);
     const { path, fullPage, ...captureOptions } = options;
     if (path !== undefined && (typeof path !== "string" || path.length === 0)) {
       throw new TypeError("page.screenshot path must be a non-empty string");
@@ -1065,6 +1141,7 @@ class Page {
     selector: string,
     options: PageClickOptions = {},
   ): Promise<PageActionReceipt> {
+    validatePublicApiOptions("Page.click", options);
     return this.#runAction(selector, (sessionId, refMap) =>
       clickInPage(
         this.#services,
@@ -1081,6 +1158,7 @@ class Page {
     selector: string,
     options: Omit<PageClickOptions, "clickCount"> = {},
   ): Promise<PageActionReceipt> {
+    validatePublicApiOptions("Page.dblclick", options);
     return this.#runAction(selector, (sessionId, refMap) =>
       clickInPage(
         this.#services,
@@ -1097,6 +1175,7 @@ class Page {
     selector: string,
     options: PageHoverOptions = {},
   ): Promise<PageActionReceipt> {
+    validatePublicApiOptions("Page.hover", options);
     return this.#runAction(selector, (sessionId, refMap) =>
       hoverInPage(
         this.#services,
@@ -1114,6 +1193,7 @@ class Page {
     targetSelector: string,
     options: PageDragAndDropOptions = {},
   ): Promise<PageActionReceipt> {
+    validatePublicApiOptions("Page.dragAndDrop", options);
     return this.#runAction(
       [sourceSelector, targetSelector],
       (sessionId, refMap) =>
@@ -1134,6 +1214,7 @@ class Page {
     value: string,
     options: PageFillOptions = {},
   ): Promise<PageActionReceipt> {
+    validatePublicApiOptions("Page.fill", options);
     return this.#runAction(selector, (sessionId, refMap) =>
       fillInPage(this.#services, sessionId, refMap, selector, value, options),
     );
@@ -1152,6 +1233,7 @@ class Page {
     deltaY: number,
     options: { deltaX?: number; behavior?: ScrollBehavior } = {},
   ): Promise<{ x: number; y: number }> {
+    validatePublicApiOptions("Page.scrollBy", options);
     if (!Number.isFinite(deltaY) || !Number.isFinite(options.deltaX ?? 0)) {
       throw new TypeError("page.scrollBy requires finite pixel deltas");
     }
@@ -1717,14 +1799,17 @@ function pageFetchPayload(
   url: string,
   options: PageFetchOptions,
 ): PageFetchPayload {
-  if (!options || typeof options !== "object" || Array.isArray(options)) {
-    throw new TypeError("page.fetch options must be an object");
-  }
-  if (Object.hasOwn(options, "signal")) {
+  if (
+    options &&
+    typeof options === "object" &&
+    !Array.isArray(options) &&
+    Object.hasOwn(options, "signal")
+  ) {
     throw new TypeError(
       "page.fetch does not accept options.signal; use timeout in milliseconds",
     );
   }
+  validatePublicApiOptions("Page.fetch", options);
   const { timeout = 20_000, ...requestOptions } = options;
   assertTimeout(timeout);
   return {
@@ -1875,13 +1960,8 @@ function assertPositiveMilliseconds(value: number, name: string): void {
   }
 }
 
-function assertPlainOptions(value: unknown, name: string): void {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new TypeError(`${name} options must be an object`);
-  }
-}
-
 function assertCdpCall(
+  apiName: "Page.cdp" | "TaskSpace.cdp",
   method: string,
   params: Record<string, unknown>,
   options: CdpOptions,
@@ -1892,9 +1972,7 @@ function assertCdpCall(
   if (!params || typeof params !== "object" || Array.isArray(params)) {
     throw new TypeError("cdp params must be an object");
   }
-  if (!options || typeof options !== "object" || Array.isArray(options)) {
-    throw new TypeError("cdp options must be an object");
-  }
+  validatePublicApiOptions(apiName, options);
   if (options.timeout !== undefined) assertTimeout(options.timeout);
 }
 

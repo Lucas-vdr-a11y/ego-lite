@@ -90,6 +90,7 @@ CDP session、事件缓冲、dialog 状态和 Network domain 状态都按 target
   "usedLabels": ["p1", "p2"],
   "releasedLabels": [],
   "initialized": true,
+  "handoffBaseline": null,
   "unmanagedTargets": {
     "USER_TARGET": "unknown"
   },
@@ -130,6 +131,8 @@ CDP session、事件缓冲、dialog 状态和 Network domain 状态都按 target
 - 第一次观察一个 space 时，已有 tab 记为 `unknown`，不会猜测它们由谁创建。
 - 在 Agent 持续控制该 space 时，后来出现的新 tab 会自动加入账本。
 - 用户控制期间不做自动收编。
+- `handOff()` 在交出控制前记录当时的 tab 集合。claim/takeover 后第一次盘点把
+  用户期间新增的 tab 记为 `unknown`，然后恢复 Agent 新 tab 的自动收编。
 
 不同 space 使用不同文件。多个进程同时写同一 space 不受支持，可能
 last-writer-wins。如果未来需要支持，必须使用文件锁或 CAS；不维护只能发现
@@ -210,6 +213,7 @@ task.spaceId;
 task.name;
 task.ownership;
 task.page(label);
+task.userPage();
 
 await task.listPages();
 await task.openPage(url, { as, timeout });
@@ -223,6 +227,8 @@ await task.cdp(method, params, { timeout });
 ```
 
 `spaceId` 是新版名称。`id` 仅作为已有脚本的兼容别名保留，不进入新版 Skill。
+`userPage()` 返回 claim/takeover 完成时用户正在看的 tab；它是边界快照，不是
+实时 active-page 查询。用户页仍未受管时，必须先 `adopt()` 才能操作。
 `finish()` 保留浏览器空间给用户，`close()` 关闭空间；两者成功后都会删除该
 space 的 Page 标签状态。
 
@@ -270,7 +276,12 @@ worker。返回值为：
 
 ```js
 {
-  (ok, status, statusText, url, headers, body);
+  ok,
+  status,
+  statusText,
+  url,
+  headers,
+  body,
 }
 ```
 
@@ -389,6 +400,9 @@ await page.evaluate(
 TaskSpace 提供 `handOff()` 和毫秒制 `waitForControl()`。用户明确要求恢复后，
 `takeOverTaskSpace(spaceId)` 直接返回新的 TaskSpace；接管 user-owned 或
 inactive space 时，`claimTaskSpace(spaceId)` 也直接返回 TaskSpace。
+claim 以及确实从用户控制返回 Agent 的 takeover，会捕获用户当时激活的 tab，
+并完成一次边界盘点。对已由 Agent 控制的 space 重复 takeover，不会重新归类
+现有 tab。
 
 结束时调用 `task.finish()` 保留浏览器空间，或调用 `task.close()` 关闭空间。
 `claimTaskSpace()` 和 `takeOverTaskSpace()` 是取得对象前的入口。旧的
@@ -417,19 +431,20 @@ SDK 路径不经过 CLI 的 execute 包装，因此在进程生命周期事件�
 claim/takeover 入口；其余旧名称只对已有脚本和显式 legacy 查询可见。不要为了
 复用新版实现而悄悄改变旧 helper 行为。
 
+V2 API 的签名、options 校验、默认 help manifest 和
+`skills/ego-browser/references/api.md` 来自同一份
+`package/ego-browser/src/public-api-schema.ts`。旧 helper 继续注入；需要查看时用
+`help("legacy")` 或 `help("legacy", "click")`。
+
 站点 site skills 暂时继续使用 legacy surface，后续再按 Page 能力注入方式
 迁移。
 
-## 11. 剩余工作
+## 11. 实施状态
 
-下一阶段按下面顺序进行：
-
-1. 用一份公共 API schema 生成参数校验、`help()` manifest 和 SKILL API
-   参考。
-2. 默认 help/SKILL 隐藏旧全局 helper，同时保留运行时兼容层和显式 legacy
-   help。
-3. 完成用户页面边界 API。
-4. 更新 site skills，再补完整的 v2 真实任务回归。
+公共 API schema、默认 V2 help、显式 legacy help、生成式 API 参考和用户页面
+边界已经实现。真实 Ego Lite E2E 已覆盖兼容接口、TaskSpace/Page、多 space、
+popup 盘点兜底、键鼠、CDP、snapshot 和视觉链路。site skills 暂时保持 legacy
+surface，不属于本阶段。
 
 不在当前范围内：
 
@@ -448,7 +463,9 @@ claim/takeover 入口；其余旧名称只对已有脚本和显式 legacy 查询
 - 跨 space 操作按 gate 串行并落到正确 space。
 - 页面预算在创建前拒绝，错误给出可执行的 close/goto 建议。
 - 首次存在的 unknown tab 不被自动收编；Agent 控制期间的新 tab 会被收编。
-- popup 立即出现和延迟出现两条路径都能进入账本。
+- handoff 期间用户新开的 tab 在 takeover 后保持 unknown；`userPage()` 返回边界
+  时激活的 tab。
+- popup 可由动作回执立即收编；即使动作回执漏记，后续盘点也会补回账本。
 - `Page.close()` 确认 tab 消失后才删除标签，最后 tab 有 anchor。
 - screenshot、evaluate、fetch、键盘和鼠标都操作并激活指定 Page。
 - 底层键鼠不安装动作探针，高层动作仍能返回导航和 popup 回执。
@@ -456,4 +473,6 @@ claim/takeover 入口；其余旧名称只对已有脚本和显式 legacy 查询
 - snapshot 始终返回全量并标明来源，不接受 `diff`。
 - 旧格式账本能读取，并在下一次写入时删掉过期字段。
 - 1.2.3 代表性脚本原样通过。
-- `npm test`、真实浏览器 E2E 和 site-skill validation 全绿。
+- 默认 help 只展示 V2；显式 legacy help 仍可查询旧 helper。
+- API 参考与公共 schema 保持同步。
+- `npm test` 和真实浏览器 E2E 全绿。

@@ -2,6 +2,12 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { parse } from "acorn";
 
+import {
+  PUBLIC_API_SCHEMA,
+  publicApiEntry,
+  type PublicApiEntry,
+} from "./public-api-schema.js";
+
 type ParamInfo = {
   name: string;
   type: string | null;
@@ -11,33 +17,61 @@ type ParamInfo = {
   default: string | null;
 };
 
-type HelperDoc = {
+export type HelperDoc = {
   name: string;
   signature: string;
   description: string | null;
   params: ParamInfo[];
   returns: string | null;
   async: boolean;
+  public?: boolean;
 };
 
 let cache: Map<string, HelperDoc> | null = null;
 
-export function help(helpers: Record<string, unknown>, ...names: string[]): HelperDoc | HelperDoc[] | string {
+export function help(
+  helpers: Record<string, unknown>,
+  ...names: string[]
+): HelperDoc | HelperDoc[] | string {
   const docs = getDocsMap();
   if (names.length === 0) {
-    const all = [...docs.values()].filter((d) => d.name in helpers);
-    return all;
+    return PUBLIC_API_SCHEMA.map(publicEntryToHelpDoc);
+  }
+  if (names[0] === "legacy") {
+    if (names.length === 1) {
+      return [...docs.values()].filter(
+        (doc) => doc.name in helpers && !publicApiEntry(doc.name),
+      );
+    }
+    return helpLegacyNames(docs, names.slice(1));
   }
   if (names.length === 1) {
-    const doc = docs.get(names[0]);
-    if (!doc) return `Unknown helper: ${names[0]}`;
-    return doc;
+    const publicEntry = findPublicEntry(names[0]);
+    if (publicEntry) return publicEntryToHelpDoc(publicEntry);
+    if (names[0] in helpers) {
+      return `Legacy helper hidden from default help: ${names[0]}. Use help("legacy", "${names[0]}").`;
+    }
+    return `Unknown helper: ${names[0]}`;
   }
-  return names.map((n) => docs.get(n) || { name: n, signature: n, description: null, params: [], returns: null, async: false });
+  return names.map((name) => {
+    const publicEntry = findPublicEntry(name);
+    if (publicEntry) return publicEntryToHelpDoc(publicEntry);
+    return {
+      name,
+      signature: name,
+      description: `Legacy helper hidden from default help. Use help("legacy", "${name}").`,
+      params: [],
+      returns: null,
+      async: false,
+    };
+  });
 }
 
 export function formatHelp(doc: HelperDoc): string {
   const lines: string[] = [];
+  if (doc.public) {
+    lines.push(doc.name, "");
+  }
   if (doc.description) {
     lines.push(doc.description);
   }
@@ -46,7 +80,9 @@ export function formatHelp(doc: HelperDoc): string {
     const type = p.type ? `: ${p.type}` : "";
     const desc = p.description ? ` — ${p.description}` : "";
     const def = p.default ? ` (default: ${p.default})` : "";
-    lines.push(`@param ${p.rest ? "..." : ""}${p.name}${opt}${type}${desc}${def}`);
+    lines.push(
+      `@param ${p.rest ? "..." : ""}${p.name}${opt}${type}${desc}${def}`,
+    );
   }
   if (doc.returns) {
     lines.push(`@returns ${doc.returns}`);
@@ -69,7 +105,7 @@ function getDocsMap(): Map<string, HelperDoc> {
       ecmaVersion: "latest",
       sourceType: "module",
       onComment: comments,
-      locations: true
+      locations: true,
     });
   } catch {
     return cache;
@@ -92,11 +128,13 @@ function getDocsMap(): Map<string, HelperDoc> {
 
     const params = extractParams(node, parsed);
     const isAsync = node.async === true;
-    const paramSig = params.map((p) => {
-      const rest = p.rest ? "..." : "";
-      const opt = p.optional ? "?" : "";
-      return `${rest}${p.name}${opt}`;
-    }).join(", ");
+    const paramSig = params
+      .map((p) => {
+        const rest = p.rest ? "..." : "";
+        const opt = p.optional ? "?" : "";
+        return `${rest}${p.name}${opt}`;
+      })
+      .join(", ");
     const retStr = parsed?.returns || (isAsync ? "Promise<...>" : null);
     const signature = `${name}(${paramSig})${retStr ? ` → ${retStr}` : ""}`;
 
@@ -106,7 +144,7 @@ function getDocsMap(): Map<string, HelperDoc> {
       description: parsed?.description || null,
       params,
       returns: retStr,
-      async: isAsync
+      async: isAsync,
     });
   });
 
@@ -120,6 +158,51 @@ function getDocsMap(): Map<string, HelperDoc> {
   return cache;
 }
 
+function helpLegacyNames(
+  docs: Map<string, HelperDoc>,
+  names: string[],
+): HelperDoc | HelperDoc[] | string {
+  const resolved = names
+    .map((name) => docs.get(name))
+    .filter(Boolean) as HelperDoc[];
+  if (resolved.length !== names.length) {
+    const missing = names.find((name) => !docs.has(name));
+    return `Unknown legacy helper: ${missing}`;
+  }
+  return resolved.length === 1 ? resolved[0] : resolved;
+}
+
+function findPublicEntry(name: string): PublicApiEntry | undefined {
+  const normalized = name
+    .replace(/^task\./, "TaskSpace.")
+    .replace(/^page\./, "Page.");
+  return publicApiEntry(normalized);
+}
+
+function publicEntryToHelpDoc(entry: PublicApiEntry): HelperDoc {
+  const options = entry.options
+    ? Object.entries(entry.options)
+        .map(([name, specification]) => {
+          const values = specification.values
+            ? ` (${specification.values.join(" | ")})`
+            : "";
+          return `${name}${values}: ${specification.description}`;
+        })
+        .join(" ")
+    : "";
+  return {
+    name: entry.name,
+    signature: entry.signature,
+    description: options
+      ? `${entry.summary} Options: ${options}`
+      : entry.summary,
+    params: [],
+    returns: null,
+    async: entry.signature.startsWith("await "),
+    public: true,
+  };
+}
+
 function readSelf(): string | null {
   try {
     const selfPath = fileURLToPath(import.meta.url);
@@ -131,11 +214,15 @@ function readSelf(): string | null {
 
 function walkFunctions(node: any, visitor: (node: any) => void) {
   if (!node || typeof node !== "object") return;
-  if (node.type === "FunctionDeclaration" || node.type === "FunctionExpression") {
+  if (
+    node.type === "FunctionDeclaration" ||
+    node.type === "FunctionExpression"
+  ) {
     visitor(node);
   }
   for (const key of Object.keys(node)) {
-    if (key === "type" || key === "loc" || key === "start" || key === "end") continue;
+    if (key === "type" || key === "loc" || key === "start" || key === "end")
+      continue;
     const child = node[key];
     if (Array.isArray(child)) {
       for (const item of child) {
@@ -147,7 +234,10 @@ function walkFunctions(node: any, visitor: (node: any) => void) {
   }
 }
 
-function walkAliases(node: any, visitor: (name: string, target: string) => void) {
+function walkAliases(
+  node: any,
+  visitor: (name: string, target: string) => void,
+) {
   if (!node || typeof node !== "object") return;
   if (node.type === "VariableDeclaration") {
     for (const decl of node.declarations || []) {
@@ -157,7 +247,8 @@ function walkAliases(node: any, visitor: (name: string, target: string) => void)
     }
   }
   for (const key of Object.keys(node)) {
-    if (key === "type" || key === "loc" || key === "start" || key === "end") continue;
+    if (key === "type" || key === "loc" || key === "start" || key === "end")
+      continue;
     const child = node[key];
     if (Array.isArray(child)) {
       for (const item of child) {
@@ -181,14 +272,18 @@ function extractParams(node: any, jsdoc: ParsedJSDoc | null): ParamInfo[] {
     return {
       ...info,
       type: jsdocParam?.type || null,
-      description: jsdocParam?.description || null
+      description: jsdocParam?.description || null,
     };
   });
 }
 
 type ParsedJSDoc = {
   description: string | null;
-  params: Array<{ name: string; type: string | null; description: string | null }>;
+  params: Array<{
+    name: string;
+    type: string | null;
+    description: string | null;
+  }>;
   returns: string | null;
 };
 
@@ -199,10 +294,16 @@ function parseJSDoc(raw: string): ParsedJSDoc {
   let returns: string | null = null;
 
   for (const line of lines) {
-    const paramMatch = line.match(/^@param\s+(?:\{([^}]*)\}\s+)?(\[?\w+\]?)(?:(?:\s+[-–—]\s*|\s+)(.+))?\s*$/);
+    const paramMatch = line.match(
+      /^@param\s+(?:\{([^}]*)\}\s+)?(\[?\w+\]?)(?:(?:\s+[-–—]\s*|\s+)(.+))?\s*$/,
+    );
     if (paramMatch) {
       const name = paramMatch[2].replace(/^\[|\]$/g, "");
-      params.push({ name, type: paramMatch[1] || null, description: paramMatch[3] || null });
+      params.push({
+        name,
+        type: paramMatch[1] || null,
+        description: paramMatch[3] || null,
+      });
       continue;
     }
     const returnsMatch = line.match(/^@returns?\s+(?:\{([^}]*)\}\s*)?(.*)/);
@@ -217,11 +318,16 @@ function parseJSDoc(raw: string): ParsedJSDoc {
   return {
     description: descLines.join(" ").trim() || null,
     params,
-    returns
+    returns,
   };
 }
 
-function resolveParam(node: any): { name: string; optional: boolean; rest: boolean; default: string | null } {
+function resolveParam(node: any): {
+  name: string;
+  optional: boolean;
+  rest: boolean;
+  default: string | null;
+} {
   if (node.type === "RestElement") {
     const inner = resolveParam(node.argument);
     return { ...inner, rest: true, optional: true };
@@ -235,7 +341,9 @@ function resolveParam(node: any): { name: string; optional: boolean; rest: boole
     return { name: node.name, optional: false, rest: false, default: null };
   }
   if (node.type === "ObjectPattern") {
-    const props = (node.properties || []).map((p: any) => p.key?.name || "?").join(", ");
+    const props = (node.properties || [])
+      .map((p: any) => p.key?.name || "?")
+      .join(", ");
     return { name: `{${props}}`, optional: false, rest: false, default: null };
   }
   if (node.type === "ArrayPattern") {

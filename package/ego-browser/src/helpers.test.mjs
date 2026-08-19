@@ -242,7 +242,9 @@ test("newTaskSpace creates and selects an agent task space", async () => {
     {
       async createTaskSpace(name) {
         calls.push(["createTaskSpace", name]);
-        return { taskId: name, id: 7, name, ownership: "agent" };
+        // Ego Lite's create result may omit ownership even though creation by
+        // this API always produces an Agent-owned space.
+        return { taskId: name, id: 7, name };
       },
       useTaskSpace(taskId) {
         calls.push(["useTaskSpace", taskId]);
@@ -424,6 +426,10 @@ test("claimTaskSpace returns a TaskSpace after claiming and selecting", async ()
         calls.push(["useTaskSpace", taskId]);
         return taskId;
       },
+      async listTabs() {
+        calls.push(["listTabs"]);
+        return { tabs: [] };
+      },
     },
     async () => {
       const task = await claimTaskSpace("checkout-flow");
@@ -441,6 +447,8 @@ test("claimTaskSpace returns a TaskSpace after claiming and selecting", async ()
     ["listTaskSpaces"],
     ["claimTaskSpace", 7, "checkout-flow"],
     ["useTaskSpace", 7],
+    ["useTaskSpace", 7],
+    ["listTabs"],
   ]);
 });
 
@@ -467,12 +475,58 @@ test("takeOverTaskSpace returns a TaskSpace when a space is specified", async ()
       async takeOverTaskSpace() {
         calls.push(["takeOverTaskSpace"]);
       },
+      async listTabs() {
+        calls.push(["listTabs"]);
+        return { tabs: [] };
+      },
     },
     async () => {
       const task = await takeOverTaskSpace(7);
       assert.equal(task.spaceId, 7);
       assert.equal(task.ownership, "agent");
       assert.equal(typeof task.openPage, "function");
+    },
+  );
+  assert.deepEqual(calls, [
+    ["listTaskSpaces"],
+    ["useTaskSpace", 7],
+    ["takeOverTaskSpace"],
+    ["useTaskSpace", 7],
+    ["listTabs"],
+  ]);
+});
+
+test("takeOverTaskSpace does not invent a user boundary when Agent already controls the space", async () => {
+  const calls = [];
+  await withEgo(
+    {
+      async listTaskSpaces() {
+        calls.push(["listTaskSpaces"]);
+        return {
+          taskSpaces: [
+            {
+              taskId: "checkout-flow",
+              id: 7,
+              name: "checkout-flow",
+              ownership: "agent",
+            },
+          ],
+        };
+      },
+      async useTaskSpace(id) {
+        calls.push(["useTaskSpace", id]);
+      },
+      async takeOverTaskSpace() {
+        calls.push(["takeOverTaskSpace"]);
+      },
+      async listTabs() {
+        calls.push(["listTabs"]);
+        return { tabs: [] };
+      },
+    },
+    async () => {
+      const task = await takeOverTaskSpace(7);
+      assert.equal(task.userPage(), undefined);
     },
   );
   assert.deepEqual(calls, [

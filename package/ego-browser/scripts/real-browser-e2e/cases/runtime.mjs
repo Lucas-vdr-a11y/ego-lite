@@ -128,7 +128,7 @@ export function runtimeCase() {
       "js reports page exceptions"
     );
 
-    const helpText = help("click", "fillInput");
+    const helpText = help("legacy", "click", "fillInput");
     assertIncludes(helpText, "click", "help returns helper documentation");
     assertIncludes(helpText, "fillInput", "help returns multiple helper docs");
 

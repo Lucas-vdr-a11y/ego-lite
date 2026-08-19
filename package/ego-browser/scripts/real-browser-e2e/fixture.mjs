@@ -14,6 +14,7 @@ export async function closeFixtureServer(fixtureServer) {
 }
 
 export async function startFixtureServer(taskName) {
+  let crossSiteBaseUrl = "";
   const fixtureServer = createServer((req, res) => {
     const url = new URL(req.url || "/", "http://127.0.0.1");
     if (url.pathname === "/healthz") {
@@ -149,7 +150,7 @@ export async function startFixtureServer(taskName) {
     }
     if (url.pathname === "/frame.html") {
       res.writeHead(200, { "content-type": "text/html" });
-      res.end(pageHtml("frame"));
+      res.end(pageHtml("frame", { iframeUrl: null }));
       return;
     }
     if (url.pathname === "/nav-target") {
@@ -184,7 +185,7 @@ export async function startFixtureServer(taskName) {
       return;
     }
     res.writeHead(200, { "content-type": "text/html" });
-    res.end(pageHtml("home"));
+    res.end(pageHtml("home", { iframeUrl: `${crossSiteBaseUrl}/frame.html` }));
   });
 
   await new Promise((resolve, reject) => {
@@ -192,13 +193,14 @@ export async function startFixtureServer(taskName) {
     fixtureServer.listen(0, "127.0.0.1", () => resolve());
   });
   const address = fixtureServer.address();
+  crossSiteBaseUrl = `http://localhost:${address.port}`;
   return {
     server: fixtureServer,
     baseUrl: `http://127.0.0.1:${address.port}`,
   };
 }
 
-function pageHtml(kind) {
+function pageHtml(kind, { iframeUrl = "/frame.html" } = {}) {
   const title =
     kind === "nav-target"
       ? "ego-lite nav target"
@@ -307,7 +309,7 @@ function pageHtml(kind) {
       </div>
       <div id="delayed">Delayed element</div>
       <div id="never-visible" style="display:none">Never visible</div>
-      <iframe id="fixture-frame" src="/frame.html"></iframe>
+      ${iframeUrl ? `<iframe id="fixture-frame" src="${iframeUrl}"></iframe>` : ""}
       <div id="inner-scroll"><div id="inner-scroll-content">Inner scroll marker</div></div>
       <section id="scroll-area"><div id="bottom-marker">Bottom marker</div></section>
       <label>Email input <input id="email-input" type="email" value="old@example.com"></label>

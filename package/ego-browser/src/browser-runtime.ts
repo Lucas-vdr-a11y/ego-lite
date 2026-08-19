@@ -141,8 +141,10 @@ export async function browserCdp(
   timeoutMs = RESPONSE_TIMEOUT_MS,
 ) {
   // Test mock: cdpOverride bypasses everything including session injection.
+  // Include the effective timeout so tests can verify timing contracts without
+  // waiting for a real CDP deadline.
   if (state.cdpOverride) {
-    return state.cdpOverride(method, params, sessionId);
+    return state.cdpOverride(method, params, sessionId, timeoutMs);
   }
   const explicit = sessionId !== undefined;
   let effective = sessionId;

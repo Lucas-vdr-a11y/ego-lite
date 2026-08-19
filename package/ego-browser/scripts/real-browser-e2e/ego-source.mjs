@@ -108,20 +108,6 @@ export function egoSource(body, context) {
       throw new Error(message + detail + ": condition stayed false, last value " + JSON.stringify(last));
     }
 
-    async function allowWheelDispatch(label, fn) {
-      try {
-        await fn();
-        return true;
-      } catch (error) {
-        const message = error?.message || String(error);
-        if (/Input\\.dispatchMouseEvent|CDP request timed out: Input\\.dispatchMouseEvent/.test(message)) {
-          cliLog(JSON.stringify({ inputDispatchWarning: { label, message } }));
-          return false;
-        }
-        throw error;
-      }
-    }
-
     async function setStableViewport() {
       await cdp("Page.bringToFront").catch(() => {});
       await cdp("Emulation.clearDeviceMetricsOverride").catch(() => {});

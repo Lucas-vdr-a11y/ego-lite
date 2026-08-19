@@ -486,7 +486,10 @@ export async function scroll(
     deltaY: options.dy ?? 300,
   };
   try {
-    await browserCdp("Input.dispatchMouseEvent", params, undefined, 1000);
+    // Chromium may acknowledge wheel input only after the compositor has
+    // processed it. Use the normal CDP deadline; retrying a timed-out wheel is
+    // unsafe because the original event may still be applied later.
+    await browserCdp("Input.dispatchMouseEvent", params);
   } catch (error) {
     // Degrade to DOM scrolling only when the target genuinely cannot dispatch
     // wheel events. Everything else (timeouts, "user is controlling", session

@@ -20,6 +20,7 @@ export type PageLedger = {
   usedLabels: string[];
   releasedLabels: string[];
   initialized: boolean;
+  handoffBaseline: string[] | null;
   unmanagedTargets: Record<string, PageOrigin>;
   pages: Record<string, PageLedgerEntry>;
 };
@@ -35,6 +36,7 @@ type AddPageOptions = {
 
 type ReconcileOptions = {
   autoAdoptNew?: boolean;
+  afterUserControl?: boolean;
 };
 
 /**
@@ -177,6 +179,28 @@ export class PageLedgerStore {
     });
   }
 
+  /**
+   * Persist the tab set visible immediately before control is handed to the
+   * user. A later process can then preserve newly observed tabs as unknown.
+   */
+  async beginUserControl(
+    spaceId: number,
+    liveTargetIds: Iterable<string>,
+  ): Promise<void> {
+    const targetIds = [...new Set(liveTargetIds)];
+    targetIds.forEach(assertTargetId);
+    await this.#update(spaceId, (ledger) => {
+      ledger.handoffBaseline = targetIds;
+    });
+  }
+
+  /** Roll back a boundary marker when the native handoff itself fails. */
+  async cancelUserControl(spaceId: number): Promise<void> {
+    await this.#update(spaceId, (ledger) => {
+      ledger.handoffBaseline = null;
+    });
+  }
+
   async reconcile(
     spaceId: number,
     liveTargetIds: Iterable<string>,
@@ -198,12 +222,18 @@ export class PageLedgerStore {
       (targetId) => !knownTargets.has(targetId),
     );
     const needsInitialization = !current.initialized;
+    const protectsUserTabs =
+      options.afterUserControl || current.handoffBaseline !== null;
     const shouldAdopt =
-      current.initialized && options.autoAdoptNew && newTargets.length > 0;
+      current.initialized &&
+      options.autoAdoptNew &&
+      !protectsUserTabs &&
+      newTargets.length > 0;
     if (
       !hasMissingPage &&
       !hasMissingUnmanaged &&
       !needsInitialization &&
+      !protectsUserTabs &&
       !shouldAdopt
     ) {
       return current;
@@ -233,6 +263,14 @@ export class PageLedgerStore {
           ledger.unmanagedTargets[targetId] = "unknown";
         }
         ledger.initialized = true;
+        ledger.handoffBaseline = null;
+        return;
+      }
+      if (protectsUserTabs) {
+        for (const targetId of untracked) {
+          ledger.unmanagedTargets[targetId] = "unknown";
+        }
+        ledger.handoffBaseline = null;
         return;
       }
       if (!options.autoAdoptNew) return;
@@ -306,6 +344,7 @@ function emptyLedger(spaceId: number): PageLedger {
     usedLabels: [],
     releasedLabels: [],
     initialized: false,
+    handoffBaseline: null,
     unmanagedTargets: {},
     pages: {},
   };
@@ -336,6 +375,7 @@ function validateLedger(
   // instead of silently adopting pre-existing user tabs.
   const releasedLabels = stored.releasedLabels ?? [];
   const initialized = stored.initialized ?? false;
+  const handoffBaseline = stored.handoffBaseline ?? null;
   const unmanagedTargets = stored.unmanagedTargets ?? {};
   if (
     stored.spaceId !== expectedSpaceId ||
@@ -351,6 +391,11 @@ function validateLedger(
         Object.hasOwn(stored.pages || {}, label),
     ) ||
     typeof initialized !== "boolean" ||
+    (handoffBaseline !== null &&
+      (!Array.isArray(handoffBaseline) ||
+        handoffBaseline.some(
+          (targetId) => typeof targetId !== "string" || targetId.length === 0,
+        ))) ||
     !unmanagedTargets ||
     typeof unmanagedTargets !== "object" ||
     Array.isArray(unmanagedTargets) ||
@@ -388,6 +433,8 @@ function validateLedger(
     usedLabels: [...stored.usedLabels],
     releasedLabels: [...releasedLabels],
     initialized,
+    handoffBaseline:
+      handoffBaseline === null ? null : [...new Set(handoffBaseline)],
     unmanagedTargets: { ...unmanagedTargets },
     pages,
   };

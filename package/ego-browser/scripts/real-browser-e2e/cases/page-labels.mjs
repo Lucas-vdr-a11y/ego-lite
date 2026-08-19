@@ -490,11 +490,15 @@ export function pageActionsAndPopupCase() {
     });
     await source.mouse.move(innerScrollPoint.x, innerScrollPoint.y);
     await source.mouse.wheel(0, 120);
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    assert(
-      await source.evaluate("document.querySelector('#inner-scroll').scrollTop > 0"),
-      "page.mouse.wheel scrolls the inner container under the current pointer"
-    );
+    let innerScrolled = false;
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      innerScrolled = await source.evaluate(
+        "document.querySelector('#inner-scroll').scrollTop > 0"
+      );
+      if (innerScrolled) break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert(innerScrolled, "page.mouse.wheel scrolls the inner container under the current pointer");
     assertEqual((await currentTab()).targetId, source.targetId, "Page mouse methods keep their Page active");
 
     await source.evaluate(() => {
@@ -550,6 +554,21 @@ export function pageActionsAndPopupCase() {
       "agent",
       "the popup is recorded as agent-created"
     );
+
+    // Simulate the action-receipt window missing this otherwise real popup.
+    // listPages must discover the live target independently and restore a
+    // managed label; popup lifecycle cannot depend on the short receipt diff.
+    const ledgerPath = join(
+      process.env.EGO_BROWSER_STATE_DIR,
+      "space-" + task.spaceId + ".json"
+    );
+    const ledger = JSON.parse(await readFile(ledgerPath, "utf8"));
+    delete ledger.pages[popup.label];
+    await writeFile(ledgerPath, JSON.stringify(ledger));
+    const afterReconcile = await task.listPages();
+    const reconciledPopup = afterReconcile.find((item) => item.targetId === popup.targetId);
+    assert(Boolean(reconciledPopup?.label), "listPages adopts a popup missed by action receipts");
+    assertEqual(reconciledPopup.openedBy, "agent", "the reconciled popup keeps Agent origin");
     assert(
       unknownBefore.every(
         (targetId) => inventory.find((item) => item.targetId === targetId)?.label === undefined
@@ -562,7 +581,7 @@ export function pageActionsAndPopupCase() {
       "an adopted popup can exceed the budget and backpressure later openPage calls"
     );
 
-    await task.page(popup.label).close();
+    await reconciledPopup.page.close();
     await source.close();
     await comparison.close();
     await budgetFiller.close();

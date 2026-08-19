@@ -76,6 +76,11 @@ class FakeEgo {
     space.ownership = "agent";
     return { ...space };
   }
+
+  async listTabs() {
+    this.calls.push(["listTabs"]);
+    return { tabs: [] };
+  }
 }
 
 async function runTaskspaceScript(ego, code) {
@@ -211,6 +216,8 @@ test("taskspace e2e claims and selects an existing user-owned task space", async
     ["listTaskSpaces"],
     ["claimTaskSpace", 7, "checkout-flow"],
     ["useTaskSpace", 7],
+    ["useTaskSpace", 7],
+    ["listTabs"],
   ]);
 });
 
@@ -265,7 +272,8 @@ test("cli e2e exposes the unified helperContext surface (help present, internals
     `
     cliLog(JSON.stringify({
       helpType: typeof help,
-      helpResultType: typeof help("click"),
+      publicHelp: help("TaskSpace.openPage"),
+      legacyHint: help("click"),
       newTabType: typeof newTab,
       helperContextType: typeof helperContext,
       loadAgentHelpersType: typeof loadAgentHelpers
@@ -276,7 +284,10 @@ test("cli e2e exposes the unified helperContext surface (help present, internals
   assert.equal(result.exitCode, 0);
   assert.deepEqual(firstJsonLine(result.stdout), {
     helpType: "function",
-    helpResultType: "string",
+    publicHelp:
+      "TaskSpace.openPage\n\nOpen and durably label a new Page. Options: as: Permanent Page label. timeout: Maximum duration in milliseconds.\n\nawait task.openPage(url, { as?, timeout? })",
+    legacyHint:
+      'Legacy helper hidden from default help: click. Use help("legacy", "click").',
     newTabType: "undefined",
     helperContextType: "undefined",
     loadAgentHelpersType: "undefined",

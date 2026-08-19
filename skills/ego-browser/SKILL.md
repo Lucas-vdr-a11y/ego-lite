@@ -8,6 +8,7 @@ description: ego-browser (ego lite) is a real Chromium browser designed from the
 ego lite is a real desktop browser based on Chromium. Agents operate real pages in isolated task spaces; pages use the user's actual login state and cookies and produce real downloads, dialogs, and new tabs. Obtain a `TaskSpace` with `taskSpace()`, then obtain or create a `Page` from it. Start every page operation from its `Page`. Page methods address their own page and activate it automatically when interaction requires it, so do not maintain a "current tab" or switch tabs manually.
 
 For installation, connection, or runtime problems, read `references/install.md`.
+For exact v2 signatures and option fields, read `references/api.md`.
 
 ## Run browser scripts
 
@@ -63,6 +64,7 @@ task.spaceId;
 task.name;
 task.ownership;
 task.page(label);
+task.userPage();
 
 await task.listPages();
 await task.openPage(url, { as, timeout });
@@ -297,7 +299,10 @@ When the user must act in the browser, call `await task.handOff()`, end the curr
 ```js
 const spaceId = 7;
 const task = await takeOverTaskSpace(spaceId);
+const userPage = task.userPage();
 ```
+
+`task.userPage()` is the tab that was active when claim/takeover completed. It may be an unmanaged user tab; adopt it before operating it. Use `listPages()` for the current active state after Agent actions begin.
 
 Use `task.waitForControl({ interval, timeout })` only when the user already knows what to do and the current script must wait in place. It waits for control but never takes it.
 
