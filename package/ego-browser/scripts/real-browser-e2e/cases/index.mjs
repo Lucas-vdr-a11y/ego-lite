@@ -22,6 +22,13 @@ import {
   pageLabelHardStopRestoreCase,
   pageLabelRestoreCase,
 } from "./page-labels.mjs";
+import {
+  portableKeyboardWorkflowCase,
+  pureCdpWorkflowCase,
+  snapshotWorkflowCase,
+  v1V2ActionParityCase,
+  visualWorkflowCase,
+} from "./workflow-chains.mjs";
 
 export const e2eCases = [
   { name: "environment initialization", body: environmentCase },
@@ -54,4 +61,9 @@ export const e2eCases = [
   { name: "page complex evaluate", body: pageComplexEvaluateCase },
   { name: "page fetch", body: pageFetchCase },
   { name: "page actions and popup adoption", body: pageActionsAndPopupCase },
+  { name: "v1 and v2 action parity", body: v1V2ActionParityCase },
+  { name: "portable keyboard workflow", body: portableKeyboardWorkflowCase },
+  { name: "pure CDP workflow", body: pureCdpWorkflowCase },
+  { name: "snapshot workflow", body: snapshotWorkflowCase },
+  { name: "visual workflow", body: visualWorkflowCase },
 ];

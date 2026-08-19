@@ -1091,6 +1091,77 @@ test("Page keyboard mirrors Playwright key state and the US layout", async () =>
   });
 });
 
+test("Page keyboard maps portable editing shortcuts on macOS", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a", { platform: "darwin" });
+    const page = await task.newPage("https://example.test/first");
+
+    await page.keyboard.press("ControlOrMeta+A");
+    await page.keyboard.press("ControlOrMeta+C");
+    await page.keyboard.press("ControlOrMeta+V");
+    await page.keyboard.press("ControlOrMeta+Z");
+    await page.keyboard.press("Meta+ArrowUp");
+    await page.keyboard.press("Meta+ArrowDown");
+
+    const keyDowns = fixture.calls
+      .filter(
+        ([kind, method, params]) =>
+          kind === "cdp" &&
+          method === "Input.dispatchKeyEvent" &&
+          params.type === "rawKeyDown",
+      )
+      .map(([, , params]) => params);
+    const commandFor = (code) =>
+      keyDowns.find((params) => params.code === code)?.commands;
+
+    assert.deepEqual(commandFor("KeyA"), ["selectAll"]);
+    assert.deepEqual(commandFor("KeyC"), ["copy"]);
+    assert.deepEqual(commandFor("KeyV"), ["paste"]);
+    assert.deepEqual(commandFor("KeyZ"), ["undo"]);
+    assert.deepEqual(commandFor("ArrowUp"), ["moveToBeginningOfDocument"]);
+    assert.deepEqual(commandFor("ArrowDown"), ["moveToEndOfDocument"]);
+    assert(
+      keyDowns
+        .filter((params) => params.code?.startsWith("Key"))
+        .every((params) => params.modifiers === 4),
+      "ControlOrMeta must resolve to Meta on macOS",
+    );
+  });
+});
+
+test("Page keyboard maps portable editing shortcuts on Windows", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a", { platform: "win32" });
+    const page = await task.newPage("https://example.test/first");
+
+    await page.keyboard.press("ControlOrMeta+A");
+    await page.keyboard.press("ControlOrMeta+C");
+    await page.keyboard.press("ControlOrMeta+V");
+    await page.keyboard.press("ControlOrMeta+Z");
+    await page.keyboard.press("Control+Home");
+    await page.keyboard.press("Control+End");
+
+    const keyDowns = fixture.calls
+      .filter(
+        ([kind, method, params]) =>
+          kind === "cdp" &&
+          method === "Input.dispatchKeyEvent" &&
+          params.type === "rawKeyDown",
+      )
+      .map(([, , params]) => params);
+    for (const code of ["KeyA", "KeyC", "KeyV", "KeyZ", "Home", "End"]) {
+      const keyDown = keyDowns.find((params) => params.code === code);
+      assert(keyDown, `${code} must be dispatched on Windows`);
+      assert.equal(keyDown.modifiers, 2, `${code} must carry Control`);
+      assert.deepEqual(
+        keyDown.commands,
+        [],
+        "Windows relies on Chromium's native shortcut handling",
+      );
+    }
+  });
+});
+
 test("Page keyboard type emits physical keys when possible and inserts unsupported text", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a", { platform: "darwin" });

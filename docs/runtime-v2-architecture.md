@@ -281,6 +281,14 @@ await page.keyboard.insertText(text)
 键盘和鼠标状态保存在 Page 对象中。`ControlOrMeta` 会按当前平台映射；macOS
 编辑快捷键通过 CDP editing commands 发送。
 
+Page 对象只在当前脚本轮次内存在，因此鼠标位置不会跨轮保留。新一轮取得 Page
+后，`page.mouse` 从 `(0, 0)` 开始；调用 `wheel()` 前应先用 `move()` 把鼠标移到
+实际要滚动的区域。`ControlOrMeta` 用于选择、复制、粘贴和撤销等跨平台编辑
+快捷键。文档首尾按平台使用原生组合：macOS 使用
+`Meta+ArrowUp` / `Meta+ArrowDown`，Windows 使用
+`Control+Home` / `Control+End`。单元测试固定覆盖 `darwin` 和 `win32` 两套映射，
+真实浏览器 E2E 则验证当前宿主平台。
+
 新版没有 `page.keyboard.dispatch()`。它只能在页面中合成
 `KeyboardEvent`，`isTrusted=false`，也不能可靠触发剪贴板和浏览器默认行为。
 确实需要合成事件时，调用方可以显式使用 `page.evaluate()`。

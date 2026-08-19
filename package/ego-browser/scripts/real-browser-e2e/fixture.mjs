@@ -162,6 +162,11 @@ export async function startFixtureServer(taskName) {
       res.end(pageHtml("secondary"));
       return;
     }
+    if (url.pathname === "/visual") {
+      res.writeHead(200, { "content-type": "text/html" });
+      res.end(visualPageHtml());
+      return;
+    }
     if (url.pathname === "/slow-page") {
       const delayMs = Number(url.searchParams.get("ms") || 250);
       setTimeout(() => {
@@ -341,6 +346,7 @@ function pageHtml(kind) {
               detail: event.detail,
               x: event.clientX,
               y: event.clientY,
+              trusted: event.isTrusted,
             });
           },
           true,
@@ -476,6 +482,51 @@ function pageHtml(kind) {
         const delayed = document.querySelector("#delayed");
         delayed.style.display = "block";
       }, 350);
+    </script>
+  </body>
+</html>`;
+}
+
+function visualPageHtml() {
+  return `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>ego-lite visual fixture</title>
+    <style>
+      html, body { height: 100%; margin: 0; overflow: hidden; }
+      body { background: #f4f6fa; }
+      canvas { left: 100px; position: fixed; top: 100px; }
+    </style>
+  </head>
+  <body>
+    <canvas id="visual-canvas" width="320" height="180"></canvas>
+    <script>
+      const canvas = document.querySelector("#visual-canvas");
+      const context = canvas.getContext("2d");
+      window.__visualClicks = 0;
+
+      function draw(active) {
+        context.fillStyle = "#172033";
+        context.fillRect(0, 0, canvas.width, canvas.height);
+        context.fillStyle = active ? "#2563eb" : "#dc2626";
+        context.fillRect(20, 20, 120, 60);
+        context.fillStyle = "#ffffff";
+        context.font = "20px sans-serif";
+        context.fillText(active ? "DONE" : "CLICK", 45, 58);
+      }
+
+      canvas.addEventListener("click", (event) => {
+        const rect = canvas.getBoundingClientRect();
+        const x = event.clientX - rect.left;
+        const y = event.clientY - rect.top;
+        if (x >= 20 && x <= 140 && y >= 20 && y <= 80) {
+          window.__visualClicks += 1;
+          window.__visualTrusted = event.isTrusted;
+          draw(true);
+        }
+      });
+      draw(false);
     </script>
   </body>
 </html>`;

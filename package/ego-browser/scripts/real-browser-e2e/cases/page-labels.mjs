@@ -478,7 +478,20 @@ export function pageActionsAndPopupCase() {
     await source.evaluate("window.scrollTo(0, 0)");
     const scrolled = await source.scrollBy(300);
     assert(scrolled.y > 0, "page.scrollBy scrolls the addressed document");
+    const innerScrollPoint = await source.evaluate(() => {
+      const element = document.querySelector("#inner-scroll");
+      element.scrollIntoView({ block: "center" });
+      element.scrollTop = 0;
+      const rect = element.getBoundingClientRect();
+      return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+    });
+    await source.mouse.move(innerScrollPoint.x, innerScrollPoint.y);
     await source.mouse.wheel(0, 120);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert(
+      await source.evaluate("document.querySelector('#inner-scroll').scrollTop > 0"),
+      "page.mouse.wheel scrolls the inner container under the current pointer"
+    );
     assertEqual((await currentTab()).targetId, source.targetId, "Page mouse methods keep their Page active");
 
     await source.evaluate(() => {
