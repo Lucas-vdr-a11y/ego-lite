@@ -480,6 +480,8 @@ surface，不属于本阶段。
 - screenshot、evaluate、fetch、键盘和鼠标都操作并激活指定 Page。
 - 页面动作不安装观察探针；高层动作仍能返回 popup 回执。
 - `keyboard.press()` 产生 native/trusted 输入；新版不暴露 synthetic dispatch。
+- `dragAndDrop()` 不只发出起止事件，还能把简单的 pointer-driven 元素实际拖到目标
+  区域；`mouse.down/move/up` 能在 Canvas 上保持按键状态并连续绘制曲线和折线。
 - snapshot 始终返回全量并标明来源，不接受 `diff`。
 - 旧格式账本能读取，并在下一次写入时删掉过期字段。
 - 1.2.3 代表性脚本原样通过。

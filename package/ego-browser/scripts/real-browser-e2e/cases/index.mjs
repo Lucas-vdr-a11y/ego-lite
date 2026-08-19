@@ -8,6 +8,7 @@ import { keyboardCase } from "./keyboard.mjs";
 import { keyboardRegressionCase } from "./keyboard-regression.mjs";
 import { pageKeyboardInterfaceCase } from "./page-keyboard.mjs";
 import { pageClickHitTargetCase } from "./page-click-hit-target.mjs";
+import { pageDragAndDrawCase } from "./page-drag-and-draw.mjs";
 import { pageScrolledScreenshotCase } from "./page-screenshot.mjs";
 import { pageSnapshotLocatorCase } from "./page-snapshot-locators.mjs";
 import { pageLoadStatesCase } from "./page-load-states.mjs";
@@ -68,6 +69,7 @@ export const e2eCases = [
   { name: "page fetch", body: pageFetchCase },
   { name: "page actions and popup adoption", body: pageActionsAndPopupCase },
   { name: "Page click hit target", body: pageClickHitTargetCase },
+  { name: "Page drag and canvas drawing", body: pageDragAndDrawCase },
   { name: "Page scrolled screenshot", body: pageScrolledScreenshotCase },
   { name: "Page snapshot locator quality", body: pageSnapshotLocatorCase },
   { name: "Page load states", body: pageLoadStatesCase },

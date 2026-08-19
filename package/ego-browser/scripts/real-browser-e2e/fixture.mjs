@@ -168,6 +168,11 @@ export async function startFixtureServer(taskName) {
       res.end(visualPageHtml());
       return;
     }
+    if (url.pathname === "/pointer-workbench") {
+      res.writeHead(200, { "content-type": "text/html" });
+      res.end(pointerWorkbenchHtml());
+      return;
+    }
     if (url.pathname === "/slow-page") {
       const delayMs = Number(url.searchParams.get("ms") || 250);
       setTimeout(() => {
@@ -558,6 +563,207 @@ function visualPageHtml() {
         }
       });
       draw(false);
+    </script>
+  </body>
+</html>`;
+}
+
+function pointerWorkbenchHtml() {
+  return `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>ego-lite pointer workbench</title>
+    <style>
+      * { box-sizing: border-box; }
+      body { background: #f6f7fb; font-family: system-ui, sans-serif; margin: 0; }
+      h1 { font-size: 20px; margin: 12px 24px; }
+      #drag-area {
+        background: #fff;
+        border: 2px solid #cbd5e1;
+        height: 170px;
+        margin: 0 24px 16px;
+        position: relative;
+        width: 720px;
+      }
+      #drag-source, #drop-target {
+        align-items: center;
+        display: flex;
+        justify-content: center;
+        position: absolute;
+        user-select: none;
+      }
+      #drag-source {
+        background: #ef4444;
+        color: #fff;
+        height: 56px;
+        left: 32px;
+        top: 54px;
+        width: 72px;
+        z-index: 2;
+      }
+      #drag-source.dropped { background: #16a34a; }
+      #drop-target {
+        background: #dcfce7;
+        border: 3px dashed #16a34a;
+        height: 110px;
+        left: 540px;
+        top: 28px;
+        width: 140px;
+      }
+      #drawing-canvas {
+        background: #fff;
+        border: 2px solid #334155;
+        display: block;
+        height: 300px;
+        margin: 0 24px;
+        width: 720px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Pointer workbench</h1>
+    <div id="drag-area">
+      <div id="drag-source">A</div>
+      <div id="drop-target">B</div>
+    </div>
+    <canvas id="drawing-canvas" width="720" height="300"></canvas>
+    <script>
+      const dragArea = document.querySelector("#drag-area");
+      const dragSource = document.querySelector("#drag-source");
+      const dropTarget = document.querySelector("#drop-target");
+      const canvas = document.querySelector("#drawing-canvas");
+      const context = canvas.getContext("2d");
+      context.fillStyle = "#ffffff";
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      context.strokeStyle = "#172033";
+      context.lineCap = "round";
+      context.lineJoin = "round";
+      context.lineWidth = 6;
+
+      const state = {
+        drag: {
+          downTrusted: false,
+          landed: false,
+          moveCount: 0,
+          movesTrusted: true,
+          upTrusted: false,
+        },
+        drawing: {
+          allButtonsHeld: true,
+          allTrusted: true,
+          strokes: [],
+        },
+      };
+      window.__pointerWorkbench = state;
+
+      let drag;
+      dragSource.addEventListener("mousedown", (event) => {
+        if (event.button !== 0) return;
+        const rect = dragSource.getBoundingClientRect();
+        drag = {
+          offsetX: event.clientX - rect.left,
+          offsetY: event.clientY - rect.top,
+        };
+        state.drag.downTrusted = event.isTrusted;
+        event.preventDefault();
+      });
+      window.addEventListener("mousemove", (event) => {
+        if (!drag) return;
+        const areaRect = dragArea.getBoundingClientRect();
+        dragSource.style.left =
+          event.clientX - areaRect.left - drag.offsetX + "px";
+        dragSource.style.top =
+          event.clientY - areaRect.top - drag.offsetY + "px";
+        state.drag.moveCount += 1;
+        state.drag.movesTrusted &&= event.isTrusted;
+      });
+      window.addEventListener("mouseup", (event) => {
+        if (!drag) return;
+        const sourceRect = dragSource.getBoundingClientRect();
+        const targetRect = dropTarget.getBoundingClientRect();
+        const centerX = sourceRect.left + sourceRect.width / 2;
+        const centerY = sourceRect.top + sourceRect.height / 2;
+        state.drag.landed =
+          centerX >= targetRect.left &&
+          centerX <= targetRect.right &&
+          centerY >= targetRect.top &&
+          centerY <= targetRect.bottom;
+        state.drag.upTrusted = event.isTrusted;
+        if (state.drag.landed) dragSource.classList.add("dropped");
+        drag = null;
+      });
+
+      let activeStroke;
+      const canvasPoint = (event) => {
+        const rect = canvas.getBoundingClientRect();
+        return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+      };
+      canvas.addEventListener("mousedown", (event) => {
+        if (event.button !== 0) return;
+        const point = canvasPoint(event);
+        activeStroke = {
+          points: [point],
+          downTrusted: event.isTrusted,
+          upTrusted: false,
+        };
+        state.drawing.strokes.push(activeStroke);
+        state.drawing.allTrusted &&= event.isTrusted;
+        context.beginPath();
+        context.moveTo(point.x, point.y);
+        event.preventDefault();
+      });
+      canvas.addEventListener("mousemove", (event) => {
+        if (!activeStroke) return;
+        const point = canvasPoint(event);
+        activeStroke.points.push(point);
+        state.drawing.allButtonsHeld &&= (event.buttons & 1) === 1;
+        state.drawing.allTrusted &&= event.isTrusted;
+        context.lineTo(point.x, point.y);
+        context.stroke();
+      });
+      window.addEventListener("mouseup", (event) => {
+        if (!activeStroke) return;
+        activeStroke.upTrusted = event.isTrusted;
+        state.drawing.allTrusted &&= event.isTrusted;
+        activeStroke = null;
+      });
+
+      state.read = () => {
+        const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+        let inkPixels = 0;
+        let minX = canvas.width;
+        let minY = canvas.height;
+        let maxX = -1;
+        let maxY = -1;
+        for (let y = 0; y < canvas.height; y += 1) {
+          for (let x = 0; x < canvas.width; x += 1) {
+            const offset = (y * canvas.width + x) * 4;
+            if (pixels[offset] > 80 || pixels[offset + 1] > 80 || pixels[offset + 2] > 80) {
+              continue;
+            }
+            inkPixels += 1;
+            minX = Math.min(minX, x);
+            minY = Math.min(minY, y);
+            maxX = Math.max(maxX, x);
+            maxY = Math.max(maxY, y);
+          }
+        }
+        return {
+          drag: { ...state.drag },
+          drawing: {
+            allButtonsHeld: state.drawing.allButtonsHeld,
+            allTrusted: state.drawing.allTrusted,
+            inkBounds: inkPixels > 0 ? { minX, minY, maxX, maxY } : null,
+            inkPixels,
+            strokes: state.drawing.strokes.map((stroke) => ({
+              downTrusted: stroke.downTrusted,
+              points: stroke.points,
+              upTrusted: stroke.upTrusted,
+            })),
+          },
+        };
+      };
     </script>
   </body>
 </html>`;
