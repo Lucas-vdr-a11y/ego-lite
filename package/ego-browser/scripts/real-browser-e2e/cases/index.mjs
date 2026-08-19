@@ -6,6 +6,9 @@ import { observationCase } from "./observation.mjs";
 import { pointerCase } from "./pointer.mjs";
 import { keyboardCase } from "./keyboard.mjs";
 import { keyboardRegressionCase } from "./keyboard-regression.mjs";
+import { pageKeyboardInterfaceCase } from "./page-keyboard.mjs";
+import { pageClickHitTargetCase } from "./page-click-hit-target.mjs";
+import { pageScrolledScreenshotCase } from "./page-screenshot.mjs";
 import { runtimeCase } from "./runtime.mjs";
 import { runtimeRegressionCase } from "./runtime-regression.mjs";
 import { eventIsolationCase } from "./event-isolation.mjs";
@@ -62,8 +65,11 @@ export const e2eCases = [
   { name: "page complex evaluate", body: pageComplexEvaluateCase },
   { name: "page fetch", body: pageFetchCase },
   { name: "page actions and popup adoption", body: pageActionsAndPopupCase },
+  { name: "Page click hit target", body: pageClickHitTargetCase },
+  { name: "Page scrolled screenshot", body: pageScrolledScreenshotCase },
   { name: "v1 and v2 action parity", body: v1V2ActionParityCase },
   { name: "portable keyboard workflow", body: portableKeyboardWorkflowCase },
+  { name: "Page keyboard interface", body: pageKeyboardInterfaceCase },
   { name: "pure CDP workflow", body: pureCdpWorkflowCase },
   { name: "snapshot workflow", body: snapshotWorkflowCase },
   { name: "visual workflow", body: visualWorkflowCase },

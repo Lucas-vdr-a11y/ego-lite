@@ -33,7 +33,21 @@ function withCdpRuntime(fn) {
       } else if (request.method === "Page.captureScreenshot") {
         result = { data: Buffer.from("png").toString("base64") };
       } else if (request.method === "Runtime.evaluate") {
-        result = { result: { value: "1" } };
+        result = {
+          result: {
+            value:
+              request.params.expression === "window.devicePixelRatio"
+                ? 2
+                : {
+                    w: 800,
+                    h: 600,
+                    sx: 24,
+                    sy: 1200,
+                    pw: 1600,
+                    ph: 3000,
+                  },
+          },
+        };
       }
       queueMicrotask(() =>
         runtime.onCDPMessage(JSON.stringify({ id: request.id, result })),
@@ -96,4 +110,32 @@ test("captureScreenshot skips page metric JavaScript while a native dialog is pe
 
   assert.equal(writes.length, 1);
   assert.equal(writes[0].path, "/tmp/ego-browser-dialog-shot.png");
+});
+
+test("captureScreenshot clips the currently visible scrolled viewport", async () => {
+  const restore = setOverrides({
+    async writeFile() {},
+  });
+  try {
+    await withCdpRuntime(async ({ sent }) => {
+      await captureScreenshot("/tmp/ego-browser-scrolled-shot.png");
+
+      const screenshot = sent.find(
+        (request) => request.method === "Page.captureScreenshot",
+      );
+      assert.deepEqual(screenshot.params, {
+        format: "png",
+        captureBeyondViewport: false,
+        clip: {
+          x: 24,
+          y: 1200,
+          width: 800,
+          height: 600,
+          scale: 0.5,
+        },
+      });
+    });
+  } finally {
+    restore();
+  }
 });

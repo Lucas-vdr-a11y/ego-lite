@@ -248,6 +248,12 @@ await page.dragAndDrop(source, target, {
 await page.fill(selector, value, { clearFirst });
 ```
 
+Pointer actions and `fill()` update Ego Lite's visible Agent cursor. `fill()`
+does not synthesize a mouse event just for the cursor hint. Bare
+`page.keyboard` calls do not move the cursor because they have no target
+element; click or fill an explicit element first when that visual context
+matters.
+
 High-level `goto()`, selector actions, `mouse.click()`, and `keyboard.press()` return lightweight receipts:
 
 ```js

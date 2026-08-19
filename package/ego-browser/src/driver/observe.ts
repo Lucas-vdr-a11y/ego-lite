@@ -158,8 +158,12 @@ export async function captureScreenshotForSession(
           infoExpression,
         );
         params.clip = {
-          x: 0,
-          y: 0,
+          // CDP interprets clip coordinates in the page's document coordinate
+          // space. A viewport screenshot therefore starts at the current scroll
+          // offset, while a full-page screenshot still starts at the document
+          // origin.
+          x: full ? 0 : info.sx,
+          y: full ? 0 : info.sy,
           width: full ? info.pw : info.w,
           height: full ? info.ph : info.h,
           scale: cssScale,

@@ -14,6 +14,7 @@ export function egoSource(body, context) {
   return `
     const { readFile, stat, writeFile } = await import("node:fs/promises");
     const { join } = await import("node:path");
+    const { inflateSync } = await import("node:zlib");
     const taskName = ${JSON.stringify(taskName)};
     const baseUrl = ${JSON.stringify(baseUrl)};
     const artifactDir = ${JSON.stringify(artifactDir)};
@@ -53,6 +54,88 @@ export function egoSource(body, context) {
         String(text).includes(expected),
         message + ": expected " + JSON.stringify(String(text).slice(0, 500)) + " to include " + JSON.stringify(expected)
       );
+    }
+
+    function countColorfulPngSamples(png) {
+      const signature = "89504e470d0a1a0a";
+      assertEqual(png.subarray(0, 8).toString("hex"), signature, "artifact is a PNG");
+      let width = 0;
+      let height = 0;
+      let bitDepth = 0;
+      let colorType = 0;
+      let interlace = 0;
+      const imageData = [];
+      for (let offset = 8; offset < png.length; ) {
+        const length = png.readUInt32BE(offset);
+        const type = png.subarray(offset + 4, offset + 8).toString("ascii");
+        const data = png.subarray(offset + 8, offset + 8 + length);
+        if (type === "IHDR") {
+          width = data.readUInt32BE(0);
+          height = data.readUInt32BE(4);
+          bitDepth = data[8];
+          colorType = data[9];
+          interlace = data[12];
+        } else if (type === "IDAT") {
+          imageData.push(data);
+        }
+        offset += length + 12;
+        if (type === "IEND") break;
+      }
+      assertEqual(bitDepth, 8, "PNG sampler supports 8-bit screenshots");
+      assertEqual(interlace, 0, "PNG sampler supports non-interlaced screenshots");
+      const channels = ({ 0: 1, 2: 3, 4: 2, 6: 4 })[colorType];
+      assert(channels, "PNG sampler supports the screenshot color type");
+      const inflated = inflateSync(Buffer.concat(imageData));
+      const stride = width * channels;
+      const pixels = Buffer.alloc(stride * height);
+      let sourceOffset = 0;
+      for (let y = 0; y < height; y++) {
+        const filter = inflated[sourceOffset++];
+        const rowOffset = y * stride;
+        const previousOffset = (y - 1) * stride;
+        for (let x = 0; x < stride; x++) {
+          const raw = inflated[sourceOffset++];
+          const left = x >= channels ? pixels[rowOffset + x - channels] : 0;
+          const up = y > 0 ? pixels[previousOffset + x] : 0;
+          const upperLeft = y > 0 && x >= channels
+            ? pixels[previousOffset + x - channels]
+            : 0;
+          let predictor = 0;
+          if (filter === 1) predictor = left;
+          else if (filter === 2) predictor = up;
+          else if (filter === 3) predictor = Math.floor((left + up) / 2);
+          else if (filter === 4) {
+            const estimate = left + up - upperLeft;
+            const leftDistance = Math.abs(estimate - left);
+            const upDistance = Math.abs(estimate - up);
+            const upperLeftDistance = Math.abs(estimate - upperLeft);
+            predictor = leftDistance <= upDistance && leftDistance <= upperLeftDistance
+              ? left
+              : upDistance <= upperLeftDistance
+                ? up
+                : upperLeft;
+          } else if (filter !== 0) {
+            throw new Error("Unsupported PNG filter " + filter);
+          }
+          pixels[rowOffset + x] = (raw + predictor) & 255;
+        }
+      }
+
+      let colorful = 0;
+      let sampled = 0;
+      for (let row = 1; row <= 5; row++) {
+        for (let column = 1; column <= 5; column++) {
+          const x = Math.floor((width * column) / 6);
+          const y = Math.floor((height * row) / 6);
+          const offset = y * stride + x * channels;
+          const red = pixels[offset];
+          const green = colorType === 0 || colorType === 4 ? red : pixels[offset + 1];
+          const blue = colorType === 0 || colorType === 4 ? red : pixels[offset + 2];
+          sampled++;
+          if (Math.max(red, green, blue) - Math.min(red, green, blue) > 30) colorful++;
+        }
+      }
+      return { colorful, sampled, width, height };
     }
 
     async function assertRejects(fn, expected, message) {

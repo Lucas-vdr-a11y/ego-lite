@@ -33,6 +33,7 @@ function createFixture(rootDir) {
   let systemFileChooserOpened = false;
   let timeoutNextMouseDispatch = false;
   let rejectNextClickPoint = false;
+  let interceptNextClickPoint = false;
   let navigateOnNextClickUrl = null;
   let elementPresent = true;
   let elementVisible = true;
@@ -168,7 +169,15 @@ function createFixture(rootDir) {
           };
         }
         if (params.functionDeclaration.includes("fillPreparation")) {
-          return { result: { type: "string", value: "needsinput" } };
+          return {
+            result: {
+              type: "object",
+              value: {
+                status: "needsinput",
+                cursorPoint: { x: 40, y: 60 },
+              },
+            },
+          };
         }
         if (params.functionDeclaration.includes("checkVisibility")) {
           return { result: { type: "boolean", value: elementVisible } };
@@ -203,6 +212,20 @@ function createFixture(rootDir) {
           };
         }
         if (params.functionDeclaration.includes("getBoundingClientRect")) {
+          if (
+            interceptNextClickPoint &&
+            params.functionDeclaration.includes("elementFromPoint")
+          ) {
+            interceptNextClickPoint = false;
+            return {
+              result: {
+                type: "object",
+                value: {
+                  error: '<button id="overlay"> intercepts pointer events',
+                },
+              },
+            };
+          }
           if (rejectNextClickPoint) {
             rejectNextClickPoint = false;
             return {
@@ -393,6 +416,9 @@ function createFixture(rootDir) {
     },
     rejectNextClickPoint() {
       rejectNextClickPoint = true;
+    },
+    interceptNextClickPoint() {
+      interceptNextClickPoint = true;
     },
     navigateOnNextClick(url) {
       navigateOnNextClickUrl = url;
@@ -987,6 +1013,19 @@ test("Page fill uses its target session and reports no popup when none opened", 
         params.functionDeclaration.includes("fillPreparation"),
     );
     assert(fillPreparation, "fill must validate and select the target element");
+    assert.deepEqual(
+      fixture.calls.find(([kind]) => kind === "showAgentMousePosition"),
+      ["showAgentMousePosition", 40, 60],
+      "fill must move the visible agent cursor to its focused element",
+    );
+    assert.equal(
+      fixture.calls.some(
+        ([kind, method]) =>
+          kind === "cdp" && method === "Input.dispatchMouseEvent",
+      ),
+      false,
+      "the fill cursor hint must not synthesize a website mouse event",
+    );
     assert.equal(
       fixture.calls.some(
         ([kind, method, params]) =>
@@ -1312,6 +1351,35 @@ test("Page keyboard press and type use the addressed target session", async () =
   });
 });
 
+test("Page keyboard type uses the main keyboard for digits and period", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a");
+    const page = await task.openPage("https://example.test/first");
+
+    await page.keyboard.type("0123456789.");
+
+    const keyDowns = fixture.calls
+      .filter(
+        ([kind, method, params]) =>
+          kind === "cdp" &&
+          method === "Input.dispatchKeyEvent" &&
+          params.type === "keyDown",
+      )
+      .map(([, , params]) => params);
+    assert.deepEqual(
+      keyDowns.map(({ key, code, location }) => ({ key, code, location })),
+      [
+        ...Array.from({ length: 10 }, (_, digit) => ({
+          key: String(digit),
+          code: `Digit${digit}`,
+          location: 0,
+        })),
+        { key: ".", code: "Period", location: 0 },
+      ],
+    );
+  });
+});
+
 test("Page keyboard mirrors Playwright key state and the US layout", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a", { platform: "darwin" });
@@ -1459,6 +1527,30 @@ test("Page keyboard type emits physical keys when possible and inserts unsupport
           method === "Input.insertText" && params.text === "é",
       ),
     );
+  });
+});
+
+test("Page keyboard releases pressed modifiers when a chord fails", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a", { platform: "darwin" });
+    const page = await task.openPage("https://example.test/first");
+
+    await assert.rejects(
+      () => page.keyboard.press("Shift+DefinitelyUnknown"),
+      /Unknown key/,
+    );
+    await page.keyboard.type("a");
+
+    const aDown = fixture.calls.find(
+      ([kind, method, params]) =>
+        kind === "cdp" &&
+        method === "Input.dispatchKeyEvent" &&
+        params.type === "keyDown" &&
+        params.code === "KeyA",
+    );
+    assert.equal(aDown[2].key, "a");
+    assert.equal(aDown[2].text, "a");
+    assert.equal(aDown[2].modifiers, 0);
   });
 });
 
@@ -1884,6 +1976,27 @@ test("Page click does not dispatch input when scrolling cannot make the element 
           kind === "cdp" && method === "Input.dispatchMouseEvent",
       ),
       false,
+    );
+  });
+});
+
+test("Page click fails closed when another element intercepts the point", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a");
+    const page = await task.openPage("https://example.test/first");
+    fixture.interceptNextClickPoint();
+
+    await assert.rejects(
+      () => page.click("#covered"),
+      /overlay.*intercepts pointer events/,
+    );
+    assert.equal(
+      fixture.calls.some(
+        ([kind, method]) =>
+          kind === "cdp" && method === "Input.dispatchMouseEvent",
+      ),
+      false,
+      "an intercepted high-level click must not dispatch any mouse input",
     );
   });
 });

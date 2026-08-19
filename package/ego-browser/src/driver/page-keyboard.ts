@@ -424,7 +424,10 @@ function buildKeyboardLayout(): Map<string, KeyDefinition> {
       };
     }
     layout.set(code, definition);
-    if (definition.location === 0 && definition.key.length === 1) {
+    // Character input should resolve to the main keyboard, never to the numpad.
+    // Numpad shifted keys expose digits, so indexing them would overwrite Digit0-9.
+    if (definition.location !== 0) continue;
+    if (definition.key.length === 1) {
       layout.set(definition.key, definition);
     }
     if (definition.shifted) {

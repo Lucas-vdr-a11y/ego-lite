@@ -95,6 +95,14 @@ export async function clickInPage(
       modifiers,
     });
     for (let count = 1; count <= clickCount; count += 1) {
+      // Moving the pointer or completing an earlier click can change layout.
+      // Recheck before every press so hover-created overlays fail closed.
+      await assertElementReceivesPointerEvents(
+        services,
+        target.sessionId,
+        target.objectId,
+        point,
+      );
       await dispatchMouseEvent(services, target.sessionId, {
         type: "mousePressed",
         x: point.x,
@@ -153,6 +161,17 @@ export async function fillInPage(
   try {
     const preparationSource = `function fillPreparation(value, clearFirst) {
       if (!this.isConnected) return { error: "element is not connected" };
+      const visibleCursorPoint = () => {
+        const rect = this.getBoundingClientRect();
+        const view = this.ownerDocument.defaultView;
+        if (!view || rect.width <= 0 || rect.height <= 0) return null;
+        const left = Math.max(0, rect.left);
+        const top = Math.max(0, rect.top);
+        const right = Math.min(view.innerWidth, rect.right);
+        const bottom = Math.min(view.innerHeight, rect.bottom);
+        if (right <= left || bottom <= top) return null;
+        return { x: (left + right) / 2, y: (top + bottom) / 2 };
+      };
       const tag = this.nodeName.toLowerCase();
       if (this.disabled) return { error: "element is disabled" };
       if (this.readOnly) return { error: "element is read only" };
@@ -174,14 +193,15 @@ export async function fillInPage(
           if (this.value !== nextValue) return { error: "malformed value" };
           this.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
           this.dispatchEvent(new Event("change", { bubbles: true }));
-          return "done";
+          return { status: "done", cursorPoint: visibleCursorPoint() };
         }
       } else if (tag !== "textarea" && !this.isContentEditable) {
         return { error: "element is not an input, textarea, or contenteditable element" };
       }
 
       this.focus();
-      if (!clearFirst) return "needsinput";
+      const cursorPoint = visibleCursorPoint();
+      if (!clearFirst) return { status: "needsinput", cursorPoint };
       if (tag === "input" || tag === "textarea") {
         this.select();
       } else {
@@ -191,7 +211,7 @@ export async function fillInPage(
         selection?.removeAllRanges();
         selection?.addRange(range);
       }
-      return "needsinput";
+      return { status: "needsinput", cursorPoint };
     }`;
     const preparation = await services.cdp(
       "Runtime.callFunctionOn",
@@ -208,7 +228,12 @@ export async function fillInPage(
     if (typeof result?.error === "string") {
       throw new Error(`page.fill failed: ${result.error}`);
     }
-    if (result === "done") return;
+    showAgentCursor(services, result?.cursorPoint);
+    const status = typeof result === "string" ? result : result?.status;
+    if (status === "done") return;
+    if (status !== "needsinput") {
+      throw new Error("page.fill received an invalid preparation result");
+    }
 
     if (clearFirst && value.length === 0) {
       const keyDown: Record<string, unknown> = {
@@ -510,6 +535,7 @@ async function resolveElementPoint(
     ? "({x:rect.x+position.x,y:rect.y+position.y})"
     : "({x:rect.x+rect.width/2,y:rect.y+rect.height/2})";
   const expression = `function(${position ? "position" : ""}) {
+    ${HIT_TARGET_HELPERS}
     let rect = this.getBoundingClientRect();
     let point = ${pointExpression};
     const outsideViewport =
@@ -527,6 +553,10 @@ async function resolveElementPoint(
       point.x >= window.innerWidth || point.y >= window.innerHeight
     ) {
       return { error: "element is not visible in the viewport" };
+    }
+    const interceptor = interceptingElementAtPoint(this, point);
+    if (interceptor) {
+      return { error: describeHitTarget(interceptor) + " intercepts pointer events" };
     }
     return point;
   }`;
@@ -550,6 +580,79 @@ async function resolveElementPoint(
   }
   return point;
 }
+
+async function assertElementReceivesPointerEvents(
+  services: PageActionServices,
+  sessionId: string,
+  objectId: string,
+  point: { x: number; y: number },
+): Promise<void> {
+  const expression = `function(point) {
+    ${HIT_TARGET_HELPERS}
+    if (!this.isConnected) return { error: "element is not connected" };
+    const interceptor = interceptingElementAtPoint(this, point);
+    return interceptor
+      ? { error: describeHitTarget(interceptor) + " intercepts pointer events" }
+      : { ok: true };
+  }`;
+  const response = await services.cdp(
+    "Runtime.callFunctionOn",
+    {
+      functionDeclaration: expression,
+      objectId,
+      arguments: [{ value: point }],
+      returnByValue: true,
+      awaitPromise: false,
+    },
+    sessionId,
+  );
+  const result = runtimeValue(response, expression);
+  if (typeof result?.error === "string") {
+    throw new Error(`page.click failed: ${result.error}`);
+  }
+}
+
+// This is a compact adaptation of Playwright's composed-tree hit-target check.
+// It handles ordinary descendants, slots, and nested shadow roots without
+// exposing an injected helper or trusting only document.elementFromPoint().
+const HIT_TARGET_HELPERS = `
+  function composedParent(element) {
+    if (element.assignedSlot) return element.assignedSlot;
+    if (element.parentElement) return element.parentElement;
+    const root = element.getRootNode ? element.getRootNode() : null;
+    return root && root.nodeType === 11 ? root.host : null;
+  }
+  function interceptingElementAtPoint(target, point) {
+    const roots = [];
+    let parent = target;
+    while (parent) {
+      const root = parent.getRootNode ? parent.getRootNode() : null;
+      if (!root || typeof root.elementsFromPoint !== "function") break;
+      roots.push(root);
+      if (root.nodeType === 9) break;
+      parent = root.host;
+    }
+    let hitElement;
+    for (let index = roots.length - 1; index >= 0; index -= 1) {
+      const root = roots[index];
+      const elements = root.elementsFromPoint(point.x, point.y);
+      const innerElement = elements[0] || root.elementFromPoint(point.x, point.y);
+      if (!innerElement) break;
+      hitElement = innerElement;
+      if (index > 0 && innerElement !== roots[index - 1].host) break;
+    }
+    let current = hitElement;
+    while (current && current !== target) current = composedParent(current);
+    return current === target ? null : hitElement || document.documentElement;
+  }
+  function describeHitTarget(element) {
+    const tag = String(element.tagName || "unknown").toLowerCase();
+    const id = element.id
+      ? ' id="' + String(element.id).slice(0, 80).replaceAll('"', '&quot;') + '"'
+      : "";
+    return "<" + tag + id + ">";
+  }
+`;
 
 function assertPageSelector(selector: unknown): asserts selector is string {
   if (typeof selector !== "string" || selector.trim().length === 0) {
@@ -578,16 +681,30 @@ async function dispatchMouseEvent(
   ) {
     return;
   }
+  showAgentCursor(services, { x: params.x, y: params.y });
+}
+
+function showAgentCursor(
+  services: PageActionServices,
+  point: { x?: unknown; y?: unknown } | null | undefined,
+): void {
+  const x = point?.x;
+  const y = point?.y;
+  if (
+    typeof x !== "number" ||
+    !Number.isFinite(x) ||
+    typeof y !== "number" ||
+    !Number.isFinite(y)
+  ) {
+    return;
+  }
   try {
-    // Ego Lite's visible agent cursor is separate from renderer input. Update
-    // it only after the page accepted the move, and start the native request
-    // while the Page gate still owns the correct task space. Do not wait for
-    // the animation: the legacy helpers also treat this as display-only work,
-    // and a completed website action must never look retryable because its
-    // cursor animation is slow or unavailable.
-    void services.showAgentMousePosition(params.x, params.y).catch(() => {});
+    // The native cursor is a display-only hint. Start it while the Page gate
+    // still owns the correct task space, but never let rendering latency or an
+    // unavailable overlay affect a completed website action.
+    void services.showAgentMousePosition(x, y).catch(() => {});
   } catch {
-    // Also tolerate an invalid test adapter that throws before returning a Promise.
+    // Also tolerate an invalid adapter that throws before returning a Promise.
   }
 }
 

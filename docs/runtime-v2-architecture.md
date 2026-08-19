@@ -328,8 +328,10 @@ Page 对象只在当前脚本轮次内存在，因此鼠标位置不会跨轮保
 `KeyboardEvent`，`isTrusted=false`，也不能可靠触发剪贴板和浏览器默认行为。
 确实需要合成事件时，调用方可以显式使用 `page.evaluate()`。
 
-每次成功的 `mouseMoved` 也会非阻塞地通知 Ego Lite 更新 Agent 光标。光标
-动画失败不会让已经完成的网页动作失败。
+每次成功的 `mouseMoved`，以及有明确目标元素的 `fill()`，都会非阻塞地通知
+Ego Lite 更新 Agent 光标。`fill()` 只更新可见光标，不会额外向网页发送鼠标事件。
+光标动画失败不会让已经完成的网页动作失败。`page.keyboard` 没有目标元素信息，
+因此不会自行移动光标。
 
 ## 7. Page 操作语义
 

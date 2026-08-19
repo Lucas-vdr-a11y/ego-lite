@@ -1,0 +1,108 @@
+export function pageClickHitTargetCase() {
+  return `
+    const task = await taskSpace(taskName);
+    const page = await task.openPage(baseUrl + "/?workflow=page-click-hit-target", {
+      as: "page-click-hit-target",
+    });
+
+    await page.evaluate(() => {
+      const target = document.createElement("button");
+      target.id = "covered-target";
+      target.textContent = "Covered target";
+      target.style.cssText =
+        "position:fixed;left:100px;top:100px;width:240px;height:80px;z-index:10";
+      const overlay = document.createElement("button");
+      overlay.id = "click-overlay";
+      overlay.textContent = "Overlay";
+      overlay.style.cssText =
+        "position:fixed;left:80px;top:80px;width:280px;height:120px;z-index:20";
+      window.__hitTargetClicks = { target: 0, overlay: 0 };
+      target.addEventListener("click", () => window.__hitTargetClicks.target++);
+      overlay.addEventListener("click", () => window.__hitTargetClicks.overlay++);
+      document.body.append(target, overlay);
+    });
+
+    await assertRejects(
+      () => page.click("#covered-target"),
+      "intercepts pointer events",
+      "high-level click rejects when another element covers its action point"
+    );
+    assertEqual(
+      JSON.stringify(await page.evaluate("window.__hitTargetClicks")),
+      JSON.stringify({ target: 0, overlay: 0 }),
+      "an intercepted high-level click reaches neither element"
+    );
+
+    const coveredPoint = await page.evaluate(() => {
+      const rect = document.querySelector("#covered-target").getBoundingClientRect();
+      return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+    });
+    await page.mouse.click(coveredPoint.x, coveredPoint.y);
+    assertEqual(
+      (await page.evaluate("window.__hitTargetClicks")).overlay,
+      1,
+      "low-level coordinate click still targets the topmost element"
+    );
+
+    await page.evaluate("document.querySelector('#click-overlay').remove()");
+    await page.click("#covered-target");
+    assertEqual(
+      (await page.evaluate("window.__hitTargetClicks")).target,
+      1,
+      "the target becomes clickable after the overlay is removed"
+    );
+
+    await page.evaluate(() => {
+      document.querySelector("#covered-target").remove();
+      const target = document.createElement("button");
+      target.id = "hover-covered-target";
+      target.textContent = "Covered after hover";
+      target.style.cssText =
+        "position:fixed;left:100px;top:240px;width:240px;height:80px;z-index:10";
+      window.__hoverCoveredClicks = { target: 0, overlay: 0 };
+      target.addEventListener("mouseenter", () => {
+        if (document.querySelector("#hover-overlay")) return;
+        const overlay = document.createElement("button");
+        overlay.id = "hover-overlay";
+        overlay.textContent = "Appeared on hover";
+        overlay.style.cssText =
+          "position:fixed;left:80px;top:220px;width:280px;height:120px;z-index:20";
+        overlay.addEventListener("click", () => window.__hoverCoveredClicks.overlay++);
+        document.body.append(overlay);
+      });
+      target.addEventListener("click", () => window.__hoverCoveredClicks.target++);
+      document.body.append(target);
+    });
+    await assertRejects(
+      () => page.click("#hover-covered-target"),
+      "intercepts pointer events",
+      "click rechecks the hit target after mouse movement"
+    );
+    assertEqual(
+      JSON.stringify(await page.evaluate("window.__hoverCoveredClicks")),
+      JSON.stringify({ target: 0, overlay: 0 }),
+      "an overlay created by hover receives no click"
+    );
+
+    await page.evaluate(() => {
+      document.querySelector("#hover-overlay").remove();
+      document.querySelector("#hover-covered-target").remove();
+      const button = document.createElement("button");
+      button.id = "descendant-target";
+      button.style.cssText =
+        "position:fixed;left:100px;top:380px;width:240px;height:80px;z-index:10";
+      button.innerHTML = '<span id="target-child">Child content</span>';
+      window.__descendantClicks = 0;
+      button.addEventListener("click", () => window.__descendantClicks++);
+      document.body.append(button);
+    });
+    await page.click("#descendant-target");
+    assertEqual(
+      await page.evaluate("window.__descendantClicks"),
+      1,
+      "a descendant at the action point is a valid hit target"
+    );
+
+    await page.close();
+  `;
+}
