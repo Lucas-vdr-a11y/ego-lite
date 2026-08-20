@@ -100,8 +100,8 @@ not the full Playwright API and has no Locator API. Common Page API:
 ### Semantic pages: snapshot and selectors
 
 For an ordinary DOM page, use an observe → act → observe loop.
-`page.snapshot()` returns semantic text for the current viewport; use
-`{ scope: "full_page" }` when content outside it matters:
+`page.snapshot()` captures the current viewport. For content outside it, use
+`page.snapshot({ scope: "full_page" })`.
 
 ```js
 const page = task.page("p1");
