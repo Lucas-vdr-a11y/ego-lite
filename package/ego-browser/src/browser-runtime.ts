@@ -1,5 +1,9 @@
 import { state } from "./state.js";
-import { assertNoEgoError, buildEgoError } from "./ego-errors.js";
+import {
+  buildEgoError,
+  invokeEgo,
+  isEgoUserControlError,
+} from "./ego-errors.js";
 
 const RESPONSE_TIMEOUT_MS = 15000;
 const SESSION_TTL_MS = 2000;
@@ -21,6 +25,9 @@ const browserEvents = [];
 const targetStates = new Map();
 const sessionTargets = new Map();
 let defaultTargetId = null;
+let userControlProbeState: "idle" | "probing" | "stopped" = "idle";
+let userControlStopError: (Error & { error_code?: string }) | null = null;
+let userControlProbeGeneration = 0;
 
 /**
  * Signals that a modal JavaScript dialog prevented a CDP command from
@@ -190,7 +197,7 @@ function rawCdp(
     } catch (error) {
       clearTimeout(timer);
       pending.delete(id);
-      reject(error);
+      reject(buildEgoError(error));
     }
   });
 }
@@ -268,7 +275,9 @@ export async function ensureSession(requestedTargetId = undefined) {
 
   let targetId = requestedTargetId;
   if (!targetId) {
-    const result = assertNoEgoError(await browserEgo().listTabs());
+    const result: any = await invokeEgo("listTabs", () =>
+      browserEgo().listTabs(),
+    );
     const tabs = result?.tabs || result?.targetInfos || [];
     const preferred = state.preferredTargetId
       ? tabs.find((tab) => tab.targetId === state.preferredTargetId)
@@ -320,6 +329,7 @@ export function invalidateSession(targetId = undefined) {
   }
   browserEvents.length = 0;
   defaultTargetId = null;
+  resetUserControlProbe();
 }
 
 export function setPreferredTarget(targetId) {
@@ -483,18 +493,95 @@ async function enablePageEvents(sessionId) {
   }
 }
 
-// Local send failures for ego.sendCDPMessage() arrive here (task inactive,
-// user-controlled, not selected/claimed, host gone) instead of as a CDP
-// response, so the matching request would otherwise sit until the 15s timeout.
-// The callback carries no request id; these failures are task-level (every
-// in-flight send fails the same way), so reject all pending requests, routing
-// the stable code through buildEgoError to use the ego-browser-owned wording.
+// Local send failures for ego.sendCDPMessage() arrive here instead of as a CDP
+// response. The callback carries no request id, so task-level failures reject
+// every pending request. User-control failures first probe the native task state:
+// the CDP callback does not carry the permission reason, while ordinary native
+// calls may do so on newer Ego Lite builds.
 function handleSendError(message, error_code) {
   if (pending.size === 0) return;
-  const error = buildEgoError({ error: message, error_code });
+
+  if (error_code !== "EGO_TASK_SPACE_USER_IN_CONTROL") {
+    rejectAllPending(buildEgoError({ error: message, error_code }));
+    return;
+  }
+  if (userControlProbeState === "stopped" && userControlStopError) {
+    rejectAllPending(userControlStopError);
+    return;
+  }
+  if (userControlProbeState === "probing") return;
+
+  userControlProbeState = "probing";
+  const generation = ++userControlProbeGeneration;
+  void probeUserControlReason(message, error_code, generation);
+}
+
+async function probeUserControlReason(
+  message: string,
+  error_code: string,
+  generation: number,
+): Promise<void> {
+  const fallback = { error: message, error_code };
+  const runtime = browserEgo();
+  if (typeof runtime.setAgentTaskState !== "function") {
+    stopForUserControl(fallback, generation);
+    return;
+  }
+
+  try {
+    const result = await runtime.setAgentTaskState("Waiting for the user");
+    if (generation !== userControlProbeGeneration) return;
+    if (isEgoUserControlError(result)) {
+      stopForUserControl(result, generation);
+      return;
+    }
+    if (result && typeof result === "object" && "error" in result) {
+      stopForUserControl(fallback, generation);
+      return;
+    }
+
+    // Control came back between the failed send and the probe. The original
+    // command still failed, but it must not create a new global hard stop.
+    userControlProbeState = "idle";
+    userControlStopError = null;
+    rejectAllPending(nativeSendError(message, error_code));
+  } catch (error) {
+    if (generation !== userControlProbeGeneration) return;
+    stopForUserControl(
+      isEgoUserControlError(error) ? error : fallback,
+      generation,
+    );
+  }
+}
+
+function stopForUserControl(errorLike: unknown, generation: number): void {
+  if (generation !== userControlProbeGeneration) return;
+  userControlStopError = buildEgoError(errorLike);
+  userControlProbeState = "stopped";
+  rejectAllPending(userControlStopError);
+}
+
+function rejectAllPending(error: Error): void {
   const entries = [...pending.values()];
   pending.clear();
   for (const entry of entries) entry.reject(error);
+}
+
+function nativeSendError(
+  message: string,
+  error_code: string,
+): Error & { error_code?: string } {
+  const error: Error & { error_code?: string } = new Error(
+    message || error_code || "CDP send failed",
+  );
+  if (error_code) error.error_code = error_code;
+  return error;
+}
+
+function resetUserControlProbe(): void {
+  userControlProbeGeneration += 1;
+  userControlProbeState = "idle";
+  userControlStopError = null;
 }
 
 function handleMessage(message) {
@@ -513,6 +600,11 @@ function handleMessage(message) {
     if (data.error) {
       entry.reject(new Error(data.error.message || data.error));
       return;
+    }
+    if (userControlProbeState === "stopped") {
+      // A successful command proves control has returned. Re-arm detection so a
+      // later, separate takeover can run its own reason probe.
+      resetUserControlProbe();
     }
     entry.resolve(data);
     return;

@@ -265,68 +265,37 @@ error object:
 }
 ```
 
-`error_code` is always `'EGO_TASK_SPACE_USER_IN_CONTROL'`. The `error` string
-describes why control was handed over. Permission prompts, device choosers, and
-required page dialogs use one of these messages:
+`error_code` is `'EGO_TASK_SPACE_USER_IN_CONTROL'`. For this code, `error` is a
+stable reason key rather than display text. Current keys are:
 
 ```text
-Notifications:
-  A browser permission prompt for notifications has appeared. Control of this
-  browser space has been handed over.
-
-Location (including approximate):
-  A browser permission prompt for location, precise or approximate, has
-  appeared. Control of this browser space has been handed over.
-
-Camera:
-  A browser permission prompt for camera access has appeared. Control of this
-  browser space has been handed over.
-
-Microphone:
-  A browser permission prompt for microphone access has appeared. Control of
-  this browser space has been handed over.
-
-Pan-Tilt-Zoom + Microphone:
-  A browser permission prompt for camera control and microphone access has
-  appeared. Control of this browser space has been handed over.
-
-MIDI:
-  A browser permission prompt for MIDI device access has appeared. Control of
-  this browser space has been handed over.
-
-Bluetooth:
-  A browser device chooser for Bluetooth has appeared. Control of this browser
-  space has been handed over.
-
-USB:
-  A browser device chooser for USB has appeared. Control of this browser space
-  has been handed over.
-
-Serial:
-  A browser port chooser for serial access has appeared. Control of this
-  browser space has been handed over.
-
-HID:
-  A browser device chooser for HID has appeared. Control of this browser space
-  has been handed over.
-
-Protocol Handler:
-  A browser permission prompt for protocol handler registration has appeared.
-  Control of this browser space has been handed over.
-
-Fallback — site dialog / required notice:
-  The page has displayed a dialog that requires review. Control of this browser
-  space has been handed over.
+notifications
+location
+camera
+microphone
+pan_tilt_zoom_microphone
+midi
+bluetooth
+usb
+serial
+hid
+protocol_handler
+fallback_site_dialog_required_notice
+manual_takeover
 ```
 
-Example when a notifications prompt caused the handoff:
+For example, a location prompt returns:
 
 ```js
 {
-  error: 'A browser permission prompt for notifications has appeared. Control of this browser space has been handed over.',
+  error: 'location',
   error_code: 'EGO_TASK_SPACE_USER_IN_CONTROL',
 }
 ```
+
+Callers should use `error_code` to identify the control boundary, then use the
+reason key to choose guidance. Unknown reason keys must fall back to generic
+user-control guidance.
 
 ## Snapshot
 
@@ -732,6 +701,9 @@ Arguments delivered to the callback:
 message: string
 error_code: string
 ```
+
+The callback does not include the reason key. A user-control send failure
+therefore identifies the control boundary, not the permission that caused it.
 
 Assign a function to receive errors. Assigning any non-function value clears the
 callback. Errors are delivered asynchronously through the Node event loop.

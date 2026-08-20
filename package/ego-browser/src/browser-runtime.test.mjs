@@ -71,6 +71,202 @@ test("browserCdp rejects the in-flight request via onSendCDPMessageError", async
   }
 });
 
+test("a non-user-control CDP failure does not run the permission probe", async () => {
+  const previous = globalThis.ego;
+  let probes = 0;
+  const runtime = {
+    async setAgentTaskState() {
+      probes += 1;
+      return undefined;
+    },
+    sendCDPMessage() {
+      queueMicrotask(() => {
+        runtime.onSendCDPMessageError(
+          "The task space is inactive.",
+          "EGO_TASK_SPACE_INACTIVE",
+        );
+      });
+    },
+  };
+  globalThis.ego = runtime;
+
+  try {
+    await assert.rejects(
+      () => browserCdp("Browser.getVersion", {}, undefined, 1000),
+      (error) => {
+        assert.equal(error.error_code, "EGO_TASK_SPACE_INACTIVE");
+        assert.match(error.message, /no longer assigned to the agent/);
+        return true;
+      },
+    );
+    assert.equal(probes, 0);
+  } finally {
+    invalidateSession();
+    if (previous === undefined) delete globalThis.ego;
+    else globalThis.ego = previous;
+  }
+});
+
+test("a user-control CDP failure probes the native permission reason before rejecting", async () => {
+  const previous = globalThis.ego;
+  let probes = 0;
+  const runtime = {
+    async setAgentTaskState() {
+      probes += 1;
+      return {
+        error: "microphone",
+        error_code: "EGO_TASK_SPACE_USER_IN_CONTROL",
+      };
+    },
+    sendCDPMessage() {
+      queueMicrotask(() => {
+        runtime.onSendCDPMessageError(
+          "The task is under user control.",
+          "EGO_TASK_SPACE_USER_IN_CONTROL",
+        );
+      });
+    },
+  };
+  globalThis.ego = runtime;
+
+  try {
+    await assert.rejects(
+      () => browserCdp("Browser.getVersion", {}, undefined, 1000),
+      (error) => {
+        assert.equal(error.error_code, "EGO_TASK_SPACE_USER_IN_CONTROL");
+        assert.match(error.message, /microphone access/);
+        return true;
+      },
+    );
+    assert.equal(probes, 1);
+  } finally {
+    invalidateSession();
+    if (previous === undefined) delete globalThis.ego;
+    else globalThis.ego = previous;
+  }
+});
+
+test("concurrent user-control CDP failures share one permission probe", async () => {
+  const previous = globalThis.ego;
+  let probes = 0;
+  let finishProbe;
+  const runtime = {
+    setAgentTaskState() {
+      probes += 1;
+      return new Promise((resolve) => {
+        finishProbe = resolve;
+      });
+    },
+    sendCDPMessage() {
+      queueMicrotask(() => {
+        runtime.onSendCDPMessageError(
+          "The task is under user control.",
+          "EGO_TASK_SPACE_USER_IN_CONTROL",
+        );
+      });
+    },
+  };
+  globalThis.ego = runtime;
+
+  try {
+    const requests = [
+      browserCdp("Browser.getVersion", {}, undefined, 1000),
+      browserCdp("Browser.getBrowserCommandLine", {}, undefined, 1000),
+    ];
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(probes, 1);
+    finishProbe({
+      error: "camera",
+      error_code: "EGO_TASK_SPACE_USER_IN_CONTROL",
+    });
+    const results = await Promise.allSettled(requests);
+    assert.deepEqual(
+      results.map((result) => result.status),
+      ["rejected", "rejected"],
+    );
+    for (const result of results) {
+      assert.match(result.reason.message, /camera access/);
+    }
+  } finally {
+    invalidateSession();
+    if (previous === undefined) delete globalThis.ego;
+    else globalThis.ego = previous;
+  }
+});
+
+test("a failed permission probe falls back to generic user-control guidance", async () => {
+  const previous = globalThis.ego;
+  const runtime = {
+    async setAgentTaskState() {
+      throw new Error("probe transport failed");
+    },
+    sendCDPMessage() {
+      queueMicrotask(() => {
+        runtime.onSendCDPMessageError(
+          "The task is under user control.",
+          "EGO_TASK_SPACE_USER_IN_CONTROL",
+        );
+      });
+    },
+  };
+  globalThis.ego = runtime;
+
+  try {
+    await assert.rejects(
+      () => browserCdp("Browser.getVersion", {}, undefined, 1000),
+      (error) => {
+        assert.match(error.message, /The user has taken control/);
+        assert.doesNotMatch(error.message, /probe transport failed/);
+        return true;
+      },
+    );
+  } finally {
+    invalidateSession();
+    if (previous === undefined) delete globalThis.ego;
+    else globalThis.ego = previous;
+  }
+});
+
+test("a recovered probe allows a later takeover to be detected", async () => {
+  const previous = globalThis.ego;
+  let probes = 0;
+  const runtime = {
+    async setAgentTaskState() {
+      probes += 1;
+      if (probes === 1) return undefined;
+      return {
+        error: "location",
+        error_code: "EGO_TASK_SPACE_USER_IN_CONTROL",
+      };
+    },
+    sendCDPMessage() {
+      queueMicrotask(() => {
+        runtime.onSendCDPMessageError(
+          "The task is under user control.",
+          "EGO_TASK_SPACE_USER_IN_CONTROL",
+        );
+      });
+    },
+  };
+  globalThis.ego = runtime;
+
+  try {
+    await assert.rejects(
+      () => browserCdp("Browser.getVersion", {}, undefined, 1000),
+      /The task is under user control/,
+    );
+    await assert.rejects(
+      () => browserCdp("Browser.getVersion", {}, undefined, 1000),
+      /location access/,
+    );
+    assert.equal(probes, 2);
+  } finally {
+    invalidateSession();
+    if (previous === undefined) delete globalThis.ego;
+    else globalThis.ego = previous;
+  }
+});
+
 test("CDP events are drained only by the target session that received them", async () => {
   const previous = globalThis.ego;
   let nextSession = 1;

@@ -5,15 +5,18 @@ import { runMain } from "../dist/src/run.js";
 
 // A minimal native ego whose only method reports a hard stop, the same shape the real
 // bindings return when the user holds (or has not handed over) the task space. The
-// `listTaskSpaces` helper lifts it through assertNoEgoError -> buildEgoError, which is
+// `listTaskSpaces` helper lifts it through invokeEgo -> buildEgoError, which is
 // where the sink is told a hard stop occurred.
-function hardStopEgo(error_code) {
+function hardStopEgo(
+  error_code,
+  error = "native wording that should never reach the agent",
+) {
   return {
     calls: 0,
     async listTaskSpaces() {
       this.calls += 1;
       return {
-        error: "native wording that should never reach the agent",
+        error,
         error_code,
       };
     },
@@ -144,6 +147,24 @@ test("a swallowed user-control hard stop discards all output and prints the guid
   assert.ok(ego.calls >= 3, "every iteration should have hit the hard stop");
 });
 
+test("a permission hard stop discards business output and keeps its specific guidance", async () => {
+  const ego = hardStopEgo("EGO_TASK_SPACE_USER_IN_CONTROL", "camera");
+  const result = await runScript(
+    `
+      console.log("before permission");
+      try { await listTaskSpaces(); } catch {}
+      console.log("after permission");
+    `,
+    ego,
+  );
+
+  assert.equal(result.exitCode, 0);
+  assert.match(result.stdout, /camera access/);
+  assert.match(result.stdout, /takeOverTaskSpace\(spaceId\)/);
+  assert.doesNotMatch(result.stdout, /before permission|after permission/);
+  assert.equal(result.stdout.match(/camera access/g).length, 1);
+});
+
 test("an inactive / unassigned task space is also a hard stop", async () => {
   const ego = hardStopEgo("EGO_TASK_SPACE_INACTIVE");
   const result = await runScript(
@@ -166,7 +187,7 @@ test("an inactive / unassigned task space is also a hard stop", async () => {
 
 test("a swallowed snapshot hard stop (rejected, not resolved) also collapses to one message", async () => {
   // snapshot rejects directly instead of resolving with { error }, so it bypasses
-  // assertNoEgoError; the collapse only works if snapshot() rebuilds it via buildEgoError.
+  // invokeEgo; the collapse only works if snapshot() rebuilds it via buildEgoError.
   const ego = snapshotHardStopEgo("EGO_TASK_SPACE_USER_IN_CONTROL");
   const result = await runScript(
     `

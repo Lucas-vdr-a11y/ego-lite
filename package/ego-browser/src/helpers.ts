@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { setOverrides, state } from "./state.js";
-import { assertNoEgoError, isEgoUserControlError } from "./ego-errors.js";
+import { invokeEgo, isEgoUserControlError } from "./ego-errors.js";
 import { help as helpRuntime, formatHelp } from "./help-runtime.js";
 import { cdp, decodeUnserializableJsValue, js } from "./cdp-eval.js";
 import * as pointer from "./driver/pointer.js";
@@ -82,7 +82,7 @@ export async function listTaskSpaces() {
     throw new Error("listTaskSpaces requires ego.listTaskSpaces");
   }
   return normalizeTaskSpaces(
-    assertNoEgoError(await ego.listTaskSpaces(), "listTaskSpaces"),
+    await invokeEgo("listTaskSpaces", () => ego.listTaskSpaces()),
   );
 }
 
@@ -146,7 +146,7 @@ export async function newTaskSpace(name) {
     throw new Error("newTaskSpace requires ego.createTaskSpace");
   }
   const created = normalizeTaskSpace(
-    assertNoEgoError(await ego.createTaskSpace(name), "newTaskSpace"),
+    await invokeEgo("newTaskSpace", () => ego.createTaskSpace(name)),
   );
   if (!created) {
     throw new Error("newTaskSpace returned an invalid task space");
@@ -225,7 +225,7 @@ async function claimResolvedTaskSpace(space, op = "claimTaskSpace") {
   }
   const id = taskSpaceNumericId(space, op);
   const claimed = normalizeTaskSpace(
-    assertNoEgoError(await ego.claimTaskSpace(id, space.name), op),
+    await invokeEgo(op, () => ego.claimTaskSpace(id, space.name)),
   );
   if (!claimed) {
     throw new Error(`${op} returned an invalid task space`);
@@ -238,7 +238,7 @@ async function selectTaskSpace(ego, space, op: string) {
   if (!ego || typeof ego.useTaskSpace !== "function") {
     throw new Error(`${op} requires ego.useTaskSpace`);
   }
-  assertNoEgoError(await ego.useTaskSpace(taskSpaceNumericId(space, op)), op);
+  await invokeEgo(op, () => ego.useTaskSpace(taskSpaceNumericId(space, op)));
   return space;
 }
 
@@ -293,7 +293,7 @@ export async function completeTaskSpace(
     if (typeof ego.completeTaskSpace !== "function") {
       throw new Error("completeTaskSpace requires ego.completeTaskSpace");
     }
-    assertNoEgoError(await ego.completeTaskSpace(), "completeTaskSpace");
+    await invokeEgo("completeTaskSpace", () => ego.completeTaskSpace());
   } else {
     if (match.ownership === "user") {
       await claimResolvedTaskSpace(match, "completeTaskSpace");
@@ -303,7 +303,7 @@ export async function completeTaskSpace(
     if (typeof ego.closeTaskSpace !== "function") {
       throw new Error("completeTaskSpace requires ego.closeTaskSpace");
     }
-    assertNoEgoError(await ego.closeTaskSpace(), "completeTaskSpace");
+    await invokeEgo("completeTaskSpace", () => ego.closeTaskSpace());
   }
   return { done: true };
 }
@@ -327,7 +327,7 @@ export async function handOffTaskSpace(nameOrId?: string | number) {
     }
     await selectTaskSpace(ego, match, "handOffTaskSpace");
   }
-  assertNoEgoError(await ego.handOffTaskSpace(), "handOffTaskSpace");
+  await invokeEgo("handOffTaskSpace", () => ego.handOffTaskSpace());
   return { done: true };
 }
 
@@ -346,7 +346,7 @@ export async function takeOverTaskSpace(nameOrId?: string | number) {
     descriptor = await findTaskSpace(nameOrId);
     await selectTaskSpace(ego, descriptor, "takeOverTaskSpace");
   }
-  assertNoEgoError(await ego.takeOverTaskSpace(), "takeOverTaskSpace");
+  await invokeEgo("takeOverTaskSpace", () => ego.takeOverTaskSpace());
   if (descriptor) {
     const task = createTaskSpaceHandle({ ...descriptor, ownership: "agent" });
     // Repeatedly ensuring control over an already agent-controlled space is a

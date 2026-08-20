@@ -8,7 +8,7 @@ import {
   setPreferredTarget,
 } from "../browser-runtime.js";
 import { cdp, js } from "../cdp-eval.js";
-import { assertNoEgoError } from "../ego-errors.js";
+import { invokeEgo } from "../ego-errors.js";
 import { state } from "../state.js";
 import { waitForDocumentLoad } from "./load.js";
 
@@ -106,7 +106,7 @@ export async function listTabs(
   options: ListTabsOptions = {},
 ): Promise<TabInfo[]> {
   const includeChrome = options.includeChrome ?? true;
-  const result = assertNoEgoError(await browserEgo().listTabs(), "listTabs");
+  const result = await invokeEgo("listTabs", () => browserEgo().listTabs());
   const tabs = result.tabs || [];
   return tabs
     .filter(
@@ -156,7 +156,7 @@ export async function switchTab(target: string | { targetId: string }) {
  * @returns {Promise<string>} New target id.
  */
 export async function newTab(url = "about:blank") {
-  const result = assertNoEgoError(await browserEgo().createTab(url), "newTab");
+  const result = await invokeEgo("newTab", () => browserEgo().createTab(url));
   if (!result.targetId) {
     throw new Error("newTab returned no targetId");
   }

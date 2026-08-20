@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { e2eCases } from "./cases/index.mjs";
+import { resolveEgoBrowserCli } from "./ego-browser-cli.mjs";
 import { egoSource } from "./ego-source.mjs";
 import { closeFixtureServer, startFixtureServer } from "./fixture.mjs";
 import { runCommand } from "./run-command.mjs";
@@ -14,6 +15,7 @@ const egoBrowserSdkPath = join(packageDir, "dist", "out", "index.js");
 const egoBrowserArgs = ["nodejs", "--sdk-path", egoBrowserSdkPath];
 
 export async function runRealBrowserE2e() {
+  const egoBrowserCli = resolveEgoBrowserCli();
   const keepTaskSpace =
     process.env.EGO_BROWSER_REAL_E2E_KEEP === "1" ||
     process.env.EGO_BROWSER_REAL_E2E_KEEP === "true";
@@ -43,7 +45,7 @@ export async function runRealBrowserE2e() {
     const startedAt = Date.now();
     try {
       const { stdout, stderr } = await runCommand(
-        "ego-browser",
+        egoBrowserCli,
         egoBrowserArgs,
         {
           cwd: packageDir,
@@ -78,6 +80,7 @@ export async function runRealBrowserE2e() {
     body,
     markerName,
     timeoutMs = 45000,
+    expectedOutput,
   ) {
     console.log(`-- ${name}`);
     const source = egoSource(body, {
@@ -86,8 +89,9 @@ export async function runRealBrowserE2e() {
     });
     const startedAt = Date.now();
     let commandError;
+    let commandResult;
     try {
-      await runCommand("ego-browser", egoBrowserArgs, {
+      commandResult = await runCommand(egoBrowserCli, egoBrowserArgs, {
         cwd: packageDir,
         egoBrowserSdkPath,
         input: source,
@@ -99,8 +103,24 @@ export async function runRealBrowserE2e() {
 
     const durationMs = Date.now() - startedAt;
     try {
-      if (!commandError) {
+      if (!commandError && !expectedOutput) {
         throw new Error("the browser script completed instead of terminating");
+      }
+      if (expectedOutput) {
+        const output = [
+          commandResult?.stdout,
+          commandResult?.stderr,
+          commandError?.stdout,
+          commandError?.stderr,
+          commandError?.message,
+        ]
+          .filter(Boolean)
+          .join("\n");
+        if (!output.includes(expectedOutput)) {
+          throw new Error(
+            `the browser script did not report the expected hard stop: ${expectedOutput}`,
+          );
+        }
       }
       // The marker is written only after openPage() has returned. Its presence
       // distinguishes the intended hard stop from an unrelated startup error.
@@ -130,6 +150,7 @@ export async function runRealBrowserE2e() {
         testCase.body(),
         testCase.markerName,
         testCase.timeoutMs,
+        testCase.expectedOutput,
       );
       return;
     }
@@ -199,6 +220,7 @@ export async function runRealBrowserE2e() {
     console.log("== E2E (real browser helpers) ==");
     console.log(`fixture: ${context.baseUrl}`);
     console.log(`task: ${taskName}`);
+    console.log(`cli: ${egoBrowserCli}`);
     console.log(`sdk: ${egoBrowserSdkPath}`);
 
     for (const testCase of e2eCases) await maybeRunTestCase(testCase);

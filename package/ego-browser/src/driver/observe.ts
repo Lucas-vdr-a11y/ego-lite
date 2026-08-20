@@ -11,7 +11,7 @@ import {
   isBrowserRuntime,
   pendingDialog,
 } from "../browser-runtime.js";
-import { buildEgoError } from "../ego-errors.js";
+import { invokeEgo } from "../ego-errors.js";
 import { resolveElementCenter } from "../element-resolver.js";
 import {
   browserRefMap,
@@ -45,17 +45,9 @@ export async function drainEvents() {
 }
 
 export async function snapshot(options: SnapshotOptions = {}) {
-  let result;
-  try {
-    result = await browserEgo().snapshot(options);
-  } catch (err) {
-    // ego.snapshot rejects directly (it never resolves with { error }), so it never
-    // reached buildEgoError — the single birthplace that records a hard stop for the
-    // output sink and swaps native wording for ego-browser's owned guidance. Route the
-    // rejection through it so a swallowed snapshot hard stop collapses like every other
-    // ego error instead of leaking repeated native text.
-    throw buildEgoError(err, "snapshot");
-  }
+  const result: any = await invokeEgo("snapshot", () =>
+    browserEgo().snapshot(options),
+  );
   browserSnapshotRefsToRefMap(browserRefMap, result.refs || []);
   return result;
 }

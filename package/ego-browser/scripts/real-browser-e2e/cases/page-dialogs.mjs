@@ -1,110 +1,51 @@
-export function pageJavaScriptDialogsCase() {
+export function pageJavaScriptDialogHandoffCase() {
   return `
     const task = await taskSpace(taskName);
     const page = await task.openPage(baseUrl + "/?page-dialogs=" + Date.now(), {
       as: "page-dialogs",
     });
 
-    try {
     await page.evaluate(() => {
-      const controls = document.createElement("section");
-      controls.innerHTML =
-        '<button id="dialog-alert">Alert</button>' +
-        '<button id="dialog-confirm">Confirm</button>' +
-        '<button id="dialog-prompt">Prompt</button>' +
-        '<output id="dialog-result">idle</output>';
-      document.body.prepend(controls);
-
-      const result = controls.querySelector("#dialog-result");
-      const record = (value) => {
-        result.textContent = value;
-        result.dataset.value = value;
-      };
-
-      controls.querySelector("#dialog-alert").addEventListener("click", () => {
+      const button = document.createElement("button");
+      button.id = "dialog-alert";
+      button.textContent = "Alert";
+      const result = document.createElement("output");
+      result.id = "dialog-result";
+      result.textContent = "idle";
+      button.addEventListener("click", () => {
         alert("Alert from real E2E");
-        record("alert:continued");
+        result.textContent = "alert:continued";
+        result.dataset.value = "alert:continued";
       });
-      controls.querySelector("#dialog-confirm").addEventListener("click", () => {
-        record("confirm:" + confirm("Confirm from real E2E"));
-      });
-      controls.querySelector("#dialog-prompt").addEventListener("click", () => {
-        record("prompt:" + prompt("Prompt from real E2E", "initial answer"));
-      });
+      document.body.prepend(button, result);
     });
 
-    async function openDialog(selector, expectedType, expectedMessage) {
-      const startedAt = Date.now();
-      const receipt = await page.click(selector);
-      assert(
-        Date.now() - startedAt < 5_000,
-        expectedType + " action returns before the CDP timeout"
-      );
-      assertEqual(receipt.dialog?.type, expectedType, expectedType + " receipt reports its type");
-      assertEqual(
-        receipt.dialog?.message,
-        expectedMessage,
-        expectedType + " receipt reports its message"
-      );
-
-      const info = await page.info();
-      assertEqual(info.dialog?.type, expectedType, expectedType + " remains pending for the caller");
-      assertEqual(
-        info.dialog?.message,
-        expectedMessage,
-        expectedType + " is readable while the page JavaScript is blocked"
-      );
-      return receipt.dialog;
-    }
-
-    async function assertAgentStillControls(stage) {
-      const pages = await task.pages();
-      assert(
-        pages.some((candidate) => candidate.label === page.label),
-        stage + " keeps the E2E task space under Agent control"
-      );
-    }
-
-    await openDialog("#dialog-alert", "alert", "Alert from real E2E");
-    await page.cdp("Page.handleJavaScriptDialog", { accept: true });
-    await page.waitForSelector('[data-value="alert:continued"]', { timeout: 2_000 });
-    await assertAgentStillControls("handling alert");
-
-    await openDialog("#dialog-confirm", "confirm", "Confirm from real E2E");
-    await page.cdp("Page.handleJavaScriptDialog", { accept: false });
-    await page.waitForSelector('[data-value="confirm:false"]', { timeout: 2_000 });
-    await assertAgentStillControls("handling confirm");
-
-    const promptDialog = await openDialog(
-      "#dialog-prompt",
-      "prompt",
-      "Prompt from real E2E"
-    );
-    assertEqual(
-      promptDialog.defaultPrompt,
-      "initial answer",
-      "prompt receipt reports the default text"
-    );
-    await page.cdp("Page.handleJavaScriptDialog", {
-      accept: true,
-      promptText: "replacement answer",
-    });
-    await page.waitForSelector('[data-value="prompt:replacement answer"]', {
-      timeout: 2_000,
-    });
-    await assertAgentStillControls("handling prompt");
-    assertEqual(
-      await page.evaluate("document.querySelector('#dialog-result').textContent"),
-      "prompt:replacement answer",
-      "page JavaScript continues after the prompt is handled"
+    await writeFile(
+      join(tempDir, "dialog-hard-stop.json"),
+      JSON.stringify({ label: page.label, targetId: page.targetId })
     );
 
-    } finally {
-      const pending = await page.info().catch(() => null);
-      if (pending?.dialog) {
-        await page.cdp("Page.handleJavaScriptDialog", { accept: false }).catch(() => {});
-      }
-      await page.close().catch(() => {});
-    }
+    // Ego Lite hands the space to the user as soon as the site opens the dialog.
+    // The hard-stop output terminates this script before click() can return.
+    await page.click("#dialog-alert");
+  `;
+}
+
+export function pageJavaScriptDialogRecoveryCase() {
+  return `
+    const saved = JSON.parse(
+      await readFile(join(tempDir, "dialog-hard-stop.json"), "utf8")
+    );
+    // This is test-only simulation of the user explicitly asking the Agent to
+    // resume. Production code never takes control back automatically.
+    const task = await takeOverTaskSpace(taskName);
+    const page = task.page(saved.label);
+
+    await page.close();
+    assertEqual(page.targetId, saved.targetId, "takeover restores the dialog Page");
+    assert(
+      !(await task.pages()).some((candidate) => candidate.label === saved.label),
+      "recovery closes the blocked dialog Page"
+    );
   `;
 }

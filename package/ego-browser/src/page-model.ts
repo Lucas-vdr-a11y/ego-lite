@@ -56,7 +56,7 @@ import {
   type PageWaitForSelectorOptions,
   type PageWaitForURLOptions,
 } from "./driver/page-waits.js";
-import { assertNoEgoError, isEgoUserControlError } from "./ego-errors.js";
+import { invokeEgo, isEgoUserControlError } from "./ego-errors.js";
 import {
   withPage as defaultWithPage,
   withSpace as defaultWithSpace,
@@ -463,9 +463,8 @@ const baseDefaultServices: Omit<PageModelServices, "ledger" | "pageBudget"> = {
   gate: defaultGate,
   pageRefs: defaultPageRefs,
   async createTab(url) {
-    const result = assertNoEgoError(
-      await browserEgo().createTab(url),
-      "task.openPage",
+    const result = await invokeEgo("task.openPage", () =>
+      browserEgo().createTab(url),
     );
     const targetId = result?.targetId || result?.result?.targetId;
     if (typeof targetId !== "string" || targetId.length === 0) {
@@ -474,9 +473,8 @@ const baseDefaultServices: Omit<PageModelServices, "ledger" | "pageBudget"> = {
     return targetId;
   },
   async listTabs() {
-    const result = assertNoEgoError(
-      await browserEgo().listTabs(),
-      "task.listTabs",
+    const result = await invokeEgo("task.listTabs", () =>
+      browserEgo().listTabs(),
     );
     return result?.tabs || result?.targetInfos || [];
   },
@@ -496,21 +494,21 @@ const baseDefaultServices: Omit<PageModelServices, "ledger" | "pageBudget"> = {
     if (typeof ego.handOffTaskSpace !== "function") {
       throw new Error("task.handOff requires ego.handOffTaskSpace");
     }
-    assertNoEgoError(await ego.handOffTaskSpace(), "task.handOff");
+    await invokeEgo("task.handOff", () => ego.handOffTaskSpace());
   },
   async completeTaskSpace() {
     const ego = browserEgo();
     if (typeof ego.completeTaskSpace !== "function") {
       throw new Error("task.finish requires ego.completeTaskSpace");
     }
-    assertNoEgoError(await ego.completeTaskSpace(), "task.finish");
+    await invokeEgo("task.finish", () => ego.completeTaskSpace());
   },
   async closeTaskSpace() {
     const ego = browserEgo();
     if (typeof ego.closeTaskSpace !== "function") {
       throw new Error("task.close requires ego.closeTaskSpace");
     }
-    assertNoEgoError(await ego.closeTaskSpace(), "task.close");
+    await invokeEgo("task.close", () => ego.closeTaskSpace());
   },
   async cdp(method, params = {}, sessionId, timeoutMs) {
     const response = await browserCdp(method, params, sessionId, timeoutMs);
@@ -519,7 +517,9 @@ const baseDefaultServices: Omit<PageModelServices, "ledger" | "pageBudget"> = {
   async showAgentMousePosition(x, y) {
     const ego = browserEgo();
     if (typeof ego.animationHighlightMouseToPosition !== "function") return;
-    await ego.animationHighlightMouseToPosition(x, y);
+    await invokeEgo("page.mouse.move", () =>
+      ego.animationHighlightMouseToPosition(x, y),
+    );
   },
   snapshot: snapshotRaw,
   screenshot: captureScreenshotForSession,

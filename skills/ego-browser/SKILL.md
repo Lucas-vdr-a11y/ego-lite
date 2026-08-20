@@ -283,8 +283,8 @@ const receipt = await page.click("#submit");
 console.log(receipt.popups ?? []);
 ```
 
-Receipts report newly opened Pages and synchronous JavaScript dialogs. A dialog
-receipt has `{ dialog }`; handle it with
+Receipts report newly opened Pages and may report a synchronous JavaScript dialog
+when Ego Lite keeps Agent control. A dialog receipt has `{ dialog }`; handle it with
 `page.cdp("Page.handleJavaScriptDialog", { accept: true })` or `accept: false`
 before continuing. The dialog command uses the existing Page session without
 activating the Page again. After any other action, confirm navigation and page
@@ -357,6 +357,8 @@ Use the standard Node.js `fetch()` for background requests that do not need Page
 ## User control and task completion
 
 Stop immediately when the user takes control, or when the space is inactive or not assigned to the Agent. Do not retry or route around the stop. Resume control only after the user explicitly asks to continue.
+
+Browser permission prompts, device choosers, and JavaScript dialogs can cause the same handoff. Ask the user to handle or review the prompt; never grant, deny, or take control back automatically.
 
 When the user must act in the browser, call `await task.handOff()`, end the current round, and tell the user what to do. After the user confirms, resume the original space in the next round:
 

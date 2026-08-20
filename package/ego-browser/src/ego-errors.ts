@@ -64,6 +64,47 @@ const EGO_ERROR_MESSAGES: Partial<Record<EgoErrorCode, string>> = {
   ].join("\n"),
 };
 
+const USER_CONTROL_GUIDANCE =
+  EGO_ERROR_MESSAGES.EGO_TASK_SPACE_USER_IN_CONTROL as string;
+
+const USER_CONTROL_REASON_MESSAGES = Object.freeze({
+  notifications: permissionPrompt("notifications"),
+  location: permissionPrompt("location access"),
+  camera: permissionPrompt("camera access"),
+  microphone: permissionPrompt("microphone access"),
+  pan_tilt_zoom_microphone: permissionPrompt(
+    "camera control and microphone access",
+  ),
+  midi: permissionPrompt("MIDI device access"),
+  bluetooth: userPromptGuidance(
+    "A browser device chooser for Bluetooth has appeared.",
+  ),
+  usb: userPromptGuidance("A browser device chooser for USB has appeared."),
+  serial: userPromptGuidance(
+    "A browser port chooser for serial access has appeared.",
+  ),
+  hid: userPromptGuidance("A browser device chooser for HID has appeared."),
+  protocol_handler: permissionPrompt("protocol handler registration"),
+  fallback_site_dialog_required_notice: userPromptGuidance(
+    "The page has displayed a dialog that requires review.",
+  ),
+  manual_takeover: USER_CONTROL_GUIDANCE,
+});
+
+function permissionPrompt(access: string): string {
+  return userPromptGuidance(
+    `A browser permission prompt for ${access} has appeared.`,
+  );
+}
+
+function userPromptGuidance(firstLine: string): string {
+  return [
+    firstLine,
+    "The user now controls this task space. Wait for the user to handle the prompt.",
+    "Resume only after the user confirms, using takeOverTaskSpace(spaceId).",
+  ].join("\n");
+}
+
 /** Type guard for codes this build knows about. */
 export function isEgoErrorCode(value: unknown): value is EgoErrorCode {
   return (
@@ -103,11 +144,25 @@ export function resolveEgoError(err: unknown): {
 } {
   const code = egoErrorCode(err);
   const message =
-    (isEgoErrorCode(code) ? EGO_ERROR_MESSAGES[code] : undefined) ??
+    (code === "EGO_TASK_SPACE_USER_IN_CONTROL"
+      ? resolveUserControlMessage(err)
+      : isEgoErrorCode(code)
+        ? EGO_ERROR_MESSAGES[code]
+        : undefined) ??
     nativeErrorText(err) ??
     code ??
     "Unknown ego error";
   return { code, message };
+}
+
+function resolveUserControlMessage(err: unknown): string {
+  const nativeText = nativeErrorText(err);
+  if (nativeText && Object.hasOwn(USER_CONTROL_REASON_MESSAGES, nativeText)) {
+    return USER_CONTROL_REASON_MESSAGES[
+      nativeText as keyof typeof USER_CONTROL_REASON_MESSAGES
+    ];
+  }
+  return USER_CONTROL_GUIDANCE;
 }
 
 /** Whether an ego error means the task is currently under user control. */
@@ -127,17 +182,11 @@ function isEgoHardStopCode(code: string | undefined): boolean {
   );
 }
 
-/** Whether an ego error is a hard stop the agent must not retry or route around. */
-export function isEgoHardStopError(err: unknown): boolean {
-  return isEgoHardStopCode(egoErrorCode(err));
-}
-
 /**
  * Build an Error carrying the resolved message and stable error_code from any ego
  * error shape. `op`, when given, prefixes the message with the failing operation.
- * Shared by assertNoEgoError (which throws it) and the CDP-send failure path (which
- * rejects pending requests with it) so every ego failure surfaces an identical
- * Error shape.
+ * Shared by invokeEgo and the CDP-send failure path so every ego failure surfaces
+ * an identical Error shape.
  */
 export function buildEgoError(
   err: unknown,
@@ -145,8 +194,8 @@ export function buildEgoError(
 ): Error & { error_code?: string } {
   const { code, message } = resolveEgoError(err);
   if (isEgoHardStopCode(code)) {
-    // buildEgoError is the single birthplace of every ego error — assertNoEgoError and
-    // the CDP-send failure path both route through it — so recording the hard stop here
+    // buildEgoError is the single birthplace of every ego error — invokeEgo and the
+    // CDP-send failure path both route through it — so recording the hard stop here
     // catches it even when the agent's own try/catch later swallows the thrown Error.
     // The op-less owned message is the one the agent should see, regardless of which
     // operation surfaced it.
@@ -159,7 +208,21 @@ export function buildEgoError(
   return error;
 }
 
-export function assertNoEgoError(result, op?: string) {
+/**
+ * Invoke a native binding and normalize synchronous throws, rejected Promises, and
+ * resolved `{ error, error_code }` objects. Control-wait probes intentionally bypass
+ * this helper because observing user control is their expected result, not a hard stop.
+ */
+export async function invokeEgo<T>(
+  op: string,
+  invoke: () => T | Promise<T>,
+): Promise<T> {
+  let result: T;
+  try {
+    result = await invoke();
+  } catch (error) {
+    throw buildEgoError(error, op);
+  }
   if (
     result &&
     typeof result === "object" &&

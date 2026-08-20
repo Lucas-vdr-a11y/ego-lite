@@ -1,5 +1,5 @@
 import { browserEgo, ensureSession } from "./browser-runtime.js";
-import { assertNoEgoError } from "./ego-errors.js";
+import { invokeEgo } from "./ego-errors.js";
 
 type SpaceScope = {
   spaceId: number;
@@ -100,7 +100,7 @@ const defaultGate = new NativeOperationGate({
     if (typeof ego.useTaskSpace !== "function") {
       throw new Error("withSpace requires ego.useTaskSpace");
     }
-    assertNoEgoError(await ego.useTaskSpace(spaceId), "withSpace");
+    await invokeEgo("withSpace", () => ego.useTaskSpace(spaceId));
   },
   ensureSession,
 });

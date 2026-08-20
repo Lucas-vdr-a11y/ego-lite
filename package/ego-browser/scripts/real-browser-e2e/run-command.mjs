@@ -25,10 +25,10 @@ export function runCommand(command, args, options = {}) {
       if (settled) return;
       settled = true;
       if (timer) clearTimeout(timer);
-      if (error.code === "ENOENT" && command === "ego-browser") {
+      if (error.code === "ENOENT" && options.egoBrowserSdkPath) {
         reject(
           new Error(
-            "ego-browser command not found; install/open ego lite before running real browser e2e",
+            `Ego Lite CLI not found at ${command}; install/open Ego Lite or set EGO_BROWSER_REAL_E2E_CLI`,
           ),
         );
         return;

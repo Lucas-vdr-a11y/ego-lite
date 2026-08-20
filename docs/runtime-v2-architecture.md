@@ -384,12 +384,11 @@ popup 回执：
 状态确认。popup 回执只表示 target 已收编；首次导航可能仍停留在 `about:blank`，
 需要目的 URL 时由调用方显式等待。
 
-同步 JavaScript dialog 会阻塞触发它的 CDP 输入响应。Runtime 收到
-`Page.javascriptDialogOpening` 后会中断该输入等待，让高层动作立即返回
-`{ dialog }`；dialog 本身保持打开，由调用方随后 accept 或 dismiss。这样不会依赖
-15 秒 CDP 超时，也不会让双击或连续输入在 dialog 关闭后继续执行剩余步骤。
-`Page.handleJavaScriptDialog` 直接使用该 Page 已有的 session，不会在 dialog 打开时
-重复激活页面；Ego Lite 可能把这种重复激活解释为用户接管。
+同步 JavaScript dialog 可能让 Ego Lite 把空间交给用户，触发动作随即 hard stop。
+Agent 不会自动接管；用户处理完并明确要求继续后，下一轮再调用
+`takeOverTaskSpace()`。dialog 事件缓存不跨 Node 进程持久化。原生没有交出控制权
+时，Runtime 仍可中断被 dialog 阻塞的输入，并把 `{ dialog }` 放进动作回执，由同一
+轮脚本 accept 或 dismiss。
 
 底层原语不安装动作探针，也不等待 50ms 反馈窗口：
 
@@ -438,6 +437,12 @@ await page.evaluate(
 - 不在用户控制期间自动盘点或收编 tab。
 - 不把 unknown 页面推断成 Agent 页面。
 - 错误由统一 hard-stop 输出处理，避免循环脚本反复打印同一接管提示。
+
+定位、摄像头或麦克风等权限弹窗也会触发这条边界。Ego Lite 在普通 native 调用
+的 `error` 或 rejected Error 的 `message` 中返回 `location`、`camera` 等原因键；
+运行时先看稳定的 `error_code`，再解析原因键，未知原因统一回退到通用提示。
+CDP 本地发送失败没有原因字段，运行时只做一次 native 状态探测，再拒绝本轮所有
+在途 CDP 请求。Agent 不会自动允许权限，也不会自动夺回控制权。
 
 TaskSpace 提供 `handOff()` 和毫秒制 `waitForControl()`。用户明确要求恢复后，
 `takeOverTaskSpace(spaceId)` 直接返回新的 TaskSpace；接管 user-owned 或
@@ -514,8 +519,8 @@ surface，不属于本阶段。
 - screenshot、evaluate、fetch、键盘和鼠标都操作并激活指定 Page。
 - 页面动作不安装观察探针；高层动作仍能返回 popup 回执。
 - `keyboard.press()` 产生 native/trusted 输入；新版不暴露 synthetic dispatch。
-- 同步 alert、confirm、prompt 不会让触发动作等待到 CDP timeout；动作回执带 dialog，
-  accept/dismiss 后页面脚本能继续执行。
+- 同步 dialog 不会退化成 CDP timeout：原生保留控制权时动作回执带 dialog；原生交出
+  控制权时本轮 hard stop，用户处理完成并明确允许后才能 takeover。
 - `dragAndDrop()` 不只发出起止事件，还能把简单的 pointer-driven 元素实际拖到目标
   区域；`mouse.down/move/up` 能在 Canvas 上保持按键状态并连续绘制曲线和折线。
 - Page 操作可以控制真实 `<video>` 和 `<audio>` 播放：开始后时间会推进，暂停、跳转、

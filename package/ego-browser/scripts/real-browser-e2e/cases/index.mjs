@@ -9,7 +9,10 @@ import { keyboardRegressionCase } from "./keyboard-regression.mjs";
 import { pageKeyboardInterfaceCase } from "./page-keyboard.mjs";
 import { pageClickHitTargetCase } from "./page-click-hit-target.mjs";
 import { pageDragAndDrawCase } from "./page-drag-and-draw.mjs";
-import { pageJavaScriptDialogsCase } from "./page-dialogs.mjs";
+import {
+  pageJavaScriptDialogHandoffCase,
+  pageJavaScriptDialogRecoveryCase,
+} from "./page-dialogs.mjs";
 import { pageMediaPlaybackCase } from "./page-media-playback.mjs";
 import { pageScrolledScreenshotCase } from "./page-screenshot.mjs";
 import { pageSnapshotLocatorCase } from "./page-snapshot-locators.mjs";
@@ -73,7 +76,17 @@ export const e2eCases = [
   { name: "page actions and popup adoption", body: pageActionsAndPopupCase },
   { name: "Page click hit target", body: pageClickHitTargetCase },
   { name: "Page drag and canvas drawing", body: pageDragAndDrawCase },
-  { name: "Page JavaScript dialogs", body: pageJavaScriptDialogsCase },
+  {
+    name: "Page JavaScript dialog handoff",
+    body: pageJavaScriptDialogHandoffCase,
+    expectedTermination: true,
+    markerName: "dialog-hard-stop.json",
+    expectedOutput: "The page has displayed a dialog that requires review.",
+  },
+  {
+    name: "Page JavaScript dialog recovery",
+    body: pageJavaScriptDialogRecoveryCase,
+  },
   { name: "Page media playback", body: pageMediaPlaybackCase },
   { name: "Page scrolled screenshot", body: pageScrolledScreenshotCase },
   { name: "Page snapshot locator quality", body: pageSnapshotLocatorCase },

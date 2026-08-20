@@ -15,8 +15,8 @@ The override is temporary. It does not modify the installed application.
 
 ## Build
 
-Ego Lite must be installed, onboarding must be complete, and `ego-browser` must
-be available on `PATH`.
+Ego Lite must be installed and onboarding must be complete. The examples below
+assume that `ego-browser` on `PATH` belongs to Ego Lite.
 
 From the repository root:
 
@@ -59,9 +59,11 @@ npm run e2e
 ```
 
 The suite builds the current worktree and automatically runs it through the
-installed CLI with `--sdk-path`. This is the preferred end-to-end compatibility
-check. `npm test` remains useful for repository tests but does not replace the
-real-browser check.
+Ego Lite CLI with `--sdk-path`. On macOS it prefers the app's stable
+`Versions/Current` helper path, so another installed Ego product cannot silently
+take over the test. Set `EGO_BROWSER_REAL_E2E_CLI` to use another installation.
+This is the preferred end-to-end compatibility check. `npm test` remains useful
+for repository tests but does not replace the real-browser check.
 
 The command is self-contained: it starts its own local fixture server, creates a
 uniquely named temporary task space, and cleans both up. No manual SDK linking,
@@ -80,6 +82,8 @@ support.
 
 - **`ego-browser` not found:** finish Ego Lite onboarding and add its CLI
   directory, commonly `~/.local/bin`, to `PATH`.
+- **Multiple Ego products are installed:** set `EGO_BROWSER_REAL_E2E_CLI` to
+  the intended Ego Lite helper. The E2E output prints the selected CLI path.
 - **`--sdk-path` unsupported:** update Ego Lite to a build that supports loading
   an external runtime.
 - **Changes are not visible:** rebuild and confirm that the absolute SDK path
