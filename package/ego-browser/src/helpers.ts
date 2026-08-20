@@ -6,6 +6,7 @@ import { setOverrides, state } from "./state.js";
 import { invokeEgo, isEgoUserControlError } from "./ego-errors.js";
 import { help as helpRuntime, formatHelp } from "./help-runtime.js";
 import { validatePublicApiOptions } from "./public-api-schema.js";
+import { createStaleEgoBrowserGuard } from "./skill-migration.js";
 import { cdp, decodeUnserializableJsValue, js } from "./cdp-eval.js";
 import * as pointer from "./driver/pointer.js";
 import * as keyboard from "./driver/keyboard.js";
@@ -612,6 +613,9 @@ export function helperContext(extra: any = {}) {
   };
   return {
     ...all,
+    // The formal 1.3 Skill starts through egoBrowser.*. Keep a narrow guard so
+    // stale conversations get a recovery instruction instead of a ReferenceError.
+    egoBrowser: createStaleEgoBrowserGuard(),
     help: (...names: string[]) => {
       const result = helpRuntime(all, ...names);
       if (typeof result === "string") return result;

@@ -427,6 +427,9 @@ function createFixture(rootDir) {
       return networkSessions.has(sessionId);
     },
     ensureSession: ensureTargetSession,
+    async ensureFrameSessions() {
+      return new Map();
+    },
     invalidateSession(targetId) {
       calls.push(["invalidateSession", targetId]);
     },

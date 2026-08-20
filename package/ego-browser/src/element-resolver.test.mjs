@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   resolveElementCenter,
+  resolveElementObjectId,
   ElementResolutionError,
 } from "../dist/src/element-resolver.js";
 import { RefMap } from "../dist/src/ref-map.js";
@@ -205,5 +206,73 @@ test("ambiguous text locators fail permanently instead of choosing one match", a
       assert.match(error.message, /matched 2 elements/);
       return true;
     },
+  );
+});
+
+test("semantic locators search cross-process iframe sessions", async () => {
+  const cdp = new FakeCDP(async (method, _params, sessionId) => {
+    if (method === "Accessibility.getFullAXTree") {
+      return sessionId === "session:frame-child"
+        ? {
+            nodes: [
+              {
+                role: { value: "button" },
+                name: { value: "Run iframe action" },
+                backendDOMNodeId: 201,
+              },
+            ],
+          }
+        : { nodes: [] };
+    }
+    if (method === "DOM.resolveNode") {
+      assert.equal(sessionId, "session:frame-child");
+      assert.equal(_params.backendNodeId, 201);
+      return { object: { objectId: "iframe-button" } };
+    }
+    return {};
+  });
+
+  const resolved = await resolveElementObjectId(
+    cdp,
+    "session:page",
+    new RefMap(),
+    'loc=role:button[name="Run iframe action"]',
+    new Map([["frame-child", "session:frame-child"]]),
+  );
+
+  assert.deepEqual(resolved, {
+    objectId: "iframe-button",
+    sessionId: "session:frame-child",
+  });
+});
+
+test("a Page document match wins before iframe fallback", async () => {
+  const cdp = new FakeCDP(async (method, _params, sessionId) => {
+    if (method === "Accessibility.getFullAXTree") {
+      return {
+        nodes: [
+          {
+            role: { value: "button" },
+            name: { value: "Duplicate" },
+            backendDOMNodeId: sessionId === "session:page" ? 1 : 2,
+          },
+        ],
+      };
+    }
+    if (method === "DOM.resolveNode") {
+      return { object: { objectId: `node:${sessionId}` } };
+    }
+    return {};
+  });
+
+  assert.deepEqual(
+    await resolveElementObjectId(
+      cdp,
+      "session:page",
+      new RefMap(),
+      'loc=role:button[name="Duplicate"]',
+      new Map([["frame-child", "session:frame-child"]]),
+    ),
+    { objectId: "node:session:page", sessionId: "session:page" },
   );
 });

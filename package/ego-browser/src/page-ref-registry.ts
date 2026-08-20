@@ -1,7 +1,9 @@
 import { RefMap } from "./ref-map.js";
 
 type SnapshotRef = {
+  refId?: string | number;
   backendNodeId?: number;
+  frameId?: string;
   role?: string;
   name?: string;
 };
@@ -35,11 +37,13 @@ export class PageRefRegistry {
       ) {
         continue;
       }
-      refs.add(
-        String(ref.backendNodeId),
+      refs.addWithFrame(
+        String(ref.refId ?? ref.backendNodeId),
         ref.backendNodeId,
         ref.role,
         ref.name,
+        undefined,
+        ref.frameId,
       );
     }
     this.#targets.set(targetId, refs);

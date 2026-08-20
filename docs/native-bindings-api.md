@@ -109,6 +109,23 @@ All async callbacks are bounced through the Node event loop before JS is
 invoked. Scripts can safely `await` these APIs and allow the process to exit
 after pending requests settle.
 
+## Browser Version
+
+### `await ego.getBrowserVersion()`
+
+Returns the installed Ego Lite version and whether its updater has an available
+release. This method is not task-scoped and does not start an update.
+
+```js
+{
+  currentVersion: '0.5.0.5',
+  updateAvailable: false,
+}
+```
+
+Older Ego Lite builds may not expose this method. Callers should treat a missing
+method, a failed request, or an invalid result as unavailable update status.
+
 ## Task Context
 
 ### `ego.useTaskSpace(id)`

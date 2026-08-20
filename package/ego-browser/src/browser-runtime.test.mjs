@@ -5,9 +5,81 @@ import {
   browserCdp,
   drainBrowserEvents,
   drainPageEvents,
+  ensureFrameSessions,
   invalidateSession,
   prepareFileChooser,
 } from "../dist/src/browser-runtime.js";
+
+test("frame sessions follow one Page target and are invalidated with it", async () => {
+  const previous = globalThis.ego;
+  const attachCounts = new Map();
+  const runtime = {
+    sendCDPMessage(payload) {
+      const request = JSON.parse(payload);
+      let result = {};
+      if (request.method === "Target.getTargets") {
+        result = {
+          targetInfos: [
+            { targetId: "page-main", type: "page" },
+            {
+              targetId: "frame-child",
+              type: "iframe",
+              parentId: "page-main",
+            },
+            {
+              targetId: "frame-grandchild",
+              type: "iframe",
+              parentId: "frame-child",
+            },
+            {
+              targetId: "foreign-frame",
+              type: "iframe",
+              parentId: "foreign-page",
+            },
+          ],
+        };
+      } else if (request.method === "Page.getFrameTree") {
+        result = {
+          frameTree: {
+            frame: { id: "page-main" },
+            childFrames: [{ frame: { id: "same-process-frame" } }],
+          },
+        };
+      } else if (request.method === "Target.attachToTarget") {
+        const targetId = request.params.targetId;
+        attachCounts.set(targetId, (attachCounts.get(targetId) || 0) + 1);
+        result = { sessionId: `session:${targetId}` };
+      }
+      queueMicrotask(() => {
+        runtime.onCDPMessage(JSON.stringify({ id: request.id, result }));
+      });
+    },
+  };
+  globalThis.ego = runtime;
+
+  try {
+    const first = await ensureFrameSessions("page-main");
+    assert.deepEqual(
+      [...first],
+      [
+        ["same-process-frame", "session:page-main"],
+        ["frame-child", "session:frame-child"],
+        ["frame-grandchild", "session:frame-grandchild"],
+      ],
+    );
+    assert.equal(attachCounts.has("foreign-frame"), false);
+
+    invalidateSession("page-main");
+    const second = await ensureFrameSessions("page-main");
+    assert.deepEqual([...second], [...first]);
+    assert.equal(attachCounts.get("frame-child"), 2);
+    assert.equal(attachCounts.get("frame-grandchild"), 2);
+  } finally {
+    invalidateSession();
+    if (previous === undefined) delete globalThis.ego;
+    else globalThis.ego = previous;
+  }
+});
 
 // Gap A: ensureSession() calls the raw listTabs binding to attach a session.
 // When the task is blocked it returns { error, error_code }; the result must
@@ -424,7 +496,7 @@ test("a JavaScript dialog interrupts the blocked Page input command", async () =
 
     const disposeStartedAt = Date.now();
     setTimeout(() => {
-      runtime.onCDPMessage(
+      runtime.onCDPMessage?.(
         JSON.stringify({ id: pendingDisableRequestId, result: {} }),
       );
     }, 60);
@@ -485,6 +557,113 @@ test("page event drains exclude unscoped browser events", async () => {
       "legacy drain still exposes unscoped browser events",
     );
   } finally {
+    if (previous === undefined) delete globalThis.ego;
+    else globalThis.ego = previous;
+  }
+});
+
+test("a native CDP callback contains internal handler failures", async () => {
+  const previous = globalThis.ego;
+  const originalConsoleError = console.error;
+  const reported = [];
+  const runtime = {
+    sendCDPMessage(payload) {
+      const request = JSON.parse(payload);
+      const result =
+        request.method === "Target.attachToTarget"
+          ? { sessionId: "session-callback-guard" }
+          : {};
+      queueMicrotask(() => {
+        runtime.onCDPMessage(JSON.stringify({ id: request.id, result }));
+      });
+    },
+  };
+  globalThis.ego = runtime;
+  console.error = (...args) => reported.push(args);
+  let interception;
+
+  try {
+    const attached = await browserCdp("Target.attachToTarget", {
+      targetId: "target-callback-guard",
+      flatten: true,
+    });
+    const sessionId = attached.result.sessionId;
+    interception = prepareFileChooser(sessionId, {
+      timeoutMs: 1_000,
+      cancel: false,
+    });
+    await interception.ready;
+    interception.resolve = () => {
+      throw new Error("file chooser handler failed");
+    };
+
+    assert.doesNotThrow(() => {
+      runtime.onCDPMessage(
+        JSON.stringify({
+          sessionId,
+          method: "Page.fileChooserOpened",
+          params: { backendNodeId: 42, mode: "selectSingle" },
+        }),
+      );
+    });
+    assert.equal(reported.length, 1);
+    assert.match(String(reported[0][0]), /onCDPMessage/);
+
+    const response = await browserCdp(
+      "Runtime.evaluate",
+      { expression: "1" },
+      sessionId,
+      1_000,
+    );
+    assert.deepEqual(response.result, {});
+  } finally {
+    console.error = originalConsoleError;
+    await interception?.dispose();
+    invalidateSession();
+    if (previous === undefined) delete globalThis.ego;
+    else globalThis.ego = previous;
+  }
+});
+
+test("runtime callbacks can be released without deleting a foreign replacement", async () => {
+  const previous = globalThis.ego;
+  const runtimeModule = await import("../dist/src/browser-runtime.js");
+  const runtime = {
+    sendCDPMessage(payload) {
+      const request = JSON.parse(payload);
+      queueMicrotask(() => {
+        runtime.onCDPMessage(
+          JSON.stringify({ id: request.id, result: { ok: true } }),
+        );
+      });
+    },
+  };
+  globalThis.ego = runtime;
+
+  try {
+    assert.equal(
+      typeof runtimeModule.releaseRuntimeCallbacks,
+      "function",
+      "the SDK lifecycle needs an explicit callback release hook",
+    );
+    await browserCdp("Target.getTargets", {}, undefined, 1_000);
+    assert.equal(typeof runtime.onCDPMessage, "function");
+    assert.equal(typeof runtime.onSendCDPMessageError, "function");
+
+    runtimeModule.releaseRuntimeCallbacks(runtime);
+    assert.equal(runtime.onCDPMessage, undefined);
+    assert.equal(runtime.onSendCDPMessageError, undefined);
+
+    await browserCdp("Target.getTargets", {}, undefined, 1_000);
+    const foreignMessage = () => {};
+    const foreignError = () => {};
+    runtime.onCDPMessage = foreignMessage;
+    runtime.onSendCDPMessageError = foreignError;
+    runtimeModule.releaseRuntimeCallbacks(runtime);
+    assert.equal(runtime.onCDPMessage, foreignMessage);
+    assert.equal(runtime.onSendCDPMessageError, foreignError);
+  } finally {
+    invalidateSession();
     if (previous === undefined) delete globalThis.ego;
     else globalThis.ego = previous;
   }

@@ -83,8 +83,8 @@ scripts/
 
 See `../../skills/ego-browser/SKILL.md` for the agent-facing workflow and
 `../../skills/ego-browser/references/api.md` for the generated v2 API reference.
-The v1 compatibility contract is documented in
-`../../docs/legacy-api-compatibility.md`.
+The old global helpers remain available as a v1 compatibility surface for
+existing scripts.
 
 ## Design constraints
 
@@ -92,6 +92,8 @@ The v1 compatibility contract is documented in
 - Snapshot helpers use the browser runtime contract: `ego.snapshot({ scope, includeActionMarks, includeStableLocator })`.
 - New public APIs must be added to `public-api-schema.ts`; runtime validation,
   default `help()`, the generated reference, and the Skill must remain aligned.
+- Embedded hosts should await the exported `disposeEgoSdk()` hook before
+  discarding a Node context; see `../../docs/native-sdk-lifecycle-requirement.md`.
 - Site-specific reusable experience belongs under `skills/ego-browser/learnings/`, not in this package.
 
 ## License

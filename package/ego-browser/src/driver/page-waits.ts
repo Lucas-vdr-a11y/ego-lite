@@ -41,6 +41,7 @@ export async function waitForSelectorInPage(
   refMap: RefMap,
   selector: string,
   options: PageWaitForSelectorOptions = {},
+  iframeSessions = new Map<string, string>(),
 ): Promise<true> {
   if (typeof selector !== "string" || selector.length === 0) {
     throw new TypeError(
@@ -59,6 +60,7 @@ export async function waitForSelectorInPage(
         sessionId,
         refMap,
         selector,
+        iframeSessions,
       );
       if (state === "attached") return true;
       if (state !== "detached") {

@@ -208,6 +208,9 @@ Snapshot labels such as `button` and `textbox` are accessibility roles, not
 necessarily HTML tag names. Use the current ref for an immediate action and a
 generated locator for reuse. CSS searches the document and nested open shadow
 roots; XPath and closed shadow roots do not cross shadow boundaries.
+For iframe content without a ref, write a `loc=role:` selector from the shown
+role and name. If the top-level document has no match, role locators also search
+ordinary iframes and OOPIFs.
 
 A ref belongs only to the Page that produced it. Take another snapshot after
 navigation, a substantial DOM change, raw CDP, or before reusing a ref in a
@@ -343,3 +346,8 @@ After verifying the result, call `task.close()` by default. Use
 `task.finish()` only when the user asks to keep the pages, must continue from
 the result page, or the result cannot be delivered through a URL, file, or
 summary. Do not report completion until the chosen method resolves.
+
+If the final output contains `[ego-browser:notice]`, finish the current browser
+task, tell the user an Ego Lite update is available, and run
+`ego-browser upgrade` only with their approval. Re-read this Skill after the
+upgrade.

@@ -3,6 +3,7 @@ import {
   browserEgo,
   drainPageEvents,
   ensureSession,
+  ensureFrameSessions,
   invalidateSession,
   isNetworkDomainEnabled,
   isPageDialogOpenedError,
@@ -234,6 +235,7 @@ type PageModelServices = {
   drainEvents(sessionId: string): any[];
   isNetworkDomainEnabled(sessionId: string): boolean;
   ensureSession(targetId: string): Promise<string>;
+  ensureFrameSessions(targetId: string): Promise<Map<string, string>>;
   invalidateSession(targetId: string): void;
   setPreferredTarget(targetId: string): void;
   now(): number;
@@ -528,6 +530,7 @@ const baseDefaultServices: Omit<PageModelServices, "ledger" | "pageBudget"> = {
   drainEvents: drainPageEvents,
   isNetworkDomainEnabled,
   ensureSession,
+  ensureFrameSessions,
   invalidateSession,
   setPreferredTarget,
   now: () => state.now(),
@@ -1160,12 +1163,16 @@ class Page {
     return this.#services.gate.withPage(page, async ({ sessionId }) => {
       await this.#activate(page.targetId);
       const refMap = await this.#refMapForAction(page, selector);
+      const iframeSessions = await this.#services.ensureFrameSessions(
+        page.targetId,
+      );
       return waitForSelectorInPage(
         this.#services,
         sessionId,
         refMap,
         selector,
         options,
+        iframeSessions,
       );
     });
   }
@@ -1220,7 +1227,7 @@ class Page {
     validatePublicApiOptions("Page.click", options);
     return this.#runAction(
       selector,
-      (sessionId, refMap) =>
+      (sessionId, refMap, iframeSessions) =>
         clickInPage(
           this.#services,
           sessionId,
@@ -1228,6 +1235,7 @@ class Page {
           selector,
           options,
           this.keyboard.modifierMask(),
+          iframeSessions,
         ),
       true,
     );
@@ -1240,7 +1248,7 @@ class Page {
     validatePublicApiOptions("Page.dblclick", options);
     return this.#runAction(
       selector,
-      (sessionId, refMap) =>
+      (sessionId, refMap, iframeSessions) =>
         clickInPage(
           this.#services,
           sessionId,
@@ -1248,6 +1256,7 @@ class Page {
           selector,
           { ...options, clickCount: 2 },
           this.keyboard.modifierMask(),
+          iframeSessions,
         ),
       true,
     );
@@ -1258,7 +1267,7 @@ class Page {
     options: PageHoverOptions = {},
   ): Promise<PageActionReceipt> {
     validatePublicApiOptions("Page.hover", options);
-    return this.#runAction(selector, (sessionId, refMap) =>
+    return this.#runAction(selector, (sessionId, refMap, iframeSessions) =>
       hoverInPage(
         this.#services,
         sessionId,
@@ -1266,6 +1275,7 @@ class Page {
         selector,
         options,
         this.keyboard.modifierMask(),
+        iframeSessions,
       ),
     );
   }
@@ -1278,7 +1288,7 @@ class Page {
     validatePublicApiOptions("Page.dragAndDrop", options);
     return this.#runAction(
       [sourceSelector, targetSelector],
-      (sessionId, refMap) =>
+      (sessionId, refMap, iframeSessions) =>
         dragAndDropInPage(
           this.#services,
           sessionId,
@@ -1287,6 +1297,7 @@ class Page {
           targetSelector,
           options,
           this.keyboard.modifierMask(),
+          iframeSessions,
         ),
     );
   }
@@ -1297,8 +1308,16 @@ class Page {
     options: PageFillOptions = {},
   ): Promise<PageActionReceipt> {
     validatePublicApiOptions("Page.fill", options);
-    return this.#runAction(selector, (sessionId, refMap) =>
-      fillInPage(this.#services, sessionId, refMap, selector, value, options),
+    return this.#runAction(selector, (sessionId, refMap, iframeSessions) =>
+      fillInPage(
+        this.#services,
+        sessionId,
+        refMap,
+        selector,
+        value,
+        options,
+        iframeSessions,
+      ),
     );
   }
 
@@ -1306,8 +1325,15 @@ class Page {
     selector: string,
     path: string | string[],
   ): Promise<PageActionReceipt> {
-    return this.#runAction(selector, (sessionId, refMap) =>
-      setInputFilesInPage(this.#services, sessionId, refMap, selector, path),
+    return this.#runAction(selector, (sessionId, refMap, iframeSessions) =>
+      setInputFilesInPage(
+        this.#services,
+        sessionId,
+        refMap,
+        selector,
+        path,
+        iframeSessions,
+      ),
     );
   }
 
@@ -1470,7 +1496,11 @@ class Page {
 
   async #runAction(
     selector: string | string[],
-    operation: (sessionId: string, refMap: RefMap) => Promise<void>,
+    operation: (
+      sessionId: string,
+      refMap: RefMap,
+      iframeSessions: Map<string, string>,
+    ) => Promise<void>,
     guardFileChooser = false,
   ): Promise<PageActionReceipt> {
     const page = await this.#resolve();
@@ -1479,7 +1509,10 @@ class Page {
       page,
       async (sessionId) => {
         const refMap = await this.#refMapForAction(page, ...selectors);
-        await operation(sessionId, refMap);
+        const iframeSessions = await this.#services.ensureFrameSessions(
+          page.targetId,
+        );
+        await operation(sessionId, refMap, iframeSessions);
       },
       guardFileChooser,
     );

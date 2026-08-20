@@ -147,6 +147,25 @@ test("a swallowed user-control hard stop discards all output and prints the guid
   assert.ok(ego.calls >= 3, "every iteration should have hit the hard stop");
 });
 
+test("a swallowed 1.3 skill mismatch discards business output and explains recovery", async () => {
+  const result = await runScript(`
+    console.log("before stale call");
+    try {
+      await egoBrowser.newTaskSpace("stale skill");
+    } catch (error) {
+      console.log("caught: " + error.message);
+    }
+    console.log("after stale call");
+  `);
+
+  assert.equal(result.exitCode, 0);
+  assert.match(result.stdout, /\[ego-browser:skill-stale\]/);
+  assert.match(result.stdout, /re-read the installed ego-browser skill/i);
+  assert.match(result.stdout, /taskSpace\(nameOrId\)/);
+  assert.doesNotMatch(result.stdout, /before stale|caught:|after stale/);
+  assert.equal(result.stdout.match(/\[ego-browser:skill-stale\]/g).length, 1);
+});
+
 test("a permission hard stop discards business output and keeps its specific guidance", async () => {
   const ego = hardStopEgo("EGO_TASK_SPACE_USER_IN_CONTROL", "camera");
   const result = await runScript(

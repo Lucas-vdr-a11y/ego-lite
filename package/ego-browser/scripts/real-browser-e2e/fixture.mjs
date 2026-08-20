@@ -163,6 +163,11 @@ export async function startFixtureServer(taskName) {
       res.end(pageHtml("secondary"));
       return;
     }
+    if (url.pathname === "/same-origin-frame") {
+      res.writeHead(200, { "content-type": "text/html" });
+      res.end(pageHtml("home", { iframeUrl: "/frame.html" }));
+      return;
+    }
     if (url.pathname === "/visual") {
       res.writeHead(200, { "content-type": "text/html" });
       res.end(visualPageHtml());
@@ -349,6 +354,7 @@ function pageHtml(kind, { iframeUrl = "/frame.html" } = {}) {
       <span id="controlled-state"></span>
       <shadow-fixture id="shadow-fixture"></shadow-fixture>
       ${kind === "frame" ? '<div id="iframe-marker" data-iframe="true" style="border:2px solid #44f;padding:8px;margin-top:8px;">iframe target</div>' : ""}
+      ${kind === "frame" ? '<button id="iframe-action" type="button" aria-label="Run iframe action">Run iframe action</button><label>Iframe field <input id="iframe-field" aria-label="Iframe field"></label><span id="iframe-result">idle</span>' : ""}
     </main>
     <script>
       window.__fixtureState = {
@@ -368,6 +374,11 @@ function pageHtml(kind, { iframeUrl = "/frame.html" } = {}) {
         dropdownValue: "alpha",
         valueEvents: {},
       };
+      const iframeAction = document.querySelector("#iframe-action");
+      iframeAction?.addEventListener("click", (event) => {
+        document.querySelector("#iframe-result").textContent =
+          "clicked:" + String(event.isTrusted);
+      });
       const shadowHost = document.querySelector("#shadow-fixture");
       const shadowRoot = shadowHost.attachShadow({ mode: "open" });
       const nestedHost = document.createElement("nested-shadow-fixture");

@@ -24,10 +24,17 @@ const pending = new Map();
 const browserEvents = [];
 const targetStates = new Map();
 const sessionTargets = new Map();
+const childTargets = new Map<string, Set<string>>();
+const parentTargets = new Map<string, string>();
 let defaultTargetId = null;
 let userControlProbeState: "idle" | "probing" | "stopped" = "idle";
 let userControlStopError: (Error & { error_code?: string }) | null = null;
 let userControlProbeGeneration = 0;
+type EgoCdpCallbackRuntime = {
+  onCDPMessage?: (payload: string) => void;
+  onSendCDPMessageError?: (message: unknown, errorCode?: string) => void;
+};
+let callbackRuntime: EgoCdpCallbackRuntime | undefined;
 
 /**
  * Signals that a modal JavaScript dialog prevented a CDP command from
@@ -115,6 +122,32 @@ function registerSession(targetId, sessionId) {
   sessionTargets.set(sessionId, targetId);
 }
 
+function registerTargetParent(targetId: string, parentTargetId: string) {
+  const previousParent = parentTargets.get(targetId);
+  if (previousParent === parentTargetId) return;
+  if (previousParent) {
+    const previousChildren = childTargets.get(previousParent);
+    previousChildren?.delete(targetId);
+    if (previousChildren?.size === 0) childTargets.delete(previousParent);
+  }
+  parentTargets.set(targetId, parentTargetId);
+  let children = childTargets.get(parentTargetId);
+  if (!children) {
+    children = new Set();
+    childTargets.set(parentTargetId, children);
+  }
+  children.add(targetId);
+}
+
+function unregisterTargetParent(targetId: string) {
+  const parentTargetId = parentTargets.get(targetId);
+  if (!parentTargetId) return;
+  parentTargets.delete(targetId);
+  const siblings = childTargets.get(parentTargetId);
+  siblings?.delete(targetId);
+  if (siblings?.size === 0) childTargets.delete(parentTargetId);
+}
+
 function clearTargetSession(targetId, { remove = false } = {}) {
   const target = targetStates.get(targetId);
   if (!target) return;
@@ -140,6 +173,17 @@ function clearTargetSession(targetId, { remove = false } = {}) {
   target.fileChooserInterception = null;
 }
 
+function clearTargetSessionTree(targetId: string, { remove = false } = {}) {
+  for (const childTargetId of [...(childTargets.get(targetId) || [])]) {
+    clearTargetSessionTree(childTargetId, { remove: true });
+  }
+  clearTargetSession(targetId, { remove });
+  if (remove) {
+    childTargets.delete(targetId);
+    unregisterTargetParent(targetId);
+  }
+}
+
 function capEvents(events) {
   if (events.length > MAX_BUFFERED_EVENTS) {
     events.splice(0, events.length - MAX_BUFFERED_EVENTS);
@@ -159,6 +203,61 @@ export function browserEgo() {
   return globalThis.ego;
 }
 
+/** Keep exceptions from crossing the native-to-JavaScript callback boundary. */
+function guardNativeCallback(label: string, callback: () => void): void {
+  try {
+    callback();
+  } catch (error) {
+    try {
+      console.error(`[ego-browser] ${label} failed:`, error);
+    } catch {
+      // Error reporting must not re-enter the native callback failure.
+    }
+  }
+}
+
+function dispatchCdpMessage(payload: string): void {
+  guardNativeCallback("onCDPMessage", () => handleMessage(payload));
+}
+
+function dispatchCdpSendError(message: unknown, errorCode?: string): void {
+  guardNativeCallback("onSendCDPMessageError", () =>
+    handleSendError(message, errorCode),
+  );
+}
+
+function bindRuntimeCallbacks(runtime: EgoCdpCallbackRuntime): void {
+  if (callbackRuntime && callbackRuntime !== runtime) {
+    releaseRuntimeCallbacks(callbackRuntime);
+  }
+  runtime.onCDPMessage = dispatchCdpMessage;
+  runtime.onSendCDPMessageError = dispatchCdpSendError;
+  callbackRuntime = runtime;
+}
+
+/** Release only callbacks installed by this runtime, preserving foreign owners. */
+export function releaseRuntimeCallbacks(
+  runtime: EgoCdpCallbackRuntime | undefined = callbackRuntime,
+): void {
+  if (!runtime) return;
+  if (runtime.onCDPMessage === dispatchCdpMessage) {
+    runtime.onCDPMessage = undefined;
+  }
+  if (runtime.onSendCDPMessageError === dispatchCdpSendError) {
+    runtime.onSendCDPMessageError = undefined;
+  }
+  if (callbackRuntime === runtime) callbackRuntime = undefined;
+}
+
+/** Stop all runtime work before an embedded Node context is discarded. */
+export function disposeBrowserRuntime(
+  runtime: EgoCdpCallbackRuntime | undefined = callbackRuntime,
+): void {
+  releaseRuntimeCallbacks(runtime);
+  rejectAllPending(new Error("ego-browser runtime was disposed"));
+  invalidateSession();
+}
+
 function rawCdp(
   method,
   params: any = {},
@@ -166,8 +265,7 @@ function rawCdp(
   timeoutMs = RESPONSE_TIMEOUT_MS,
 ) {
   const runtime = browserEgo();
-  runtime.onCDPMessage = handleMessage;
-  runtime.onSendCDPMessageError = handleSendError;
+  bindRuntimeCallbacks(runtime);
   const id = nextMessageId++;
   const payload = JSON.stringify({
     id,
@@ -319,15 +417,93 @@ export async function ensureSession(requestedTargetId = undefined) {
   return target.sessionInflight;
 }
 
+/**
+ * Attach sessions for every live OOPIF that belongs to one top-level Page.
+ * TargetInfo.parentId provides the ownership edge, so unrelated iframe targets
+ * in the same task space are never searched by this Page.
+ */
+export async function ensureFrameSessions(pageTargetId: string) {
+  if (typeof pageTargetId !== "string" || pageTargetId.length === 0) {
+    throw new TypeError("ensureFrameSessions requires a non-empty targetId");
+  }
+  const pageSessionId = await ensureSession(pageTargetId);
+  const [response, frameTreeResponse] = await Promise.all([
+    browserCdp("Target.getTargets"),
+    browserCdp("Page.getFrameTree", {}, pageSessionId),
+  ]);
+  const targetInfos =
+    response?.result?.targetInfos || response?.targetInfos || [];
+  const byParent = new Map<string, any[]>();
+  for (const info of targetInfos) {
+    if (
+      info?.type !== "iframe" ||
+      typeof info.targetId !== "string" ||
+      typeof info.parentId !== "string"
+    ) {
+      continue;
+    }
+    const children = byParent.get(info.parentId) || [];
+    children.push(info);
+    byParent.set(info.parentId, children);
+  }
+
+  const descendants: any[] = [];
+  const visit = (parentTargetId: string) => {
+    for (const info of byParent.get(parentTargetId) || []) {
+      descendants.push(info);
+      visit(info.targetId);
+    }
+  };
+  visit(pageTargetId);
+
+  const liveTargetIds = new Set(
+    descendants.map((info) => info.targetId as string),
+  );
+  const knownDescendants: string[] = [];
+  const collectKnownDescendants = (parentTargetId: string) => {
+    for (const childTargetId of childTargets.get(parentTargetId) || []) {
+      knownDescendants.push(childTargetId);
+      collectKnownDescendants(childTargetId);
+    }
+  };
+  collectKnownDescendants(pageTargetId);
+  for (const knownTargetId of knownDescendants.reverse()) {
+    if (!liveTargetIds.has(knownTargetId)) {
+      clearTargetSessionTree(knownTargetId, { remove: true });
+    }
+  }
+
+  const sessions = new Map<string, string>();
+  const frameTree =
+    frameTreeResponse?.result?.frameTree || frameTreeResponse?.frameTree;
+  const collectSameProcessFrames = (tree: any, isRoot = false) => {
+    const frameId = tree?.frame?.id;
+    if (!isRoot && typeof frameId === "string") {
+      sessions.set(frameId, pageSessionId);
+    }
+    for (const child of tree?.childFrames || []) {
+      collectSameProcessFrames(child);
+    }
+  };
+  if (frameTree) collectSameProcessFrames(frameTree, true);
+  for (const info of descendants) {
+    registerTargetParent(info.targetId, info.parentId);
+    sessions.set(info.targetId, await ensureSession(info.targetId));
+  }
+  return sessions;
+}
+
 export function invalidateSession(targetId = undefined) {
   if (targetId) {
-    clearTargetSession(targetId, { remove: true });
+    clearTargetSessionTree(targetId, { remove: true });
     return;
   }
   for (const knownTargetId of [...targetStates.keys()]) {
     clearTargetSession(knownTargetId, { remove: true });
   }
   browserEvents.length = 0;
+  childTargets.clear();
+  parentTargets.clear();
   defaultTargetId = null;
   resetUserControlProbe();
 }
@@ -619,13 +795,17 @@ function handleMessage(message) {
       data.params?.targetId ||
       data.params?.targetInfo?.targetId;
     if (targetId) {
-      clearTargetSession(targetId, {
+      clearTargetSessionTree(targetId, {
         remove: data.method === "Target.targetDestroyed",
       });
     }
   } else if (data.method === "Target.attachedToTarget") {
     const sessionId = data.params?.sessionId;
     const targetId = data.params?.targetInfo?.targetId;
+    const parentTargetId = data.params?.targetInfo?.parentId;
+    if (targetId && parentTargetId) {
+      registerTargetParent(targetId, parentTargetId);
+    }
     if (sessionId && targetId) registerSession(targetId, sessionId);
   }
   const sessionId = data.sessionId;
@@ -680,12 +860,13 @@ export function browserSnapshotRefsToRefMap(refMap, refs = []) {
     if (ref.backendNodeId === undefined || ref.backendNodeId === null) {
       continue;
     }
-    refMap.add(
-      String(ref.backendNodeId),
+    refMap.addWithFrame(
+      String(ref.refId ?? ref.backendNodeId),
       ref.backendNodeId,
       ref.role,
       ref.name,
       undefined,
+      ref.frameId,
     );
   }
 }

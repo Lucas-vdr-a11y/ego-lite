@@ -4,6 +4,7 @@ import { pathToFileURL } from "node:url";
 import * as helpers from "./helpers.js";
 import {
   clearPreferredTarget,
+  disposeBrowserRuntime,
   invalidateSession,
   setPreferredTarget,
 } from "./browser-runtime.js";
@@ -15,11 +16,16 @@ import {
   resetSink,
 } from "./output-sink.js";
 import { runMain } from "./run.js";
+import { installStaleEgoBrowserGuard } from "./skill-migration.js";
+import { emitUpdateNotice } from "./update-notice.js";
 
 type HelperFunction = (...args: unknown[]) => unknown;
 type EgoRuntime = Record<string, unknown> & {
   helpers?: Record<string, HelperFunction>;
   learnings?: Record<string, unknown>;
+  getBrowserVersion?: () => unknown | Promise<unknown>;
+  onCDPMessage?: (payload: string) => void;
+  onSendCDPMessageError?: (message: unknown, errorCode?: string) => void;
 };
 type InstallTarget = Record<string, unknown> & {
   ego?: EgoRuntime;
@@ -32,6 +38,11 @@ type InstallEgoSdkOptions = {
 
 export * from "./helpers.js";
 export { runMain } from "./run.js";
+
+/** Release native callbacks before the host discards an embedded Node context. */
+export async function disposeEgoSdk(target: InstallTarget = globalThis) {
+  disposeBrowserRuntime(target.ego);
+}
 
 const SYNC_HELPERS = new Set(["help"]);
 // Marks an ego runtime whose mutating methods have already been wrapped, so a
@@ -73,6 +84,10 @@ export function installEgoSdk(
     });
     installed[name] = exposed as HelperFunction;
   }
+  // Non-function values are intentionally absent from the normal helper loop.
+  // Install the 1.3 migration guard explicitly so embedded SDK execution and
+  // the direct CLI produce the same actionable error.
+  installStaleEgoBrowserGuard(target);
   const usingDefaultCliLog = !options.cliLog;
   const cliLogFn = options.cliLog || createCliLog();
   Object.defineProperty(target, "cliLog", {
@@ -99,6 +114,10 @@ export function installEgoSdk(
     installLifecycleFlush(process.stdout);
   }
   if (target.ego && typeof target.ego === "object") {
+    void emitUpdateNotice(target.ego, (line) => {
+      if (usingDefaultCliLog) bufferOutput(`${line}\n`);
+      else cliLogFn(line);
+    });
     target.ego.helpers = installed;
     target.ego.learnings = {};
     if (!(target.ego as Record<symbol, unknown>)[EGO_WRAPPED]) {

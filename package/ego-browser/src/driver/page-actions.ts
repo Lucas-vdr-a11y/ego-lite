@@ -68,6 +68,7 @@ export async function clickInPage(
   selector: string,
   options: PageClickOptions = {},
   modifiers = 0,
+  iframeSessions = new Map<string, string>(),
 ): Promise<void> {
   assertPageSelector(selector);
   const button = options.button ?? "left";
@@ -77,6 +78,7 @@ export async function clickInPage(
     sessionId,
     refMap,
     selector,
+    iframeSessions,
   );
   try {
     const point = await resolveElementPoint(
@@ -84,6 +86,7 @@ export async function clickInPage(
       target.sessionId,
       target.objectId,
       options.position,
+      target.frameId,
     );
     const buttons = pressedButtons(button);
     await dispatchMouseEvent(services, target.sessionId, {
@@ -101,7 +104,7 @@ export async function clickInPage(
         services,
         target.sessionId,
         target.objectId,
-        point,
+        point.local,
       );
       await dispatchMouseEvent(services, target.sessionId, {
         type: "mousePressed",
@@ -145,6 +148,7 @@ export async function fillInPage(
   selector: string,
   value: string,
   options: PageFillOptions = {},
+  iframeSessions = new Map<string, string>(),
 ): Promise<void> {
   assertPageSelector(selector);
   if (typeof value !== "string") {
@@ -157,6 +161,7 @@ export async function fillInPage(
     sessionId,
     refMap,
     selector,
+    iframeSessions,
   );
   try {
     const preparationSource = `function fillPreparation(value, clearFirst) {
@@ -228,7 +233,15 @@ export async function fillInPage(
     if (typeof result?.error === "string") {
       throw new Error(`page.fill failed: ${result.error}`);
     }
-    showAgentCursor(services, result?.cursorPoint);
+    showAgentCursor(
+      services,
+      await pagePointForFrame(
+        services,
+        resolved.sessionId,
+        resolved.frameId,
+        result?.cursorPoint,
+      ),
+    );
     const status = typeof result === "string" ? result : result?.status;
     if (status === "done") return;
     if (status !== "needsinput") {
@@ -284,6 +297,7 @@ export async function hoverInPage(
   selector: string,
   options: PageHoverOptions = {},
   modifiers = 0,
+  iframeSessions = new Map<string, string>(),
 ): Promise<void> {
   assertPageSelector(selector);
   const resolved = await resolveElementObjectId(
@@ -291,6 +305,7 @@ export async function hoverInPage(
     sessionId,
     refMap,
     selector,
+    iframeSessions,
   );
   try {
     const point = await resolveElementPoint(
@@ -298,6 +313,7 @@ export async function hoverInPage(
       resolved.sessionId,
       resolved.objectId,
       options.position,
+      resolved.frameId,
     );
     await dispatchMouseEvent(services, resolved.sessionId, {
       type: "mouseMoved",
@@ -321,6 +337,7 @@ export async function dragAndDropInPage(
   targetSelector: string,
   options: PageDragAndDropOptions = {},
   modifiers = 0,
+  iframeSessions = new Map<string, string>(),
 ): Promise<void> {
   assertPageSelector(sourceSelector);
   assertPageSelector(targetSelector);
@@ -329,6 +346,7 @@ export async function dragAndDropInPage(
     sessionId,
     refMap,
     sourceSelector,
+    iframeSessions,
   );
   let target;
   try {
@@ -337,18 +355,21 @@ export async function dragAndDropInPage(
       sessionId,
       refMap,
       targetSelector,
+      iframeSessions,
     );
     const sourcePoint = await resolveElementPoint(
       services,
       source.sessionId,
       source.objectId,
       options.sourcePosition,
+      source.frameId,
     );
     const targetPoint = await resolveElementPoint(
       services,
       target.sessionId,
       target.objectId,
       options.targetPosition,
+      target.frameId,
     );
     const button = options.button ?? "left";
     const buttons = pressedButtons(button);
@@ -521,7 +542,8 @@ async function resolveElementPoint(
   sessionId: string,
   objectId: string,
   position?: { x: number; y: number },
-): Promise<{ x: number; y: number }> {
+  frameId?: string,
+): Promise<{ x: number; y: number; local: { x: number; y: number } }> {
   if (
     position !== undefined &&
     (!position ||
@@ -578,7 +600,46 @@ async function resolveElementPoint(
   if (!Number.isFinite(point?.x) || !Number.isFinite(point?.y)) {
     throw new Error("page.click could not resolve the element position");
   }
-  return point;
+  const pagePoint = await pagePointForFrame(
+    services,
+    sessionId,
+    frameId,
+    point,
+  );
+  return { ...pagePoint, local: point };
+}
+
+async function pagePointForFrame(
+  services: PageActionServices,
+  sessionId: string,
+  frameId: string | undefined,
+  point: { x?: unknown; y?: unknown } | null | undefined,
+): Promise<{ x: number; y: number } | null | undefined> {
+  if (
+    !point ||
+    typeof point.x !== "number" ||
+    !Number.isFinite(point.x) ||
+    typeof point.y !== "number" ||
+    !Number.isFinite(point.y) ||
+    !frameId
+  ) {
+    return point as { x: number; y: number } | null | undefined;
+  }
+  const owner = await services.cdp("DOM.getFrameOwner", { frameId }, sessionId);
+  const backendNodeId = owner?.backendNodeId;
+  if (backendNodeId === undefined || backendNodeId === null) {
+    throw new Error(`page action could not resolve iframe ${frameId}`);
+  }
+  const box = await services.cdp(
+    "DOM.getBoxModel",
+    { backendNodeId },
+    sessionId,
+  );
+  const content = box?.model?.content;
+  if (!Array.isArray(content) || content.length < 2) {
+    throw new Error(`page action could not resolve iframe ${frameId} position`);
+  }
+  return { x: point.x + content[0], y: point.y + content[1] };
 }
 
 async function assertElementReceivesPointerEvents(

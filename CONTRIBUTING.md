@@ -188,7 +188,7 @@ Because every heredoc runs in a fresh Node process, new scripts call
 
 Control is handed to the user with `task.handOff()` and resumed, after user
 approval, with `takeOverTaskSpace(spaceId)`. The old global helpers remain a v1
-compatibility surface; see `docs/legacy-api-compatibility.md`.
+compatibility surface for existing scripts.
 
 ---
 

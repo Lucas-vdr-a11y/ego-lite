@@ -27,6 +27,8 @@ test("the real-browser fixture uses a non-recursive cross-site iframe", async ()
       response.text(),
     );
     assert.match(frameHtml, /id="iframe-marker"/);
+    assert.match(frameHtml, /id="iframe-action"/);
+    assert.match(frameHtml, /id="iframe-field"/);
     assert.doesNotMatch(
       frameHtml,
       /id="fixture-frame"/,

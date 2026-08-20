@@ -27,6 +27,7 @@ export async function setInputFilesInPage(
   refMap: RefMap,
   selector: string,
   path: string | string[],
+  iframeSessions = new Map<string, string>(),
 ): Promise<void> {
   const files = normalizeFilePaths(path, "page.setInputFiles");
   const resolved = await resolveElementObjectId(
@@ -34,6 +35,7 @@ export async function setInputFilesInPage(
     sessionId,
     refMap,
     selector,
+    iframeSessions,
   );
   let inputObjectId: string | undefined;
   try {
