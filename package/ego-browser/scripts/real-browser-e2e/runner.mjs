@@ -1,11 +1,4 @@
-import {
-  mkdir,
-  mkdtemp,
-  readFile,
-  rm,
-  stat,
-  writeFile,
-} from "node:fs/promises";
+import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -49,14 +42,21 @@ export async function runRealBrowserE2e() {
     });
     const startedAt = Date.now();
     try {
-      const { stdout } = await runCommand("ego-browser", egoBrowserArgs, {
-        cwd: packageDir,
-        egoBrowserSdkPath,
-        input: source,
-        timeoutMs,
-      });
+      const { stdout, stderr } = await runCommand(
+        "ego-browser",
+        egoBrowserArgs,
+        {
+          cwd: packageDir,
+          egoBrowserSdkPath,
+          input: source,
+          timeoutMs,
+        },
+      );
       const durationMs = Date.now() - startedAt;
-      const assertions = await readCaseAssertionCount(tempDir, stdout);
+      const assertions = extractAssertionCount(stdout, stderr);
+      if (assertions === null) {
+        throw new Error(`${name} produced no assertion summary`);
+      }
       recordResult(name, "pass", durationMs, assertions);
       console.log(
         `-- ${name} passed (${formatDuration(durationMs)}, ${assertions} assertions)`,
@@ -64,7 +64,8 @@ export async function runRealBrowserE2e() {
     } catch (error) {
       const durationMs = Date.now() - startedAt;
       const message = error?.message || String(error);
-      const assertions = await readCaseAssertionCount(tempDir, error?.stdout);
+      const assertions =
+        extractAssertionCount(error?.stdout, error?.stderr) ?? 0;
       recordResult(name, "fail", durationMs, assertions, message);
       console.error(
         `[FAIL] ${name} (${formatDuration(durationMs)}): ${message}`,
@@ -136,7 +137,6 @@ export async function runRealBrowserE2e() {
   }
 
   async function cleanupTaskSpace() {
-    const beforeFails = caseResults.filter((r) => r.status === "fail").length;
     await runEgoCase(
       "cleanup",
       `
@@ -269,22 +269,9 @@ async function initializeE2eEnvironment(context, tempDir) {
   );
 }
 
-async function readCaseAssertionCount(tempDir, stdout) {
-  const resultPath = join(tempDir, "case-result.json");
-  try {
-    const raw = await readFile(resultPath, "utf8");
-    const parsed = JSON.parse(raw);
-    if (typeof parsed.assertions === "number") return parsed.assertions;
-  } catch {
-    // file not written or not valid JSON — fall back to stdout
-  }
-  return extractAssertionCount(stdout);
-}
-
-function extractAssertionCount(stdout) {
-  if (!stdout) return 0;
+function extractAssertionCount(...outputs) {
   // Find the last JSON line with "assertions" from cliLog output
-  const lines = stdout.split("\n");
+  const lines = outputs.filter(Boolean).join("\n").split("\n");
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i].trim();
     if (line.startsWith("{") && line.includes("assertions")) {
@@ -296,7 +283,7 @@ function extractAssertionCount(stdout) {
       }
     }
   }
-  return 0;
+  return null;
 }
 
 function formatDuration(ms) {

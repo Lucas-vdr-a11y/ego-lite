@@ -5,12 +5,10 @@ import { isAbsolute, relative, resolve } from "node:path";
 import {
   iterLearningDirs,
   learningEntry,
-  learningsRoot,
   loadLearningManifest,
   siteSkillsForUrl,
   siteSkillsRoot,
   urlHostname,
-  LearningEntry,
   LearningManifest,
   LearnedContext,
   LearnedKnowledgeNote,
@@ -18,11 +16,6 @@ import {
   NodeToolSchema,
   ToolSchema,
 } from "./check-domain-learning.js";
-import {
-  validateLearning,
-  validateLearnings,
-  validateSiteSkills,
-} from "./validate-learning-format.js";
 
 export {
   checkDomainLearningExists,

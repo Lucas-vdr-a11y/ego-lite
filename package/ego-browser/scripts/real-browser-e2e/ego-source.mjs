@@ -250,10 +250,8 @@ export function egoSource(body, context) {
     try {
       ${body}
       cliLog(JSON.stringify({ ok: true, assertions: __assertionCount }));
-      await writeFile(join(tempDir, "case-result.json"), JSON.stringify({ ok: true, assertions: __assertionCount }));
     } catch (error) {
       cliLog(JSON.stringify({ ok: false, assertions: __assertionCount, error: error.message }));
-      await writeFile(join(tempDir, "case-result.json"), JSON.stringify({ ok: false, assertions: __assertionCount, error: error.message })).catch(() => {});
       error.message = ${JSON.stringify("real browser e2e")} + ": " + error.message;
       throw error;
     }
