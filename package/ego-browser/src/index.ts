@@ -18,6 +18,7 @@ import {
 import { runMain } from "./run.js";
 import { installStaleEgoBrowserGuard } from "./skill-migration.js";
 import { emitUpdateNotice } from "./update-notice.js";
+import { installPageContextGuard } from "./page-context-guard.js";
 
 type HelperFunction = (...args: unknown[]) => unknown;
 type EgoRuntime = Record<string, unknown> & {
@@ -56,6 +57,7 @@ export function installEgoSdk(
   if (!target || typeof target !== "object") {
     return target;
   }
+  if (target === globalThis) installPageContextGuard(target);
   const context = options.context || helpers.helperContext();
   const readySignal = Promise.resolve(options.ready);
   let readyError = null;

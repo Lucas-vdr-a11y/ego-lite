@@ -2,19 +2,32 @@ import { isAbsolute } from "node:path";
 
 import { resolveElementObjectId } from "../element-resolver.js";
 import { type RefMap } from "../ref-map.js";
+import { COMPOSED_TREE_HELPERS } from "./action-target.js";
 import { type KeyboardServices } from "./keyboard.js";
 
 type PageInputServices = KeyboardServices;
 
 const RESOLVE_FILE_INPUT_SOURCE = `function resolveFileInputForUpload() {
+  ${COMPOSED_TREE_HELPERS}
   const isFileInput = (element) =>
-    element instanceof HTMLInputElement && element.type === "file";
+    String(element?.tagName || "").toUpperCase() === "INPUT" &&
+    String(element.type || "").toLowerCase() === "file";
   if (isFileInput(this)) return this;
-  if (this instanceof HTMLLabelElement && isFileInput(this.control)) {
+  const isFileLabel = (element) =>
+    String(element?.tagName || "").toUpperCase() === "LABEL" &&
+    isFileInput(element.control);
+  if (isFileLabel(this)) {
     return this.control;
   }
-  const descendant = this.querySelector?.('input[type="file"]');
-  if (isFileInput(descendant)) return descendant;
+  const label = nearestComposedAncestor(this, isFileLabel);
+  if (label) return label.control;
+  const descendants = composedDescendantMatches(this, isFileInput, true);
+  if (descendants.length === 1) return descendants[0];
+  if (descendants.length > 1) {
+    throw new TypeError(
+      "page.setInputFiles selected a container with multiple file inputs",
+    );
+  }
   throw new TypeError(
     "page.setInputFiles requires a file input, its label, or a container with a file input",
   );

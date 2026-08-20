@@ -329,6 +329,31 @@ export function pageBasicOperationsCase() {
       "fixture-upload.txt",
       "page.setInputFiles follows a label to its file input"
     );
+    await first.evaluate(() => {
+      const shadowHost = document.createElement("div");
+      shadowHost.id = "shadow-file-wrapper";
+      shadowHost.attachShadow({ mode: "open" }).innerHTML =
+        '<section><input id="shadow-file-input" type="file" /></section>';
+      document.body.append(shadowHost);
+
+      const ambiguous = document.createElement("div");
+      ambiguous.id = "ambiguous-file-wrapper";
+      ambiguous.innerHTML = '<input type="file" /><input type="file" />';
+      document.body.append(ambiguous);
+    });
+    await first.setInputFiles("#shadow-file-wrapper", uploadPath);
+    assertEqual(
+      await first.evaluate(
+        "document.querySelector('#shadow-file-wrapper').shadowRoot.querySelector('#shadow-file-input').files[0].name",
+      ),
+      "fixture-upload.txt",
+      "page.setInputFiles searches nested open shadow roots"
+    );
+    await assertRejects(
+      () => first.setInputFiles("#ambiguous-file-wrapper", uploadPath),
+      "multiple file inputs",
+      "page.setInputFiles refuses to choose the first of multiple descendants"
+    );
 
     await assertRejects(
       () => first.click("#dynamic-file-button"),
@@ -411,6 +436,48 @@ export function pageActionsAndPopupCase() {
     assertEqual((await currentTab()).targetId, source.targetId, "page.fill activates and keeps its page current");
 
     await source.evaluate(() => {
+      const wrapper = document.createElement("div");
+      wrapper.id = "fill-descendant-wrapper";
+      wrapper.innerHTML = '<section><div><input id="fill-descendant-input" /></div></section>';
+      document.body.append(wrapper);
+
+      const editor = document.createElement("div");
+      editor.id = "fill-ancestor-editor";
+      editor.contentEditable = "true";
+      editor.innerHTML = '<span><em id="fill-ancestor-text">old text</em></span>';
+      document.body.append(editor);
+
+      const ambiguous = document.createElement("div");
+      ambiguous.id = "ambiguous-fill-wrapper";
+      ambiguous.innerHTML = '<input id="ambiguous-fill-a" /><input id="ambiguous-fill-b" />';
+      document.body.append(ambiguous);
+    });
+    await source.fill("#fill-descendant-wrapper", "nested input");
+    assertEqual(
+      await source.evaluate("document.querySelector('#fill-descendant-input').value"),
+      "nested input",
+      "page.fill descends through wrappers to one fillable target"
+    );
+    await source.fill("#fill-ancestor-text", "ancestor editor");
+    assertEqual(
+      await source.evaluate("document.querySelector('#fill-ancestor-editor').innerText"),
+      "ancestor editor",
+      "page.fill climbs to the nearest editing host"
+    );
+    await assertRejects(
+      () => source.fill("#ambiguous-fill-wrapper", "must not choose"),
+      "multiple fillable targets",
+      "page.fill refuses to choose between multiple editable descendants"
+    );
+    assertEqual(
+      await source.evaluate(
+        "document.querySelector('#ambiguous-fill-a').value + document.querySelector('#ambiguous-fill-b').value",
+      ),
+      "",
+      "an ambiguous page.fill does not modify either field"
+    );
+
+    await source.evaluate(() => {
       const editor = document.createElement("div");
       editor.id = "pointer-activated-editor";
       editor.contentEditable = "true";
@@ -438,6 +505,28 @@ export function pageActionsAndPopupCase() {
       await source.evaluate("window.__editorPointerActivations"),
       1,
       "page.fill uses only one pointer fallback after the standard fill is rejected"
+    );
+
+    await source.evaluate((popupUrl) => {
+      const editor = document.createElement("div");
+      editor.id = "linked-rich-editor";
+      editor.contentEditable = "true";
+      editor.style.cssText =
+        "position:fixed;left:300px;top:160px;width:240px;height:40px;background:white;z-index:1000";
+      editor.innerHTML =
+        '<a href="' + popupUrl + '" target="_blank" style="display:block;width:100%;height:100%">linked text</a>';
+      editor.addEventListener("beforeinput", (event) => event.preventDefault());
+      document.body.append(editor);
+    }, baseUrl + "/secondary?unsafe-fill-popup=1");
+    await assertRejects(
+      () => source.fill("#linked-rich-editor", "must not navigate"),
+      "cannot safely activate",
+      "page.fill refuses a pointer fallback that would click an editor link"
+    );
+    assertEqual(
+      (await task.tabs()).some((item) => item.url.includes("unsafe-fill-popup")),
+      false,
+      "a rejected fill does not open the interactive descendant"
     );
 
     await source.evaluate((popupUrl) => {

@@ -44,6 +44,8 @@ function createFixture(rootDir) {
   let fillElementKind = "input";
   let fillText = "";
   let ignoredFillInsertionsRemaining = 0;
+  let focusResult = { focused: true };
+  let unsafeFillActivationTarget = null;
   let navigateOnNextClickUrl = null;
   let elementPresent = true;
   let elementVisible = true;
@@ -219,7 +221,17 @@ function createFixture(rootDir) {
       if (method === "Runtime.callFunctionOn") {
         if (params.functionDeclaration.includes("focusElementForAction")) {
           return {
-            result: { type: "object", value: { focused: true } },
+            result: { type: "object", value: focusResult },
+          };
+        }
+        if (params.functionDeclaration.includes("safeFillActivationTarget")) {
+          return {
+            result: {
+              type: "object",
+              value: unsafeFillActivationTarget
+                ? { error: unsafeFillActivationTarget }
+                : { safe: true },
+            },
           };
         }
         if (params.functionDeclaration.includes("resolveFileInputForUpload")) {
@@ -228,6 +240,15 @@ function createFixture(rootDir) {
             result: {
               type: "object",
               objectId: `file-input:${targetId}`,
+            },
+          };
+        }
+        if (params.functionDeclaration.includes("resolveFillTargetForAction")) {
+          const targetId = targetForSession(sessionId);
+          return {
+            result: {
+              type: "object",
+              objectId: `element:${targetId}`,
             },
           };
         }
@@ -564,6 +585,12 @@ function createFixture(rootDir) {
       fillElementKind = kind;
       fillText = initialText;
       ignoredFillInsertionsRemaining = ignoreInsertions;
+    },
+    configureFocusResult(result) {
+      focusResult = result;
+    },
+    configureUnsafeFillActivation(target) {
+      unsafeFillActivationTarget = target;
     },
     fillText: () => fillText,
     setElementState({ present = true, visible = true }) {
@@ -1551,6 +1578,39 @@ test("Page fill retries an unchanged contenteditable once with a real click", as
   });
 });
 
+test("Page fill refuses a pointer fallback that would activate an interactive descendant", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a");
+    const page = await task.openPage("https://example.test/editor");
+    fixture.configureFill({
+      kind: "contenteditable",
+      initialText: "linked text",
+      ignoreInsertions: 1,
+    });
+    fixture.configureUnsafeFillActivation(
+      '<a href="https://example.test/link">',
+    );
+    fixture.calls.length = 0;
+
+    await assert.rejects(
+      () => page.fill("[contenteditable]", "replacement"),
+      (error) => {
+        assert.equal(error.kind, "permanent");
+        assert.match(error.message, /cannot safely activate.*<a href=/i);
+        return true;
+      },
+    );
+    assert.equal(
+      fixture.calls.some(
+        ([kind, method]) =>
+          kind === "cdp" && method === "Input.dispatchMouseEvent",
+      ),
+      false,
+      "a fill fallback must not click an interactive descendant",
+    );
+  });
+});
+
 test("Page fill rejects when a contenteditable still ignores the pointer fallback", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
@@ -1929,6 +1989,56 @@ test("Page focus and selector-scoped press resolve and focus one element", async
   });
 });
 
+test("Page focus accepts a uniquely retargeted descendant", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a");
+    const page = await task.openPage("https://example.test/editor");
+    fixture.configureFocusResult({ focused: true, retargeted: "descendant" });
+
+    assert.deepEqual(await page.focus("#editor-wrapper"), {});
+  });
+});
+
+test("Page focus reports ambiguous candidates once as a permanent failure", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a");
+    const page = await task.openPage("https://example.test/editor");
+    fixture.configureFocusResult({
+      error: "element contains multiple editable targets",
+      details: {
+        tagName: "TD",
+        contentEditable: false,
+        tabIndex: -1,
+        activeTagName: "BODY",
+        candidateCount: 2,
+      },
+    });
+    fixture.calls.length = 0;
+
+    await assert.rejects(
+      () => page.focus("td"),
+      (error) => {
+        assert.equal(error.kind, "permanent");
+        assert.match(
+          error.message,
+          /multiple editable targets.*td.*contenteditable=false.*tabIndex=-1.*active=body.*candidates=2/i,
+        );
+        return true;
+      },
+    );
+    assert.equal(
+      fixture.calls.filter(
+        ([kind, method, params]) =>
+          kind === "cdp" &&
+          method === "Runtime.callFunctionOn" &&
+          params.functionDeclaration.includes("focusElementForAction"),
+      ).length,
+      1,
+      "a permanent focus failure must not consume the action timeout",
+    );
+  });
+});
+
 test("Page keyboard paste restores the clipboard after the native shortcut", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a", { platform: "darwin" });
@@ -1956,6 +2066,25 @@ test("Page keyboard paste restores the clipboard after the native shortcut", asy
       "write",
       "a\tb\nc\td",
     ]);
+  });
+});
+
+test("Page keyboard paste forwards plain-text and HTML clipboard representations", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a", { platform: "darwin" });
+    const page = await task.openPage("https://example.test/table");
+    const content = {
+      text: "A\tB",
+      html: "<table><tr><td>A</td><td>B</td></tr></table>",
+    };
+
+    assert.deepEqual(await page.keyboard.paste(content), {});
+    assert.deepEqual(
+      fixture.calls.find(
+        (call) => call[0] === "clipboard" && call[1] === "write",
+      ),
+      ["clipboard", "write", content],
+    );
   });
 });
 

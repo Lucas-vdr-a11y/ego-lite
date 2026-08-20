@@ -126,6 +126,10 @@ Selector actions require exactly one match. Unquoted text normalizes whitespace,
 ignores case, and matches a substring; quoted text such as
 `text="Save changes"` is exact and case-sensitive.
 
+When a selector identifies a wrapper, `focus()` and `press()` may use its
+interactive ancestor or unique editable descendant; `fill()` and
+`setInputFiles()` only continue to a unique compatible control.
+
 Snapshot node names are accessibility roles. Use a current ref for an immediate
 action and a generated locator for reuse. When a useful node has no ref,
 construct a selector from its role, text, or surrounding context. CSS searches
@@ -152,7 +156,15 @@ keyboard names and `+`-separated chords follow Playwright syntax. Use
 `ControlOrMeta` for portable shortcuts and verify the resulting page state.
 
 `keyboard.paste()` sends the native paste shortcut and then restores the user's
-clipboard. The focused page decides how to interpret tabs and newlines.
+clipboard. Pass `{ text, html }` when a rich editor needs structured clipboard
+content; `text` is the plain-text fallback.
+
+```js
+await page.keyboard.paste({
+  text: "Name\tStatus",
+  html: "<table><tr><td>Name</td><td>Status</td></tr></table>",
+});
+```
 
 For rich-text editors and editable grids, validate a small edit and its result
 before repeating it at scale.

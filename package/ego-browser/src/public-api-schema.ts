@@ -387,7 +387,8 @@ export const PUBLIC_API_SCHEMA: readonly PublicApiEntry[] = [
   {
     name: "Page.fill",
     signature: "await page.fill(selector, value, { clearFirst?, timeout? })",
-    summary: "Focus and fill an input-like element, then verify its value.",
+    summary:
+      "Fill the selected field, its editing host, or its unique fillable descendant, then verify the value.",
     options: {
       clearFirst: option("boolean", "Clear the current value before filling."),
       timeout: actionTimeout,
@@ -396,7 +397,8 @@ export const PUBLIC_API_SCHEMA: readonly PublicApiEntry[] = [
   {
     name: "Page.focus",
     signature: "await page.focus(selector, { timeout? })",
-    summary: "Resolve one element and focus it.",
+    summary:
+      "Focus the element, its nearest interactive ancestor, or its unique editable descendant.",
     options: { timeout: actionTimeout },
   },
   {
@@ -408,7 +410,8 @@ export const PUBLIC_API_SCHEMA: readonly PublicApiEntry[] = [
   {
     name: "Page.setInputFiles",
     signature: "await page.setInputFiles(selector, pathOrPaths)",
-    summary: "Set files on a file input without opening the system chooser.",
+    summary:
+      "Set files on a file input resolved from the input, its label, or a unique descendant.",
   },
   {
     name: "Page.waitForFileChooser",
@@ -518,9 +521,9 @@ export const PUBLIC_API_SCHEMA: readonly PublicApiEntry[] = [
   },
   {
     name: "Page.keyboard.paste",
-    signature: "await page.keyboard.paste(text)",
+    signature: "await page.keyboard.paste(textOrContent)",
     summary:
-      "Send native paste and restore the clipboard; the focused page interprets the text.",
+      "Send native paste with a string or { text, html? }, then restore the clipboard.",
   },
 ] as const;
 

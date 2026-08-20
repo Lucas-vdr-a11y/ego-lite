@@ -50,6 +50,7 @@ import {
 } from "./driver/page-input.js";
 import {
   PageKeyboardController,
+  type PageClipboardContent,
   type PageKeyboardPressOptions,
   type PageKeyboardTypeOptions,
 } from "./driver/page-keyboard.js";
@@ -252,7 +253,7 @@ type PageModelServices = {
   ): Promise<any>;
   showAgentMousePosition(x: number, y: number): Promise<void>;
   withTemporaryClipboardText<T>(
-    text: string,
+    content: PageClipboardContent,
     action: () => Promise<T>,
   ): Promise<T>;
   snapshot(options?: SnapshotOptions): Promise<any>;
@@ -472,8 +473,8 @@ class PageKeyboard {
     await this.#controller.pressInSession(sessionId, chord, options);
   }
 
-  async paste(text: string): Promise<PageActionReceipt> {
-    return (await this.#controller.paste(text)) as PageActionReceipt;
+  async paste(content: PageClipboardContent): Promise<PageActionReceipt> {
+    return (await this.#controller.paste(content)) as PageActionReceipt;
   }
 
   async insertText(text: string): Promise<void> {

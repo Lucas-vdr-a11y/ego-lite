@@ -7,8 +7,15 @@ export type ClipboardTransaction = {
   finish(): Promise<ClipboardTransactionStatus>;
 };
 
+export type ClipboardContent = {
+  text: string;
+  html?: string;
+};
+
+type ClipboardInput = string | ClipboardContent;
+
 type ClipboardTransactionOptions = {
-  beginTransaction?: (text: string) => Promise<ClipboardTransaction>;
+  beginTransaction?: (content: ClipboardInput) => Promise<ClipboardTransaction>;
 };
 
 type ClipboardHostMessage = {
@@ -37,13 +44,11 @@ let transactionQueue: Promise<void> = Promise.resolve();
  * single user resource shared by every Page.
  */
 export async function withTemporaryClipboardText<T>(
-  text: string,
+  text: ClipboardInput,
   action: () => Promise<T>,
   options: ClipboardTransactionOptions = {},
 ): Promise<T> {
-  if (typeof text !== "string") {
-    throw new TypeError("page.keyboard.paste text must be a string");
-  }
+  const content = validateClipboardInput(text);
   if (typeof action !== "function") {
     throw new TypeError("clipboard action must be a function");
   }
@@ -58,7 +63,7 @@ export async function withTemporaryClipboardText<T>(
   try {
     const beginTransaction =
       options.beginTransaction ?? beginDarwinClipboardTransaction;
-    const transaction = await beginTransaction(text);
+    const transaction = await beginTransaction(content);
     let value!: T;
     let actionError: unknown;
     try {
@@ -92,13 +97,22 @@ export async function withTemporaryClipboardText<T>(
   }
 }
 
+/** Temporarily publish multiple representations of the same clipboard value. */
+export async function withTemporaryClipboardContent<T>(
+  content: ClipboardContent,
+  action: () => Promise<T>,
+  options: ClipboardTransactionOptions = {},
+): Promise<T> {
+  return withTemporaryClipboardText(content, action, options);
+}
+
 /**
  * Keep the original NSPasteboard items inside a short-lived JXA process. The
  * data never crosses stdout or enters the Node heap, and every readable format
  * is restored unless another process changes the clipboard first.
  */
 async function beginDarwinClipboardTransaction(
-  text: string,
+  input: ClipboardInput,
 ): Promise<ClipboardTransaction> {
   if (process.platform !== "darwin") {
     throw new Error(
@@ -125,7 +139,7 @@ async function beginDarwinClipboardTransaction(
     child.once("exit", (code, signal) => resolve({ code, signal }));
   });
 
-  child.stdin.end(text, "utf8");
+  child.stdin.end(JSON.stringify(input), "utf8");
   const first = await nextHostMessage(messages, exit, () => stderr);
   if (first.state !== "ready") {
     throw new Error(first.message || "could not prepare the macOS clipboard");
@@ -154,6 +168,31 @@ async function beginDarwinClipboardTransaction(
       );
     },
   };
+}
+
+function validateClipboardInput(input: ClipboardInput): ClipboardInput {
+  if (typeof input === "string") return input;
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw new TypeError(
+      "page.keyboard.paste requires a string or { text, html? }",
+    );
+  }
+  const keys = Object.keys(input);
+  const unknown = keys.find((key) => key !== "text" && key !== "html");
+  if (unknown) {
+    throw new TypeError(
+      `page.keyboard.paste received unknown content field: ${unknown}`,
+    );
+  }
+  if (typeof input.text !== "string") {
+    throw new TypeError("page.keyboard.paste content.text must be a string");
+  }
+  if (input.html !== undefined && typeof input.html !== "string") {
+    throw new TypeError("page.keyboard.paste content.html must be a string");
+  }
+  return input.html === undefined
+    ? { text: input.text }
+    : { text: input.text, html: input.html };
 }
 
 function clipboardMessages(stream: NodeJS.ReadableStream) {
@@ -287,15 +326,23 @@ function restorePasteboard(snapshot) {
 }
 
 const input = $.NSFileHandle.fileHandleWithStandardInput.readDataToEndOfFile;
-const text = ObjC.unwrap(
+const serialized = ObjC.unwrap(
   $.NSString.alloc.initWithDataEncoding(input, $.NSUTF8StringEncoding)
 );
+const parsed = JSON.parse(serialized);
+const content = typeof parsed === "string" ? { text: parsed } : parsed;
 const saved = snapshotPasteboard();
 
 try {
   pasteboard.clearContents;
-  if (!pasteboard.setStringForType($(text), $.NSPasteboardTypeString)) {
+  if (!pasteboard.setStringForType($(content.text), $.NSPasteboardTypeString)) {
     throw new Error("NSPasteboard rejected the temporary text");
+  }
+  if (
+    content.html !== undefined &&
+    !pasteboard.setStringForType($(content.html), $.NSPasteboardTypeHTML)
+  ) {
+    throw new Error("NSPasteboard rejected the temporary HTML");
   }
 } catch (error) {
   try { restorePasteboard(saved); } catch (_) {}

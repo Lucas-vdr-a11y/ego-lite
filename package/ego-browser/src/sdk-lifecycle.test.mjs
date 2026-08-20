@@ -49,3 +49,25 @@ test("disposeEgoSdk releases native callbacks and rejects pending CDP work", () 
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stderr, /sdk lifecycle ok/);
 });
+
+test("the embedded SDK explains that document belongs inside Page.evaluate", () => {
+  const sdkUrl = new URL("../dist/src/index.js", import.meta.url).href;
+  const script = `
+    globalThis.ego = {};
+    await import(${JSON.stringify(sdkUrl)});
+    try {
+      document.body;
+      throw new Error("document guard did not run");
+    } catch (error) {
+      if (!/document is not defined/i.test(error.message)) throw error;
+      if (!/page\\.evaluate\\(\\)/i.test(error.message)) throw error;
+    }
+  `;
+  const result = spawnSync(
+    process.execPath,
+    ["--input-type=module", "--eval", script],
+    { encoding: "utf8" },
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+});

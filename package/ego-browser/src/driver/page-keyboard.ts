@@ -7,11 +7,18 @@ export type PageKeyboardServices = {
   ): Promise<any>;
   sleep(ms: number): Promise<void>;
   withTemporaryClipboardText<T>(
-    text: string,
+    content: PageClipboardContent,
     action: () => Promise<T>,
   ): Promise<T>;
   platform?: string;
 };
+
+export type PageClipboardContent =
+  | string
+  | {
+      text: string;
+      html?: string;
+    };
 
 export type PageKeyboardPressOptions = {
   delay?: number;
@@ -137,10 +144,10 @@ export class PageKeyboardController {
     if (releaseError) throw releaseError;
   }
 
-  async paste(text: string): Promise<unknown> {
-    assertText(text, "page.keyboard.paste");
+  async paste(content: PageClipboardContent): Promise<unknown> {
+    assertClipboardContent(content);
     return this.#runObserved((sessionId) =>
-      this.#services.withTemporaryClipboardText(text, () =>
+      this.#services.withTemporaryClipboardText(content, () =>
         this.pressInSession(sessionId, "ControlOrMeta+V"),
       ),
     );
@@ -225,6 +232,32 @@ export class PageKeyboardController {
 
   async #insertText(sessionId: string, text: string): Promise<void> {
     await this.#services.cdp("Input.insertText", { text }, sessionId);
+  }
+}
+
+function assertClipboardContent(
+  content: unknown,
+): asserts content is PageClipboardContent {
+  if (typeof content === "string") return;
+  if (!content || typeof content !== "object" || Array.isArray(content)) {
+    throw new TypeError(
+      "page.keyboard.paste requires a string or { text, html? }",
+    );
+  }
+  const value = content as Record<string, unknown>;
+  const unknown = Object.keys(value).find(
+    (key) => key !== "text" && key !== "html",
+  );
+  if (unknown) {
+    throw new TypeError(
+      `page.keyboard.paste received unknown content field: ${unknown}`,
+    );
+  }
+  if (typeof value.text !== "string") {
+    throw new TypeError("page.keyboard.paste content.text must be a string");
+  }
+  if (value.html !== undefined && typeof value.html !== "string") {
+    throw new TypeError("page.keyboard.paste content.html must be a string");
   }
 }
 

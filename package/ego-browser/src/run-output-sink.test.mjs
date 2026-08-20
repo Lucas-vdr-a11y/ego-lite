@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 
 import { runMain } from "../dist/src/run.js";
 
@@ -264,4 +265,23 @@ test("an ordinary uncaught error still flushes the output logged before it", asy
   assert.ok(result.error, "expected runMain to reject");
   assert.equal(result.error.message, "boom");
   assert.equal(result.stdout, "partial result\n");
+});
+
+test("a top-level document ReferenceError explains the Page execution boundary", async () => {
+  const result = await runScript(`console.log(document.body);`);
+
+  assert.ok(result.error, "expected runMain to reject");
+  assert.match(result.error.message, /document is not defined/i);
+  assert.match(result.error.message, /page\.evaluate\(\)/i);
+});
+
+test("the direct CLI prints an ordinary uncaught error once", () => {
+  const entry = new URL("../dist/out/index.js", import.meta.url);
+  const result = spawnSync(process.execPath, [entry.pathname], {
+    input: 'throw new Error("single-error-probe")\n',
+    encoding: "utf8",
+  });
+
+  assert.equal(result.status, 1);
+  assert.equal(result.stderr.match(/single-error-probe/g)?.length, 1);
 });

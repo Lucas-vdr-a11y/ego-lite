@@ -35,6 +35,48 @@ export function pageKeyboardInterfaceCase() {
       "page.focus addresses one selector"
     );
 
+    await page.evaluate(() => {
+      const wrapper = document.createElement("div");
+      wrapper.id = "deep-focus-wrapper";
+      wrapper.innerHTML =
+        '<div><section><div><input id="deep-focus-input" /></div></section></div>';
+      document.body.append(wrapper);
+
+      const editor = document.createElement("div");
+      editor.id = "focus-ancestor-editor";
+      editor.contentEditable = "true";
+      editor.innerHTML = '<span><em id="focus-descendant-text">editable</em></span>';
+      document.body.append(editor);
+
+      const slottedEditor = document.createElement("div");
+      slottedEditor.id = "slotted-focus-host";
+      slottedEditor.attachShadow({ mode: "open" }).innerHTML =
+        '<button id="slotted-button"><slot></slot></button>';
+      slottedEditor.innerHTML = '<span id="slotted-focus-text">slotted button</span>';
+      document.body.append(slottedEditor);
+    });
+    await page.focus("#deep-focus-wrapper");
+    assertEqual(
+      await page.evaluate("document.activeElement?.id"),
+      "deep-focus-input",
+      "page.focus descends through any number of wrappers to one focusable target"
+    );
+    await page.focus("#focus-descendant-text");
+    assertEqual(
+      await page.evaluate("document.activeElement?.id"),
+      "focus-ancestor-editor",
+      "page.focus climbs through any number of wrappers to a focusable ancestor"
+    );
+    await page.focus("#slotted-focus-text");
+    assertEqual(
+      await page.evaluate(
+        "document.querySelector('#slotted-focus-host').shadowRoot.activeElement?.id",
+      ),
+      "slotted-button",
+      "page.focus follows the composed parent chain through a slot"
+    );
+    await page.focus("#text-area");
+
     // U+0020 through U+007E covers every printable ASCII character.
     const printable = Array.from(
       { length: 95 },
@@ -165,6 +207,27 @@ export function pageKeyboardInterfaceCase() {
       "pasted\\t世界\\nnext",
       "paste uses native clipboard input and preserves tabs and newlines"
     );
+
+    await page.evaluate(() => {
+      const editor = document.createElement("div");
+      editor.id = "html-paste-editor";
+      editor.contentEditable = "true";
+      editor.style.cssText = "width:300px;min-height:80px;background:white";
+      document.body.append(editor);
+      editor.focus();
+    });
+    await page.keyboard.paste({
+      text: "Name\\tStatus",
+      html: "<table><tr><td>Name</td><td>Status</td></tr></table>",
+    });
+    const richPaste = await page.evaluate(() => ({
+      table: Boolean(document.querySelector("#html-paste-editor table")),
+      text: document.querySelector("#html-paste-editor").innerText,
+    }));
+    assertEqual(richPaste.table, true, "paste exposes HTML to rich editors");
+    assertIncludes(richPaste.text, "Name", "HTML paste keeps its text visible");
+    assertIncludes(richPaste.text, "Status", "HTML paste preserves every table cell");
+    await page.focus("#text-area");
 
     await page.evaluate("window.__pageKeyboardContractEvents = []");
     await page.keyboard.press("Numpad1");

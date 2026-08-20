@@ -6,6 +6,7 @@ import {
 
 import { formatCliLogValue } from "./format.js";
 import * as helpers from "./helpers.js";
+import { addPageContextHint } from "./page-context-guard.js";
 import {
   bufferOutput,
   createRoundConsole,
@@ -128,7 +129,7 @@ async function execute(code: string, stdout: WritableLike) {
     // The thrown Error surfaces the hard-stop message on its own, so flush as a thrown
     // completion (drop the buffer, stay silent) and let it propagate.
     flushSink(stdout, true);
-    throw error;
+    throw addPageContextHint(error);
   }
   flushSink(stdout, false);
 }

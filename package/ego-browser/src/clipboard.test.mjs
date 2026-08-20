@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   ClipboardRestoreError,
+  withTemporaryClipboardContent,
   withTemporaryClipboardText,
 } from "../dist/src/clipboard.js";
 
@@ -29,6 +30,27 @@ test("temporary clipboard text is restored after the action", async () => {
 
   assert.equal(value, 42);
   assert.deepEqual(events, [["begin", "temporary"], "action", "finish"]);
+});
+
+test("temporary clipboard content keeps text and HTML representations together", async () => {
+  const content = {
+    text: "A\tB",
+    html: "<table><tr><td>A</td><td>B</td></tr></table>",
+  };
+  let prepared;
+
+  await withTemporaryClipboardContent(content, async () => {}, {
+    async beginTransaction(value) {
+      prepared = value;
+      return {
+        async finish() {
+          return "restored";
+        },
+      };
+    },
+  });
+
+  assert.deepEqual(prepared, content);
 });
 
 test("temporary clipboard text is restored when the action throws", async () => {

@@ -4,6 +4,10 @@ import {
   resolveElementObjectId,
 } from "../element-resolver.js";
 import { RefMap } from "../ref-map.js";
+import {
+  COMPOSED_PARENT_HELPER,
+  EDIT_ACTION_TARGET_HELPERS,
+} from "./action-target.js";
 
 type PageActionServices = {
   cdp(
@@ -204,7 +208,13 @@ export async function fillInPage(
     iframeSessions,
     { strict: true },
   );
+  let actionObjectId: string | undefined;
   try {
+    actionObjectId = await resolveFillActionTarget(
+      services,
+      resolved.sessionId,
+      resolved.objectId,
+    );
     const preparationSource = `function fillPreparation(value, clearFirst) {
       if (!this.isConnected) return { error: "element is not connected" };
       const visibleCursorPoint = () => {
@@ -272,7 +282,7 @@ export async function fillInPage(
         "Runtime.callFunctionOn",
         {
           functionDeclaration: preparationSource,
-          objectId: resolved.objectId,
+          objectId: actionObjectId,
           arguments: [{ value }, { value: clearFirst }],
           returnByValue: true,
           awaitPromise: false,
@@ -305,7 +315,7 @@ export async function fillInPage(
       await verifyFilledValue(
         services,
         resolved.sessionId,
-        resolved.objectId,
+        actionObjectId,
         value,
         clearFirst,
       )
@@ -320,7 +330,7 @@ export async function fillInPage(
       await clickResolvedElement(
         services,
         resolved.sessionId,
-        resolved.objectId,
+        actionObjectId,
         resolved.frameId,
       );
       result = await prepare();
@@ -335,7 +345,7 @@ export async function fillInPage(
         await verifyFilledValue(
           services,
           resolved.sessionId,
-          resolved.objectId,
+          actionObjectId,
           value,
           clearFirst,
         )
@@ -349,14 +359,57 @@ export async function fillInPage(
       `page.fill did not accept the text. Click the ${target} and use page.keyboard, then verify the result.`,
     );
   } finally {
-    await services
-      .cdp(
-        "Runtime.releaseObject",
-        { objectId: resolved.objectId },
-        resolved.sessionId,
-      )
-      .catch(() => {});
+    if (actionObjectId && actionObjectId !== resolved.objectId) {
+      await releaseObject(services, resolved.sessionId, actionObjectId);
+    }
+    await releaseObject(services, resolved.sessionId, resolved.objectId);
   }
+}
+
+async function resolveFillActionTarget(
+  services: PageActionServices,
+  sessionId: string,
+  objectId: string,
+): Promise<string> {
+  const source = `function resolveFillTargetForAction() {
+    ${EDIT_ACTION_TARGET_HELPERS}
+    const tag = String(this.tagName || "").toUpperCase();
+    if (tag === "INPUT" || tag === "TEXTAREA" || isExplicitContentEditable(this)) {
+      return this;
+    }
+    const editingHost = nearestComposedAncestor(this, isExplicitContentEditable);
+    if (editingHost) return editingHost;
+    const candidates = composedDescendantMatches(
+      this,
+      isFillableActionTarget,
+      true,
+    );
+    if (candidates.length > 1) {
+      throw new TypeError("page.fill selected an element with multiple fillable targets");
+    }
+    return candidates[0] || this;
+  }`;
+  const response = await services.cdp(
+    "Runtime.callFunctionOn",
+    {
+      functionDeclaration: source,
+      objectId,
+      returnByValue: false,
+      awaitPromise: false,
+    },
+    sessionId,
+  );
+  if (response?.exceptionDetails) {
+    throw new ElementResolutionError(
+      exceptionDescription(response),
+      "permanent",
+    );
+  }
+  const targetObjectId = response?.result?.objectId;
+  if (!targetObjectId) {
+    throw new Error("page.fill could not resolve an editable action target");
+  }
+  return targetObjectId;
 }
 
 /** Focus one strictly resolved element in an explicit Page session. */
@@ -378,12 +431,65 @@ export async function focusInPage(
   );
   const source = `function focusElementForAction() {
     if (!this.isConnected) return { error: "element is not connected" };
-    if (typeof this.focus !== "function") return { error: "element is not focusable" };
-    this.focus();
-    const active = this.ownerDocument.activeElement;
-    return active === this || this.contains(active)
-      ? { focused: true }
-      : { error: "element could not be focused" };
+    ${EDIT_ACTION_TARGET_HELPERS}
+    const deepActiveElement = () => {
+      let active = this.ownerDocument.activeElement;
+      while (active?.shadowRoot?.activeElement) {
+        active = active.shadowRoot.activeElement;
+      }
+      return active;
+    };
+    const containsComposed = (container, element) => {
+      let current = element;
+      while (current) {
+        if (current === container) return true;
+        current = composedParent(current);
+      }
+      return false;
+    };
+    const details = () => ({
+      tagName: this.tagName,
+      contentEditable: Boolean(this.isContentEditable),
+      tabIndex: this.tabIndex,
+      activeTagName: deepActiveElement()?.tagName || null,
+    });
+    const tryFocus = (candidate, retargeted) => {
+      if (typeof candidate.focus !== "function") return null;
+      candidate.focus();
+      const active = deepActiveElement();
+      return active === candidate || containsComposed(candidate, active)
+        ? { focused: true, retargeted }
+        : null;
+    };
+
+    const direct = tryFocus(this, null);
+    if (direct) return direct;
+
+    let ancestor = composedParent(this);
+    while (ancestor) {
+      if (isStrongFocusTarget(ancestor)) {
+        const focused = tryFocus(ancestor, "ancestor");
+        if (focused) return focused;
+      }
+      ancestor = composedParent(ancestor);
+    }
+
+    const editableCandidates = composedDescendantMatches(
+      this,
+      isEditableFocusTarget,
+      true,
+    );
+    if (editableCandidates.length === 1) {
+      const focused = tryFocus(editableCandidates[0], "descendant");
+      if (focused) return focused;
+    }
+    if (editableCandidates.length > 1) {
+      return {
+        error: "element contains multiple editable targets",
+        details: { ...details(), candidateCount: editableCandidates.length },
+      };
+    }
+    return { error: "element is not focusable", details: details() };
   }`;
   try {
     const response = await services.cdp(
@@ -398,9 +504,16 @@ export async function focusInPage(
     );
     const result = runtimeValue(response, source);
     if (typeof result?.error === "string") {
+      const details = result.details;
+      const candidateCount = details?.candidateCount
+        ? `, candidates=${String(details.candidateCount)}`
+        : "";
+      const description = details
+        ? ` (${String(details.tagName || "element").toLowerCase()}, contenteditable=${Boolean(details.contentEditable)}, tabIndex=${String(details.tabIndex)}, active=${String(details.activeTagName || "none").toLowerCase()}${candidateCount})`
+        : "";
       throw new ElementResolutionError(
-        `page.focus failed: ${result.error}`,
-        "transient",
+        `page.focus failed: ${result.error}${description}`,
+        result.error === "element is not connected" ? "transient" : "permanent",
       );
     }
   } finally {
@@ -514,6 +627,18 @@ async function clickResolvedElement(
     false,
     true,
   );
+  await assertElementReceivesPointerEvents(
+    services,
+    sessionId,
+    objectId,
+    point.local,
+  );
+  await assertSafeFillActivationTarget(
+    services,
+    sessionId,
+    objectId,
+    point.local,
+  );
   await dispatchMouseEvent(services, sessionId, {
     type: "mouseMoved",
     x: point.x,
@@ -522,12 +647,6 @@ async function clickResolvedElement(
     buttons: 0,
     modifiers: 0,
   });
-  await assertElementReceivesPointerEvents(
-    services,
-    sessionId,
-    objectId,
-    point.local,
-  );
   await dispatchMouseEvent(services, sessionId, {
     type: "mousePressed",
     x: point.x,
@@ -546,6 +665,45 @@ async function clickResolvedElement(
     modifiers: 0,
     clickCount: 1,
   });
+}
+
+async function assertSafeFillActivationTarget(
+  services: PageActionServices,
+  sessionId: string,
+  objectId: string,
+  point: { x: number; y: number },
+): Promise<void> {
+  const expression = `function safeFillActivationTarget(point) {
+    ${HIT_TARGET_HELPERS}
+    if (!this.isConnected) return { error: "the editor is not connected" };
+    const hit = hitElementAtPoint(this, point);
+    let current = hit;
+    while (current && current !== this) {
+      if (isExplicitInteractiveElement(current)) {
+        return { error: describeHitTarget(current) };
+      }
+      current = composedParent(current);
+    }
+    return { safe: true };
+  }`;
+  const response = await services.cdp(
+    "Runtime.callFunctionOn",
+    {
+      functionDeclaration: expression,
+      objectId,
+      arguments: [{ value: point }],
+      returnByValue: true,
+      awaitPromise: false,
+    },
+    sessionId,
+  );
+  const result = runtimeValue(response, expression);
+  if (typeof result?.error === "string") {
+    throw new ElementResolutionError(
+      `page.fill cannot safely activate the editor because ${result.error} would receive the click`,
+      "permanent",
+    );
+  }
 }
 
 /** Move the native mouse over one element in an explicit Page session. */
@@ -994,17 +1152,20 @@ function fillPreparationError(message: string) {
     : new Error(`page.fill failed: ${message}`);
 }
 
+function exceptionDescription(response: any): string {
+  return (
+    response?.exceptionDetails?.exception?.description ||
+    response?.exceptionDetails?.text ||
+    "page action evaluation failed"
+  );
+}
+
 // This is a compact adaptation of Playwright's composed-tree hit-target check.
 // It handles ordinary descendants, slots, and nested shadow roots without
 // exposing an injected helper or trusting only document.elementFromPoint().
 const HIT_TARGET_HELPERS = `
-  function composedParent(element) {
-    if (element.assignedSlot) return element.assignedSlot;
-    if (element.parentElement) return element.parentElement;
-    const root = element.getRootNode ? element.getRootNode() : null;
-    return root && root.nodeType === 11 ? root.host : null;
-  }
-  function isInteractiveElement(element) {
+  ${COMPOSED_PARENT_HELPER}
+  function isExplicitInteractiveElement(element) {
     if (
       element?.matches?.(":disabled") ||
       element?.getAttribute?.("aria-disabled") === "true"
@@ -1016,7 +1177,10 @@ const HIT_TARGET_HELPERS = `
       return true;
     }
     if (tag === "A" && element.hasAttribute?.("href")) return true;
-    if (element?.isContentEditable) return true;
+    if (
+      element?.hasAttribute?.("contenteditable") &&
+      element.getAttribute("contenteditable") !== "false"
+    ) return true;
     return new Set([
       "button",
       "checkbox",
@@ -1034,7 +1198,10 @@ const HIT_TARGET_HELPERS = `
       "treeitem"
     ]).has(String(element?.getAttribute?.("role") || "").toLowerCase());
   }
-  function interceptingElementAtPoint(target, point) {
+  function isInteractiveElement(element) {
+    return isExplicitInteractiveElement(element) || Boolean(element?.isContentEditable);
+  }
+  function hitElementAtPoint(target, point) {
     const roots = [];
     let parent = target;
     while (parent) {
@@ -1053,6 +1220,10 @@ const HIT_TARGET_HELPERS = `
       hitElement = innerElement;
       if (index > 0 && innerElement !== roots[index - 1].host) break;
     }
+    return hitElement;
+  }
+  function interceptingElementAtPoint(target, point) {
+    const hitElement = hitElementAtPoint(target, point);
     let current = hitElement;
     while (current && current !== target) current = composedParent(current);
     if (current === target) return null;
@@ -1071,7 +1242,10 @@ const HIT_TARGET_HELPERS = `
     const id = element.id
       ? ' id="' + String(element.id).slice(0, 80).replaceAll('"', '&quot;') + '"'
       : "";
-    return "<" + tag + id + ">";
+    const href = tag === "a" && element.hasAttribute?.("href")
+      ? ' href="' + String(element.getAttribute("href")).slice(0, 120).replaceAll('"', '&quot;') + '"'
+      : "";
+    return "<" + tag + id + href + ">";
   }
 `;
 
