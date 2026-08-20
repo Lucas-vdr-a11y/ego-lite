@@ -18,6 +18,9 @@ export function pageKeyboardInterfaceCase() {
             code: event.code ?? null,
             location: event.location ?? null,
             repeat: event.repeat ?? false,
+            altKey: event.altKey ?? false,
+            ctrlKey: event.ctrlKey ?? false,
+            metaKey: event.metaKey ?? false,
             shiftKey: event.shiftKey ?? false,
             data: event.data ?? null,
             trusted: event.isTrusted,
@@ -85,6 +88,36 @@ export function pageKeyboardInterfaceCase() {
     assertEqual(repeatedA[0].repeat, false, "the first keydown is not a repeat");
     assertEqual(repeatedA[1].repeat, true, "a second down without up is a repeat");
     assertEqual(repeatedA[0].shiftKey, true, "held Shift modifies following keys");
+
+    await page.evaluate(() => {
+      const input = document.querySelector("#text-area");
+      input.value = "abcdef";
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
+      window.__pageKeyboardContractEvents = [];
+    });
+    await page.keyboard.press(process.platform === "darwin" ? "META+A" : "CONTROL+A");
+    const uppercaseModifierState = await page.evaluate(() => ({
+      start: document.querySelector("#text-area").selectionStart,
+      end: document.querySelector("#text-area").selectionEnd,
+      keyA: window.__pageKeyboardContractEvents.find(
+        (event) => event.type === "keydown" && event.code === "KeyA",
+      ),
+    }));
+    assertEqual(uppercaseModifierState.start, 0, "uppercase modifier selects from the start");
+    assertEqual(uppercaseModifierState.end, 6, "uppercase modifier selects through the end");
+    assertEqual(
+      process.platform === "darwin"
+        ? uppercaseModifierState.keyA.metaKey
+        : uppercaseModifierState.keyA.ctrlKey,
+      true,
+      "uppercase modifier produces the native platform shortcut",
+    );
+    assertEqual(
+      uppercaseModifierState.keyA.trusted,
+      true,
+      "uppercase modifier keeps the shortcut trusted",
+    );
 
     await page.keyboard.press("ControlOrMeta+A");
     await page.keyboard.type("replaced");

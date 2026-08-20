@@ -39,6 +39,13 @@ type LayoutEntry = {
 
 const KEYPAD_LOCATION = 3;
 const MODIFIER_NAMES = ["Alt", "Control", "Meta", "Shift"] as const;
+const MODIFIER_ALIASES = new Map<string, string>([
+  ["alt", "Alt"],
+  ["control", "Control"],
+  ["meta", "Meta"],
+  ["shift", "Shift"],
+  ["controlormeta", "ControlOrMeta"],
+]);
 const MODIFIER_MASKS: Record<(typeof MODIFIER_NAMES)[number], number> = {
   Alt: 1,
   Control: 2,
@@ -225,10 +232,13 @@ function resolveSmartModifier(
   key: string,
   platform: string = process.platform,
 ): string {
-  if (key === "ControlOrMeta") {
+  // Modifier names are forgiving because agents often use protocol-style
+  // uppercase constants. Ordinary key names remain case-sensitive.
+  const normalized = MODIFIER_ALIASES.get(key.toLowerCase()) ?? key;
+  if (normalized === "ControlOrMeta") {
     return platform === "darwin" ? "Meta" : "Control";
   }
-  return key;
+  return normalized;
 }
 
 function keyDefinitionForString(input: string, shift: boolean): KeyDefinition {

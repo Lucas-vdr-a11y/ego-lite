@@ -388,6 +388,10 @@ popup 回执：
 这些方法在输入完成后 resolve `undefined`。它们产生的延迟 popup 仍可由统一
 盘点收编。
 
+键盘 modifier 名称 `Alt`、`Control`、`Meta`、`Shift` 和 `ControlOrMeta` 不区分
+大小写；普通键名仍使用 Playwright 的大小写约定。跨平台快捷键优先使用
+`ControlOrMeta`。
+
 ### 7.3 Snapshot
 
 原生 snapshot 只能观察当前激活页，因此 `page.snapshot()` 在 gate 内先激活

@@ -1559,6 +1559,29 @@ test("Page keyboard maps portable editing shortcuts on macOS", async () => {
   });
 });
 
+test("Page keyboard accepts case-insensitive modifier names", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a", { platform: "darwin" });
+    const page = await task.openPage("https://example.test/first");
+
+    await page.keyboard.press("ALT+CONTROL+META+SHIFT+A");
+    await page.keyboard.press("CONTROLORMETA+A");
+
+    const aDowns = fixture.calls
+      .filter(
+        ([kind, method, params]) =>
+          kind === "cdp" &&
+          method === "Input.dispatchKeyEvent" &&
+          params.type === "rawKeyDown" &&
+          params.code === "KeyA",
+      )
+      .map(([, , params]) => params);
+    assert.equal(aDowns[0].modifiers, 15);
+    assert.equal(aDowns[1].modifiers, 4);
+    assert.deepEqual(aDowns[1].commands, ["selectAll"]);
+  });
+});
+
 test("Page keyboard maps portable editing shortcuts on Windows", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a", { platform: "win32" });

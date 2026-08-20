@@ -300,7 +300,10 @@ await page.keyboard.type(text, { delay });
 await page.keyboard.insertText(text);
 ```
 
-Keyboard key names and `+`-separated chords follow Playwright syntax. Use `ControlOrMeta` for portable shortcuts.
+Keyboard key names and `+`-separated chords follow Playwright syntax. Modifier
+names (`Alt`, `Control`, `Meta`, `Shift`, and `ControlOrMeta`) are
+case-insensitive; other key names remain case-sensitive. Use `ControlOrMeta`
+for portable shortcuts.
 
 Low-level `mouse.move/down/up/wheel`, `keyboard.down/up/type/insertText`, and `scrollBy()` do not return an action receipt; verify their effect explicitly.
 
