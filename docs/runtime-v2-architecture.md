@@ -357,11 +357,17 @@ popup 回执：
 ```js
 {
   popups?: [{ label, targetId }]
+  dialog?: { type, message, defaultPrompt, url }
 }
 ```
 
 高层动作只比较动作前后的 tab 列表，不向页面安装观察脚本。导航、表单和 DOM
 结果应通过 `url()`、`waitForSelector()`、`snapshot()` 或读取页面状态确认。
+
+同步 JavaScript dialog 会阻塞触发它的 CDP 输入响应。Runtime 收到
+`Page.javascriptDialogOpening` 后会中断该输入等待，让高层动作立即返回
+`{ dialog }`；dialog 本身保持打开，由调用方随后 accept 或 dismiss。这样不会依赖
+15 秒 CDP 超时，也不会让双击或连续输入在 dialog 关闭后继续执行剩余步骤。
 
 底层原语不安装动作探针，也不等待 50ms 反馈窗口：
 
@@ -480,6 +486,8 @@ surface，不属于本阶段。
 - screenshot、evaluate、fetch、键盘和鼠标都操作并激活指定 Page。
 - 页面动作不安装观察探针；高层动作仍能返回 popup 回执。
 - `keyboard.press()` 产生 native/trusted 输入；新版不暴露 synthetic dispatch。
+- 同步 alert、confirm、prompt 不会让触发动作等待到 CDP timeout；动作回执带 dialog，
+  accept/dismiss 后页面脚本能继续执行。
 - `dragAndDrop()` 不只发出起止事件，还能把简单的 pointer-driven 元素实际拖到目标
   区域；`mouse.down/move/up` 能在 Canvas 上保持按键状态并连续绘制曲线和折线。
 - Page 操作可以控制真实 `<video>` 和 `<audio>` 播放：开始后时间会推进，暂停、跳转、

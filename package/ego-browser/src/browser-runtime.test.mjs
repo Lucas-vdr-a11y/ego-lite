@@ -5,6 +5,7 @@ import {
   browserCdp,
   drainBrowserEvents,
   drainPageEvents,
+  invalidateSession,
   prepareFileChooser,
 } from "../dist/src/browser-runtime.js";
 
@@ -117,6 +118,127 @@ test("CDP events are drained only by the target session that received them", asy
       "target A retains its own event queue",
     );
   } finally {
+    if (previous === undefined) {
+      delete globalThis.ego;
+    } else {
+      globalThis.ego = previous;
+    }
+  }
+});
+
+test("a JavaScript dialog interrupts the blocked Page input command", async () => {
+  const previous = globalThis.ego;
+  let sessionId;
+  let pendingDisableRequestId;
+  const runtime = {
+    sendCDPMessage(payload) {
+      const request = JSON.parse(payload);
+      if (request.method === "Target.attachToTarget") {
+        sessionId = "session-dialog";
+        queueMicrotask(() => {
+          runtime.onCDPMessage(
+            JSON.stringify({ id: request.id, result: { sessionId } }),
+          );
+        });
+        return;
+      }
+      if (request.method === "Page.enable") {
+        queueMicrotask(() => {
+          runtime.onCDPMessage(JSON.stringify({ id: request.id, result: {} }));
+        });
+        return;
+      }
+      if (request.method === "Page.setInterceptFileChooserDialog") {
+        if (request.params.enabled) {
+          queueMicrotask(() => {
+            runtime.onCDPMessage(
+              JSON.stringify({ id: request.id, result: {} }),
+            );
+          });
+        } else {
+          pendingDisableRequestId = request.id;
+        }
+        return;
+      }
+      if (request.method === "Input.dispatchMouseEvent") {
+        // Chromium keeps this request pending until the modal dialog closes.
+        queueMicrotask(() => {
+          runtime.onCDPMessage(
+            JSON.stringify({
+              sessionId,
+              method: "Page.javascriptDialogOpening",
+              params: {
+                type: "alert",
+                message: "Confirm action",
+                url: "https://example.test/dialog",
+              },
+            }),
+          );
+        });
+      }
+    },
+  };
+  globalThis.ego = runtime;
+
+  try {
+    const attached = await browserCdp("Target.attachToTarget", {
+      targetId: "target-dialog",
+      flatten: true,
+    });
+    await browserCdp("Page.enable", {}, attached.result.sessionId);
+    const fileChooser = prepareFileChooser(attached.result.sessionId, {
+      timeoutMs: 1_000,
+      cancel: true,
+    });
+    await fileChooser.ready;
+
+    await assert.rejects(
+      () =>
+        browserCdp(
+          "Input.dispatchMouseEvent",
+          { type: "mouseReleased", x: 10, y: 10 },
+          attached.result.sessionId,
+          100,
+        ),
+      (error) => {
+        assert.equal(error.code, "EGO_PAGE_DIALOG_OPENED");
+        assert.deepEqual(error.dialog, {
+          type: "alert",
+          message: "Confirm action",
+          url: "https://example.test/dialog",
+        });
+        return true;
+      },
+    );
+
+    await assert.rejects(
+      () =>
+        browserCdp(
+          "Runtime.releaseObject",
+          { objectId: "element-1" },
+          attached.result.sessionId,
+          100,
+        ),
+      (error) => {
+        assert.equal(error.code, "EGO_PAGE_DIALOG_OPENED");
+        assert.equal(error.method, "Runtime.releaseObject");
+        return true;
+      },
+    );
+
+    const disposeStartedAt = Date.now();
+    setTimeout(() => {
+      runtime.onCDPMessage(
+        JSON.stringify({ id: pendingDisableRequestId, result: {} }),
+      );
+    }, 60);
+    await fileChooser.dispose();
+    assert(
+      Date.now() - disposeStartedAt < 40,
+      "dialog handling must not wait for file chooser cleanup",
+    );
+  } finally {
+    invalidateSession();
     if (previous === undefined) {
       delete globalThis.ego;
     } else {

@@ -499,6 +499,8 @@ export function publicApiMarkdown(): string {
     "# ego-browser v2 API reference",
     "",
     "Generated from `package/ego-browser/src/public-api-schema.ts`.",
+    "",
+    'High-level Page actions return a receipt that may contain `popups` or a synchronous `dialog`. Handle a returned dialog with `page.cdp("Page.handleJavaScriptDialog", { accept: true })` or `{ accept: false }` before continuing; prompts may also include `promptText`.',
   ];
   for (const [group, entries] of groups) {
     lines.push(

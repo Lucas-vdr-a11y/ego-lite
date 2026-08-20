@@ -5,6 +5,7 @@ import {
   ensureSession,
   invalidateSession,
   isNetworkDomainEnabled,
+  isPageDialogOpenedError,
   pendingDialog,
   prepareFileChooser,
   setPreferredTarget,
@@ -251,6 +252,7 @@ export type PageInventoryItem = {
 
 export type PageActionReceipt = {
   popups?: Array<{ label: string; targetId: string }>;
+  dialog?: Record<string, unknown>;
 };
 
 const PAGE_CLOSE_CONFIRM_TIMEOUT_MS = 2_000;
@@ -1446,7 +1448,15 @@ class Page {
     operation: (sessionId: string) => Promise<void>,
   ): Promise<void> {
     const page = await this.#resolve();
-    await this.#runInputBoundary(page, operation);
+    try {
+      await this.#runInputBoundary(page, operation);
+    } catch (error) {
+      // A modal dialog is now the page's observable result. The interrupted
+      // driver stack has already unwound, so no later click/key steps resume
+      // unexpectedly after the caller handles the dialog.
+      if (isPageDialogOpenedError(error)) return;
+      throw error;
+    }
   }
 
   async #runValueAction<T>(
@@ -1512,6 +1522,15 @@ class Page {
           value = await operation(sessionId);
         } catch (error) {
           actionError = error;
+        }
+
+        if (isPageDialogOpenedError(actionError)) {
+          const dialog =
+            this.#services.pendingDialog(sessionId) || actionError.dialog;
+          return {
+            value: undefined as T,
+            receipt: { dialog },
+          };
         }
 
         // A popup is normally created synchronously by the input event. A short

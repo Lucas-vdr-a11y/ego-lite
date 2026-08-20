@@ -266,7 +266,12 @@ const receipt = await page.click("#submit");
 console.log(receipt.popups ?? []);
 ```
 
-Receipts only report newly opened Pages. After an action, confirm navigation and page changes with `url()`, `waitForSelector()`, `info()`, `snapshot()`, a screenshot, an export, or a readback.
+Receipts report newly opened Pages and synchronous JavaScript dialogs. A dialog
+receipt has `{ dialog }`; handle it with
+`page.cdp("Page.handleJavaScriptDialog", { accept: true })` or `accept: false`
+before continuing. After any other action, confirm navigation and page changes
+with `url()`, `waitForSelector()`, `info()`, `snapshot()`, a screenshot, an
+export, or a readback.
 
 Mouse and keyboard primitives:
 

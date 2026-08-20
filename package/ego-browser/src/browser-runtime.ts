@@ -10,12 +10,54 @@ const SESSION_LOST =
   /Session (?:with given id )?not found|Target closed|No session/i;
 const BROWSER_LEVEL = (method) =>
   method.startsWith("Target.") || method.startsWith("Browser.");
+const DIALOG_BLOCKED_METHOD = (method) =>
+  method.startsWith("Input.") ||
+  method.startsWith("Runtime.") ||
+  method === "DOM.setFileInputFiles" ||
+  method === "Page.navigate";
 let nextMessageId = 1;
 const pending = new Map();
 const browserEvents = [];
 const targetStates = new Map();
 const sessionTargets = new Map();
 let defaultTargetId = null;
+
+/**
+ * Signals that a modal JavaScript dialog prevented a CDP command from
+ * completing. The dialog remains open; Page-level code decides whether to
+ * expose it in an action receipt or surface this error to the caller.
+ */
+export class PageDialogOpenedError extends Error {
+  readonly code = "EGO_PAGE_DIALOG_OPENED";
+  readonly method: string;
+  readonly sessionId: string;
+  readonly dialog: Record<string, unknown>;
+
+  constructor(
+    method: string,
+    sessionId: string,
+    dialog: Record<string, unknown>,
+  ) {
+    super(
+      `a JavaScript dialog opened while ${method} was running; handle the dialog before continuing`,
+    );
+    this.name = "PageDialogOpenedError";
+    this.method = method;
+    this.sessionId = sessionId;
+    this.dialog = { ...dialog };
+  }
+}
+
+export function isPageDialogOpenedError(
+  error: unknown,
+): error is PageDialogOpenedError {
+  return (
+    error instanceof PageDialogOpenedError ||
+    (Boolean(error) &&
+      typeof error === "object" &&
+      (error as { code?: unknown }).code === "EGO_PAGE_DIALOG_OPENED")
+  );
+}
 
 export type FileChooserOpenedEvent = {
   backendNodeId: number;
@@ -132,6 +174,8 @@ function rawCdp(
       reject(new Error(`CDP request timed out: ${method}`));
     }, timeoutMs);
     pending.set(id, {
+      method,
+      sessionId,
       resolve: (response) => {
         clearTimeout(timer);
         resolve(response);
@@ -167,6 +211,10 @@ export async function browserCdp(
   let effective = sessionId;
   if (!explicit && !BROWSER_LEVEL(method)) {
     effective = await ensureSession();
+  }
+  const dialog = effective ? pendingDialog(effective) : null;
+  if (dialog && DIALOG_BLOCKED_METHOD(method)) {
+    throw new PageDialogOpenedError(method, effective, dialog);
   }
   try {
     const response = await rawCdp(method, params, effective, timeoutMs);
@@ -372,11 +420,19 @@ export function prepareFileChooser(
       if (!observed && reason) rejectEvent(reason);
       await interception.ready.catch(() => {});
       await interception.cancelPromise;
-      await rawCdp(
+      const disable = rawCdp(
         "Page.setInterceptFileChooserDialog",
         { enabled: false },
         sessionId,
       ).catch(() => {});
+      if (target.pendingDialog) {
+        // Chromium can hold this housekeeping response until the modal dialog
+        // closes. Send it now, but do not keep the triggering action's gate
+        // occupied; Page.handleJavaScriptDialog must be able to run next.
+        void disable;
+        return;
+      }
+      await disable;
     },
   };
   target.fileChooserInterception = interception;
@@ -484,7 +540,13 @@ function handleMessage(message) {
   const targetId = sessionId ? sessionTargets.get(sessionId) : undefined;
   const target = targetId ? targetStates.get(targetId) : undefined;
   if (data.method === "Page.javascriptDialogOpening") {
-    if (target) target.pendingDialog = data.params || {};
+    if (target) {
+      target.pendingDialog = data.params || {};
+      rejectCommandsBlockedByDialog(
+        sessionId,
+        target.pendingDialog as Record<string, unknown>,
+      );
+    }
   } else if (data.method === "Page.javascriptDialogClosed") {
     if (target) target.pendingDialog = null;
   } else if (data.method === "Page.fileChooserOpened") {
@@ -493,6 +555,20 @@ function handleMessage(message) {
   const events = target ? target.events : browserEvents;
   events.push(data);
   capEvents(events);
+}
+
+function rejectCommandsBlockedByDialog(
+  sessionId: string | undefined,
+  dialog: Record<string, unknown>,
+) {
+  if (!sessionId) return;
+  for (const [id, entry] of pending) {
+    if (entry.sessionId !== sessionId || !DIALOG_BLOCKED_METHOD(entry.method)) {
+      continue;
+    }
+    pending.delete(id);
+    entry.reject(new PageDialogOpenedError(entry.method, sessionId, dialog));
+  }
 }
 
 function rejectFileChooserInterception(target, error: Error) {

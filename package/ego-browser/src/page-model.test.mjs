@@ -32,6 +32,8 @@ function createFixture(rootDir) {
   let activeFileChooserWaiter = null;
   let systemFileChooserOpened = false;
   let timeoutNextMouseDispatch = false;
+  let dialogOnNextClick = null;
+  const pendingDialogs = new Map();
   let rejectNextClickPoint = false;
   let interceptNextClickPoint = false;
   let navigateOnNextClickUrl = null;
@@ -314,6 +316,17 @@ function createFixture(rootDir) {
           throw new Error("CDP request timed out: Input.dispatchMouseEvent");
         }
         if (params.type === "mouseReleased") {
+          if (dialogOnNextClick) {
+            const dialog = dialogOnNextClick;
+            dialogOnNextClick = null;
+            pendingDialogs.set(sessionId, dialog);
+            const error = new Error(
+              "a JavaScript dialog opened while Input.dispatchMouseEvent was running",
+            );
+            error.code = "EGO_PAGE_DIALOG_OPENED";
+            error.dialog = dialog;
+            throw error;
+          }
           if (fileChooserOnNextClick) {
             if (activeFileChooserWaiter) {
               activeFileChooserWaiter.emit(fileChooserOnNextClick);
@@ -335,6 +348,10 @@ function createFixture(rootDir) {
       if (method === "Target.activateTarget") {
         activeTarget = params.targetId;
         return { success: true };
+      }
+      if (method === "Page.handleJavaScriptDialog") {
+        pendingDialogs.delete(sessionId);
+        return {};
       }
       if (method === "Target.closeTarget") {
         tabs.delete(params.targetId);
@@ -364,8 +381,8 @@ function createFixture(rootDir) {
       calls.push(["screenshot", path, options, sessionId]);
       return path || "/tmp/generated-shot.png";
     },
-    pendingDialog() {
-      return null;
+    pendingDialog(sessionId) {
+      return pendingDialogs.get(sessionId) || null;
     },
     prepareFileChooser(sessionId, { timeoutMs, cancel }) {
       calls.push(["prepareFileChooser", sessionId, { timeoutMs, cancel }]);
@@ -439,6 +456,13 @@ function createFixture(rootDir) {
     systemFileChooserOpened: () => systemFileChooserOpened,
     timeoutNextMouseDispatch() {
       timeoutNextMouseDispatch = true;
+    },
+    openDialogOnNextClick(dialog = {}) {
+      dialogOnNextClick = {
+        type: dialog.type ?? "alert",
+        message: dialog.message ?? "Confirm action",
+        url: dialog.url ?? "https://example.test/dialog",
+      };
     },
     rejectNextClickPoint() {
       rejectNextClickPoint = true;
@@ -1020,6 +1044,32 @@ test("Page click fails closed when native mouse dispatch times out", async () =>
       "target-1",
       "click must leave its Page active",
     );
+  });
+});
+
+test("Page click returns a pending JavaScript dialog without waiting for input completion", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a");
+    const page = await task.openPage("https://example.test/dialog");
+    fixture.openDialogOnNextClick();
+
+    assert.deepEqual(await page.click("#open-dialog"), {
+      dialog: {
+        type: "alert",
+        message: "Confirm action",
+        url: "https://example.test/dialog",
+      },
+    });
+    assert.deepEqual(await page.info(), {
+      dialog: {
+        type: "alert",
+        message: "Confirm action",
+        url: "https://example.test/dialog",
+      },
+    });
+
+    await page.cdp("Page.handleJavaScriptDialog", { accept: true });
+    assert.equal((await page.info()).url, "https://example.test/dialog");
   });
 });
 
