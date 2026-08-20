@@ -242,7 +242,7 @@ type PageModelServices = {
   pageBudget: number;
 };
 
-export type PageInventoryItem = {
+export type TabInventoryItem = {
   targetId: string;
   label?: string;
   page: Page | UnmanagedPage;
@@ -630,17 +630,26 @@ class TaskSpace {
       );
       const active = tabs.find((tab) => tab.active);
       this.#userPage = active
-        ? pageInventory(this, this.#services, ledger, tabs).find(
+        ? tabInventory(this, this.#services, ledger, tabs).find(
             (item) => item.targetId === active.targetId,
           )?.page
         : undefined;
     });
   }
 
-  async listPages(): Promise<PageInventoryItem[]> {
+  /** Return managed Page handles after reconciling the browser tab list. */
+  async pages(): Promise<Page[]> {
+    const tabs = await this.tabs();
+    return tabs
+      .filter((item) => item.page instanceof Page)
+      .map((item) => item.page as Page);
+  }
+
+  /** Return managed and unmanaged tabs after reconciling browser state. */
+  async tabs(): Promise<TabInventoryItem[]> {
     return this.#services.gate.withSpace(this.id, async () => {
       const { ledger, tabs } = await this.#reconcilePages();
-      return pageInventory(this, this.#services, ledger, tabs);
+      return tabInventory(this, this.#services, ledger, tabs);
     });
   }
 
@@ -859,7 +868,7 @@ class TaskSpace {
 
 /**
  * A read-only identity for a live tab that is not managed by the Page model.
- * Obtain one from TaskSpace.listPages(), then call TaskSpace.adopt() before
+ * Obtain one from TaskSpace.tabs(), then call TaskSpace.adopt() before
  * navigating, observing, or closing the tab.
  */
 class UnmanagedPage {
@@ -875,7 +884,7 @@ class UnmanagedPage {
   ) {
     if (token !== unmanagedPageConstructorToken) {
       throw new TypeError(
-        "UnmanagedPage handles can only be obtained from task.listPages()",
+        "UnmanagedPage handles can only be obtained from task.tabs()",
       );
     }
     this.spaceId = task.id;
@@ -1046,6 +1055,21 @@ class Page {
     );
   }
 
+  /** Wait without activating this Page or occupying the native operation gate. */
+  async waitForTimeout(timeout: number): Promise<void> {
+    if (
+      typeof timeout !== "number" ||
+      !Number.isFinite(timeout) ||
+      timeout < 0
+    ) {
+      throw new TypeError(
+        "page.waitForTimeout requires a non-negative number of milliseconds",
+      );
+    }
+    await this.#resolve();
+    await this.#services.sleep(timeout);
+  }
+
   async title(): Promise<string> {
     return this.#evaluate("document.title", false);
   }
@@ -1106,7 +1130,12 @@ class Page {
     assertCdpCall("Page.cdp", method, params, options);
     const page = await this.#resolve();
     return this.#services.gate.withPage(page, async ({ sessionId }) => {
-      await this.#activate(page.targetId);
+      // A modal dialog already belongs to the active Page. Re-activating it
+      // can hand browser control to the user before CDP gets a chance to close
+      // the dialog, so send this one command directly to its existing session.
+      if (method !== "Page.handleJavaScriptDialog") {
+        await this.#activate(page.targetId);
+      }
       try {
         return await this.#services.cdp(
           method,
@@ -1963,12 +1992,12 @@ async function waitForTargetToDisappear(
   }
 }
 
-function pageInventory(
+function tabInventory(
   task: TaskSpace,
   services: PageModelServices,
   ledger: PageLedger,
   tabs: RuntimeTab[],
-): PageInventoryItem[] {
+): TabInventoryItem[] {
   const managedByTarget = new Map(
     Object.entries(ledger.pages).map(([label, entry]) => [
       entry.targetId,
@@ -2009,7 +2038,7 @@ function pageInventory(
 function assertUnmanagedPage(page: unknown): asserts page is UnmanagedPage {
   if (!(page instanceof UnmanagedPage)) {
     throw new TypeError(
-      "task.adopt requires an untracked page returned by task.listPages()",
+      "task.adopt requires an untracked page returned by task.tabs()",
     );
   }
 }

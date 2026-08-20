@@ -15,14 +15,18 @@ test("the public API schema contains the v2 entry points and object methods", ()
     "takeOverTaskSpace",
     "TaskSpace.spaceId",
     "TaskSpace.userPage",
+    "TaskSpace.pages",
+    "TaskSpace.tabs",
     "TaskSpace.openPage",
     "Page.snapshot",
     "Page.targetId",
     "Page.waitForURL",
+    "Page.waitForTimeout",
     "Page.keyboard.press",
   ]) {
     assert(names.has(name), `missing public API schema entry: ${name}`);
   }
+  assert.equal(names.has("TaskSpace.listPages"), false);
 });
 
 test("schema-driven option validation rejects unknown and invalid fields", () => {

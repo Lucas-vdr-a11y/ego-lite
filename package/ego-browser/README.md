@@ -14,13 +14,13 @@ npm run build     # bundle to dist/out/index.js
 npm test          # build + tsc --noEmit + node --test
 ```
 
-The build emits a single ESM file `dist/out/index.js`. The ego-browser browser dispatches `ego-browser nodejs <<'EOF' ... EOF` heredocs to that bundle. Inside the heredoc, all helpers (`snapshotText`, `click`, `useOrCreateTaskSpace`, ...) are pre-imported in camelCase.
+The build emits a single ESM file `dist/out/index.js`. The ego-browser browser dispatches `ego-browser nodejs <<'EOF' ... EOF` heredocs to that bundle. The v2 `TaskSpace` and `Page` APIs are preloaded; the v1 global helpers remain available only for existing scripts.
 
 ```bash
 ego-browser nodejs <<'EOF'
-await useOrCreateTaskSpace('demo')
-await openOrReuseTab('https://example.com', { wait: true })
-cliLog(await snapshotText())
+const task = await taskSpace('demo')
+const page = await task.openPage('https://example.com', { as: 'main' })
+console.log(await page.snapshot())
 EOF
 ```
 
@@ -28,7 +28,7 @@ Local invocation without the browser (for debugging the helper bundle itself) re
 
 ```bash
 node dist/out/index.js <<'JS'
-cliLog(await pageInfo())
+console.log(await help())
 JS
 ```
 
@@ -62,8 +62,10 @@ npm run validate:site-skills    # alias: validate:learnings
 src/
   run.ts                 CLI entry; reads stdin, injects helpers, executes
   helpers.ts             public helper surface (re-exports + glue)
+  page-model.ts          TaskSpace/Page lifecycle and operations
+  public-api-schema.ts   v2 validation, help, and reference source
   browser-runtime.ts     bridge to globalThis.ego (CDP, sessions, events)
-  element-resolver.ts    resolves @eN / CSS / XPath / ARIA targets
+  element-resolver.ts    resolves @N / CSS / XPath / ARIA targets
   driver/
     pointer.ts           click, hover, drag, scroll, scrollBy
     observe.ts           snapshot, captureScreenshot, elementCenter
@@ -79,13 +81,17 @@ scripts/
   build.mjs              esbuild bundling
 ```
 
-The top-level repo README has the full helper inventory and the task-space / control-handoff protocol. See also `../../skills/ego-browser/SKILL.md` for the agent-facing contract.
+See `../../skills/ego-browser/SKILL.md` for the agent-facing workflow and
+`../../skills/ego-browser/references/api.md` for the generated v2 API reference.
+The v1 compatibility contract is documented in
+`../../docs/legacy-api-compatibility.md`.
 
 ## Design constraints
 
 - The browser runtime owns tabs, task spaces, CDP transport, snapshots, and event delivery. This package keeps only agent-facing ergonomics.
 - Snapshot helpers use the browser runtime contract: `ego.snapshot({ scope, includeActionMarks, includeStableLocator })`.
-- Public helpers are camelCase only.
+- New public APIs must be added to `public-api-schema.ts`; runtime validation,
+  default `help()`, the generated reference, and the Skill must remain aligned.
 - Site-specific reusable experience belongs under `skills/ego-browser/learnings/`, not in this package.
 
 ## License

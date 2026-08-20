@@ -575,6 +575,32 @@ test("TaskSpace.waitForControl times out in milliseconds and validates options",
   });
 });
 
+test("Page.waitForTimeout validates and waits in milliseconds without activating the Page", async () => {
+  await withFixture(async (fixture) => {
+    const waits = [];
+    const task = taskForRound(fixture, "round-a", {
+      async sleep(ms) {
+        waits.push(ms);
+      },
+    });
+    const page = await task.openPage("https://example.test/timer");
+    fixture.calls.length = 0;
+
+    await page.waitForTimeout(125);
+
+    assert.deepEqual(waits, [125]);
+    assert.deepEqual(fixture.calls, []);
+    await assert.rejects(
+      () => page.waitForTimeout(-1),
+      /page\.waitForTimeout requires a non-negative number of milliseconds/,
+    );
+    await assert.rejects(
+      () => page.waitForTimeout(Number.POSITIVE_INFINITY),
+      /page\.waitForTimeout requires a non-negative number of milliseconds/,
+    );
+  });
+});
+
 test("v2 methods reject option fields that are absent from the public schema", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
@@ -654,13 +680,13 @@ test("handoff preserves user-created tabs as unknown and captures the active use
     assert.equal(userPage.targetId, "target-user");
     assert.equal(userPage.openedBy, "unknown");
 
-    const inventory = await afterTakeover.listPages();
+    const inventory = await afterTakeover.tabs();
     const userItem = inventory.find((item) => item.targetId === "target-user");
     assert.equal(userItem.label, undefined);
     assert.equal(userItem.openedBy, "unknown");
 
     fixture.addExternalTab("target-popup", "https://example.test/agent-popup");
-    const reconciled = await afterTakeover.listPages();
+    const reconciled = await afterTakeover.tabs();
     assert.equal(
       reconciled.find((item) => item.targetId === "target-popup").openedBy,
       "agent",
@@ -1030,7 +1056,7 @@ test("Page click fails closed when native mouse dispatch times out", async () =>
       () => first.click("#open-popup"),
       /CDP request timed out: Input\.dispatchMouseEvent/,
     );
-    const inventory = await task.listPages();
+    const inventory = await task.tabs();
     assert.equal(
       inventory.find((item) => item.targetId === "target-user").label,
       undefined,
@@ -1077,7 +1103,26 @@ test("Page click returns a pending JavaScript dialog without waiting for input c
       },
     });
 
+    const activationsBeforeHandle = fixture.calls.filter(
+      ([kind, method]) => kind === "cdp" && method === "Target.activateTarget",
+    ).length;
     await page.cdp("Page.handleJavaScriptDialog", { accept: true });
+    assert.equal(
+      fixture.calls.filter(
+        ([kind, method]) =>
+          kind === "cdp" && method === "Target.activateTarget",
+      ).length,
+      activationsBeforeHandle,
+      "handling a modal dialog must not re-activate its already active Page",
+    );
+    assert(
+      fixture.calls.some(
+        ([kind, method, , sessionId]) =>
+          kind === "cdp" &&
+          method === "Page.handleJavaScriptDialog" &&
+          sessionId === "session:target-1",
+      ),
+    );
     assert.equal((await page.info()).url, "https://example.test/dialog");
   });
 });
@@ -2293,7 +2338,7 @@ test("close keeps the page managed when the target never disappears", async () =
 
     await assert.rejects(() => page.close(), /did not close within 2000ms/);
 
-    const inventory = await task.listPages();
+    const inventory = await task.tabs();
     assert.equal(inventory[0].label, page.label);
     assert.equal(await page.title(), "https://example.test/first");
   });
@@ -2329,7 +2374,7 @@ test("a ledger failure closes the newly created uncommitted tab", async () => {
   });
 });
 
-test("listPages combines managed labels with live browser information", async () => {
+test("pages returns managed Page handles while tabs returns the complete inventory", async () => {
   await withFixture(async (fixture) => {
     fixture.tabs.set("target-user", {
       targetId: "target-user",
@@ -2339,15 +2384,34 @@ test("listPages combines managed labels with live browser information", async ()
     });
     const task = taskForRound(fixture, "round-a");
     const managed = await task.openPage("https://example.test/managed");
+    fixture.tabs.set("target-popup", {
+      targetId: "target-popup",
+      url: "https://example.test/popup",
+      title: "Late popup",
+      active: false,
+    });
 
-    const pages = await task.listPages();
-    const managedItem = pages.find((item) => item.label === "p1");
-    const unknownItem = pages.find((item) => item.targetId === "target-user");
+    const pages = await task.pages();
+    const tabs = await task.tabs();
+    const managedItem = tabs.find((item) => item.label === "p1");
+    const popupItem = tabs.find((item) => item.label === "p2");
+    const unknownItem = tabs.find((item) => item.targetId === "target-user");
 
+    assert.deepEqual(
+      pages.map((page) => page.label),
+      ["p1", "p2"],
+    );
+    assert(pages.every((page) => typeof page.url === "function"));
+    assert.equal(
+      pages.some((page) => page.targetId === "target-user"),
+      false,
+    );
     assert.equal(managedItem.page.label, "p1");
     assert.equal(managedItem.page.targetId, managed.targetId);
     assert.equal(managedItem.title, "https://example.test/managed");
     assert.equal(managedItem.openedBy, "agent");
+    assert.equal(popupItem.page.label, "p2");
+    assert.equal(popupItem.openedBy, "agent");
     assert.equal(unknownItem.label, undefined);
     assert.equal(unknownItem.page.targetId, "target-user");
     assert.equal(unknownItem.page.spaceId, 7);
@@ -2357,10 +2421,11 @@ test("listPages combines managed labels with live browser information", async ()
     assert.equal(unknownItem.page.close, undefined);
     assert.equal(unknownItem.title, "User page");
     assert.equal(unknownItem.openedBy, "unknown");
+    assert.equal(task.listPages, undefined);
   });
 });
 
-test("listPages automatically manages a tab created during agent control", async () => {
+test("tabs automatically manages a tab created during agent control", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
     await task.openPage("https://example.test/managed");
@@ -2371,7 +2436,7 @@ test("listPages automatically manages a tab created during agent control", async
       active: false,
     });
 
-    const popup = (await task.listPages()).find(
+    const popup = (await task.tabs()).find(
       (item) => item.targetId === "target-popup",
     );
 
@@ -2390,7 +2455,7 @@ test("adopt turns a live untracked page into a managed page", async () => {
       active: true,
     });
     const task = taskForRound(fixture, "round-a");
-    const [{ page: untracked }] = await task.listPages();
+    const [{ page: untracked }] = await task.tabs();
 
     const adopted = await task.adopt(untracked, { as: "notes" });
 
@@ -2402,7 +2467,7 @@ test("adopt turns a live untracked page into a managed page", async () => {
       /\[notes .*space "research"\(7\).*\]\nsnapshot:https:\/\/example\.test\/user/,
     );
     assert.deepEqual(
-      (await task.listPages()).map(({ label, openedBy }) => ({
+      (await task.tabs()).map(({ label, openedBy }) => ({
         label,
         openedBy,
       })),
@@ -2420,7 +2485,7 @@ test("adopt rejects stale, cross-space, and already managed handles", async () =
       active: true,
     });
     const task = taskForRound(fixture, "round-a");
-    const [{ page: untracked }] = await task.listPages();
+    const [{ page: untracked }] = await task.tabs();
     const otherTask = createTaskSpaceHandle(
       { id: 8, name: "other", ownership: "agent" },
       {
@@ -2440,7 +2505,7 @@ test("adopt rejects stale, cross-space, and already managed handles", async () =
       /target target-user is already page p1/,
     );
 
-    const inventory = await task.listPages();
+    const inventory = await task.tabs();
     assert.equal(inventory[0].page.label, adopted.label);
     fixture.tabs.delete("target-user");
     const stale = untracked;
@@ -2461,7 +2526,7 @@ test("adopt applies the managed-page budget before changing the ledger", async (
     });
     const task = taskForRound(fixture, "round-a", { pageBudget: 1 });
     await task.openPage("https://example.test/managed");
-    const untracked = (await task.listPages()).find(
+    const untracked = (await task.tabs()).find(
       (item) => item.targetId === "target-user",
     ).page;
 
@@ -2469,7 +2534,7 @@ test("adopt applies the managed-page budget before changing the ledger", async (
       () => task.adopt(untracked),
       /Page budget reached \(1\/1\)/,
     );
-    const after = await task.listPages();
+    const after = await task.tabs();
     assert.equal(
       after.find((item) => item.targetId === "target-user").label,
       undefined,
@@ -2486,14 +2551,14 @@ test("release leaves an adopted page open and retires its label", async () => {
       active: true,
     });
     const task = taskForRound(fixture, "round-a");
-    const untracked = (await task.listPages())[0].page;
+    const untracked = (await task.tabs())[0].page;
     const adopted = await task.adopt(untracked);
 
     const released = await task.release(adopted.label);
 
     assert.equal(released.targetId, "target-user");
     assert.equal(fixture.tabs.has("target-user"), true);
-    assert.equal((await task.listPages())[0].label, undefined);
+    assert.equal((await task.tabs())[0].label, undefined);
     await assert.rejects(() => adopted.snapshot(), /page p1 was released/);
     const adoptedAgain = await task.adopt(released);
     assert.equal(adoptedAgain.label, "p2");
@@ -2510,17 +2575,17 @@ test("release refuses to orphan a page created by the agent", async () => {
       /page p1 was created by the agent; close it instead/,
     );
     assert.equal(fixture.tabs.has(created.targetId), true);
-    assert.equal((await task.listPages())[0].label, "p1");
+    assert.equal((await task.tabs())[0].label, "p1");
   });
 });
 
-test("listPages retires a managed label when its browser tab disappeared", async () => {
+test("tabs retires a managed label when its browser tab disappeared", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
     const page = await task.openPage("https://example.test/managed");
     fixture.tabs.delete(page.targetId);
 
-    assert.deepEqual(await task.listPages(), []);
+    assert.deepEqual(await task.tabs(), []);
     await assert.rejects(
       () => task.page("p1").snapshot(),
       /page p1 was closed/,

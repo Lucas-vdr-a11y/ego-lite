@@ -11,6 +11,10 @@ ego-browser 2.x 会为 Agent 提供新的 `TaskSpace` / `Page` API，但不会�
 
 因此，“旧接口不可见”只针对 Agent 文档和发现机制，不表示运行时删除。
 
+这里的兼容范围只包括 1.2.3 公共接口，不包括 2.0 beta 开发期间出现过的新版
+方法。比如旧版 beta 的 `task.listPages()` 已拆成 `task.pages()` 和
+`task.tabs()`，不会保留别名。
+
 ## 兼容承诺
 
 1. 1.2.3 已有 helper 保持原来的参数、错误语义和副作用。

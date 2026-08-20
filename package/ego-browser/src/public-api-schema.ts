@@ -89,8 +89,13 @@ export const PUBLIC_API_SCHEMA: readonly PublicApiEntry[] = [
       "Return the tab active at the claim/takeover boundary, when one was captured.",
   },
   {
-    name: "TaskSpace.listPages",
-    signature: "await task.listPages()",
+    name: "TaskSpace.pages",
+    signature: "await task.pages()",
+    summary: "List the managed Page handles in this space.",
+  },
+  {
+    name: "TaskSpace.tabs",
+    signature: "await task.tabs()",
     summary: "List managed Pages and unmanaged tabs in this space.",
   },
   {
@@ -208,6 +213,12 @@ export const PUBLIC_API_SCHEMA: readonly PublicApiEntry[] = [
     signature: "await page.waitForURL(urlOrRegExp, { timeout? })",
     summary: "Wait for an exact URL or regular-expression match.",
     options: { timeout },
+  },
+  {
+    name: "Page.waitForTimeout",
+    signature: "await page.waitForTimeout(timeout)",
+    summary:
+      "Wait a fixed number of milliseconds without activating this Page.",
   },
   {
     name: "Page.title",

@@ -2,7 +2,7 @@
 
 Thanks for your interest in contributing to **ego-browser (ego-lite)**! This guide is aimed at developers who want to build on top of the project or submit patches upstream. It covers the architecture, local development workflow, code conventions, and PR process.
 
-> For the project vision, see [`README.md`](./README.md). For the agent-facing runbook, see [`skills/ego-browser/SKILL.md`](./skills/ego-browser/SKILL.md) (or [`SKILL.zh.md`](./skills/ego-browser/SKILL.zh.md)). For repo-level guidance, see [`AGENTS.md`](./AGENTS.md).
+> For the project vision, see [`README.md`](./README.md). For the agent-facing runbook, see [`skills/ego-browser/SKILL.md`](./skills/ego-browser/SKILL.md). For repo-level guidance, see [`AGENTS.md`](./AGENTS.md).
 
 ---
 
@@ -42,8 +42,10 @@ ego-lite/
 │   │   ├── index.ts            # SDK / CLI bootstrap
 │   │   ├── run.ts              # stdin executor, CLI entry
 │   │   ├── helpers.ts          # Public helper surface composition
+│   │   ├── page-model.ts       # TaskSpace / Page lifecycle and operations
+│   │   ├── public-api-schema.ts# v2 validation, help, and reference source
 │   │   ├── browser-runtime.ts  # CDP transport and session cache
-│   │   ├── element-resolver.ts # @eN / CSS / XPath / ARIA resolution
+│   │   ├── element-resolver.ts # @N / CSS / XPath / ARIA resolution
 │   │   ├── cdp-eval.ts         # cdp() / js() helpers
 │   │   ├── state.ts            # Shared mutable runtime state (singleton)
 │   │   ├── env.ts              # Environment variables
@@ -58,13 +60,13 @@ ego-lite/
 │   ├── scripts/
 │   │   ├── build.mjs           # esbuild + rollup bundler
 │   │   └── validate-site-skills.ts
-│   ├── test/                   # node --test suites
-│   ├── artifacts/              # Build output (published to GitHub Release by CI)
-│   ├── dist/                   # tsc output (gitignored)
+│   ├── test/real-browser-e2e/  # Real-browser fixtures and harness tests
+│   ├── dist/                   # Build output (gitignored)
 │   ├── package.json
 │   └── tsconfig.json
 ├── skills/ego-browser/         # Agent skill package
-│   ├── SKILL.md / SKILL.zh.md  # Agent usage guide
+│   ├── SKILL.md                # Canonical agent usage guide
+│   ├── references/api.md       # Generated v2 API reference
 │   └── learnings/<site>/       # Per-site knowledge packs (github / google / x-com ...)
 ├── spec/                       # Spec references
 ├── public/                     # Demo assets
@@ -78,14 +80,14 @@ ego-lite/
 
 ## 3. Tech Stack & Runtime
 
-| Item | Choice |
-| --- | --- |
-| Language | TypeScript (`tsc --noEmit` for typecheck only) |
-| Runtime | Node.js **>= 22**, ESM only (`"type": "module"`) |
-| Package manager | npm (commit `package-lock.json`) |
-| Bundler | esbuild + rollup (output: `artifacts/ego-browser/index.js`) |
-| Tests | Node built-in `node --test` + `node:assert/strict` |
-| Runtime deps | Only `acorn` (lightweight parsing) |
+| Item              | Choice                                                                  |
+| ----------------- | ----------------------------------------------------------------------- |
+| Language          | TypeScript (`tsc --noEmit` for typecheck only)                          |
+| Runtime           | Node.js **>= 22**, ESM only (`"type": "module"`)                        |
+| Package manager   | npm (commit `package-lock.json`)                                        |
+| Bundler           | esbuild + rollup (output: `dist/out/index.js`)                          |
+| Tests             | Node built-in `node --test` + `node:assert/strict`                      |
+| Runtime deps      | Only `acorn` (lightweight parsing)                                      |
 | Browser transport | Chrome DevTools Protocol (CDP) directly — **no Puppeteer / Playwright** |
 
 ---
@@ -99,7 +101,7 @@ ego-lite/
 cd package/ego-browser
 npm ci
 
-# 2. Build (produces dist/ and artifacts/ego-browser/index.js)
+# 2. Build (produces dist/out/index.js and dist/src/)
 npm run build
 
 # 3. Typecheck
@@ -115,9 +117,8 @@ npm run validate:site-skills    # alias: validate:learnings
 **Calling the CLI directly** (for local debugging):
 
 ```bash
-node artifacts/ego-browser/index.js <<'JS'
-await waitForLoad()
-cliLog(await pageInfo())
+node dist/out/index.js <<'JS'
+console.log(await help())
 JS
 ```
 
@@ -130,11 +131,11 @@ JS
 
 **Key environment variables**:
 
-| Variable | Purpose |
-| --- | --- |
+| Variable                      | Purpose                                                                          |
+| ----------------------------- | -------------------------------------------------------------------------------- |
 | `EGO_BROWSER_AGENT_WORKSPACE` | Override skill workspace root (defaults to `skills/ego-browser` inside the repo) |
-| `EGO_BROWSER_NAME` | Browser instance name (default `default`) |
-| `EGO_BROWSER_DEBUG_CLICKS` | Enable click debug logging |
+| `EGO_BROWSER_NAME`            | Browser instance name (default `default`)                                        |
+| `EGO_BROWSER_DEBUG_CLICKS`    | Enable click debug logging                                                       |
 
 ---
 
@@ -181,27 +182,33 @@ stdin JS → runMain() → injected helpers → CDP / DOM / AX resolution → op
 ### Task Space Model
 
 A `Task Space` is an isolated browsing context provided by ego-browser: it owns its own tab set but inherits the user's login state.
-Because every heredoc runs in a fresh Node process, **the agent must call `useOrCreateTaskSpace(name)` at the start of every heredoc to re-attach to the same task space**, and end with `completeTaskSpace(name, { keep })` in the final round.
+Because every heredoc runs in a fresh Node process, new scripts call
+`taskSpace(nameOrId)` in each round, restore Pages by durable label, and end with
+`task.finish()` or `task.close()`.
 
-Control (`agent` ↔ `user`) is handed off via the `handOffTaskSpace` / `takeOverTaskSpace` / `waitForAgentControl` protocol — for example, when the user needs to log in manually or solve a CAPTCHA.
+Control is handed to the user with `task.handOff()` and resumed, after user
+approval, with `takeOverTaskSpace(spaceId)`. The old global helpers remain a v1
+compatibility surface; see `docs/legacy-api-compatibility.md`.
 
 ---
 
 ## 6. Key Modules
 
-| File | Responsibility |
-| --- | --- |
-| `src/index.ts` | SDK injection (`installEgoSdk`); decides whether to run as CLI or be imported as a library |
-| `src/run.ts` | Reads stdin, builds an `AsyncFunction`, and invokes it with helpers as named arguments |
-| `src/helpers.ts` | Composes and exports the helper set exposed to heredocs |
-| `src/browser-runtime.ts` | Maintains the CDP connection, session cache, and event buffer for the browser's ego runtime |
-| `src/element-resolver.ts` | Resolves `@eN` refs, CSS, XPath, and ARIA/role to backend nodeIds |
-| `src/cdp-eval.ts` | `cdp()` raw CDP calls + `js()` in-page evaluation |
-| `src/state.ts` | Shared mutable state singleton (`send`, `platform`, `agentWorkspace`, session caches). Tests can inject stubs via `setOverrides()` |
-| `src/driver/*` | Minimal-dependency primitives per capability; only call into `cdp()` |
-| `src/learning/index.ts` | Discovers and loads `learnings/<site>/`, exposes `runSiteTool` / `runSiteBrowserTool` |
-| `src/learning/validate-learning-format.ts` | Site manifest validator |
-| `scripts/build.mjs` | Uses `.build.lock` to prevent concurrent builds; esbuild transform + rollup bundle into a single file |
+| File                                       | Responsibility                                                                                                                     |
+| ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `src/index.ts`                             | SDK injection (`installEgoSdk`); decides whether to run as CLI or be imported as a library                                         |
+| `src/run.ts`                               | Reads stdin, builds an `AsyncFunction`, and invokes it with helpers as named arguments                                             |
+| `src/helpers.ts`                           | Composes and exports the helper set exposed to heredocs                                                                            |
+| `src/page-model.ts`                        | Implements the v2 TaskSpace/Page lifecycle and operations                                                                          |
+| `src/public-api-schema.ts`                 | Defines v2 validation, default help, and the generated API reference                                                               |
+| `src/browser-runtime.ts`                   | Maintains the CDP connection, session cache, and event buffer for the browser's ego runtime                                        |
+| `src/element-resolver.ts`                  | Resolves `@N` refs, CSS, XPath, and ARIA/role to backend nodeIds                                                                   |
+| `src/cdp-eval.ts`                          | `cdp()` raw CDP calls + `js()` in-page evaluation                                                                                  |
+| `src/state.ts`                             | Shared mutable state singleton (`send`, `platform`, `agentWorkspace`, session caches). Tests can inject stubs via `setOverrides()` |
+| `src/driver/*`                             | Minimal-dependency primitives per capability; only call into `cdp()`                                                               |
+| `src/learning/index.ts`                    | Discovers and loads `learnings/<site>/`, exposes `runSiteTool` / `runSiteBrowserTool`                                              |
+| `src/learning/validate-learning-format.ts` | Site manifest validator                                                                                                            |
+| `scripts/build.mjs`                        | Uses `.build.lock` to prevent concurrent builds; esbuild transform + rollup bundle into a single file                              |
 
 > Historical note: the repo is migrating from `.js` to `.ts`. If `AGENTS.md` still mentions `.js` files, defer to the current `src/*.ts`.
 
@@ -235,15 +242,19 @@ learnings/<site>/
 
 - Use **stable URLs** and **stable selectors** (CSS / ARIA / text) only
 - Never write **pixel coordinates**, **secrets/tokens**, or **task narration**
-- Capture the *shape* of the site, not your task — a "map", not a "diary"
+- Capture the _shape_ of the site, not your task — a "map", not a "diary"
 
 ---
 
 ## 8. Testing & Quality
 
 - Test framework: `node --test` with `node:assert/strict`
-- Test files: `package/ego-browser/test/*.test.js`, split by responsibility (runtime / helpers / resolver / nav-driver / site-skills / build / state ...)
-- Style: behavior-driven, using **temp workspaces + `setOverrides()`** for stub injection — no real browser launches
+- Tests are colocated in `package/ego-browser/src/**/*.test.mjs`, with a small
+  set of package tests in `package/ego-browser/test/*.test.js`.
+- Unit tests use temporary workspaces, overrides, or a fake Ego binding.
+- `npm run e2e` is the self-contained real-browser suite. It builds the current
+  checkout, launches it through `--sdk-path`, uses a unique temporary space,
+  and cleans up without manual browser interaction.
 
 **Minimum pre-submit bar**:
 
@@ -251,14 +262,18 @@ learnings/<site>/
 cd package/ego-browser
 npm test                       # must pass
 npm run validate:site-skills   # if learnings changed
+npm run e2e                    # for real browser or task-space behavior
 ```
 
 **When to add/extend tests**:
 
-- Changes to session / connection handling → add cases in `browser-runtime.test.js` / `session-injection.test.js`
-- Changes to the resolver → `element-resolver.test.js`
-- New helper → `helpers.test.js` or the matching driver test
-- Changes to learning loading → `site-skills.test.js` / `validate-site-skills.test.js`
+- Changes to session or connection handling → `src/browser-runtime.test.mjs`
+- Changes to the resolver → `src/element-resolver.test.mjs`
+- Changes to the v2 Page surface → `src/page-model.test.mjs`,
+  `src/public-api-schema.test.mjs`, and the relevant real-browser E2E case
+- New public v2 API → update `src/public-api-schema.ts`, regenerate
+  `skills/ego-browser/references/api.md`, and update the Skill and architecture
+- Changes to learning loading → the matching `src/**/*.test.mjs` suite
 
 ---
 
@@ -271,8 +286,8 @@ npm run validate:site-skills   # if learnings changed
 - **TypeScript non-strict mode**: `strict: false`, but keep explicit type signatures
 - **Shared state goes through the `state.ts` singleton** — do not thread `connection` / `send` through function parameters
 - **Helpers are injected, not imported**: agent scripts do not `import`; all helpers are placed in scope by `run.ts`
-- **Snapshot refs (`@eN`) are short-lived**: re-snapshot after any DOM mutation; for long-lived values use `loc=...` or stable CSS / ARIA
-- **No lint / prettier**: style is enforced by convention and code review. When editing, blend in with the surrounding code instead of introducing a new style
+- **Snapshot refs (`@N`) are short-lived**: re-snapshot after navigation or DOM changes; for long-lived values use `loc=...` or stable CSS / ARIA
+- **Formatting**: run `npm run style:check`; keep edits consistent with the surrounding code
 
 ---
 
@@ -305,10 +320,11 @@ Add at least one release-note label so generated releases are grouped correctly:
 
 - [ ] `npm test` is green
 - [ ] Typecheck passes (`npm run typecheck`)
+- [ ] `npm run e2e` is green when real browser or task-space behavior changed
 - [ ] If learnings changed, `npm run validate:site-skills` passes
 - [ ] Change is "minimal surgical edit" (see §12)
 - [ ] No undeclared runtime dependencies introduced
-- [ ] Public helper names / docs are kept in sync (update both `SKILL.md` and `SKILL.zh.md`)
+- [ ] Public API schema, generated reference, `SKILL.md`, and architecture docs are kept in sync
 
 ---
 
@@ -329,12 +345,12 @@ Add at least one release-note label so generated releases are grouped correctly:
 
 This repo strongly endorses the four principles below (see [`AGENTS.md`](./AGENTS.md)). Both human contributors and AI agents should apply them on every change:
 
-| Principle | Meaning |
-| --- | --- |
-| **Think Before Coding** | Don't assume, don't paper over confusion; surface trade-offs explicitly and push back when needed |
-| **Simplicity First** | The smallest amount of code that solves the problem; no speculative abstractions or configuration |
-| **Surgical Changes** | Change only what needs to change; preserve the existing style; do not opportunistically "improve" unrelated code |
-| **Goal-Driven Execution** | Translate the task into a verifiable goal; write the check first, then iterate until it passes |
+| Principle                 | Meaning                                                                                                          |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| **Think Before Coding**   | Don't assume, don't paper over confusion; surface trade-offs explicitly and push back when needed                |
+| **Simplicity First**      | The smallest amount of code that solves the problem; no speculative abstractions or configuration                |
+| **Surgical Changes**      | Change only what needs to change; preserve the existing style; do not opportunistically "improve" unrelated code |
+| **Goal-Driven Execution** | Translate the task into a verifiable goal; write the check first, then iterate until it passes                   |
 
 > "Every changed line should trace back to the requirement of this task."
 

@@ -11,13 +11,18 @@ export function pageLabelCreateCase() {
     const refLine = snapshot.split("\\n").find((line) => line.includes("Increment counter"));
     const refMatch = refLine && refLine.match(/\\[ref=([0-9]+)/);
     assert(refMatch, "snapshot exposes a ref for the cross-round action");
-    const inventory = await task.listPages();
+    const inventory = await task.tabs();
     const managed = inventory.find((item) => item.label === page.label);
-    assertEqual(managed.page.targetId, page.targetId, "listPages returns the managed Page handle");
-    assertEqual(managed.openedBy, "agent", "listPages identifies managed page origin");
+    const managedPages = await task.pages();
+    assertEqual(managed.page.targetId, page.targetId, "tabs returns the managed Page handle");
+    assertEqual(managed.openedBy, "agent", "tabs identifies managed page origin");
+    assertEqual(managedPages.length, 1, "pages excludes unmanaged tabs");
+    assertEqual(managedPages[0].label, page.label, "pages returns the managed Page directly");
+    assertEqual(typeof managedPages[0].url, "function", "pages returns Page methods");
+    assertEqual(typeof task.listPages, "undefined", "the replaced listPages method is absent");
     assert(
       inventory.some((item) => item.label === undefined && item.openedBy === "unknown"),
-      "listPages preserves untracked browser tabs as unknown"
+      "tabs preserves untracked browser tabs as unknown"
     );
     await writeFile(
       join(tempDir, "managed-page.json"),
@@ -73,10 +78,10 @@ export function pageLabelCloseCase() {
       if (!(await listTabs()).some((tab) => tab.targetId === next.targetId)) break;
       await wait(0.05);
     }
-    const reconciled = await task.listPages();
+    const reconciled = await task.tabs();
     assert(
       !reconciled.some((item) => item.label === "p2"),
-      "listPages removes a managed page closed outside the object API"
+      "tabs removes a managed page closed outside the object API"
     );
     await assertRejects(
       () => task.page("p2").snapshot(),
@@ -120,7 +125,7 @@ export function pageBudgetCase() {
     const managed = [];
     for (let index = 0; index < 3; index += 1) {
       managed.push(await task.openPage(baseUrl + "/secondary?budget=" + index));
-      const inventory = await task.listPages();
+      const inventory = await task.tabs();
       assertEqual(
         inventory.filter((item) => item.label !== undefined).length,
         index + 1,
@@ -135,11 +140,11 @@ export function pageBudgetCase() {
     );
     const afterReject = await listTabs();
     assertEqual(afterReject.length, beforeReject.length, "budget rejects before creating a browser tab");
-    const inventory = await task.listPages();
+    const inventory = await task.tabs();
     assertEqual(
       inventory.filter((item) => item.label !== undefined).length,
       3,
-      "listPages reports every managed page at the budget limit"
+      "tabs reports every managed page at the budget limit"
     );
     for (const page of managed) await page.close();
   `;
@@ -148,9 +153,9 @@ export function pageBudgetCase() {
 export function pageAdoptionCase() {
   return `
     const task = await taskSpace(taskName);
-    const beforeAdopt = await task.listPages();
+    const beforeAdopt = await task.tabs();
     const untracked = beforeAdopt.find((item) => item.label === undefined);
-    assert(Boolean(untracked), "listPages preserves a tab from before the control boundary");
+    assert(Boolean(untracked), "tabs preserves a tab from before the control boundary");
     const source = untracked.page;
     assertEqual(untracked.page.targetId, source.targetId, "untracked handle keeps the target id");
     assertEqual(untracked.page.snapshot, undefined, "untracked handle cannot snapshot directly");
@@ -170,7 +175,7 @@ export function pageAdoptionCase() {
       "release leaves the browser tab open"
     );
     assertEqual(
-      (await task.listPages()).find((item) => item.targetId === source.targetId).label,
+      (await task.tabs()).find((item) => item.targetId === source.targetId).label,
       undefined,
       "release removes the durable label"
     );
@@ -213,6 +218,14 @@ export function pageBasicOperationsCase() {
     assertIncludes(info.url, "page-api=first", "page.info reads its own URL");
     assert(info.w > 0 && info.h > 0, "page.info reports a usable viewport");
     assertEqual((await currentTab()).targetId, second.targetId, "metadata reads do not activate their page");
+    const waitStartedAt = Date.now();
+    await first.waitForTimeout(25);
+    assert(Date.now() - waitStartedAt >= 20, "waitForTimeout waits in milliseconds");
+    assertEqual(
+      (await currentTab()).targetId,
+      second.targetId,
+      "waitForTimeout does not activate its Page"
+    );
     const baselineSnapshot = await first.snapshot();
     assertIncludes(baselineSnapshot, 'page-api-first', "snapshot identifies its source Page");
     assertIncludes(baselineSnapshot, 'space "' + taskName + '"', "snapshot identifies its task space");
@@ -365,7 +378,7 @@ export function pageBasicOperationsCase() {
 export function pageActionsAndPopupCase() {
   return `
     const task = await taskSpace(taskName);
-    const unknownBefore = (await task.listPages())
+    const unknownBefore = (await task.tabs())
       .filter((item) => item.label === undefined)
       .map((item) => item.targetId);
     assert(unknownBefore.length > 0, "the control-boundary inventory keeps pre-existing tabs untracked");
@@ -575,7 +588,7 @@ export function pageActionsAndPopupCase() {
       "page-actions=popup",
       "the receipt label resolves the popup Page"
     );
-    const inventory = await task.listPages();
+    const inventory = await task.tabs();
     assertEqual(
       inventory.find((item) => item.targetId === popup.targetId).openedBy,
       "agent",
@@ -583,7 +596,7 @@ export function pageActionsAndPopupCase() {
     );
 
     // Simulate the action-receipt window missing this otherwise real popup.
-    // listPages must discover the live target independently and restore a
+    // tabs must discover the live target independently and restore a
     // managed label; popup lifecycle cannot depend on the short receipt diff.
     const ledgerPath = join(
       process.env.EGO_BROWSER_STATE_DIR,
@@ -592,9 +605,9 @@ export function pageActionsAndPopupCase() {
     const ledger = JSON.parse(await readFile(ledgerPath, "utf8"));
     delete ledger.pages[popup.label];
     await writeFile(ledgerPath, JSON.stringify(ledger));
-    const afterReconcile = await task.listPages();
+    const afterReconcile = await task.tabs();
     const reconciledPopup = afterReconcile.find((item) => item.targetId === popup.targetId);
-    assert(Boolean(reconciledPopup?.label), "listPages adopts a popup missed by action receipts");
+    assert(Boolean(reconciledPopup?.label), "tabs adopts a popup missed by action receipts");
     assertEqual(reconciledPopup.openedBy, "agent", "the reconciled popup keeps Agent origin");
     assert(
       unknownBefore.every(

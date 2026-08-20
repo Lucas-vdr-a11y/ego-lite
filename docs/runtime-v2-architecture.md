@@ -127,7 +127,7 @@ CDP session、事件缓冲、dialog 状态和 Network domain 状态都按 target
 ### 4.3 浏览器事实与账本事实
 
 浏览器决定一个 tab 是否仍存在；账本决定它是否受 Page 模型管理。
-`listPages()`、`openPage()` 等盘点入口会用 `listTabs()` 对账：
+`pages()`、`tabs()`、`openPage()` 等盘点入口会用原生 `listTabs()` 对账：
 
 - 浏览器中已经消失的受管页面从账本移除，但标签仍保持已使用状态。
 - 第一次观察一个 space 时，已有 tab 记为 `unknown`，不会猜测它们由谁创建。
@@ -169,13 +169,17 @@ placeholder 文档当成新页面。创建成功但文档仍未稳定时，标�
 
 ### 5.3 Adopt 和 release
 
-`task.listPages()` 同时返回受管 Page 和只读 `UnmanagedPage`：
+`task.pages()` 返回所有受管 Page。`task.tabs()` 返回完整 tab 清单，其中既有受管
+Page，也有只读 `UnmanagedPage`：
 
 ```js
-const pages = await task.listPages();
-const unknown = pages.find((item) => !item.label);
+const pages = await task.pages();
+const tabs = await task.tabs();
+const unknown = tabs.find((item) => !item.label);
 const adopted = await task.adopt(unknown.page, { as: "reference" });
 ```
+
+两个方法都是异步的，因为返回前会先把浏览器中的 tab 与页面账本对齐。
 
 `UnmanagedPage` 只有身份信息，不能直接导航、点击或关闭。调用 `adopt()` 后才
 获得完整 Page。
@@ -186,7 +190,7 @@ Agent 创建的页面不能 release，必须显式 close，避免制造无人管
 ### 5.4 Popup
 
 高层页面动作会在动作前后比较 tab 列表。立即出现的新 tab 会自动获得标签，
-并进入动作回执。传播较慢的 popup 会在下一次 `listPages()`、`openPage()` 或
+并进入动作回执。传播较慢的 popup 会在下一次 `pages()`、`tabs()`、`openPage()` 或
 下一轮盘点时收编。
 
 当 space 从未交给用户控制时，新出现的 tab 可以归因于 Agent 或 Agent 触发的
@@ -218,7 +222,8 @@ task.ownership;
 task.page(label);
 task.userPage();
 
-await task.listPages();
+await task.pages();
+await task.tabs();
 await task.openPage(url, { as, timeout });
 await task.adopt(unmanagedPage, { as });
 await task.release(label);
@@ -251,6 +256,7 @@ await page.snapshot(options)
 await page.screenshot({ path, fullPage, clip, raw })
 await page.url()
 await page.waitForURL(urlOrRegExp, { timeout })
+await page.waitForTimeout(timeout)
 await page.title()
 await page.info()
 await page.evaluate(fnOrString, arg?)
@@ -278,6 +284,9 @@ await page.close()
 options 中；`fullPage` 表示捕获完整页面。`waitForSelector()` 的 `state` 支持
 `attached`、`detached`、`visible` 和 `hidden`，默认是 `visible`。
 `waitForURL()` 接受完整 URL 字符串或正则表达式，默认等待 10,000ms。
+`waitForTimeout()` 只等待指定毫秒数，不激活 Page，也不占用 native operation
+gate。它主要用于调试和短暂的视觉稳定；正常流程优先等待 URL、selector 或
+load state。
 
 CSS selector 会在 document 和每一层 open shadow root 中查找，因而 Shadow DOM
 节点也可以通过 `loc=css:` 或 raw CSS 操作。selector 应描述元素在自身 tree scope
@@ -348,11 +357,12 @@ Ego Lite 更新 Agent 光标。`fill()` 只更新可见光标，不会额外向�
 下面的操作会先激活目标 Page：
 
 - snapshot、screenshot
-- goto、evaluate、fetch、page.cdp
+- goto、evaluate、fetch、page.cdp（处理已打开的 JavaScript dialog 除外）
 - selector action 和 wait
 - mouse、keyboard、scrollBy
 
-`url()`、`waitForURL()`、`title()`、`info()` 和 `events()` 不改变当前激活页。
+`url()`、`waitForURL()`、`waitForTimeout()`、`title()`、`info()` 和 `events()`
+不改变当前激活页。
 
 激活目标页是有意行为。真实 Ego Lite 测试中，后台页输入曾出现 CDP 超时并
 退化为 `isTrusted=false` 的合成事件；激活后可保持正常 CDP Input 路径。
@@ -378,6 +388,8 @@ popup 回执：
 `Page.javascriptDialogOpening` 后会中断该输入等待，让高层动作立即返回
 `{ dialog }`；dialog 本身保持打开，由调用方随后 accept 或 dismiss。这样不会依赖
 15 秒 CDP 超时，也不会让双击或连续输入在 dialog 关闭后继续执行剩余步骤。
+`Page.handleJavaScriptDialog` 直接使用该 Page 已有的 session，不会在 dialog 打开时
+重复激活页面；Ego Lite 可能把这种重复激活解释为用户接管。
 
 底层原语不安装动作探针，也不等待 50ms 反馈窗口：
 
@@ -492,6 +504,8 @@ surface，不属于本阶段。
 - 多个 Page 的 session、事件和同号 ref 不串页。
 - 跨 space 操作按 gate 串行并落到正确 space。
 - 页面预算在创建前拒绝，错误给出可执行的 close/goto 建议。
+- `pages()` 只返回受管 Page；`tabs()` 还返回未受管 tab，二者都会先完成盘点。
+- `waitForTimeout()` 校验毫秒参数，不激活 Page，也不阻塞其他 space 的操作。
 - 首次存在的 unknown tab 不被自动收编；Agent 控制期间的新 tab 会被收编。
 - handoff 期间用户新开的 tab 在 takeover 后保持 unknown；`userPage()` 返回边界
   时激活的 tab。

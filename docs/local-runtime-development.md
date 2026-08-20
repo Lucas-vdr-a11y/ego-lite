@@ -63,6 +63,12 @@ installed CLI with `--sdk-path`. This is the preferred end-to-end compatibility
 check. `npm test` remains useful for repository tests but does not replace the
 real-browser check.
 
+The command is self-contained: it starts its own local fixture server, creates a
+uniquely named temporary task space, and cleans both up. No manual SDK linking,
+task-space selection, takeover, or browser interaction is part of a successful
+run. A fresh agent can use this command without any context from an earlier
+debugging session.
+
 ## Keep the Skill aligned
 
 The Skill describes the APIs implemented by the runtime. When an agent is used,

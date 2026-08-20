@@ -55,6 +55,14 @@ export function helperSurfaceCase() {
     assertEqual(typeof globalThis.newTab, "undefined", "internal newTab is not exposed");
     const defaultHelp = help();
     assertIncludes(defaultHelp, "TaskSpace.openPage", "default help presents the v2 object API");
+    assertIncludes(defaultHelp, "TaskSpace.pages", "default help presents managed Pages");
+    assertIncludes(defaultHelp, "TaskSpace.tabs", "default help presents tab inventory");
+    assertIncludes(defaultHelp, "Page.waitForTimeout", "default help presents fixed waits");
+    assertIncludes(
+      help("TaskSpace.listPages"),
+      "Unknown helper",
+      "removed v2 methods do not remain as help aliases"
+    );
     assertIncludes(
       help("click"),
       "Legacy helper hidden from default help",

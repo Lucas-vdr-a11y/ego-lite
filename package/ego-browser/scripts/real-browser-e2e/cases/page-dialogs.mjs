@@ -57,13 +57,23 @@ export function pageJavaScriptDialogsCase() {
       return receipt.dialog;
     }
 
+    async function assertAgentStillControls(stage) {
+      const pages = await task.pages();
+      assert(
+        pages.some((candidate) => candidate.label === page.label),
+        stage + " keeps the E2E task space under Agent control"
+      );
+    }
+
     await openDialog("#dialog-alert", "alert", "Alert from real E2E");
     await page.cdp("Page.handleJavaScriptDialog", { accept: true });
     await page.waitForSelector('[data-value="alert:continued"]', { timeout: 2_000 });
+    await assertAgentStillControls("handling alert");
 
     await openDialog("#dialog-confirm", "confirm", "Confirm from real E2E");
     await page.cdp("Page.handleJavaScriptDialog", { accept: false });
     await page.waitForSelector('[data-value="confirm:false"]', { timeout: 2_000 });
+    await assertAgentStillControls("handling confirm");
 
     const promptDialog = await openDialog(
       "#dialog-prompt",
@@ -82,6 +92,7 @@ export function pageJavaScriptDialogsCase() {
     await page.waitForSelector('[data-value="prompt:replacement answer"]', {
       timeout: 2_000,
     });
+    await assertAgentStillControls("handling prompt");
     assertEqual(
       await page.evaluate("document.querySelector('#dialog-result').textContent"),
       "prompt:replacement answer",

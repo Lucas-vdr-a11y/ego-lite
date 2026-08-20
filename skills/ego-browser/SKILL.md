@@ -66,7 +66,8 @@ task.ownership;
 task.page(label);
 task.userPage();
 
-await task.listPages();
+await task.pages();
+await task.tabs();
 await task.openPage(url, { as, timeout });
 await task.adopt(unmanagedPage, { as });
 await task.release(label);
@@ -82,7 +83,8 @@ Follow these page-management rules:
 - Reuse an existing Page by default. Call `page.goto()` to open another URL in the same Page. Call `task.openPage()` only when pages truly need to remain side by side.
 - Pages receive permanent `p1`, `p2`, and similar labels automatically. Pass `{ as }` to choose a label. Closed labels are never reused.
 - Each space manages at most eight pages by default. On `EGO_PAGE_BUDGET_REACHED`, close temporary pages or reuse an existing Page with `goto()`; do not bypass the budget.
-- `task.listPages()` returns managed and unmanaged tabs. An `UnmanagedPage` without a `label` exposes identity information only. Call `task.adopt(item.page, { as })` before observing or operating it.
+- `task.pages()` returns only managed Page handles. It is async because it reconciles live browser tabs before returning.
+- `task.tabs()` returns the complete tab inventory, including managed Pages and unmanaged tabs. An `UnmanagedPage` without a `label` exposes identity information only. Call `task.adopt(item.page, { as })` before observing or operating it.
 - Use `task.release(label)` only to return an unknown-origin page to the user while keeping its tab open. Close Agent-created pages with `page.close()`.
 - `page.close()` resolves only after the tab has actually disappeared. If close fails, the Page label remains valid and the operation can be retried safely.
 
@@ -90,10 +92,10 @@ Follow these page-management rules:
 
 `task.ownership` is the ownership captured when the TaskSpace handle was created. `page.openedBy` is `"agent"` or `"unknown"`; treat `"unknown"` as user-owned for lifecycle decisions.
 
-Each `listPages()` item has `{ label?, page, targetId, title, url, active, openedBy }`. Use `task.page(label)` to resume a known Page; use `listPages()` to discover active or unmanaged tabs:
+Each `tabs()` item has `{ label?, page, targetId, title, url, active, openedBy }`. Use `task.page(label)` to resume a known Page, `pages()` to iterate managed Pages, and `tabs()` to discover active or unmanaged tabs:
 
 ```js
-const items = await task.listPages();
+const items = await task.tabs();
 const active = items.find((item) => item.active);
 if (active && !active.label) {
   const adopted = await task.adopt(active.page, { as: "user" });
@@ -114,8 +116,8 @@ for (const popup of receipt.popups ?? []) {
 
 The receipt confirms that the popup target was adopted; its first navigation may
 still be at `about:blank`. Use `waitForURL()` when the destination matters. A
-popup that propagates slowly will be discovered by the next `listPages()` or
-`openPage()` call, or when the task resumes in a later round.
+popup that propagates slowly will be discovered by the next `pages()`, `tabs()`,
+or `openPage()` call, or when the task resumes in a later round.
 
 ## Choose an interaction path
 
@@ -226,6 +228,7 @@ await page.evaluate(fnOrString, argument);
 await page.fetch(url, options);
 await page.cdp(method, params, { timeout });
 await page.waitForURL(urlOrRegExp, { timeout });
+await page.waitForTimeout(timeout);
 await page.waitForSelector(selector, { timeout, state });
 await page.waitForLoadState(state, { timeout, idleMs });
 await page.setInputFiles(selector, pathOrPaths);
@@ -240,6 +243,9 @@ await page.close();
 - `goto()` defaults to `timeout: 15_000`.
 - `waitForURL()` accepts an exact URL string or a `RegExp`, defaults to
   `timeout: 10_000`, and does not activate the Page.
+- `waitForTimeout()` waits a fixed number of milliseconds without activating
+  the Page. Use it only for debugging or brief visual stabilization; prefer a
+  URL, selector, load-state, or application-state wait in normal flows.
 - `snapshot()` defaults to `{ scope: "full_page", includeActionMarks: true, includeStableLocator: true }`. `scope` is `"full_page"` or `"only_within_viewport"`; there is no `diff` option.
 - Omit `screenshot()`'s `path` to receive a temporary PNG path; provided paths should be absolute. `clip.scale` is optional and positive. `raw` defaults to `false`; set it only for uncorrected device-pixel output.
 - `evaluate()` accepts a function with at most one JSON-serializable argument, or a string expression with no argument. Its return value must also be JSON-serializable.
@@ -280,9 +286,10 @@ console.log(receipt.popups ?? []);
 Receipts report newly opened Pages and synchronous JavaScript dialogs. A dialog
 receipt has `{ dialog }`; handle it with
 `page.cdp("Page.handleJavaScriptDialog", { accept: true })` or `accept: false`
-before continuing. After any other action, confirm navigation and page changes
-with `url()`, `waitForSelector()`, `info()`, `snapshot()`, a screenshot, an
-export, or a readback.
+before continuing. The dialog command uses the existing Page session without
+activating the Page again. After any other action, confirm navigation and page
+changes with `url()`, `waitForSelector()`, `info()`, `snapshot()`, a screenshot,
+an export, or a readback.
 
 Mouse and keyboard primitives:
 
@@ -340,7 +347,7 @@ Use the standard Node.js `fetch()` for background requests that do not need Page
 
 ## Wait, recover, and verify
 
-- Decide how to verify the result before triggering an action. Verify with `waitForSelector()`, `waitForLoadState()`, action receipts, `page.url()`, `page.info()`, or the target page's state. Do not invent other wait methods or use a fixed sleep instead of checking state.
+- Decide how to verify the result before triggering an action. Verify with `waitForSelector()`, `waitForLoadState()`, action receipts, `page.url()`, `page.info()`, or the target page's state. Do not use `waitForTimeout()` instead of checking a state the Page can expose.
 - When page structure is unknown, observe it in one focused pass, then perform related actions in one script round. Do not retry similar selectors across many rounds.
 - A single-element action must identify one clear target. On zero matches, inspect the page, overlays, dialogs, and load state. On multiple matches, use a more specific locator.
 - After a failure, take one targeted snapshot, screenshot, or state reading before changing approach. Do not repeat nearly identical actions.
@@ -359,7 +366,7 @@ const task = await takeOverTaskSpace(spaceId);
 const userPage = task.userPage();
 ```
 
-`task.userPage()` is the tab that was active when claim/takeover completed. It may be an unmanaged user tab; adopt it before operating it. Use `listPages()` for the current active state after Agent actions begin.
+`task.userPage()` is the tab that was active when claim/takeover completed. It may be an unmanaged user tab; adopt it before operating it. Use `tabs()` for the current active state after Agent actions begin.
 
 Use `task.waitForControl({ interval, timeout })` only when the user already knows what to do and the current script must wait in place. It waits for control but never takes it.
 
