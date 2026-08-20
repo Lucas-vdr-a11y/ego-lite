@@ -70,7 +70,8 @@ response_time_test
 agent-home/.pi/agent/skills/*/sites/*
 
 evals/reports/*
-.agents/skills
+.agents/skills/*
+!.agents/skills/ego-browser
 .gitmodules
 
 issues.md

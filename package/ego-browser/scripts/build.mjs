@@ -17,6 +17,7 @@ const bundledCli = join(bundledCliDir, "index.js");
 const skillSourceDir = join(repoRoot, "skills", "ego-browser");
 const bundledSkillDir = join(outDir, "ego-browser");
 const buildLock = join(root, ".build.lock");
+const bundledSkillEntries = ["SKILL.md", "learnings", "references", "scripts"];
 
 let lock;
 try {
@@ -39,7 +40,7 @@ try {
     platform: "node",
     format: "esm",
     target: "node22",
-    logLevel: "info"
+    logLevel: "info",
   };
 
   await build({
@@ -49,7 +50,7 @@ try {
     outbase: ".",
     bundle: false,
     sourcemap: false,
-    absWorkingDir: root
+    absWorkingDir: root,
   });
 
   const rollupConfig = {
@@ -62,16 +63,21 @@ try {
         compilerOptions: {
           noEmit: false,
           declaration: false,
-          removeComments: false
-        }
-      })
-    ]
+          removeComments: false,
+        },
+      }),
+    ],
   };
   const bundle = await rollup(rollupConfig);
   await bundle.write({ file: bundledCli, format: "esm", sourcemap: false });
   await bundle.close();
 
-  await cp(skillSourceDir, bundledSkillDir, { recursive: true });
+  await mkdir(bundledSkillDir, { recursive: true });
+  for (const entry of bundledSkillEntries) {
+    await cp(join(skillSourceDir, entry), join(bundledSkillDir, entry), {
+      recursive: true,
+    });
+  }
   await chmod(bundledCli, 0o755);
 } finally {
   await lock.close();
@@ -81,7 +87,7 @@ try {
 async function tsEntryPoints(dirs) {
   const files = [];
   for (const dir of dirs) {
-    files.push(...await collectTsFiles(join(root, dir), dir));
+    files.push(...(await collectTsFiles(join(root, dir), dir)));
   }
   return files.sort();
 }
@@ -93,7 +99,7 @@ async function collectTsFiles(absDir, relativeDir) {
     const relativePath = `${relativeDir}/${entry.name}`;
     const absPath = join(absDir, entry.name);
     if (entry.isDirectory()) {
-      files.push(...await collectTsFiles(absPath, relativePath));
+      files.push(...(await collectTsFiles(absPath, relativePath)));
     } else if (entry.isFile() && entry.name.endsWith(".ts")) {
       files.push(relativePath);
     }

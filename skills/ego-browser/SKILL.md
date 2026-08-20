@@ -5,13 +5,9 @@ description: ego-browser (ego lite) is a real Chromium browser designed from the
 
 # ego-browser
 
-Ego Lite is a real Chromium browser where Agents work in isolated task spaces
-while reusing the user's login state. Obtain a `TaskSpace` with `taskSpace()`,
-then operate each tab through its `Page`.
-
 For installation, connection, or runtime problems, read
-`references/install.md`. Normal browser work should not require the API
-reference; use `help()` or `references/api.md` only for uncommon options.
+`references/install.md`. Use `help()` or `references/api.md` for uncommon
+options.
 
 ## Run browser scripts
 
@@ -20,25 +16,24 @@ Run JavaScript through a heredoc:
 ```bash
 ego-browser nodejs <<'EOF'
 const task = await taskSpace("inspect example page");
-const page = await task.openPage("https://example.com", { as: "main" });
+const page = await task.openPage("https://example.com");
 
 console.log({ taskSpaceId: task.spaceId, page: page.label });
 console.log(await page.snapshot());
 EOF
 ```
 
-The heredoc runs in Node.js and all browser APIs are preloaded. Use `document`
-and `window` only inside `page.evaluate()`; do not import Playwright, launch
-another browser, or create a temporary script file first.
+The heredoc runs in Node.js with all browser APIs preloaded. Use them directly,
+and run page JavaScript inside `page.evaluate()`. Do not import Playwright or
+launch another browser.
 
-When the user explicitly asks for ego-browser, run the first real browser
-command immediately. Diagnose the CLI or installation only if that command
-fails. Console output is returned together when the script round finishes.
+When the user explicitly asks for ego-browser, start with the first real browser
+command and diagnose the CLI or installation if it fails. Console output is
+returned together when the script round finishes.
 
 ## Spaces, rounds, and pages
 
-- Complete the user's goal within one task space. Use multiple spaces only when
-  the user explicitly requests different profiles.
+- Complete the user's goal within one task space.
 - Every heredoc starts a new Node.js process. Task spaces, tabs, and Page labels
   survive across rounds; JavaScript variables do not.
 - In the first round, use a short goal name and print `task.spaceId`. In later
@@ -47,31 +42,16 @@ fails. Console output is returned together when the script round finishes.
 - All time values are milliseconds.
 
 ```js
-// First round
-const task = await taskSpace("collect release notes");
-const page = await task.openPage("https://example.com", { as: "source" });
-console.log({ taskSpaceId: task.spaceId, page: page.label });
-
-// Later round
+// Later round: use the space id and Page label printed earlier.
 const resumed = await taskSpace(7);
-const source = resumed.page("source");
+const source = resumed.page("p1");
 await source.goto("https://example.com/releases");
 ```
 
-When the user explicitly requests a browser profile, select its unique id while
-creating a new, uniquely named space:
-
-```js
-const matches = (await profiles()).filter((item) => item.name === "Work");
-if (matches.length !== 1)
-  throw new Error("Work profile is missing or ambiguous");
-const task = await taskSpace("work account research", {
-  profileId: matches[0].id,
-});
-```
-
-Profile display names may be duplicated. Pass the returned `id`; `profileId`
-cannot change or resume an existing space.
+Do not inspect or select profiles in normal tasks. Call `profiles()` and pass a
+`profileId` only when the user explicitly requests a particular Ego Lite
+profile. Profile selection applies only when creating a new space and cannot
+change an existing one; use `help("profiles")` for this rare workflow.
 
 The common TaskSpace surface is:
 
@@ -94,18 +74,19 @@ await task.close();
 await task.cdp(method, params, { timeout });
 ```
 
-Pages receive permanent labels such as `p1` automatically; `{ as }` chooses a
-meaningful label. A space manages at most eight Pages by default. If the budget
-is reached, close a temporary Page or navigate an existing one.
+Pages receive permanent labels such as `p1`, `p2`, and `p3` automatically. Use
+these labels by default; pass `{ as }` only when a custom label is specifically
+needed. A space manages at most eight Pages by default. If the budget is
+reached, close a temporary Page or navigate an existing one.
 
 `task.pages()` returns managed Pages. `task.tabs()` returns every tab in the
 space as `{ label?, page, targetId, title, url, active, openedBy }`. A tab
-without a label is unmanaged and cannot be operated until adopted:
+without a label is unmanaged; adopt it before operating:
 
 ```js
 const active = (await task.tabs()).find((item) => item.active);
 if (active && !active.label) {
-  const page = await task.adopt(active.page, { as: "user" });
+  const page = await task.adopt(active.page);
   console.log({ page: page.label, url: await page.url() });
 }
 ```
@@ -170,16 +151,13 @@ await page.keyboard.type(text, { delay });
 await page.keyboard.insertText(text);
 ```
 
-Use `help("Page.click")` or `help("TaskSpace.openPage")` when an uncommon
-option or exact default matters.
-
 ### Semantic pages: snapshot and selectors
 
 For an ordinary DOM page, start with `page.snapshot()`. It returns semantic
 text containing refs and stable locators:
 
 ```js
-const page = task.page("main");
+const page = task.page("p1");
 console.log(await page.snapshot());
 
 // Suppose the snapshot shows [ref=21] on an email field and
@@ -201,18 +179,15 @@ Element actions accept:
 
 Unquoted text locators normalize whitespace, ignore case, and match a substring;
 quote the value for an exact, case-sensitive match, such as
-`text="Save changes"`. They select the smallest matching element and reject an
-ambiguous match.
+`text="Save changes"`. A text locator selects the smallest matching element and
+must be unique.
 
-Snapshot labels such as `button` and `textbox` are accessibility roles, not
-necessarily HTML tag names. Use the current ref for an immediate action and a
-generated locator for reuse. CSS searches the document and nested open shadow
-roots; XPath and closed shadow roots do not cross shadow boundaries.
-For iframe content without a ref, write a `loc=role:` selector from the shown
-role and name. If the top-level document has no match, role locators also search
-ordinary iframes and OOPIFs.
+Snapshot node names are accessibility roles. Use the current ref for an
+immediate action and a generated locator for reuse. CSS searches nested open
+shadow roots. If the top-level document has no role match, role locators also
+search ordinary iframes and OOPIFs.
 
-A ref belongs only to the Page that produced it. Take another snapshot after
+Refs are scoped to the Page that produced them. Take another snapshot after
 navigation, a substantial DOM change, raw CDP, or before reusing a ref in a
 later round.
 
@@ -280,8 +255,8 @@ await page.cdp("Page.handleJavaScriptDialog", { accept: true });
 // Use accept: false to dismiss it.
 ```
 
-After an action, verify the expected URL, selector, snapshot, screenshot, file,
-or application state. Prefer state-based waits over `waitForTimeout()`.
+Receipts record dispatched actions and popup or dialog observations. Verify the
+application state required by the task with state-based waits.
 
 ## Files and requests
 
@@ -345,7 +320,7 @@ const task = await claimTaskSpace(7);
 After verifying the result, call `task.close()` by default. Use
 `task.finish()` only when the user asks to keep the pages, must continue from
 the result page, or the result cannot be delivered through a URL, file, or
-summary. Do not report completion until the chosen method resolves.
+summary.
 
 If the final output contains `[ego-browser:notice]`, finish the current browser
 task, tell the user an Ego Lite update is available, and run
