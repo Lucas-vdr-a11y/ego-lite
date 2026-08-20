@@ -18,6 +18,7 @@ test("the public API schema contains the v2 entry points and object methods", ()
     "TaskSpace.openPage",
     "Page.snapshot",
     "Page.targetId",
+    "Page.waitForURL",
     "Page.keyboard.press",
   ]) {
     assert(names.has(name), `missing public API schema entry: ${name}`);

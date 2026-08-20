@@ -27,6 +27,10 @@ export type PageWaitForLoadStateOptions = {
   idleMs?: number;
 };
 
+export type PageWaitForURLOptions = {
+  timeout?: number;
+};
+
 const VISIBILITY_FUNCTION =
   "function(){if(typeof this.checkVisibility==='function')return this.checkVisibility({checkOpacity:true,checkVisibilityCSS:true});const s=getComputedStyle(this);const r=this.getBoundingClientRect();return s.display!=='none'&&s.visibility!=='hidden'&&s.opacity!=='0'&&r.width>0&&r.height>0;}";
 
@@ -96,6 +100,69 @@ export async function waitForSelectorInPage(
   }
   throw new Error(
     `page.waitForSelector timed out after ${timeoutMs}ms: ${selector}`,
+  );
+}
+
+/** Wait until one Page reaches an exact URL or matches a regular expression. */
+export async function waitForURLInPage(
+  services: PageWaitServices,
+  sessionId: string,
+  expected: string | RegExp,
+  options: PageWaitForURLOptions = {},
+): Promise<void> {
+  if (
+    !(
+      (typeof expected === "string" && expected.length > 0) ||
+      expected instanceof RegExp
+    )
+  ) {
+    throw new TypeError(
+      "page.waitForURL expected URL must be a non-empty string or RegExp",
+    );
+  }
+  const timeoutMs = options.timeout ?? 10_000;
+  const pattern =
+    expected instanceof RegExp
+      ? new RegExp(expected.source, expected.flags)
+      : undefined;
+  const deadline = services.now() + timeoutMs;
+  let lastUrl = "";
+  while (services.now() <= deadline) {
+    const remaining = Math.max(1, deadline - services.now());
+    let response;
+    try {
+      response = await services.cdp(
+        "Runtime.evaluate",
+        { expression: "location.href", returnByValue: true },
+        sessionId,
+        Math.min(1_000, remaining),
+      );
+    } catch (error) {
+      if (isRuntimeEvaluateTimeout(error)) {
+        if (services.now() >= deadline) break;
+      } else if (!isTransientNavigationContextError(error)) {
+        throw error;
+      }
+    }
+    if (typeof response?.result?.value === "string") {
+      lastUrl = response.result.value;
+      if (typeof expected === "string") {
+        if (lastUrl === expected) return;
+      } else {
+        pattern!.lastIndex = 0;
+        if (pattern!.test(lastUrl)) return;
+      }
+    }
+    const waitMs = deadline - services.now();
+    if (waitMs <= 0) break;
+    await services.sleep(Math.min(100, waitMs));
+  }
+  const expectation =
+    typeof expected === "string"
+      ? JSON.stringify(expected)
+      : expected.toString();
+  throw new Error(
+    `page.waitForURL timed out after ${timeoutMs}ms: expected ${expectation}; last URL was ${JSON.stringify(lastUrl)}`,
   );
 }
 
@@ -177,6 +244,15 @@ function isRuntimeEvaluateTimeout(error: unknown): boolean {
   return (
     error instanceof Error &&
     error.message.includes("CDP request timed out: Runtime.evaluate")
+  );
+}
+
+function isTransientNavigationContextError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return (
+    error.message.includes("Execution context was destroyed") ||
+    error.message.includes("Cannot find context with specified id") ||
+    error.message.includes("Inspected target navigated")
   );
 }
 

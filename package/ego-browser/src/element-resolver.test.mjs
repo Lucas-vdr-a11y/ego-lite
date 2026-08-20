@@ -119,3 +119,26 @@ test("role locator with degenerate box model throws transient", async () => {
     },
   );
 });
+
+test("CSS locators search nested open shadow roots", async () => {
+  const cdp = new FakeCDP(async (method, params) => {
+    if (method === "Runtime.evaluate") {
+      assert.match(
+        params.expression,
+        /shadowRoot/,
+        "the CSS query must visit open shadow roots instead of using only document.querySelectorAll",
+      );
+      return { result: { value: { x: 12, y: 34 } } };
+    }
+    return {};
+  });
+
+  const point = await resolveElementCenter(
+    cdp,
+    undefined,
+    new RefMap(),
+    'loc=css:input[aria-label="Shadow field"]',
+  );
+
+  assert.deepEqual(point, { x: 12, y: 34, sessionId: undefined });
+});

@@ -347,6 +347,7 @@ function pageHtml(kind, { iframeUrl = "/frame.html" } = {}) {
       <label>Number input <input id="number-input" type="number" value="123"></label>
       <label>Controlled input <input id="controlled-input" type="text"></label>
       <span id="controlled-state"></span>
+      <shadow-fixture id="shadow-fixture"></shadow-fixture>
       ${kind === "frame" ? '<div id="iframe-marker" data-iframe="true" style="border:2px solid #44f;padding:8px;margin-top:8px;">iframe target</div>' : ""}
     </main>
     <script>
@@ -367,6 +368,21 @@ function pageHtml(kind, { iframeUrl = "/frame.html" } = {}) {
         dropdownValue: "alpha",
         valueEvents: {},
       };
+      const shadowHost = document.querySelector("#shadow-fixture");
+      const shadowRoot = shadowHost.attachShadow({ mode: "open" });
+      const nestedHost = document.createElement("nested-shadow-fixture");
+      shadowRoot.append(nestedHost);
+      const nestedShadowRoot = nestedHost.attachShadow({ mode: "open" });
+      const shadowInput = document.createElement("input");
+      shadowInput.setAttribute("aria-label", "Shadow field");
+      shadowRoot.prepend(shadowInput);
+      const shadowButton = document.createElement("button");
+      shadowButton.id = "shadow-action";
+      shadowButton.textContent = "Shadow action";
+      shadowButton.addEventListener("click", () => {
+        shadowButton.dataset.clicked = "true";
+      });
+      nestedShadowRoot.append(shadowButton);
       const count = document.querySelector("#click-count");
       const clickButton = document.querySelector("#click-button");
       for (const type of ["mousemove", "mousedown", "mouseup", "click", "dblclick"]) {

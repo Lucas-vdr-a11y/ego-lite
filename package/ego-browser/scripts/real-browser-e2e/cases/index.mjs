@@ -13,6 +13,7 @@ import { pageJavaScriptDialogsCase } from "./page-dialogs.mjs";
 import { pageMediaPlaybackCase } from "./page-media-playback.mjs";
 import { pageScrolledScreenshotCase } from "./page-screenshot.mjs";
 import { pageSnapshotLocatorCase } from "./page-snapshot-locators.mjs";
+import { pageShadowDomCase } from "./page-shadow-dom.mjs";
 import { pageLoadStatesCase } from "./page-load-states.mjs";
 import { runtimeCase } from "./runtime.mjs";
 import { runtimeRegressionCase } from "./runtime-regression.mjs";
@@ -76,6 +77,7 @@ export const e2eCases = [
   { name: "Page media playback", body: pageMediaPlaybackCase },
   { name: "Page scrolled screenshot", body: pageScrolledScreenshotCase },
   { name: "Page snapshot locator quality", body: pageSnapshotLocatorCase },
+  { name: "Page open Shadow DOM locators", body: pageShadowDomCase },
   { name: "Page load states", body: pageLoadStatesCase },
   { name: "v1 and v2 action parity", body: v1V2ActionParityCase },
   { name: "portable keyboard workflow", body: portableKeyboardWorkflowCase },

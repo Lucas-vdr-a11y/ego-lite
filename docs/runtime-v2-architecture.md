@@ -248,6 +248,7 @@ await page.goto(url, { timeout })
 await page.snapshot(options)
 await page.screenshot({ path, fullPage, clip, raw })
 await page.url()
+await page.waitForURL(urlOrRegExp, { timeout })
 await page.title()
 await page.info()
 await page.evaluate(fnOrString, arg?)
@@ -274,6 +275,11 @@ await page.close()
 `screenshot()` 和 `waitForSelector()` 使用 Playwright 风格的参数。截图路径放在
 options 中；`fullPage` 表示捕获完整页面。`waitForSelector()` 的 `state` 支持
 `attached`、`detached`、`visible` 和 `hidden`，默认是 `visible`。
+`waitForURL()` 接受完整 URL 字符串或正则表达式，默认等待 10,000ms。
+
+CSS selector 会在 document 和每一层 open shadow root 中查找，因而 Shadow DOM
+节点也可以通过 `loc=css:` 或 raw CSS 操作。selector 应描述元素在自身 tree scope
+内的结构；XPath 和 closed shadow root 不跨 shadow boundary。
 
 文件上传不操作系统文件选择器。已有 file input 时，`setInputFiles()` 直接设置
 文件；网站点击后才创建 input 时，先建立 `waitForFileChooser()`，再点击并通过
@@ -344,7 +350,7 @@ Ego Lite 更新 Agent 光标。`fill()` 只更新可见光标，不会额外向�
 - selector action 和 wait
 - mouse、keyboard、scrollBy
 
-`url()`、`title()`、`info()` 和 `events()` 是纯读取，不改变当前激活页。
+`url()`、`waitForURL()`、`title()`、`info()` 和 `events()` 不改变当前激活页。
 
 激活目标页是有意行为。真实 Ego Lite 测试中，后台页输入曾出现 CDP 超时并
 退化为 `isTrusted=false` 的合成事件；激活后可保持正常 CDP Input 路径。
@@ -362,7 +368,9 @@ popup 回执：
 ```
 
 高层动作只比较动作前后的 tab 列表，不向页面安装观察脚本。导航、表单和 DOM
-结果应通过 `url()`、`waitForSelector()`、`snapshot()` 或读取页面状态确认。
+结果应通过 `url()`、`waitForURL()`、`waitForSelector()`、`snapshot()` 或读取页面
+状态确认。popup 回执只表示 target 已收编；首次导航可能仍停留在 `about:blank`，
+需要目的 URL 时由调用方显式等待。
 
 同步 JavaScript dialog 会阻塞触发它的 CDP 输入响应。Runtime 收到
 `Page.javascriptDialogOpening` 后会中断该输入等待，让高层动作立即返回

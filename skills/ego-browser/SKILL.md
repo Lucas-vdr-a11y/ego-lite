@@ -107,11 +107,15 @@ New tabs opened by high-level actions receive labels automatically and may appea
 const receipt = await page.click('a[target="_blank"]');
 for (const popup of receipt.popups ?? []) {
   const popupPage = task.page(popup.label);
+  await popupPage.waitForURL(/\/expected-path(?:[?#]|$)/, { timeout: 10_000 });
   console.log({ popup: popup.label, url: await popupPage.url() });
 }
 ```
 
-A popup that propagates slowly will be discovered by the next `listPages()` or `openPage()` call, or when the task resumes in a later round.
+The receipt confirms that the popup target was adopted; its first navigation may
+still be at `about:blank`. Use `waitForURL()` when the destination matters. A
+popup that propagates slowly will be discovered by the next `listPages()` or
+`openPage()` call, or when the task resumes in a later round.
 
 ## Choose an interaction path
 
@@ -133,6 +137,10 @@ Page actions accept these selectors:
 - stable `loc=css:`, `loc=role:`, and `loc=href:` values returned by snapshot
 - `xpath=...`
 - raw CSS selectors
+
+CSS selectors search the document and every nested open shadow root. Write the
+selector for the element's own tree scope; XPath and closed shadow roots do not
+cross a shadow boundary.
 
 Snapshot node labels such as `button` and `textbox` are accessibility roles,
 not necessarily HTML tag names. Use the current `@N` for an immediate action,
@@ -217,6 +225,7 @@ await page.screenshot({
 await page.evaluate(fnOrString, argument);
 await page.fetch(url, options);
 await page.cdp(method, params, { timeout });
+await page.waitForURL(urlOrRegExp, { timeout });
 await page.waitForSelector(selector, { timeout, state });
 await page.waitForLoadState(state, { timeout, idleMs });
 await page.setInputFiles(selector, pathOrPaths);
@@ -229,6 +238,8 @@ await page.close();
 ```
 
 - `goto()` defaults to `timeout: 15_000`.
+- `waitForURL()` accepts an exact URL string or a `RegExp`, defaults to
+  `timeout: 10_000`, and does not activate the Page.
 - `snapshot()` defaults to `{ scope: "full_page", includeActionMarks: true, includeStableLocator: true }`. `scope` is `"full_page"` or `"only_within_viewport"`; there is no `diff` option.
 - Omit `screenshot()`'s `path` to receive a temporary PNG path; provided paths should be absolute. `clip.scale` is optional and positive. `raw` defaults to `false`; set it only for uncorrected device-pixel output.
 - `evaluate()` accepts a function with at most one JSON-serializable argument, or a string expression with no argument. Its return value must also be JSON-serializable.

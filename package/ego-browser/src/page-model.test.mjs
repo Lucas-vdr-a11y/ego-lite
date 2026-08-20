@@ -42,6 +42,7 @@ function createFixture(rootDir) {
   let documentReadyState = "complete";
   let domContentLoaded = true;
   let timeoutNextLifecycleEvaluate = false;
+  let timeoutNextUrlEvaluate = false;
   let nowMs = 1_000;
   const pageEvents = new Map();
   const networkSessions = new Set();
@@ -125,6 +126,11 @@ function createFixture(rootDir) {
           };
         }
         if (params.expression === "location.href") {
+          if (timeoutNextUrlEvaluate) {
+            timeoutNextUrlEvaluate = false;
+            nowMs += timeoutMs ?? 0;
+            throw new Error("CDP request timed out: Runtime.evaluate");
+          }
           return { result: { type: "string", value: tab.url } };
         }
         if (params.expression === "document.title") {
@@ -483,6 +489,9 @@ function createFixture(rootDir) {
     },
     timeoutNextLifecycleEvaluation() {
       timeoutNextLifecycleEvaluate = true;
+    },
+    timeoutNextUrlEvaluation() {
+      timeoutNextUrlEvaluate = true;
     },
     setSession(targetId, sessionId) {
       sessionOverrides.set(targetId, sessionId);
@@ -1899,6 +1908,87 @@ test("Page waits and events remain isolated to the addressed target", async () =
       ),
       "network idle must enable events on the addressed Page session",
     );
+  });
+});
+
+test("Page waitForURL follows a popup from about:blank without activating it", async () => {
+  await withFixture(async (fixture) => {
+    let elapsedMs = 0;
+    let popupTargetId;
+    const expectedUrl = "https://example.test/delayed-popup";
+    const task = taskForRound(fixture, "round-a", {
+      now: () => elapsedMs,
+      async sleep(ms) {
+        elapsedMs += ms;
+        if (popupTargetId && elapsedMs >= 150) {
+          fixture.tabs.get(popupTargetId).url = expectedUrl;
+        }
+      },
+    });
+    const source = await task.openPage("https://example.test/source");
+    fixture.openPopupOnNextClick("about:blank");
+    const receipt = await source.click("#open-popup");
+    popupTargetId = receipt.popups[0].targetId;
+    const popup = task.page(receipt.popups[0].label);
+    fixture.addExternalTab("target-user", "https://example.test/user", {
+      active: true,
+    });
+    const activationCallsBefore = fixture.calls.filter(
+      ([kind, method]) => kind === "cdp" && method === "Target.activateTarget",
+    ).length;
+
+    await popup.waitForURL(expectedUrl, { timeout: 500 });
+    await popup.waitForURL(/delayed-popup$/, { timeout: 1 });
+
+    assert.equal(await popup.url(), expectedUrl);
+    assert.equal(
+      fixture.activeTarget(),
+      "target-user",
+      "waiting for a URL must not steal the active tab",
+    );
+    assert.equal(
+      fixture.calls.filter(
+        ([kind, method]) =>
+          kind === "cdp" && method === "Target.activateTarget",
+      ).length,
+      activationCallsBefore,
+    );
+  });
+});
+
+test("Page waitForURL validates its matcher and reports the last URL", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a");
+    const page = await task.openPage("about:blank");
+
+    await assert.rejects(
+      () => page.waitForURL("https://example.test/never", { timeout: 10 }),
+      /waitForURL timed out after 10ms.*last URL was "about:blank"/,
+    );
+    await assert.rejects(
+      () => page.waitForURL("", { timeout: 10 }),
+      /non-empty string or RegExp/,
+    );
+    await assert.rejects(
+      () => page.waitForURL(42, { timeout: 10 }),
+      /non-empty string or RegExp/,
+    );
+    await assert.rejects(
+      () => page.waitForURL(/blank/, { timeout: 0 }),
+      /positive number of milliseconds/,
+    );
+  });
+});
+
+test("Page waitForURL retries a transient evaluation timeout", async () => {
+  await withFixture(async (fixture) => {
+    const expectedUrl = "https://example.test/after-timeout";
+    const task = taskForRound(fixture, "round-a");
+    const page = await task.openPage(expectedUrl);
+    fixture.timeoutNextUrlEvaluation();
+
+    await page.waitForURL(expectedUrl, { timeout: 2_000 });
+    assert.equal(await page.url(), expectedUrl);
   });
 });
 

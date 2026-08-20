@@ -441,19 +441,19 @@ function buildFindElementJs(selector) {
   if (String(selector).startsWith("xpath=")) {
     return `document.evaluate(${JSON.stringify(String(selector).slice(6))}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue`;
   }
-  return `document.querySelector(${JSON.stringify(selector)})`;
+  return buildCssFindJs(selector);
 }
 
 function buildLocatorFindJs(locator) {
   if (locator.kind === "css") {
-    return `document.querySelector(${JSON.stringify(locator.selector)})`;
+    return buildCssFindJs(locator.selector);
   }
   return `(() => ${hrefElementsJs(locator.href)}[0] || null)()`;
 }
 
 function buildLocatorCountJs(locator) {
   if (locator.kind === "css") {
-    return `document.querySelectorAll(${JSON.stringify(locator.selector)}).length`;
+    return buildCssCountJs(locator.selector);
   }
   return `(() => ${hrefElementsJs(locator.href)}.length)()`;
 }
@@ -470,7 +470,7 @@ function buildLocatorCenterJs(locator) {
 }
 
 function hrefElementsJs(href) {
-  return `Array.from(document.querySelectorAll('a[href]')).filter((el) => {
+  return `${buildCssQueryAllJs("a[href]")}.filter((el) => {
             try {
               const u = new URL(el.href, location.href);
               const path = u.pathname + u.search + u.hash;
@@ -479,6 +479,47 @@ function hrefElementsJs(href) {
               return false;
             }
           })`;
+}
+
+// CSS locators from the native snapshot can point into an open shadow tree.
+// Query every reachable tree scope so those locators have the same meaning
+// when an action reuses them. XPath deliberately keeps document-only semantics.
+const OPEN_SHADOW_QUERY_HELPER = `
+  function __egoQueryAllOpenShadow(selector) {
+    const matches = [];
+    const roots = [document];
+    while (roots.length) {
+      const root = roots.pop();
+      matches.push(...root.querySelectorAll(selector));
+      const elements = root.querySelectorAll('*');
+      for (let index = elements.length - 1; index >= 0; index -= 1) {
+        const shadowRoot = elements[index].shadowRoot;
+        if (shadowRoot) roots.push(shadowRoot);
+      }
+    }
+    return matches;
+  }
+`;
+
+function buildCssQueryAllJs(selector) {
+  return `(() => {
+            ${OPEN_SHADOW_QUERY_HELPER}
+            return __egoQueryAllOpenShadow(${JSON.stringify(selector)});
+          })()`;
+}
+
+function buildCssFindJs(selector) {
+  return `(() => {
+            ${OPEN_SHADOW_QUERY_HELPER}
+            return __egoQueryAllOpenShadow(${JSON.stringify(selector)})[0] || null;
+          })()`;
+}
+
+function buildCssCountJs(selector) {
+  return `(() => {
+            ${OPEN_SHADOW_QUERY_HELPER}
+            return __egoQueryAllOpenShadow(${JSON.stringify(selector)}).length;
+          })()`;
 }
 
 function buildSelectorCenterJs(selector) {

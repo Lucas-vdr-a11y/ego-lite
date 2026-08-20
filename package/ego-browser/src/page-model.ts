@@ -51,8 +51,10 @@ import {
 import {
   waitForLoadStateInPage,
   waitForSelectorInPage,
+  waitForURLInPage,
   type PageWaitForLoadStateOptions,
   type PageWaitForSelectorOptions,
+  type PageWaitForURLOptions,
 } from "./driver/page-waits.js";
 import { assertNoEgoError, isEgoUserControlError } from "./ego-errors.js";
 import {
@@ -1031,6 +1033,17 @@ class Page {
 
   async url(): Promise<string> {
     return this.#evaluate("location.href", false);
+  }
+
+  async waitForURL(
+    expected: string | RegExp,
+    options: PageWaitForURLOptions = {},
+  ): Promise<void> {
+    validatePublicApiOptions("Page.waitForURL", options);
+    const page = await this.#resolve();
+    return this.#services.gate.withPage(page, ({ sessionId }) =>
+      waitForURLInPage(this.#services, sessionId, expected, options),
+    );
   }
 
   async title(): Promise<string> {

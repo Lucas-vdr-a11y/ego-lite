@@ -204,6 +204,12 @@ export const PUBLIC_API_SCHEMA: readonly PublicApiEntry[] = [
     summary: "Read this Page's current URL.",
   },
   {
+    name: "Page.waitForURL",
+    signature: "await page.waitForURL(urlOrRegExp, { timeout? })",
+    summary: "Wait for an exact URL or regular-expression match.",
+    options: { timeout },
+  },
+  {
     name: "Page.title",
     signature: "await page.title()",
     summary: "Read this Page's current title.",
