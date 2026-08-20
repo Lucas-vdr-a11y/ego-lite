@@ -9,8 +9,13 @@ import { PageLedgerStore } from "../dist/src/page-ledger.js";
 import {
   captureTaskSpaceUserBoundary,
   createTaskSpaceHandle,
+  initializeTaskSpaceHandle,
 } from "../dist/src/page-model.js";
 import { PageRefRegistry } from "../dist/src/page-ref-registry.js";
+import {
+  consumeUnhandledPageNotices,
+  resetPageNotices,
+} from "../dist/src/output-sink.js";
 
 async function withFixture(fn) {
   const rootDir = await mkdtemp(join(tmpdir(), "ego-page-model-test-"));
@@ -52,6 +57,7 @@ function createFixture(rootDir) {
   const sessionOverrides = new Map();
   const sessionTargets = new Map();
   const snapshotOptions = [];
+  const browserEventListeners = new Set();
 
   function openPendingPopup() {
     if (!popupOnNextClick) return;
@@ -405,6 +411,7 @@ function createFixture(rootDir) {
         activeTarget = params.targetId;
         return { success: true };
       }
+      if (method === "Target.setDiscoverTargets") return {};
       if (method === "Page.handleJavaScriptDialog") {
         pendingDialogs.delete(sessionId);
         return {};
@@ -495,6 +502,11 @@ function createFixture(rootDir) {
     setPreferredTarget(targetId) {
       calls.push(["setPreferredTarget", targetId]);
     },
+    supportsBackgroundPageDiscovery: () => true,
+    subscribeBrowserEvents(listener) {
+      browserEventListeners.add(listener);
+      return () => browserEventListeners.delete(listener);
+    },
     now: () => nowMs,
     sleep: async (ms) => {
       nowMs += ms;
@@ -508,8 +520,8 @@ function createFixture(rootDir) {
     services,
     snapshotOptions,
     tabs,
-    addExternalTab(targetId, url, { active = false } = {}) {
-      tabs.set(targetId, { targetId, url, title: url, active });
+    addExternalTab(targetId, url, { active = false, ...details } = {}) {
+      tabs.set(targetId, { targetId, url, title: url, active, ...details });
       if (active) activeTarget = targetId;
     },
     openPopupOnNextClick(url) {
@@ -577,6 +589,11 @@ function createFixture(rootDir) {
       events.push({ sessionId, method, params });
       pageEvents.set(sessionId, events);
     },
+    emitBrowserEvent(method, params = {}) {
+      for (const listener of [...browserEventListeners]) {
+        listener({ method, params });
+      }
+    },
   };
 }
 
@@ -590,6 +607,124 @@ function taskForRound(fixture, roundId, overrides = {}) {
     },
   );
 }
+
+async function waitForLedgerTarget(ledger, spaceId, targetId) {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const entry = Object.entries((await ledger.read(spaceId)).pages).find(
+      ([, page]) => page.targetId === targetId,
+    );
+    if (entry) return { label: entry[0], ...entry[1] };
+    await new Promise((resolve) => setTimeout(resolve, 2));
+  }
+  throw new Error(`timed out waiting for ledger target ${targetId}`);
+}
+
+test("background discovery does not adopt the pre-existing tab baseline", async () => {
+  await withFixture(async (fixture) => {
+    resetPageNotices();
+    fixture.addExternalTab("target-existing", "https://example.test/existing");
+    const ledger = new PageLedgerStore({ rootDir: fixture.rootDir });
+    const task = taskForRound(fixture, "round-a", { ledger });
+
+    await initializeTaskSpaceHandle(task);
+    const page = await task.openPage("https://example.test/managed");
+
+    assert.equal(page.label, "p1");
+    assert.deepEqual((await ledger.read(7)).unmanagedTargets, {
+      "target-existing": "unknown",
+    });
+    assert.deepEqual(consumeUnhandledPageNotices(), []);
+  });
+});
+
+test("background target discovery adopts a delayed popup and reports its opener", async () => {
+  await withFixture(async (fixture) => {
+    resetPageNotices();
+    const ledger = new PageLedgerStore({ rootDir: fixture.rootDir });
+    const task = taskForRound(fixture, "round-a", { ledger });
+    await initializeTaskSpaceHandle(task);
+    const source = await task.openPage("https://example.test/source");
+    fixture.addExternalTab("target-delayed", "https://example.test/delayed", {
+      openerId: source.targetId,
+    });
+
+    fixture.emitBrowserEvent("Target.targetCreated", {
+      targetInfo: {
+        targetId: "target-delayed",
+        type: "page",
+        url: "https://example.test/delayed",
+        openerId: source.targetId,
+      },
+    });
+
+    const adopted = await waitForLedgerTarget(ledger, 7, "target-delayed");
+    assert.equal(adopted.label, "p2");
+    assert.deepEqual(consumeUnhandledPageNotices(), [
+      {
+        spaceId: 7,
+        targetId: "target-delayed",
+        label: "p2",
+        openerLabel: "p1",
+        url: "https://example.test/delayed",
+      },
+    ]);
+  });
+});
+
+test("using a delayed popup suppresses its notice before round output", async () => {
+  await withFixture(async (fixture) => {
+    resetPageNotices();
+    const ledger = new PageLedgerStore({ rootDir: fixture.rootDir });
+    const task = taskForRound(fixture, "round-a", { ledger });
+    await initializeTaskSpaceHandle(task);
+    const source = await task.openPage("https://example.test/source");
+    fixture.addExternalTab("target-delayed", "https://example.test/delayed", {
+      openerId: source.targetId,
+    });
+    fixture.emitBrowserEvent("Target.targetCreated", {
+      targetInfo: {
+        targetId: "target-delayed",
+        type: "page",
+        url: "https://example.test/delayed",
+        openerId: source.targetId,
+      },
+    });
+    const adopted = await waitForLedgerTarget(ledger, 7, "target-delayed");
+
+    assert.equal(
+      await task.page(adopted.label).url(),
+      "https://example.test/delayed",
+    );
+    assert.deepEqual(consumeUnhandledPageNotices(), []);
+  });
+});
+
+test("tab reconciliation reports a late page without requiring an explicit wait", async () => {
+  await withFixture(async (fixture) => {
+    resetPageNotices();
+    const task = taskForRound(fixture, "round-a");
+    const source = await task.openPage("https://example.test/source");
+    fixture.addExternalTab("target-delayed", "https://example.test/delayed", {
+      openerId: source.targetId,
+    });
+
+    const inventory = await task.tabs();
+    const adopted = inventory.find(
+      (item) => item.targetId === "target-delayed",
+    );
+
+    assert.equal(adopted.label, "p2");
+    assert.deepEqual(consumeUnhandledPageNotices(), [
+      {
+        spaceId: 7,
+        targetId: "target-delayed",
+        label: "p2",
+        openerLabel: "p1",
+        url: "https://example.test/delayed",
+      },
+    ]);
+  });
+});
 
 test("TaskSpace.waitForControl polls in milliseconds without taking control", async () => {
   await withFixture(async (fixture) => {

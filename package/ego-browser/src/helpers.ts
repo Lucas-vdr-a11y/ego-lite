@@ -18,6 +18,7 @@ import { browserFetch, serverFetch } from "./http.js";
 import {
   captureTaskSpaceUserBoundary,
   createTaskSpaceHandle,
+  initializeTaskSpaceHandle,
 } from "./page-model.js";
 import {
   loadBrowserToolSource,
@@ -243,7 +244,9 @@ export async function taskSpace(
   const { profileId } = options;
   if (profileId === undefined) {
     const descriptor = await useOrCreateTaskSpace(nameOrId);
-    return createTaskSpaceHandle(descriptor);
+    const task = createTaskSpaceHandle(descriptor);
+    await initializeTaskSpaceHandle(task);
+    return task;
   }
   if (typeof nameOrId !== "string") {
     throw new TypeError(
@@ -257,7 +260,9 @@ export async function taskSpace(
     );
   }
   const descriptor = await newTaskSpace(nameOrId, profileId);
-  return createTaskSpaceHandle(descriptor);
+  const task = createTaskSpaceHandle(descriptor);
+  await initializeTaskSpaceHandle(task);
+  return task;
 }
 
 /**
@@ -272,6 +277,7 @@ export async function claimTaskSpace(nameOrId) {
   const claimed = await claimResolvedTaskSpace(space, "claimTaskSpace");
   const task = createTaskSpaceHandle({ ...claimed, ownership: "agent" });
   await captureTaskSpaceUserBoundary(task);
+  await initializeTaskSpaceHandle(task);
   return task;
 }
 
@@ -412,6 +418,7 @@ export async function takeOverTaskSpace(nameOrId?: string | number) {
     if (descriptor.ownership === "agentDelegatedToUser") {
       await captureTaskSpaceUserBoundary(task);
     }
+    await initializeTaskSpaceHandle(task);
     return task;
   }
 }

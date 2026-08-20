@@ -8,6 +8,7 @@ import {
   ensureFrameSessions,
   invalidateSession,
   prepareFileChooser,
+  subscribeBrowserEvents,
 } from "../dist/src/browser-runtime.js";
 
 test("frame sessions follow one Page target and are invalidated with it", async () => {
@@ -557,6 +558,55 @@ test("page event drains exclude unscoped browser events", async () => {
       "legacy drain still exposes unscoped browser events",
     );
   } finally {
+    if (previous === undefined) delete globalThis.ego;
+    else globalThis.ego = previous;
+  }
+});
+
+test("browser event subscribers are isolated and can unsubscribe", async () => {
+  const previous = globalThis.ego;
+  const originalConsoleError = console.error;
+  const received = [];
+  const reported = [];
+  const runtime = {
+    sendCDPMessage(payload) {
+      const request = JSON.parse(payload);
+      queueMicrotask(() => {
+        runtime.onCDPMessage(JSON.stringify({ id: request.id, result: {} }));
+      });
+    },
+    emit(event) {
+      runtime.onCDPMessage(JSON.stringify(event));
+    },
+  };
+  globalThis.ego = runtime;
+  console.error = (...args) => reported.push(args);
+
+  const unsubscribeThrowing = subscribeBrowserEvents(() => {
+    throw new Error("subscriber failed");
+  });
+  const unsubscribe = subscribeBrowserEvents((event) => received.push(event));
+  try {
+    await browserCdp("Target.setDiscoverTargets", { discover: true });
+    runtime.emit({
+      method: "Target.targetCreated",
+      params: { targetInfo: { targetId: "popup-1", type: "page" } },
+    });
+    unsubscribe();
+    runtime.emit({
+      method: "Target.targetCreated",
+      params: { targetInfo: { targetId: "popup-2", type: "page" } },
+    });
+
+    assert.deepEqual(
+      received.map((event) => event.params.targetInfo.targetId),
+      ["popup-1"],
+    );
+    assert.equal(reported.length, 2, "each throwing callback is contained");
+  } finally {
+    unsubscribe();
+    unsubscribeThrowing();
+    console.error = originalConsoleError;
     if (previous === undefined) delete globalThis.ego;
     else globalThis.ego = previous;
   }

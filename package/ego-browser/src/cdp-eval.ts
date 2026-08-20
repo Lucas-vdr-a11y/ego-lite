@@ -1,4 +1,5 @@
-import { send, state } from "./state.js";
+import { browserCdp } from "./browser-runtime.js";
+import { state } from "./state.js";
 
 class TimeoutError extends Error {}
 
@@ -14,7 +15,7 @@ let hasWarnedAboutFunctionJs = false;
 export async function cdp(method, params: any = {}, sessionId = undefined) {
   const result = state.cdpOverride
     ? await state.cdpOverride(method, params, sessionId)
-    : (await send({ method, params, session_id: sessionId })).result || {};
+    : (await browserCdp(method, params, sessionId)).result || {};
   if (
     !sessionId &&
     (method === "Network.enable" || method === "Network.disable")

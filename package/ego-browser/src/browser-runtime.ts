@@ -22,6 +22,7 @@ const DIALOG_BLOCKED_METHOD = (method) =>
 let nextMessageId = 1;
 const pending = new Map();
 const browserEvents = [];
+const browserEventSubscribers = new Set<(event: any) => void>();
 const targetStates = new Map();
 const sessionTargets = new Map();
 const childTargets = new Map<string, Set<string>>();
@@ -255,7 +256,19 @@ export function disposeBrowserRuntime(
 ): void {
   releaseRuntimeCallbacks(runtime);
   rejectAllPending(new Error("ego-browser runtime was disposed"));
+  browserEventSubscribers.clear();
   invalidateSession();
+}
+
+/** Subscribe to Target/Browser events without consuming the legacy event queue. */
+export function subscribeBrowserEvents(
+  listener: (event: any) => void,
+): () => void {
+  if (typeof listener !== "function") {
+    throw new TypeError("browser event listener must be a function");
+  }
+  browserEventSubscribers.add(listener);
+  return () => browserEventSubscribers.delete(listener);
 }
 
 function rawCdp(
@@ -823,6 +836,11 @@ function handleMessage(message) {
     if (target) target.pendingDialog = null;
   } else if (data.method === "Page.fileChooserOpened") {
     target?.fileChooserInterception?.resolve(data.params || {});
+  }
+  if (typeof data.method === "string" && BROWSER_LEVEL(data.method)) {
+    for (const listener of [...browserEventSubscribers]) {
+      guardNativeCallback("browser event subscriber", () => listener(data));
+    }
   }
   const events = target ? target.events : browserEvents;
   events.push(data);

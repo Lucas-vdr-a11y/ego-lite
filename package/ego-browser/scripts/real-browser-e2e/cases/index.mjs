@@ -21,6 +21,10 @@ import { pageShadowDomCase } from "./page-shadow-dom.mjs";
 import { pageTextLocatorCase } from "./page-text-locators.mjs";
 import { pageOopifActionCase, pageOopifRestoreCase } from "./page-oopif.mjs";
 import { pageLoadStatesCase } from "./page-load-states.mjs";
+import {
+  pageDelayedPopupResumeCase,
+  pageDelayedPopupScheduleCase,
+} from "./page-delayed-popup.mjs";
 import { runtimeCase } from "./runtime.mjs";
 import { runtimeRegressionCase } from "./runtime-regression.mjs";
 import { eventIsolationCase } from "./event-isolation.mjs";
@@ -100,6 +104,15 @@ export const e2eCases = [
   { name: "Page OOPIF actions", body: pageOopifActionCase },
   { name: "Page OOPIF restore and close", body: pageOopifRestoreCase },
   { name: "Page load states", body: pageLoadStatesCase },
+  {
+    name: "Page delayed popup: schedule",
+    body: pageDelayedPopupScheduleCase,
+  },
+  {
+    name: "Page delayed popup: resume",
+    body: pageDelayedPopupResumeCase,
+    forbiddenOutput: "[ego-browser:pages]",
+  },
   { name: "v1 and v2 action parity", body: v1V2ActionParityCase },
   { name: "portable keyboard workflow", body: portableKeyboardWorkflowCase },
   { name: "Page keyboard interface", body: pageKeyboardInterfaceCase },

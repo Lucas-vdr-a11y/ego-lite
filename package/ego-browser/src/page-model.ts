@@ -5,11 +5,13 @@ import {
   ensureSession,
   ensureFrameSessions,
   invalidateSession,
+  isBrowserRuntime,
   isNetworkDomainEnabled,
   isPageDialogOpenedError,
   pendingDialog,
   prepareFileChooser,
   setPreferredTarget,
+  subscribeBrowserEvents,
   type FileChooserInterception,
   type FileChooserOpenedEvent,
 } from "./browser-runtime.js";
@@ -73,6 +75,12 @@ import {
   type PageOrigin,
 } from "./page-ledger.js";
 import { PageRefRegistry } from "./page-ref-registry.js";
+import {
+  clearSpacePageNotices,
+  forgetPageNotice,
+  markPageObserved,
+  recordUnhandledPage,
+} from "./output-sink.js";
 import { validatePublicApiOptions } from "./public-api-schema.js";
 import { parseRef, type RefMap } from "./ref-map.js";
 import { state } from "./state.js";
@@ -219,6 +227,7 @@ type RuntimeTab = {
   active?: boolean;
   title?: string;
   url?: string;
+  openerId?: string;
 };
 
 type PageModelServices = {
@@ -259,6 +268,8 @@ type PageModelServices = {
   ensureFrameSessions(targetId: string): Promise<Map<string, string>>;
   invalidateSession(targetId: string): void;
   setPreferredTarget(targetId: string): void;
+  supportsBackgroundPageDiscovery(): boolean;
+  subscribeBrowserEvents(listener: (event: any) => void): () => void;
   now(): number;
   sleep(ms: number): Promise<void>;
   platform: string;
@@ -491,6 +502,7 @@ let defaultLedger: PageLedgerStore | undefined;
 const defaultPageRefs = new PageRefRegistry();
 const unmanagedPageConstructorToken = Symbol("UnmanagedPage");
 const captureUserBoundaryToken = Symbol("captureUserBoundary");
+const initializeTaskSpaceToken = Symbol("initializeTaskSpace");
 
 const defaultGate: OperationGate = {
   withSpace: defaultWithSpace,
@@ -570,6 +582,8 @@ const baseDefaultServices: Omit<PageModelServices, "ledger" | "pageBudget"> = {
   ensureFrameSessions,
   invalidateSession,
   setPreferredTarget,
+  supportsBackgroundPageDiscovery: isBrowserRuntime,
+  subscribeBrowserEvents,
   now: () => state.now(),
   async sleep(ms) {
     await state.sleep(ms);
@@ -617,6 +631,13 @@ export async function captureTaskSpaceUserBoundary(
   await task.captureUserBoundary(captureUserBoundaryToken);
 }
 
+/** Enable round-local discovery for pages that appear after an action returns. */
+export async function initializeTaskSpaceHandle(
+  task: TaskSpace,
+): Promise<void> {
+  await task.initializeBackgroundPageDiscovery(initializeTaskSpaceToken);
+}
+
 class TaskSpace {
   readonly taskId?: string | number;
   readonly id: number;
@@ -626,6 +647,8 @@ class TaskSpace {
   readonly recentTabTitles?: string[];
   readonly #services: PageModelServices;
   #userPage?: Page | UnmanagedPage;
+  #stopBrowserEvents?: () => void;
+  #backgroundDiscoveryInitialized = false;
 
   constructor(descriptor: TaskSpaceDescriptor, services: PageModelServices) {
     this.taskId = descriptor.taskId;
@@ -649,6 +672,39 @@ class TaskSpace {
   /** The tab active at the most recent claim/takeover boundary, if any. */
   userPage(): Page | UnmanagedPage | undefined {
     return this.#userPage;
+  }
+
+  async initializeBackgroundPageDiscovery(token: symbol): Promise<void> {
+    if (token !== initializeTaskSpaceToken) {
+      throw new TypeError(
+        "background page discovery is initialized internally",
+      );
+    }
+    if (
+      this.#backgroundDiscoveryInitialized ||
+      this.ownership !== "agent" ||
+      !this.#services.supportsBackgroundPageDiscovery()
+    ) {
+      return;
+    }
+    this.#backgroundDiscoveryInitialized = true;
+    this.#stopBrowserEvents = this.#services.subscribeBrowserEvents((event) => {
+      this.#handleBrowserEvent(event);
+    });
+
+    // Subscribe before enabling discovery so a target created during setup
+    // cannot fall into the gap between the initial inventory and the callback.
+    try {
+      await this.#services.gate.withSpace(this.id, async () => {
+        await this.#services.cdp("Target.setDiscoverTargets", {
+          discover: true,
+        });
+        await this.#recoverExistingChildPages();
+      });
+    } catch {
+      // Background discovery is an observation aid. Existing action receipts
+      // and task.tabs() reconciliation remain the correctness fallback.
+    }
   }
 
   async captureUserBoundary(token: symbol): Promise<void> {
@@ -721,6 +777,7 @@ class TaskSpace {
       await this.#services.ledger.beginUserControl(this.spaceId);
       try {
         await this.#services.handOffTaskSpace();
+        this.#stopBackgroundPageDiscovery();
       } catch (error) {
         await this.#services.ledger.cancelUserControl(this.spaceId);
         throw error;
@@ -733,6 +790,8 @@ class TaskSpace {
     await this.#services.gate.withSpace(this.spaceId, async () => {
       await this.#services.completeTaskSpace();
       await this.#services.ledger.discard(this.spaceId);
+      this.#stopBackgroundPageDiscovery();
+      clearSpacePageNotices(this.spaceId);
     });
   }
 
@@ -741,6 +800,8 @@ class TaskSpace {
     await this.#services.gate.withSpace(this.spaceId, async () => {
       await this.#services.closeTaskSpace();
       await this.#services.ledger.discard(this.spaceId);
+      this.#stopBackgroundPageDiscovery();
+      clearSpacePageNotices(this.spaceId);
     });
   }
 
@@ -896,14 +957,143 @@ class TaskSpace {
     ledger: PageLedger;
     tabs: RuntimeTab[];
   }> {
+    // Some embedders provide a minimal ledger port. Adoption still works
+    // without the optional before-image; only the round notice is skipped.
+    const before =
+      typeof this.#services.ledger.read === "function"
+        ? await this.#services.ledger.read(this.id)
+        : undefined;
     const tabs = await this.#services.listTabs();
     const ledger = await this.#services.ledger.reconcile(
       this.id,
       tabs.map((tab) => tab.targetId),
       { autoAdoptNew: this.ownership === "agent" },
     );
+    if (before) {
+      const knownTargets = new Set(
+        Object.values(before.pages).map((page) => page.targetId),
+      );
+      for (const [label, page] of Object.entries(ledger.pages)) {
+        if (knownTargets.has(page.targetId)) continue;
+        const tab = tabs.find(
+          (candidate) => candidate.targetId === page.targetId,
+        );
+        recordDiscoveredPage(
+          this.id,
+          { label, ...page },
+          labelForTarget(ledger, tab?.openerId),
+          tab?.url,
+        );
+      }
+    }
     return { ledger, tabs };
   }
+
+  async #adoptDiscoveredChildPage(
+    ledger: PageLedger,
+    tab: RuntimeTab,
+  ): Promise<ManagedPage | undefined> {
+    const openerLabel = labelForTarget(ledger, tab.openerId);
+    if (
+      !openerLabel ||
+      labelForTarget(ledger, tab.targetId) ||
+      Object.hasOwn(ledger.unmanagedTargets, tab.targetId)
+    ) {
+      return undefined;
+    }
+
+    try {
+      const page = await this.#services.ledger.addPage(this.id, tab.targetId, {
+        openedBy: "agent",
+      });
+      // Keep the current inventory usable while adopting a chain of child
+      // pages from one listTabs() result.
+      ledger.pages[page.label] = {
+        targetId: page.targetId,
+        openedBy: page.openedBy,
+      };
+      recordDiscoveredPage(this.id, page, openerLabel, tab.url);
+      return page;
+    } catch {
+      // Another discovery path may have adopted the same target first.
+      return undefined;
+    }
+  }
+
+  #handleBrowserEvent(event: any): void {
+    if (event?.method === "Target.targetDestroyed") {
+      const targetId = event.params?.targetId;
+      if (typeof targetId === "string") {
+        forgetPageNotice(this.id, targetId);
+      }
+      return;
+    }
+    const info = event?.params?.targetInfo;
+    if (
+      event?.method !== "Target.targetCreated" ||
+      info?.type !== "page" ||
+      typeof info.targetId !== "string" ||
+      typeof info.openerId !== "string"
+    ) {
+      return;
+    }
+
+    void this.#services.gate
+      .withSpace(this.id, async () => {
+        const before = await this.#services.ledger.read(this.id);
+        const tabs = await this.#services.listTabs();
+        const tab = tabs.find(
+          (candidate) => candidate.targetId === info.targetId,
+        );
+        if (!tab) return;
+        await this.#adoptDiscoveredChildPage(before, {
+          ...tab,
+          openerId: info.openerId,
+          url: tab.url || info.url,
+        });
+      })
+      .catch(() => {
+        // The next task.tabs() reconciliation remains the fallback.
+      });
+  }
+
+  async #recoverExistingChildPages(): Promise<void> {
+    const ledger = await this.#services.ledger.read(this.id);
+    const tabs = await this.#services.listTabs();
+    for (const tab of tabs) {
+      await this.#adoptDiscoveredChildPage(ledger, tab);
+    }
+  }
+
+  #stopBackgroundPageDiscovery(): void {
+    this.#stopBrowserEvents?.();
+    this.#stopBrowserEvents = undefined;
+  }
+}
+
+function labelForTarget(
+  ledger: PageLedger,
+  targetId: unknown,
+): string | undefined {
+  if (typeof targetId !== "string") return undefined;
+  return Object.entries(ledger.pages).find(
+    ([, page]) => page.targetId === targetId,
+  )?.[0];
+}
+
+function recordDiscoveredPage(
+  spaceId: number,
+  page: ManagedPage,
+  openerLabel?: string,
+  url?: string,
+): void {
+  recordUnhandledPage({
+    spaceId,
+    targetId: page.targetId,
+    label: page.label,
+    openerLabel,
+    url,
+  });
 }
 
 /**
@@ -1564,6 +1754,7 @@ class Page {
     const entry = await this.#services.ledger.getPage(this.spaceId, this.label);
     this.#targetId = entry.targetId;
     this.#openedBy = entry.openedBy;
+    markPageObserved(this.spaceId, entry.targetId);
     return { spaceId: this.spaceId, targetId: entry.targetId };
   }
 
@@ -1748,6 +1939,7 @@ class Page {
               tab.targetId,
               { openedBy: "agent" },
             );
+            recordDiscoveredPage(this.spaceId, managed, this.label, tab.url);
             popups.push({ label: managed.label, targetId: managed.targetId });
           }
         } catch (error) {

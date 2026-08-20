@@ -36,7 +36,12 @@ export async function runRealBrowserE2e() {
     caseResults.push({ name, status, durationMs, assertionCount, message });
   }
 
-  async function runEgoCase(name, body, timeoutMs = 45000) {
+  async function runEgoCase(
+    name,
+    body,
+    timeoutMs = 45000,
+    { expectedOutput, forbiddenOutput } = {},
+  ) {
     console.log(`-- ${name}`);
     const source = egoSource(body, {
       ...context,
@@ -55,6 +60,17 @@ export async function runRealBrowserE2e() {
         },
       );
       const durationMs = Date.now() - startedAt;
+      const output = [stdout, stderr].filter(Boolean).join("\n");
+      if (expectedOutput && !output.includes(expectedOutput)) {
+        throw new Error(
+          `output did not include ${JSON.stringify(expectedOutput)}`,
+        );
+      }
+      if (forbiddenOutput && output.includes(forbiddenOutput)) {
+        throw new Error(
+          `output unexpectedly included ${JSON.stringify(forbiddenOutput)}`,
+        );
+      }
       const assertions = extractAssertionCount(stdout, stderr);
       if (assertions === null) {
         throw new Error(`${name} produced no assertion summary`);
@@ -174,7 +190,12 @@ export async function runRealBrowserE2e() {
       );
       return;
     }
-    await runEgoCase(testCase.name, testCase.body(), testCase.timeoutMs);
+    await runEgoCase(
+      testCase.name,
+      testCase.body(),
+      testCase.timeoutMs,
+      testCase,
+    );
   }
 
   async function cleanupTaskSpace() {

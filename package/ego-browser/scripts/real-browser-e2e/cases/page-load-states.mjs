@@ -40,17 +40,33 @@ export function pageLoadStatesCase() {
       button.textContent = "Open delayed popup";
       button.style.cssText = "position:fixed;left:20px;top:20px;z-index:2147483647";
       button.addEventListener("click", () => {
-        const popup = window.open("about:blank", "_blank");
         setTimeout(() => {
-          popup.location.href = popupUrl;
-        }, 750);
+          window.open(popupUrl, "_blank");
+        }, 650);
       });
       document.body.append(button);
     }, baseUrl + "/secondary?page-load-states=delayed-popup");
+    const ledgerPath = join(
+      process.env.EGO_BROWSER_STATE_DIR,
+      "space-" + task.spaceId + ".json"
+    );
+    const beforeLedger = JSON.parse(await readFile(ledgerPath, "utf8"));
+    const beforeTargets = new Set(
+      Object.values(beforeLedger.pages).map((entry) => entry.targetId)
+    );
     const receipt = await page.click("#delayed-popup");
-    assertEqual(receipt.popups.length, 1, "the delayed popup is adopted immediately");
-    const popup = task.page(receipt.popups[0].label);
-    assertEqual(await popup.url(), "about:blank", "the adopted popup begins at about:blank");
+    assertEqual(
+      receipt.popups?.length ?? 0,
+      0,
+      "the popup is created after the action receipt window"
+    );
+    await page.waitForTimeout(1_000);
+    const afterLedger = JSON.parse(await readFile(ledgerPath, "utf8"));
+    const delayedPopup = Object.entries(afterLedger.pages).find(
+      ([, entry]) => !beforeTargets.has(entry.targetId)
+    );
+    assert(Boolean(delayedPopup), "background discovery adopts the delayed popup");
+    const popup = task.page(delayedPopup[0]);
     await popup.waitForURL(/page-load-states=delayed-popup$/, { timeout: 3_000 });
     assertIncludes(
       await popup.url(),

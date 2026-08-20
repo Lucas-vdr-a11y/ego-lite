@@ -1,34 +1,30 @@
 import { formatCliLogValue } from "./format.js";
 
 /**
- * Output sink for the agent-facing heredoc runtime.
- *
- * `cliLog` is the only channel an agent reads. A single user takeover turns that
- * channel into noise: while the user holds control, every browser command re-reports
- * the same hard-stop error, so a script that loops over work and swallows each error
- * (try/catch, `.catch()`) prints the same guidance on every iteration, buried under
- * its own business logging and success rows.
- *
- * To collapse that to one clean line we buffer cliLog output instead of writing it
- * straight through. When a hard-stop error is born (see `buildEgoError`) we record its
- * owned message once. At the end of the run we either:
- *   - a hard stop occurred -> discard the whole buffer and emit the owned message once
- *   - otherwise            -> flush the buffered output verbatim
- *
- * Buffering is the price of discarding pre-stop output: bytes already written cannot be
- * recalled, so nothing may be written until we know the run did not hard-stop. Each
- * heredoc runs in its own short-lived process, so this module state is per-run and needs
- * no cross-round reset; `resetSink()` exists only so in-process tests can reuse the run.
+ * Round output stays buffered until completion because bytes written before a hard
+ * stop cannot be recalled. A hard stop discards business output and Page notices,
+ * then emits its owned guidance once. The short-lived process makes this state
+ * round-local; reset functions exist only for in-process tests.
  */
 
 type WritableLike = { write(chunk: string): unknown };
 
 export type RoundConsole = Pick<Console, "log" | "info" | "warn" | "error">;
 
+export type UnhandledPageNotice = {
+  spaceId: number;
+  targetId: string;
+  label: string;
+  openerLabel?: string;
+  url?: string;
+};
+
 let buffer: string[] = [];
 let hardStopMessage: string | null = null;
 let flushed = false;
 let lifecycleHooked = false;
+const pendingPageNotices = new Map<string, UnhandledPageNotice>();
+const observedPages = new Set<string>();
 
 /** Buffer one already-formatted cliLog chunk (the trailing newline is included). */
 export function bufferOutput(chunk: string): void {
@@ -62,6 +58,54 @@ export function markHardStop(message: string): void {
   }
 }
 
+/** Queue a discovered Page for the round summary unless agent code used it. */
+export function recordUnhandledPage(notice: UnhandledPageNotice): void {
+  const key = pageKey(notice.spaceId, notice.targetId);
+  if (observedPages.has(key)) return;
+  pendingPageNotices.set(key, {
+    ...pendingPageNotices.get(key),
+    ...notice,
+  });
+}
+
+/** Mark a Page as used during this round so it needs no automatic summary. */
+export function markPageObserved(spaceId: number, targetId: string): void {
+  const key = pageKey(spaceId, targetId);
+  observedPages.add(key);
+  pendingPageNotices.delete(key);
+}
+
+/** Remove round output state for a Page that no longer exists. */
+export function forgetPageNotice(spaceId: number, targetId: string): void {
+  const key = pageKey(spaceId, targetId);
+  pendingPageNotices.delete(key);
+  observedPages.delete(key);
+}
+
+/** Remove pending Page output when its task space reaches a terminal state. */
+export function clearSpacePageNotices(spaceId: number): void {
+  const prefix = `${spaceId}:`;
+  for (const key of pendingPageNotices.keys()) {
+    if (key.startsWith(prefix)) pendingPageNotices.delete(key);
+  }
+  for (const key of observedPages) {
+    if (key.startsWith(prefix)) observedPages.delete(key);
+  }
+}
+
+/** Drain Page notices once. Exported so behavior tests can inspect the round. */
+export function consumeUnhandledPageNotices(): UnhandledPageNotice[] {
+  const notices = [...pendingPageNotices.values()];
+  pendingPageNotices.clear();
+  return notices;
+}
+
+/** Clear only Page notice state for Page-model behavior tests. */
+export function resetPageNotices(): void {
+  pendingPageNotices.clear();
+  observedPages.clear();
+}
+
 /**
  * Emit the run's output exactly once.
  *
@@ -74,6 +118,7 @@ export function markHardStop(message: string): void {
 export function flushSink(stream: WritableLike, thrown: boolean): void {
   if (flushed) return;
   flushed = true;
+  const pageNotices = consumeUnhandledPageNotices();
   if (hardStopMessage !== null) {
     // Drop every buffered line — business logs, success rows, and the repeated error
     // echoes — so the owned guidance is all that remains.
@@ -86,6 +131,9 @@ export function flushSink(stream: WritableLike, thrown: boolean): void {
     }
   } else {
     for (const chunk of buffer) stream.write(chunk);
+    if (pageNotices.length > 0) {
+      stream.write(formatPageNotices(pageNotices));
+    }
   }
   buffer = [];
 }
@@ -95,6 +143,24 @@ export function resetSink(): void {
   buffer = [];
   hardStopMessage = null;
   flushed = false;
+  resetPageNotices();
+}
+
+function formatPageNotices(notices: UnhandledPageNotice[]): string {
+  const lines = notices.map((notice) => {
+    const source = notice.openerLabel ? ` from ${notice.openerLabel}` : "";
+    const url = oneLine(notice.url || "about:blank");
+    return `Unhandled page ${notice.label}${source}: ${url}`;
+  });
+  return `[ego-browser:pages]\n${lines.join("\n")}\n`;
+}
+
+function oneLine(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function pageKey(spaceId: number, targetId: string): string {
+  return `${spaceId}:${targetId}`;
 }
 
 /**

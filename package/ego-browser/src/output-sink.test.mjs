@@ -4,7 +4,9 @@ import assert from "node:assert/strict";
 import {
   bufferOutput,
   flushSink,
+  markPageObserved,
   markHardStop,
+  recordUnhandledPage,
   resetSink,
 } from "../dist/src/output-sink.js";
 
@@ -71,4 +73,56 @@ test("a message that already ends in a newline is not double-terminated", () => 
   const out = fakeStream();
   flushSink(out, false);
   assert.equal(out.text(), "already terminated\n");
+});
+
+test("flushSink appends unhandled pages after the script output", () => {
+  resetSink();
+  bufferOutput("saved rows\n");
+  recordUnhandledPage({
+    spaceId: 7,
+    targetId: "target-popup",
+    label: "p4",
+    openerLabel: "p1",
+    url: "https://example.test/popup",
+  });
+  const out = fakeStream();
+
+  flushSink(out, false);
+
+  assert.equal(
+    out.text(),
+    "saved rows\n[ego-browser:pages]\nUnhandled page p4 from p1: https://example.test/popup\n",
+  );
+});
+
+test("using a discovered Page suppresses its round-end notice", () => {
+  resetSink();
+  recordUnhandledPage({
+    spaceId: 7,
+    targetId: "target-popup",
+    label: "p4",
+    url: "about:blank",
+  });
+  markPageObserved(7, "target-popup");
+  const out = fakeStream();
+
+  flushSink(out, false);
+
+  assert.equal(out.text(), "");
+});
+
+test("a hard stop discards unhandled-page notices with other output", () => {
+  resetSink();
+  recordUnhandledPage({
+    spaceId: 7,
+    targetId: "target-popup",
+    label: "p4",
+    url: "about:blank",
+  });
+  markHardStop("STOP");
+  const out = fakeStream();
+
+  flushSink(out, false);
+
+  assert.equal(out.text(), "STOP\n");
 });
