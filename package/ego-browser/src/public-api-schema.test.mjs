@@ -42,6 +42,17 @@ test("schema-driven option validation rejects unknown and invalid fields", () =>
     force: true,
     timeout: 500,
   });
+  for (const waitUntil of [
+    "commit",
+    "domcontentloaded",
+    "load",
+    "networkidle",
+  ]) {
+    validatePublicApiOptions("Page.goto", {
+      referer: "https://example.test/source",
+      waitUntil,
+    });
+  }
 
   assert.throws(
     () => validatePublicApiOptions("taskSpace", { profileId: "" }),
@@ -56,6 +67,10 @@ test("schema-driven option validation rejects unknown and invalid fields", () =>
     /timeout must be a positive number of milliseconds/,
   );
   assert.throws(
+    () => validatePublicApiOptions("Page.goto", { waitUntil: "interactive" }),
+    /waitUntil must be one of commit, domcontentloaded, load, networkidle/,
+  );
+  assert.throws(
     () => validatePublicApiOptions("Page.click", { button: "primary" }),
     /button must be one of left, middle, right/,
   );
@@ -68,6 +83,10 @@ test("the generated reference contains signatures and option descriptions", () =
   assert.match(
     markdown,
     /`await task\.openPage\(url, \{ as\?, timeout\? \}\)`/,
+  );
+  assert.match(
+    markdown,
+    /`await page\.goto\(url, \{ referer\?, timeout\?, waitUntil\? \}\)`/,
   );
   assert.match(markdown, /`as` — Permanent Page label\.<br>`timeout`/);
   assert.match(markdown, /Open and durably label a new Page/);

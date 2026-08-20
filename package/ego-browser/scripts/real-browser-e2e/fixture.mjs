@@ -194,6 +194,17 @@ export async function startFixtureServer(taskName) {
       }, delayMs);
       return;
     }
+    if (url.pathname === "/streamed-page") {
+      const delayMs = Number(url.searchParams.get("ms") || 1000);
+      res.writeHead(200, { "content-type": "text/html" });
+      res.write(`<!doctype html><html><head><title>Streamed fixture</title></head>
+        <body><h1 id="commit-marker">document committed</h1>
+        <script>document.documentElement.dataset.committed = "true";</script>`);
+      setTimeout(() => {
+        res.end("</body></html>");
+      }, delayMs);
+      return;
+    }
     if (url.pathname === "/domcontentloaded-page") {
       const delayMs = Number(url.searchParams.get("ms") || 1500);
       res.writeHead(200, { "content-type": "text/html" });

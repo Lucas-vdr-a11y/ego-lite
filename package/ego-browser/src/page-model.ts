@@ -54,9 +54,11 @@ import {
   type PageKeyboardTypeOptions,
 } from "./driver/page-keyboard.js";
 import {
+  navigateInPage,
   waitForLoadStateInPage,
   waitForSelectorInPage,
   waitForURLInPage,
+  type PageGotoWaitUntil,
   type PageWaitForLoadStateOptions,
   type PageWaitForSelectorOptions,
   type PageWaitForURLOptions,
@@ -114,7 +116,9 @@ type AdoptPageOptions = {
 };
 
 type PageGotoOptions = {
+  referer?: string;
   timeout?: number;
+  waitUntil?: PageGotoWaitUntil;
 };
 
 type PageSnapshotOptions = SnapshotOptions;
@@ -1233,20 +1237,16 @@ class Page {
     assertUrl(url);
     validatePublicApiOptions("Page.goto", options);
     const timeoutMs = options.timeout ?? 15_000;
+    const waitUntil = options.waitUntil ?? "load";
     const page = await this.#resolve();
     const { receipt } = await this.#runActionBoundary(
       page,
       async (sessionId) => {
-        const navigation = await this.#services.cdp(
-          "Page.navigate",
-          { url },
-          sessionId,
+        await navigateInPage(this.#services, sessionId, url, {
+          referer: options.referer,
           timeoutMs,
-        );
-        if (navigation?.errorText) {
-          throw new Error(`page.goto failed: ${navigation.errorText}`);
-        }
-        await waitForReadyState(this.#services, sessionId, timeoutMs);
+          waitUntil,
+        });
       },
     );
     return receipt;
@@ -2267,29 +2267,6 @@ function isBrowserPlaceholderUrl(url: string): boolean {
     url === "chrome://newtab/" ||
     url === "chrome://new-tab-page/"
   );
-}
-
-async function waitForReadyState(
-  services: PageModelServices,
-  sessionId: string,
-  timeoutMs: number,
-): Promise<void> {
-  const deadline = services.now() + timeoutMs;
-  while (services.now() <= deadline) {
-    const remaining = Math.max(1, deadline - services.now());
-    const response = await services.cdp(
-      "Runtime.evaluate",
-      {
-        expression: "document.readyState",
-        returnByValue: true,
-      },
-      sessionId,
-      Math.min(1_000, remaining),
-    );
-    if (response?.result?.value === "complete") return;
-    await services.sleep(Math.min(100, remaining));
-  }
-  throw new Error(`page.goto timed out after ${timeoutMs}ms`);
 }
 
 function assertUrl(url: string): void {

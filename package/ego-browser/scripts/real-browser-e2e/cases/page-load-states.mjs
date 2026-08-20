@@ -2,11 +2,30 @@ export function pageLoadStatesCase() {
   return `
     const task = await taskSpace(taskName);
     const page = await task.openPage("about:blank", { as: "page-load-states" });
-    await page.cdp("Page.navigate", {
-      url: baseUrl + "/domcontentloaded-page?ms=1500",
+    const referer = baseUrl + "/navigation-source";
+    await page.goto(baseUrl + "/streamed-page?ms=1000", {
+      referer,
+      waitUntil: "commit",
+      timeout: 1_000,
     });
+    const afterCommit = await page.evaluate(() => ({
+      marker: document.documentElement.dataset.committed,
+      readyState: document.readyState,
+      referer: document.referrer,
+    }));
+    assertEqual(afterCommit.marker, "true", "commit waits for the new document");
+    assertEqual(
+      afterCommit.readyState,
+      "loading",
+      "commit returns before the streamed document finishes loading"
+    );
+    assertEqual(afterCommit.referer, referer, "goto forwards the referer header");
+    await page.waitForLoadState("load", { timeout: 2_000 });
 
-    await page.waitForLoadState("domcontentloaded", { timeout: 1_000 });
+    await page.goto(baseUrl + "/domcontentloaded-page?ms=1500", {
+      waitUntil: "domcontentloaded",
+      timeout: 1_000,
+    });
     const afterDomContentLoaded = await page.evaluate(() => ({
       marker: document.documentElement.dataset.domContentLoaded,
       readyState: document.readyState,

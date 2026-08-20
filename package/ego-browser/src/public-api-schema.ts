@@ -192,9 +192,20 @@ export const PUBLIC_API_SCHEMA: readonly PublicApiEntry[] = [
   },
   {
     name: "Page.goto",
-    signature: "await page.goto(url, { timeout? })",
+    signature: "await page.goto(url, { referer?, timeout?, waitUntil? })",
     summary: "Navigate this Page in place.",
-    options: { timeout },
+    options: {
+      referer: option(
+        "nonEmptyString",
+        "HTTP Referer header for the navigation.",
+      ),
+      timeout,
+      waitUntil: option(
+        "string",
+        "Completion state; defaults to load. networkidle requires 500ms without network activity.",
+        ["commit", "domcontentloaded", "load", "networkidle"],
+      ),
+    },
   },
   {
     name: "Page.snapshot",

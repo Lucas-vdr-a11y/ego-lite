@@ -968,6 +968,118 @@ test("a page label restores in a new round and goto reuses its target", async ()
   });
 });
 
+test("Page.goto accepts Playwright-style navigation options", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a");
+    const page = await task.openPage("https://example.test/first");
+    fixture.setDocumentLifecycle({
+      readyState: "interactive",
+      domContentLoaded: true,
+    });
+
+    await page.goto("https://example.test/second", {
+      referer: "https://example.test/source",
+      timeout: 250,
+      waitUntil: "domcontentloaded",
+    });
+
+    const navigation = fixture.calls.find(
+      ([kind, method]) => kind === "cdp" && method === "Page.navigate",
+    );
+    assert.deepEqual(navigation.slice(2, 4), [
+      {
+        url: "https://example.test/second",
+        referrer: "https://example.test/source",
+      },
+      "session:target-1",
+    ]);
+  });
+});
+
+test("Page.goto commit waits for this navigation without waiting for the DOM", async () => {
+  await withFixture(async (fixture) => {
+    const baseCdp = fixture.services.cdp;
+    let nowMs = 5_000;
+    let committed = false;
+    let commitChecks = 0;
+    const task = taskForRound(fixture, "round-a", {
+      async cdp(method, params, sessionId, timeoutMs) {
+        if (method === "Page.navigate") {
+          await baseCdp(method, params, sessionId, timeoutMs);
+          return {
+            result: { frameId: "frame-1", loaderId: "loader-new" },
+          };
+        }
+        if (method === "Page.getFrameTree") {
+          commitChecks += 1;
+          return {
+            result: {
+              frameTree: {
+                frame: {
+                  id: "frame-1",
+                  loaderId: committed ? "loader-new" : "loader-old",
+                },
+              },
+            },
+          };
+        }
+        return baseCdp(method, params, sessionId, timeoutMs);
+      },
+      now: () => nowMs,
+      async sleep(ms) {
+        nowMs += ms;
+        committed = true;
+      },
+    });
+    const page = await task.openPage("https://example.test/first");
+    fixture.setDocumentLifecycle({
+      readyState: "loading",
+      domContentLoaded: false,
+    });
+    const callsBeforeGoto = fixture.calls.length;
+
+    await page.goto("https://example.test/second", {
+      timeout: 250,
+      waitUntil: "commit",
+    });
+
+    assert.equal(commitChecks, 2);
+    assert.equal(
+      fixture.calls
+        .slice(callsBeforeGoto)
+        .some(
+          ([kind, method]) => kind === "cdp" && method === "Runtime.evaluate",
+        ),
+      false,
+      "commit must not wait for DOM readiness",
+    );
+  });
+});
+
+test("Page.goto starts network tracking before a network-idle navigation", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a");
+    const page = await task.openPage("https://example.test/first");
+    const callsBeforeGoto = fixture.calls.length;
+
+    await page.goto("https://example.test/second", {
+      timeout: 1_000,
+      waitUntil: "networkidle",
+    });
+
+    const methods = fixture.calls
+      .slice(callsBeforeGoto)
+      .filter(([kind]) => kind === "cdp")
+      .map(([, method]) => method);
+    assert(
+      methods.indexOf("Network.enable") < methods.indexOf("Page.navigate"),
+    );
+    assert(
+      methods.lastIndexOf("Network.disable") > methods.indexOf("Page.navigate"),
+    );
+  });
+});
+
 test("openPage waits for the document created by this call, not an already-complete placeholder", async () => {
   await withFixture(async (fixture) => {
     const requestedUrl = "https://example.test/created-document";
