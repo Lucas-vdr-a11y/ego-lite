@@ -234,7 +234,7 @@ export function pageBasicOperationsCase() {
       marker.textContent = "Snapshot diff marker";
       document.body.append(marker);
     });
-    const changedSnapshot = await first.snapshot();
+    const changedSnapshot = await first.snapshot({ scope: "full_page" });
     assertIncludes(changedSnapshot, "Snapshot diff marker", "snapshot contains new page content");
     assertEqual(
       await first.evaluate("document.querySelector('h1').textContent"),

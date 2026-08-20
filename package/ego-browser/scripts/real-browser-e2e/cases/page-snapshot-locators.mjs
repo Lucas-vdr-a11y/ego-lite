@@ -14,7 +14,7 @@ export function pageSnapshotLocatorCase() {
       document.body.append(region);
     });
 
-    const snapshot = await page.snapshot();
+    const snapshot = await page.snapshot({ scope: "full_page" });
     const duplicateLines = snapshot
       .split("\\n")
       .filter((line) => line.includes("locator=duplicate"));

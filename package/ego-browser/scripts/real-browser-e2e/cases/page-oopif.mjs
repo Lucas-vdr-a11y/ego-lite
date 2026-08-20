@@ -4,7 +4,7 @@ export function pageOopifActionCase() {
     const page = await task.openPage(baseUrl + "/?page-api=oopif", {
       as: "oopif-page",
     });
-    const snapshot = await page.snapshot();
+    const snapshot = await page.snapshot({ scope: "full_page" });
     assertIncludes(snapshot, "Run iframe action", "snapshot includes cross-site iframe content");
     assertIncludes(snapshot, "Iframe field", "snapshot includes the iframe input");
     await page.click('loc=role:button[name="Run iframe action"]');
@@ -32,7 +32,7 @@ export function pageOopifActionCase() {
       as: "same-origin-frame",
     });
     assertIncludes(
-      await sameOrigin.snapshot(),
+      await sameOrigin.snapshot({ scope: "full_page" }),
       "Run iframe action",
       "snapshot includes same-process iframe content"
     );
@@ -55,7 +55,7 @@ export function pageOopifRestoreCase() {
   return `
     const task = await taskSpace(taskName);
     const page = task.page("oopif-page");
-    const snapshot = await page.snapshot();
+    const snapshot = await page.snapshot({ scope: "full_page" });
     assertIncludes(snapshot, "Run iframe action", "a later round observes the iframe");
     await page.click('text="Run iframe action"');
 

@@ -51,6 +51,7 @@ function createFixture(rootDir) {
   const networkSessions = new Set();
   const sessionOverrides = new Map();
   const sessionTargets = new Map();
+  const snapshotOptions = [];
 
   function openPendingPopup() {
     if (!popupOnNextClick) return;
@@ -401,6 +402,7 @@ function createFixture(rootDir) {
     },
     async snapshot(options = {}) {
       const tab = tabs.get(activeTarget);
+      snapshotOptions.push({ ...options });
       calls.push(["snapshot", activeTarget]);
       return {
         content: `snapshot:${tab?.url}`,
@@ -477,6 +479,7 @@ function createFixture(rootDir) {
     gate,
     rootDir,
     services,
+    snapshotOptions,
     tabs,
     addExternalTab(targetId, url, { active = false } = {}) {
       tabs.set(targetId, { targetId, url, title: url, active });
@@ -867,7 +870,7 @@ test("snapshot activates the addressed page, not whichever tab was current", asy
   });
 });
 
-test("snapshot reports its source and rejects options absent from the schema", async () => {
+test("snapshot defaults to the viewport, reports its source, and validates options", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
     const page = await task.openPage("https://example.test/before");
@@ -876,6 +879,19 @@ test("snapshot reports its source and rejects options absent from the schema", a
       await page.snapshot(),
       /snapshot:https:\/\/example\.test\/before/,
     );
+    assert.deepEqual(fixture.snapshotOptions.at(-1), {
+      scope: "only_within_viewport",
+      includeActionMarks: true,
+      includeStableLocator: true,
+    });
+
+    await page.snapshot({ scope: "full_page" });
+    assert.deepEqual(fixture.snapshotOptions.at(-1), {
+      scope: "full_page",
+      includeActionMarks: true,
+      includeStableLocator: true,
+    });
+
     await assert.rejects(
       () => page.snapshot({ diff: true }),
       /page\.snapshot received unknown option: diff/,

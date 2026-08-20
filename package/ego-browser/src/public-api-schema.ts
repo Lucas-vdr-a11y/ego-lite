@@ -195,12 +195,14 @@ export const PUBLIC_API_SCHEMA: readonly PublicApiEntry[] = [
     name: "Page.snapshot",
     signature:
       "await page.snapshot({ scope?, includeActionMarks?, includeStableLocator? })",
-    summary: "Return a full semantic snapshot with Page provenance.",
+    summary:
+      "Return a semantic snapshot of the current viewport with Page provenance.",
     options: {
-      scope: option("string", "Snapshot scope.", [
-        "full_page",
-        "only_within_viewport",
-      ]),
+      scope: option(
+        "string",
+        "Snapshot scope; defaults to only_within_viewport.",
+        ["full_page", "only_within_viewport"],
+      ),
       includeActionMarks: option("boolean", "Include action marks."),
       includeStableLocator: option("boolean", "Include stable locators."),
     },

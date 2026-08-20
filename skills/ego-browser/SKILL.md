@@ -153,8 +153,9 @@ await page.keyboard.insertText(text);
 
 ### Semantic pages: snapshot and selectors
 
-For an ordinary DOM page, start with `page.snapshot()`. It returns semantic
-text containing refs and stable locators:
+For an ordinary DOM page, work in a short observe → act → observe loop. Start
+with `page.snapshot()`, which returns semantic text for the current viewport.
+Pass `{ scope: "full_page" }` only when content outside the viewport matters:
 
 ```js
 const page = task.page("p1");
@@ -183,16 +184,19 @@ quote the value for an exact, case-sensitive match, such as
 must be unique.
 
 Snapshot node names are accessibility roles. Use the current ref for an
-immediate action and a generated locator for reuse. CSS searches nested open
-shadow roots. If the top-level document has no role match, role locators also
-search ordinary iframes and OOPIFs.
+immediate action and a generated locator for reuse. A missing ref does not mean
+that an element is inert: use its role, text, and surrounding context to judge
+whether it is interactive. If it clearly represents the intended control, try
+a role locator or an exact text locator such as `text="Save changes"`, then
+verify the result with a fresh snapshot. CSS searches nested open shadow roots.
+If the top-level document has no role match, role locators also search ordinary
+iframes and OOPIFs.
 
-Refs are scoped to the Page that produced them. Take another snapshot after
-navigation, a substantial DOM change, raw CDP, or before reusing a ref in a
-later round.
-
-After opening a menu or dialog that rerenders its contents, take a new snapshot
-before selecting an item from it.
+A snapshot is temporary: it describes one Page at one moment, and its refs
+belong only to that Page. After any action that may change the page—navigation,
+clicking, filling, keyboard input, opening a menu or dialog, page JavaScript, or
+raw CDP—take a fresh snapshot before choosing the next target. Also refresh
+before using a ref in a later round.
 
 ### Visual pages: screenshot, mouse, and keyboard
 

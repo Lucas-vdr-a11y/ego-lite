@@ -1044,10 +1044,10 @@ class Page {
     return this.#services.gate.withPage(page, async () => {
       await this.#activate(page.targetId);
       const result = await this.#services.snapshot({
-        scope: "full_page",
-        includeActionMarks: true,
-        includeStableLocator: true,
         ...options,
+        scope: options.scope ?? "only_within_viewport",
+        includeActionMarks: options.includeActionMarks ?? true,
+        includeStableLocator: options.includeStableLocator ?? true,
       });
       this.#services.pageRefs.replace(page.targetId, result?.refs || []);
       const content = result?.content || "";
