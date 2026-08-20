@@ -410,6 +410,36 @@ export function pageActionsAndPopupCase() {
     );
     assertEqual((await currentTab()).targetId, source.targetId, "page.fill activates and keeps its page current");
 
+    await source.evaluate(() => {
+      const editor = document.createElement("div");
+      editor.id = "pointer-activated-editor";
+      editor.contentEditable = "true";
+      editor.textContent = "old editor text";
+      editor.style.cssText =
+        "position:fixed;left:20px;top:160px;width:240px;height:40px;background:white;z-index:1000";
+      let pointerActivated = false;
+      window.__editorPointerActivations = 0;
+      editor.addEventListener("pointerdown", () => {
+        pointerActivated = true;
+        window.__editorPointerActivations += 1;
+      });
+      editor.addEventListener("beforeinput", (event) => {
+        if (!pointerActivated) event.preventDefault();
+      });
+      document.body.append(editor);
+    });
+    await source.fill("#pointer-activated-editor", "accepted after click");
+    assertEqual(
+      await source.evaluate("document.querySelector('#pointer-activated-editor').innerText"),
+      "accepted after click",
+      "page.fill retries a rich editor that requires real pointer activation"
+    );
+    assertEqual(
+      await source.evaluate("window.__editorPointerActivations"),
+      1,
+      "page.fill uses only one pointer fallback after the standard fill is rejected"
+    );
+
     await source.evaluate((popupUrl) => {
       const area = document.createElement("div");
       area.innerHTML = String.raw\`

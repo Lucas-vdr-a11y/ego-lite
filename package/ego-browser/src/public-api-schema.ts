@@ -361,7 +361,7 @@ export const PUBLIC_API_SCHEMA: readonly PublicApiEntry[] = [
   {
     name: "Page.fill",
     signature: "await page.fill(selector, value, { clearFirst? })",
-    summary: "Focus and fill an input-like element.",
+    summary: "Focus and fill an input-like element, then verify its value.",
     options: {
       clearFirst: option("boolean", "Clear the current value before filling."),
     },

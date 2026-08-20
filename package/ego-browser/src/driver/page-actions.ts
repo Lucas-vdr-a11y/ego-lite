@@ -1,5 +1,8 @@
 import { runtimeValue } from "../cdp-eval.js";
-import { resolveElementObjectId } from "../element-resolver.js";
+import {
+  ElementResolutionError,
+  resolveElementObjectId,
+} from "../element-resolver.js";
 import { RefMap } from "../ref-map.js";
 
 type PageActionServices = {
@@ -59,6 +62,8 @@ type MouseMoveState = PageMouseMoveOptions & {
 };
 
 const INPUT_EVENT_DELAY_MS = 25;
+const FILL_VERIFICATION_ATTEMPTS = 5;
+const FILL_VERIFICATION_INTERVAL_MS = 50;
 
 /** Click an element through one explicit target session and Page ref map. */
 export async function clickInPage(
@@ -105,6 +110,7 @@ export async function clickInPage(
         target.sessionId,
         target.objectId,
         point.local,
+        count === 1,
       );
       await dispatchMouseEvent(services, target.sessionId, {
         type: "mousePressed",
@@ -198,7 +204,7 @@ export async function fillInPage(
           if (this.value !== nextValue) return { error: "malformed value" };
           this.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
           this.dispatchEvent(new Event("change", { bubbles: true }));
-          return { status: "done", cursorPoint: visibleCursorPoint() };
+          return { status: "done", kind: "input", cursorPoint: visibleCursorPoint() };
         }
       } else if (tag !== "textarea" && !this.isContentEditable) {
         return { error: "element is not an input, textarea, or contenteditable element" };
@@ -206,7 +212,8 @@ export async function fillInPage(
 
       this.focus();
       const cursorPoint = visibleCursorPoint();
-      if (!clearFirst) return { status: "needsinput", cursorPoint };
+      const kind = this.isContentEditable ? "contenteditable" : tag;
+      if (!clearFirst) return { status: "needsinput", kind, cursorPoint };
       if (tag === "input" || tag === "textarea") {
         this.select();
       } else {
@@ -216,20 +223,23 @@ export async function fillInPage(
         selection?.removeAllRanges();
         selection?.addRange(range);
       }
-      return { status: "needsinput", cursorPoint };
+      return { status: "needsinput", kind, cursorPoint };
     }`;
-    const preparation = await services.cdp(
-      "Runtime.callFunctionOn",
-      {
-        functionDeclaration: preparationSource,
-        objectId: resolved.objectId,
-        arguments: [{ value }, { value: clearFirst }],
-        returnByValue: true,
-        awaitPromise: false,
-      },
-      resolved.sessionId,
-    );
-    const result = runtimeValue(preparation, preparationSource);
+    const prepare = async () => {
+      const preparation = await services.cdp(
+        "Runtime.callFunctionOn",
+        {
+          functionDeclaration: preparationSource,
+          objectId: resolved.objectId,
+          arguments: [{ value }, { value: clearFirst }],
+          returnByValue: true,
+          awaitPromise: false,
+        },
+        resolved.sessionId,
+      );
+      return runtimeValue(preparation, preparationSource);
+    };
+    let result = await prepare();
     if (typeof result?.error === "string") {
       throw new Error(`page.fill failed: ${result.error}`);
     }
@@ -248,36 +258,54 @@ export async function fillInPage(
       throw new Error("page.fill received an invalid preparation result");
     }
 
-    if (clearFirst && value.length === 0) {
-      const keyDown: Record<string, unknown> = {
-        type: "rawKeyDown",
-        key: "Delete",
-        code: "Delete",
-        modifiers: 0,
-        windowsVirtualKeyCode: 46,
-      };
-      if ((services.platform ?? process.platform) === "darwin") {
-        keyDown.commands = ["deleteForward"];
-      }
-      await services.cdp("Input.dispatchKeyEvent", keyDown, resolved.sessionId);
-      await services.cdp(
-        "Input.dispatchKeyEvent",
-        {
-          type: "keyUp",
-          key: "Delete",
-          code: "Delete",
-          modifiers: 0,
-          windowsVirtualKeyCode: 46,
-        },
+    await dispatchFillInput(services, resolved.sessionId, value, clearFirst);
+    if (
+      await verifyFilledValue(
+        services,
         resolved.sessionId,
-      );
-    } else if (value.length > 0) {
-      await services.cdp(
-        "Input.insertText",
-        { text: value },
-        resolved.sessionId,
-      );
+        resolved.objectId,
+        value,
+        clearFirst,
+      )
+    ) {
+      return;
     }
+
+    if (result?.kind === "contenteditable") {
+      // Some editors do not install their internal editing state until they
+      // receive a real pointer activation. Retry only after proving that the
+      // ordinary fill had no observable effect, which avoids duplicate input.
+      await clickResolvedElement(
+        services,
+        resolved.sessionId,
+        resolved.objectId,
+        resolved.frameId,
+      );
+      result = await prepare();
+      if (typeof result?.error === "string") {
+        throw new Error(`page.fill failed: ${result.error}`);
+      }
+      if (result?.status !== "needsinput") {
+        throw new Error("page.fill received an invalid preparation result");
+      }
+      await dispatchFillInput(services, resolved.sessionId, value, clearFirst);
+      if (
+        await verifyFilledValue(
+          services,
+          resolved.sessionId,
+          resolved.objectId,
+          value,
+          clearFirst,
+        )
+      ) {
+        return;
+      }
+    }
+
+    const target = result?.kind === "contenteditable" ? "editor" : "field";
+    throw new Error(
+      `page.fill did not accept the text. Click the ${target} and use page.keyboard, then verify the result.`,
+    );
   } finally {
     await services
       .cdp(
@@ -287,6 +315,144 @@ export async function fillInPage(
       )
       .catch(() => {});
   }
+}
+
+async function dispatchFillInput(
+  services: PageActionServices,
+  sessionId: string,
+  value: string,
+  clearFirst: boolean,
+): Promise<void> {
+  if (clearFirst && value.length === 0) {
+    const keyDown: Record<string, unknown> = {
+      type: "rawKeyDown",
+      key: "Delete",
+      code: "Delete",
+      modifiers: 0,
+      windowsVirtualKeyCode: 46,
+    };
+    if ((services.platform ?? process.platform) === "darwin") {
+      keyDown.commands = ["deleteForward"];
+    }
+    await services.cdp("Input.dispatchKeyEvent", keyDown, sessionId);
+    await services.cdp(
+      "Input.dispatchKeyEvent",
+      {
+        type: "keyUp",
+        key: "Delete",
+        code: "Delete",
+        modifiers: 0,
+        windowsVirtualKeyCode: 46,
+      },
+      sessionId,
+    );
+    return;
+  }
+  if (value.length > 0) {
+    await services.cdp("Input.insertText", { text: value }, sessionId);
+  }
+}
+
+async function verifyFilledValue(
+  services: PageActionServices,
+  sessionId: string,
+  objectId: string,
+  value: string,
+  clearFirst: boolean,
+): Promise<boolean> {
+  const source = `function verifyFilledValue(value, clearFirst) {
+    if (!this.isConnected) return { error: "element is not connected" };
+    const tag = this.nodeName.toLowerCase();
+    const observed = tag === "input" || tag === "textarea"
+      ? this.value
+      : (this.innerText ?? this.textContent ?? "");
+    const normalize = (text) => String(text)
+      .replace(/\\r\\n?/g, "\\n")
+      .replace(/\\u200b/g, "");
+    const actual = normalize(observed);
+    const expected = normalize(value);
+    return {
+      matches: clearFirst ? actual === expected : actual.includes(expected),
+    };
+  }`;
+  let consecutiveMatches = 0;
+  for (let attempt = 0; attempt < FILL_VERIFICATION_ATTEMPTS; attempt += 1) {
+    const response = await services.cdp(
+      "Runtime.callFunctionOn",
+      {
+        functionDeclaration: source,
+        objectId,
+        arguments: [{ value }, { value: clearFirst }],
+        returnByValue: true,
+        awaitPromise: false,
+      },
+      sessionId,
+    );
+    const result = runtimeValue(response, source);
+    if (typeof result?.error === "string") {
+      // Input has already been dispatched, so retrying the whole operation
+      // could duplicate text on a replacement element.
+      throw new Error(`page.fill could not verify the result: ${result.error}`);
+    }
+    if (result?.matches === true) {
+      consecutiveMatches += 1;
+      if (consecutiveMatches === 2) return true;
+    } else {
+      consecutiveMatches = 0;
+    }
+    if (attempt + 1 < FILL_VERIFICATION_ATTEMPTS) {
+      await services.sleep(FILL_VERIFICATION_INTERVAL_MS);
+    }
+  }
+  return false;
+}
+
+async function clickResolvedElement(
+  services: PageActionServices,
+  sessionId: string,
+  objectId: string,
+  frameId?: string,
+): Promise<void> {
+  const point = await resolveElementPoint(
+    services,
+    sessionId,
+    objectId,
+    undefined,
+    frameId,
+  );
+  await dispatchMouseEvent(services, sessionId, {
+    type: "mouseMoved",
+    x: point.x,
+    y: point.y,
+    button: "none",
+    buttons: 0,
+    modifiers: 0,
+  });
+  await assertElementReceivesPointerEvents(
+    services,
+    sessionId,
+    objectId,
+    point.local,
+    true,
+  );
+  await dispatchMouseEvent(services, sessionId, {
+    type: "mousePressed",
+    x: point.x,
+    y: point.y,
+    button: "left",
+    buttons: 1,
+    modifiers: 0,
+    clickCount: 1,
+  });
+  await dispatchMouseEvent(services, sessionId, {
+    type: "mouseReleased",
+    x: point.x,
+    y: point.y,
+    button: "left",
+    buttons: 0,
+    modifiers: 0,
+    clickCount: 1,
+  });
 }
 
 /** Move the native mouse over one element in an explicit Page session. */
@@ -595,6 +761,12 @@ async function resolveElementPoint(
   );
   const point = runtimeValue(response, expression);
   if (typeof point?.error === "string") {
+    if (point.error === "element is not visible in the viewport") {
+      throw new ElementResolutionError(
+        `page.click failed: ${point.error}`,
+        "transient",
+      );
+    }
     throw new Error(`page.click failed: ${point.error}`);
   }
   if (!Number.isFinite(point?.x) || !Number.isFinite(point?.y)) {
@@ -647,6 +819,7 @@ async function assertElementReceivesPointerEvents(
   sessionId: string,
   objectId: string,
   point: { x: number; y: number },
+  retryDisconnected = false,
 ): Promise<void> {
   const expression = `function(point) {
     ${HIT_TARGET_HELPERS}
@@ -669,6 +842,12 @@ async function assertElementReceivesPointerEvents(
   );
   const result = runtimeValue(response, expression);
   if (typeof result?.error === "string") {
+    if (retryDisconnected && result.error === "element is not connected") {
+      throw new ElementResolutionError(
+        `page.click failed: ${result.error}`,
+        "transient",
+      );
+    }
     throw new Error(`page.click failed: ${result.error}`);
   }
 }

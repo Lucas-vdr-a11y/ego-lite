@@ -191,6 +191,9 @@ Refs are scoped to the Page that produced them. Take another snapshot after
 navigation, a substantial DOM change, raw CDP, or before reusing a ref in a
 later round.
 
+After opening a menu or dialog that rerenders its contents, take a new snapshot
+before selecting an item from it.
+
 ### Visual pages: screenshot, mouse, and keyboard
 
 Use a screenshot with mouse and keyboard operations for canvas, rich-text,
@@ -207,6 +210,12 @@ Inspect the screenshot with an image-viewing tool. Coordinates use CSS pixels.
 Keyboard names and `+`-separated chords follow Playwright syntax; use
 `ControlOrMeta` for portable shortcuts. Low-level mouse and keyboard methods
 do not return action receipts, so verify their effect explicitly.
+
+For rich-text editors and editable table cells, verify the first edit. If
+`fill()` says the target rejected the text, click it, use `page.keyboard`, and
+verify again. Canvas or virtualized grids usually need click plus keyboard or
+paste. Before bulk table entry, test a small 2×2 paste; do not send `Tab` after
+the final cell unless moving focus is intended.
 
 ### Page JavaScript and CDP
 
@@ -242,6 +251,9 @@ for (const popup of receipt.popups ?? []) {
   await popupPage.waitForURL(/\/expected-path(?:[?#]|$)/, { timeout: 10_000 });
 }
 ```
+
+A click that opens a new window continues on `task.page(popup.label)`, not on
+the source Page.
 
 A popup may initially be `about:blank`; wait for its URL when the destination
 matters. Slowly propagating popups appear on the next `pages()` or `tabs()`

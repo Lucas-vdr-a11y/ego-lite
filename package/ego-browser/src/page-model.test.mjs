@@ -34,8 +34,11 @@ function createFixture(rootDir) {
   let timeoutNextMouseDispatch = false;
   let dialogOnNextClick = null;
   const pendingDialogs = new Map();
-  let rejectNextClickPoint = false;
+  let rejectedClickPointsRemaining = 0;
   let interceptNextClickPoint = false;
+  let fillElementKind = "input";
+  let fillText = "";
+  let ignoredFillInsertionsRemaining = 0;
   let navigateOnNextClickUrl = null;
   let elementPresent = true;
   let elementVisible = true;
@@ -208,7 +211,22 @@ function createFixture(rootDir) {
               type: "object",
               value: {
                 status: "needsinput",
+                kind: fillElementKind,
                 cursorPoint: { x: 40, y: 60 },
+              },
+            },
+          };
+        }
+        if (params.functionDeclaration.includes("verifyFilledValue")) {
+          const expected = params.arguments?.[0]?.value ?? "";
+          const clearFirst = params.arguments?.[1]?.value ?? true;
+          return {
+            result: {
+              type: "object",
+              value: {
+                matches: clearFirst
+                  ? fillText === expected
+                  : fillText.includes(expected),
               },
             },
           };
@@ -260,8 +278,8 @@ function createFixture(rootDir) {
               },
             };
           }
-          if (rejectNextClickPoint) {
-            rejectNextClickPoint = false;
+          if (rejectedClickPointsRemaining > 0) {
+            rejectedClickPointsRemaining -= 1;
             return {
               result: {
                 type: "object",
@@ -302,8 +320,20 @@ function createFixture(rootDir) {
         };
       }
       if (method === "Runtime.releaseObject") return {};
-      if (method === "Input.insertText") return {};
-      if (method === "Input.dispatchKeyEvent") return {};
+      if (method === "Input.insertText") {
+        if (ignoredFillInsertionsRemaining > 0) {
+          ignoredFillInsertionsRemaining -= 1;
+        } else {
+          fillText = params.text;
+        }
+        return {};
+      }
+      if (method === "Input.dispatchKeyEvent") {
+        if (params.type === "rawKeyDown" && params.key === "Delete") {
+          fillText = "";
+        }
+        return {};
+      }
       if (method === "DOM.setFileInputFiles") return {};
       if (method === "Network.enable") {
         networkSessions.add(sessionId);
@@ -474,7 +504,10 @@ function createFixture(rootDir) {
       };
     },
     rejectNextClickPoint() {
-      rejectNextClickPoint = true;
+      rejectedClickPointsRemaining = 1;
+    },
+    rejectClickPoints(count) {
+      rejectedClickPointsRemaining = count;
     },
     interceptNextClickPoint() {
       interceptNextClickPoint = true;
@@ -482,6 +515,12 @@ function createFixture(rootDir) {
     navigateOnNextClick(url) {
       navigateOnNextClickUrl = url;
     },
+    configureFill({ kind = "input", initialText = "", ignoreInsertions = 0 }) {
+      fillElementKind = kind;
+      fillText = initialText;
+      ignoredFillInsertionsRemaining = ignoreInsertions;
+    },
+    fillText: () => fillText,
     setElementState({ present = true, visible = true }) {
       elementPresent = present;
       elementVisible = visible;
@@ -1182,6 +1221,79 @@ test("Page fill uses its target session and reports no popup when none opened", 
       fixture.activeTarget(),
       "target-1",
       "fill must leave its Page active",
+    );
+  });
+});
+
+test("Page fill retries an unchanged contenteditable once with a real click", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a");
+    const page = await task.openPage("https://example.test/editor");
+    fixture.configureFill({
+      kind: "contenteditable",
+      initialText: "old text",
+      ignoreInsertions: 1,
+    });
+    fixture.calls.length = 0;
+
+    assert.deepEqual(await page.fill("[contenteditable]", "new text"), {});
+    assert.equal(fixture.fillText(), "new text");
+    assert.equal(
+      fixture.calls.filter(
+        ([kind, method]) => kind === "cdp" && method === "Input.insertText",
+      ).length,
+      2,
+      "the standard input attempt should run once before the pointer fallback",
+    );
+    assert.deepEqual(
+      fixture.calls
+        .filter(
+          ([kind, method]) =>
+            kind === "cdp" && method === "Input.dispatchMouseEvent",
+        )
+        .map(([, , params]) => params.type),
+      ["mouseMoved", "mousePressed", "mouseReleased"],
+      "the fallback should perform exactly one real click",
+    );
+  });
+});
+
+test("Page fill rejects when a contenteditable still ignores the pointer fallback", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a");
+    const page = await task.openPage("https://example.test/editor");
+    fixture.configureFill({
+      kind: "contenteditable",
+      initialText: "old text",
+      ignoreInsertions: 2,
+    });
+
+    await assert.rejects(
+      () => page.fill("[contenteditable]", "new text"),
+      /did not accept the text.*click the editor and use page\.keyboard/i,
+    );
+    assert.equal(fixture.fillText(), "old text");
+  });
+});
+
+test("Page fill does not click a regular input when the site rejects its value", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a");
+    const page = await task.openPage("https://example.test/form");
+    fixture.configureFill({ kind: "input", ignoreInsertions: 1 });
+    fixture.calls.length = 0;
+
+    await assert.rejects(
+      () => page.fill("input[name=email]", "user@example.test"),
+      /did not accept the text/i,
+    );
+    assert.equal(
+      fixture.calls.some(
+        ([kind, method]) =>
+          kind === "cdp" && method === "Input.dispatchMouseEvent",
+      ),
+      false,
+      "only contenteditable elements may receive the pointer fallback",
     );
   });
 });
@@ -2233,15 +2345,51 @@ test("Page click scrolls the element into view before computing its point", asyn
   });
 });
 
-test("Page click does not dispatch input when scrolling cannot make the element visible", async () => {
+test("Page click retries a transient visibility change before dispatching input", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
     const page = await task.openPage("https://example.test/first");
     fixture.rejectNextClickPoint();
 
+    assert.deepEqual(await page.click("#temporarily-hidden"), {});
+    assert.equal(
+      fixture.calls.filter(
+        ([kind, method, params]) =>
+          kind === "cdp" &&
+          method === "Runtime.callFunctionOn" &&
+          params.functionDeclaration.includes("getBoundingClientRect"),
+      ).length,
+      2,
+    );
+    assert(
+      fixture.calls.some(
+        ([kind, method, params]) =>
+          kind === "cdp" &&
+          method === "Input.dispatchMouseEvent" &&
+          params.type === "mouseReleased",
+      ),
+    );
+  });
+});
+
+test("Page click reports a persistent transient state after bounded retries", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a");
+    const page = await task.openPage("https://example.test/first");
+    fixture.rejectClickPoints(3);
+
     await assert.rejects(
-      () => page.click("#hidden"),
-      /element is not visible in the viewport/,
+      () => page.click("#changing"),
+      /page state changed.*new snapshot.*current selector/i,
+    );
+    assert.equal(
+      fixture.calls.filter(
+        ([kind, method, params]) =>
+          kind === "cdp" &&
+          method === "Runtime.callFunctionOn" &&
+          params.functionDeclaration.includes("getBoundingClientRect"),
+      ).length,
+      3,
     );
     assert.equal(
       fixture.calls.some(

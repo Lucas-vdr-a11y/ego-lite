@@ -57,6 +57,7 @@ import {
   type PageWaitForSelectorOptions,
   type PageWaitForURLOptions,
 } from "./driver/page-waits.js";
+import { ElementResolutionError } from "./element-resolver.js";
 import { invokeEgo, isEgoUserControlError } from "./ego-errors.js";
 import {
   withPage as defaultWithPage,
@@ -82,6 +83,16 @@ type TaskSpaceDescriptor = {
   ownership?: string;
   recentTabTitles?: string[];
 };
+
+function isRetryableElementStateError(
+  error: unknown,
+): error is ElementResolutionError {
+  return (
+    error instanceof ElementResolutionError &&
+    error.kind === "transient" &&
+    !error.message.startsWith("Unknown ref:")
+  );
+}
 
 type OpenPageOptions = {
   as?: string;
@@ -261,6 +272,8 @@ export type PageActionReceipt = {
 
 const PAGE_CLOSE_CONFIRM_TIMEOUT_MS = 2_000;
 const PAGE_CLOSE_CONFIRM_INTERVAL_MS = 50;
+const PAGE_ACTION_RESOLUTION_ATTEMPTS = 3;
+const PAGE_ACTION_RESOLUTION_RETRY_MS = 50;
 const CONTROL_POLL_INTERVAL_MS = 20_000;
 const CONTROL_WAIT_TIMEOUT_MS = 600_000;
 
@@ -1508,11 +1521,29 @@ class Page {
     const { receipt } = await this.#runActionBoundary(
       page,
       async (sessionId) => {
-        const refMap = await this.#refMapForAction(page, ...selectors);
-        const iframeSessions = await this.#services.ensureFrameSessions(
-          page.targetId,
-        );
-        await operation(sessionId, refMap, iframeSessions);
+        for (
+          let attempt = 1;
+          attempt <= PAGE_ACTION_RESOLUTION_ATTEMPTS;
+          attempt += 1
+        ) {
+          try {
+            const refMap = await this.#refMapForAction(page, ...selectors);
+            const iframeSessions = await this.#services.ensureFrameSessions(
+              page.targetId,
+            );
+            await operation(sessionId, refMap, iframeSessions);
+            return;
+          } catch (error) {
+            if (!isRetryableElementStateError(error)) throw error;
+            if (attempt === PAGE_ACTION_RESOLUTION_ATTEMPTS) {
+              throw new ElementResolutionError(
+                `The page state changed while resolving this action after ${attempt} attempts: ${error.message}. Take a new snapshot and use a current selector.`,
+                "transient",
+              );
+            }
+            await this.#services.sleep(PAGE_ACTION_RESOLUTION_RETRY_MS);
+          }
+        }
       },
       guardFileChooser,
     );
