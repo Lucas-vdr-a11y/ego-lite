@@ -6,13 +6,14 @@ High-level Page actions return a receipt that may contain `popups` or a synchron
 
 ## Entry points
 
-| API                                       | Options | Purpose                                                                        |
-| ----------------------------------------- | ------- | ------------------------------------------------------------------------------ |
-| `await taskSpace(nameOrId)`               | —       | Reuse or create an Agent-owned task space and return TaskSpace.                |
-| `await claimTaskSpace(spaceId)`           | —       | Claim a user-owned or inactive space after user approval and return TaskSpace. |
-| `await takeOverTaskSpace(spaceId)`        | —       | Resume an Agent-owned space after user approval and return TaskSpace.          |
-| `fileChooser.isMultiple()`                | —       | Report whether the chooser accepts multiple files.                             |
-| `await fileChooser.setFiles(pathOrPaths)` | —       | Set files on an intercepted chooser without a system dialog.                   |
+| API                                         | Options                                                                   | Purpose                                                                                 |
+| ------------------------------------------- | ------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `await profiles()`                          | —                                                                         | List browser profiles available for new task spaces.                                    |
+| `await taskSpace(nameOrId, { profileId? })` | `profileId` — Browser profile id returned by profiles(); new spaces only. | Reuse or create an Agent-owned task space; profileId applies only to a new named space. |
+| `await claimTaskSpace(spaceId)`             | —                                                                         | Claim a user-owned or inactive space after user approval and return TaskSpace.          |
+| `await takeOverTaskSpace(spaceId)`          | —                                                                         | Resume an Agent-owned space after user approval and return TaskSpace.                   |
+| `fileChooser.isMultiple()`                  | —                                                                         | Report whether the chooser accepts multiple files.                                      |
+| `await fileChooser.setFiles(pathOrPaths)`   | —                                                                         | Set files on an intercepted chooser without a system dialog.                            |
 
 ## TaskSpace
 

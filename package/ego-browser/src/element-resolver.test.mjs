@@ -142,3 +142,68 @@ test("CSS locators search nested open shadow roots", async () => {
 
   assert.deepEqual(point, { x: 12, y: 34, sessionId: undefined });
 });
+
+test("text locators normalize whitespace and search nested open shadow roots", async () => {
+  const cdp = new FakeCDP(async (method, params) => {
+    if (method === "Runtime.evaluate") {
+      assert.match(params.expression, /shadowRoot/);
+      assert.match(params.expression, /replace\(\/\\s\+\/g, " "\)/);
+      assert.match(params.expression, /toLowerCase\(\)\s*\.includes/);
+      assert.match(params.expression, /INPUT/);
+      return { result: { value: { x: 20, y: 30 } } };
+    }
+    return {};
+  });
+
+  const point = await resolveElementCenter(
+    cdp,
+    undefined,
+    new RefMap(),
+    "text=Save changes",
+  );
+
+  assert.deepEqual(point, { x: 20, y: 30, sessionId: undefined });
+});
+
+test("quoted text locators use exact case-sensitive matching", async () => {
+  const cdp = new FakeCDP(async (method, params) => {
+    if (method === "Runtime.evaluate") {
+      assert.match(params.expression, /mode: "exact"/);
+      assert.match(params.expression, /=== expected/);
+      return { result: { value: { x: 40, y: 50 } } };
+    }
+    return {};
+  });
+
+  const point = await resolveElementCenter(
+    cdp,
+    undefined,
+    new RefMap(),
+    'text="Save changes"',
+  );
+
+  assert.deepEqual(point, { x: 40, y: 50, sessionId: undefined });
+});
+
+test("ambiguous text locators fail permanently instead of choosing one match", async () => {
+  const cdp = new FakeCDP(async (method) => {
+    if (method === "Runtime.evaluate") {
+      return {
+        result: {
+          value: { error: "Locator text=Save matched 2 elements" },
+        },
+      };
+    }
+    return {};
+  });
+
+  await assert.rejects(
+    () => resolveElementCenter(cdp, undefined, new RefMap(), "text=Save"),
+    (error) => {
+      assert.ok(error instanceof ElementResolutionError);
+      assert.equal(error.kind, "permanent");
+      assert.match(error.message, /matched 2 elements/);
+      return true;
+    },
+  );
+});

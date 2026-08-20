@@ -3,6 +3,7 @@ export type PublicApiOptionKind =
   | "clip"
   | "finiteNumber"
   | "nonNegativeNumber"
+  | "nonEmptyString"
   | "positiveInteger"
   | "positiveMilliseconds"
   | "string"
@@ -46,9 +47,21 @@ const position = option(
  */
 export const PUBLIC_API_SCHEMA: readonly PublicApiEntry[] = [
   {
+    name: "profiles",
+    signature: "await profiles()",
+    summary: "List browser profiles available for new task spaces.",
+  },
+  {
     name: "taskSpace",
-    signature: "await taskSpace(nameOrId)",
-    summary: "Reuse or create an Agent-owned task space and return TaskSpace.",
+    signature: "await taskSpace(nameOrId, { profileId? })",
+    summary:
+      "Reuse or create an Agent-owned task space; profileId applies only to a new named space.",
+    options: {
+      profileId: option(
+        "nonEmptyString",
+        "Browser profile id returned by profiles(); new spaces only.",
+      ),
+    },
   },
   {
     name: "claimTaskSpace",
@@ -568,6 +581,9 @@ function validateOptionValue(
     case "nonNegativeNumber":
       valid = typeof value === "number" && Number.isFinite(value) && value >= 0;
       break;
+    case "nonEmptyString":
+      valid = typeof value === "string" && value.length > 0;
+      break;
     case "positiveInteger":
       valid = Number.isInteger(value) && (value as number) > 0;
       break;
@@ -594,6 +610,11 @@ function validateOptionValue(
     }
     if (specification.kind === "nonNegativeNumber") {
       throw new TypeError(`${apiName} ${optionName} must be non-negative`);
+    }
+    if (specification.kind === "nonEmptyString") {
+      throw new TypeError(
+        `${apiName} ${optionName} must be a non-empty string`,
+      );
     }
     if (specification.kind === "positiveInteger") {
       throw new TypeError(

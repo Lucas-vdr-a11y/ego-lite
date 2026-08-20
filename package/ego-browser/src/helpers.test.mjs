@@ -9,6 +9,7 @@ import {
   newTaskSpace,
   helperContext,
   listTaskSpaces,
+  profiles,
   taskSpace,
   useOrCreateTaskSpace,
   switchTaskSpace,
@@ -95,9 +96,43 @@ test("listTaskSpaces throws on binding error objects", async () => {
   );
 });
 
+test("profiles returns the browser profiles exposed by Ego Lite", async () => {
+  const expected = [
+    { id: "Default", name: "Personal", isDefault: true },
+    { id: "Profile 2", name: "Work", isDefault: false },
+  ];
+  await withEgo(
+    {
+      async listProfiles() {
+        return { profiles: expected };
+      },
+    },
+    async () => {
+      assert.deepEqual(await profiles(), expected);
+    },
+  );
+});
+
+test("profiles rejects malformed native results", async () => {
+  await withEgo(
+    {
+      async listProfiles() {
+        return { profiles: [{ id: "Default", name: "Personal" }] };
+      },
+    },
+    async () => {
+      await assert.rejects(
+        () => profiles(),
+        /profiles expected entries with id, name, and isDefault/,
+      );
+    },
+  );
+});
+
 test("taskspace helper surface exposes public helpers including claimTaskSpace", () => {
   const context = helperContext();
   assert.equal(typeof context.taskSpace, "function");
+  assert.equal(typeof context.profiles, "function");
   assert.equal(typeof context.listTaskSpaces, "function");
   assert.equal(typeof context.switchTaskSpace, "function");
   assert.equal(typeof context.newTaskSpace, "function");
@@ -147,6 +182,104 @@ test("taskSpace returns the new object model for a resolved space", async () => 
       assert.equal(typeof task.handOff, "function");
       assert.equal(typeof task.finish, "function");
       assert.equal(typeof task.close, "function");
+    },
+  );
+});
+
+test("taskSpace creates a new space with an explicit browser profile", async () => {
+  const calls = [];
+  await withEgo(
+    {
+      async listTaskSpaces() {
+        calls.push(["listTaskSpaces"]);
+        return { taskSpaces: [] };
+      },
+      async createTaskSpace(name, profileId) {
+        calls.push(["createTaskSpace", name, profileId]);
+        return { taskId: name, id: 8, name };
+      },
+      useTaskSpace(id) {
+        calls.push(["useTaskSpace", id]);
+        return id;
+      },
+    },
+    async () => {
+      const task = await taskSpace("work research", { profileId: "Profile 2" });
+      assert.equal(task.spaceId, 8);
+      assert.equal(task.name, "work research");
+    },
+  );
+  assert.deepEqual(calls, [
+    ["listTaskSpaces"],
+    ["createTaskSpace", "work research", "Profile 2"],
+    ["useTaskSpace", 8],
+  ]);
+});
+
+test("taskSpace does not reuse an existing name when a profile is explicit", async () => {
+  const calls = [];
+  await withEgo(
+    {
+      async listTaskSpaces() {
+        calls.push(["listTaskSpaces"]);
+        return {
+          taskSpaces: [
+            {
+              taskId: "work research",
+              id: 7,
+              name: "work research",
+              ownership: "agent",
+            },
+          ],
+        };
+      },
+      async createTaskSpace(name, profileId) {
+        calls.push(["createTaskSpace", name, profileId]);
+        return { taskId: name, id: 8, name };
+      },
+      useTaskSpace(id) {
+        calls.push(["useTaskSpace", id]);
+        return id;
+      },
+    },
+    async () => {
+      await assert.rejects(
+        () => taskSpace("work research", { profileId: "Profile 2" }),
+        /profileId only applies when creating a new task space.*already exists/,
+      );
+    },
+  );
+  assert.deepEqual(calls, [["listTaskSpaces"]]);
+});
+
+test("taskSpace rejects profile selection when resuming a numeric space id", async () => {
+  await withEgo(
+    {
+      async listTaskSpaces() {
+        throw new Error("must not inspect spaces");
+      },
+    },
+    async () => {
+      await assert.rejects(
+        () => taskSpace(7, { profileId: "Profile 2" }),
+        /profileId can only be used with a new task-space name/,
+      );
+    },
+  );
+});
+
+test("taskSpace rejects empty profile ids before calling Ego Lite", async () => {
+  await withEgo(
+    {
+      async listTaskSpaces() {
+        throw new Error("must not inspect spaces");
+      },
+    },
+    async () => {
+      await assert.rejects(
+        () => taskSpace("work research", { profileId: "" }),
+        /taskSpace profileId must be a non-empty string/,
+      );
     },
   );
 });

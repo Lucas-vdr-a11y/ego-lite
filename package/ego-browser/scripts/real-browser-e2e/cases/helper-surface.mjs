@@ -1,6 +1,7 @@
 export function helperSurfaceCase() {
   return `
     const expectedHelpers = [
+      "profiles",
       "listTaskSpaces",
       "switchTaskSpace",
       "newTaskSpace",
@@ -57,6 +58,7 @@ export function helperSurfaceCase() {
     assertIncludes(defaultHelp, "TaskSpace.openPage", "default help presents the v2 object API");
     assertIncludes(defaultHelp, "TaskSpace.pages", "default help presents managed Pages");
     assertIncludes(defaultHelp, "TaskSpace.tabs", "default help presents tab inventory");
+    assertIncludes(defaultHelp, "profiles", "default help presents browser profile selection");
     assertIncludes(defaultHelp, "Page.waitForTimeout", "default help presents fixed waits");
     assertIncludes(
       help("TaskSpace.listPages"),

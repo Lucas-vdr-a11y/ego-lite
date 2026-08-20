@@ -4,8 +4,8 @@ import { resolveElementObjectId } from "../element-resolver.js";
 
 /**
  * Resolve any selector form to a CDP Runtime objectId handle.
- * Accepts @ref / ref=N, loc=css:/loc=role:/loc=href:, xpath=, and raw CSS —
- * the same surface as the pointer/observe helpers, via the unified resolver.
+ * Accepts @ref / ref=N, loc=css:/loc=role:/loc=href:, text=, xpath=, and raw
+ * CSS — the same surface as the pointer/observe helpers, via the unified resolver.
  * Refreshes the RefMap on demand when the input is a ref and the map is empty.
  * @param {string} selectorOrRef Selector or ref string.
  * @returns {Promise<{objectId: string, sessionId?: string}>}

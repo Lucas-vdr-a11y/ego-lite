@@ -1,6 +1,7 @@
 import { environmentCase } from "./environment.mjs";
 import { helperSurfaceCase } from "./helper-surface.mjs";
 import { crossSpaceV2Case, taskSpaceCase } from "./task-space.mjs";
+import { profileSelectionCase } from "./profile-selection.mjs";
 import { navigationCase } from "./navigation.mjs";
 import { observationCase } from "./observation.mjs";
 import { pointerCase } from "./pointer.mjs";
@@ -17,6 +18,7 @@ import { pageMediaPlaybackCase } from "./page-media-playback.mjs";
 import { pageScrolledScreenshotCase } from "./page-screenshot.mjs";
 import { pageSnapshotLocatorCase } from "./page-snapshot-locators.mjs";
 import { pageShadowDomCase } from "./page-shadow-dom.mjs";
+import { pageTextLocatorCase } from "./page-text-locators.mjs";
 import { pageLoadStatesCase } from "./page-load-states.mjs";
 import { runtimeCase } from "./runtime.mjs";
 import { runtimeRegressionCase } from "./runtime-regression.mjs";
@@ -46,6 +48,7 @@ export const e2eCases = [
   { name: "environment initialization", body: environmentCase },
   { name: "helper surface", body: helperSurfaceCase },
   { name: "task spaces and control", body: taskSpaceCase },
+  { name: "TaskSpace profile selection", body: profileSelectionCase },
   { name: "v2 cross-space routing", body: crossSpaceV2Case },
   { name: "navigation helpers", body: navigationCase },
   { name: "observation helpers", body: observationCase },
@@ -91,6 +94,7 @@ export const e2eCases = [
   { name: "Page scrolled screenshot", body: pageScrolledScreenshotCase },
   { name: "Page snapshot locator quality", body: pageSnapshotLocatorCase },
   { name: "Page open Shadow DOM locators", body: pageShadowDomCase },
+  { name: "Page text locators", body: pageTextLocatorCase },
   { name: "Page load states", body: pageLoadStatesCase },
   { name: "v1 and v2 action parity", body: v1V2ActionParityCase },
   { name: "portable keyboard workflow", body: portableKeyboardWorkflowCase },

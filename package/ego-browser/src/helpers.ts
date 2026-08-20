@@ -5,6 +5,7 @@ import { pathToFileURL } from "node:url";
 import { setOverrides, state } from "./state.js";
 import { invokeEgo, isEgoUserControlError } from "./ego-errors.js";
 import { help as helpRuntime, formatHelp } from "./help-runtime.js";
+import { validatePublicApiOptions } from "./public-api-schema.js";
 import { cdp, decodeUnserializableJsValue, js } from "./cdp-eval.js";
 import * as pointer from "./driver/pointer.js";
 import * as keyboard from "./driver/keyboard.js";
@@ -86,6 +87,33 @@ export async function listTaskSpaces() {
   );
 }
 
+/**
+ * List browser profiles that may be selected when creating a task space.
+ * Profile ids are stable locators; display names are not guaranteed unique.
+ * @returns {Promise<Array<{id:string,name:string,isDefault:boolean}>>}
+ */
+export async function profiles() {
+  const ego = globalThis.ego;
+  if (!ego || typeof ego.listProfiles !== "function") {
+    throw new Error("profiles requires ego.listProfiles");
+  }
+  const result = await invokeEgo("profiles", () => ego.listProfiles());
+  if (
+    !Array.isArray(result?.profiles) ||
+    !result.profiles.every(
+      (profile) =>
+        profile &&
+        typeof profile.id === "string" &&
+        profile.id.length > 0 &&
+        typeof profile.name === "string" &&
+        typeof profile.isDefault === "boolean",
+    )
+  ) {
+    throw new Error("profiles expected entries with id, name, and isDefault");
+  }
+  return result.profiles;
+}
+
 /*
  * Task space ownership policy (`ownership`: "agent" | "agentDelegatedToUser" | "user").
  * "agent" and "agentDelegatedToUser" are both agent-owned (see isAgentOwned) — the
@@ -138,15 +166,22 @@ export async function switchTaskSpace(nameOrId) {
 /**
  * Create an agent-owned task space and select it for the current Node invocation.
  * @param {string} name Task space name.
+ * @param {string} [profileId] Profile id returned by profiles().
  * @returns {Promise<{taskId:string,id:number,name:string,createdBy?:string,ownership?:string,recentTabTitles?:string[]}>}
  */
-export async function newTaskSpace(name) {
+export async function newTaskSpace(name, profileId?: string) {
   const ego = globalThis.ego;
   if (!ego || typeof ego.createTaskSpace !== "function") {
     throw new Error("newTaskSpace requires ego.createTaskSpace");
   }
+  // Do not pass an explicit undefined: older native bindings reject extra
+  // arguments, while newer builds accept profileId as the second argument.
   const created = normalizeTaskSpace(
-    await invokeEgo("newTaskSpace", () => ego.createTaskSpace(name)),
+    await invokeEgo("newTaskSpace", () =>
+      profileId === undefined
+        ? ego.createTaskSpace(name)
+        : ego.createTaskSpace(name, profileId),
+    ),
   );
   if (!created) {
     throw new Error("newTaskSpace returned an invalid task space");
@@ -196,10 +231,31 @@ export async function useOrCreateTaskSpace(nameOrId) {
  * Return the v2 object handle for an existing task space, or create the space
  * when a string name does not exist.
  * @param {string|number} nameOrId Task space name or numeric id.
+ * @param {{profileId?:string}} [options] Creation options for a new named space.
  * @returns {Promise<import('./page-model.js').TaskSpace>}
  */
-export async function taskSpace(nameOrId) {
-  const descriptor = await useOrCreateTaskSpace(nameOrId);
+export async function taskSpace(
+  nameOrId,
+  options: { profileId?: string } = {},
+) {
+  validatePublicApiOptions("taskSpace", options);
+  const { profileId } = options;
+  if (profileId === undefined) {
+    const descriptor = await useOrCreateTaskSpace(nameOrId);
+    return createTaskSpaceHandle(descriptor);
+  }
+  if (typeof nameOrId !== "string") {
+    throw new TypeError(
+      "taskSpace profileId can only be used with a new task-space name",
+    );
+  }
+  const existing = findMatchingTaskSpace(await listTaskSpaces(), nameOrId);
+  if (existing) {
+    throw new Error(
+      `taskSpace profileId only applies when creating a new task space; ${JSON.stringify(nameOrId)} already exists`,
+    );
+  }
+  const descriptor = await newTaskSpace(nameOrId, profileId);
   return createTaskSpaceHandle(descriptor);
 }
 
@@ -541,6 +597,7 @@ export function helperContext(extra: any = {}) {
     runSiteTool,
     runSiteBrowserTool,
     learnContext,
+    profiles,
     listTaskSpaces,
     switchTaskSpace,
     newTaskSpace,

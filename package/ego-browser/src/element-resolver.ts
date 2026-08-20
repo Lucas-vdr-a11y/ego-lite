@@ -448,12 +448,18 @@ function buildLocatorFindJs(locator) {
   if (locator.kind === "css") {
     return buildCssFindJs(locator.selector);
   }
+  if (locator.kind === "text") {
+    return `(() => ${textElementsJs(locator)}[0] || null)()`;
+  }
   return `(() => ${hrefElementsJs(locator.href)}[0] || null)()`;
 }
 
 function buildLocatorCountJs(locator) {
   if (locator.kind === "css") {
     return buildCssCountJs(locator.selector);
+  }
+  if (locator.kind === "text") {
+    return `(() => ${textElementsJs(locator)}.length)()`;
   }
   return `(() => ${hrefElementsJs(locator.href)}.length)()`;
 }
@@ -479,6 +485,81 @@ function hrefElementsJs(href) {
               return false;
             }
           })`;
+}
+
+function textElementsJs(locator) {
+  return `(() => {
+            ${OPEN_SHADOW_QUERY_HELPER}
+            const spec = {
+              mode: ${JSON.stringify(locator.mode)},
+              text: ${JSON.stringify(locator.text)}
+            };
+            const normalize = (value) =>
+              String(value ?? "").replace(/\\s+/g, " ").trim();
+            const expected = normalize(spec.text);
+            const excludedTags = new Set([
+              "HEAD",
+              "NOSCRIPT",
+              "SCRIPT",
+              "STYLE",
+              "TEMPLATE",
+              "TITLE"
+            ]);
+            const elements = __egoQueryAllOpenShadow("*").filter(
+              (element) => !excludedTags.has(element.tagName)
+            );
+
+            function fullText(element) {
+              const type = String(element.getAttribute?.("type") || "").toLowerCase();
+              if (element.tagName === "INPUT" && (type === "button" || type === "submit")) {
+                return normalize(element.value);
+              }
+              return normalize(element.textContent);
+            }
+
+            function immediateText(element) {
+              const type = String(element.getAttribute?.("type") || "").toLowerCase();
+              if (element.tagName === "INPUT" && (type === "button" || type === "submit")) {
+                return normalize(element.value);
+              }
+              return normalize(
+                [...element.childNodes]
+                  .filter((node) => node.nodeType === Node.TEXT_NODE)
+                  .map((node) => node.nodeValue)
+                  .join(" ")
+              );
+            }
+
+            function matches(element) {
+              if (spec.mode === "exact") return immediateText(element) === expected;
+              return fullText(element)
+                .toLowerCase()
+                .includes(expected.toLowerCase());
+            }
+
+            function isComposedDescendant(ancestor, node) {
+              let current = node;
+              while (current) {
+                if (current === ancestor) return true;
+                if (current.parentElement) {
+                  current = current.parentElement;
+                  continue;
+                }
+                const root = current.getRootNode?.();
+                current = root instanceof ShadowRoot ? root.host : null;
+              }
+              return false;
+            }
+
+            const matchesByText = elements.filter(matches);
+            return matchesByText.filter(
+              (element) =>
+                !matchesByText.some(
+                  (other) =>
+                    other !== element && isComposedDescendant(element, other)
+                )
+            );
+          })()`;
 }
 
 // CSS locators from the native snapshot can point into an open shadow tree.
@@ -545,6 +626,22 @@ function parseLocator(input) {
     const href = value.slice(5);
     return href ? { kind: "href", href, raw: value } : null;
   }
+  if (value.startsWith("text=")) {
+    const body = value.slice(5).trim();
+    if (!body) return null;
+    const quoted =
+      (body.startsWith('"') && body.endsWith('"')) ||
+      (body.startsWith("'") && body.endsWith("'"));
+    const text = quoted ? parseLocatorName(body) : body;
+    return normalizeText(text)
+      ? {
+          kind: "text",
+          mode: quoted ? "exact" : "substring",
+          text,
+          raw: value,
+        }
+      : null;
+  }
   const roleMatch = /^role:([A-Za-z0-9_-]+)\[name=(.+)\]$/.exec(value);
   if (roleMatch) {
     return {
@@ -570,6 +667,12 @@ function parseLocatorName(raw) {
     return trimmed.slice(1, -1);
   }
   return trimmed;
+}
+
+function normalizeText(value) {
+  return String(value ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function boxModelCenter(model: any = {}) {

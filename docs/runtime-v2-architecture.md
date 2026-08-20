@@ -216,6 +216,11 @@ Agent 创建的页面不能 release，必须显式 close，避免制造无人管
 ```js
 const task = await taskSpace(nameOrId);
 
+const availableProfiles = await profiles();
+const profiledTask = await taskSpace(uniqueName, {
+  profileId: availableProfiles[0].id,
+});
+
 task.spaceId;
 task.name;
 task.ownership;
@@ -233,6 +238,11 @@ await task.finish();
 await task.close();
 await task.cdp(method, params, { timeout });
 ```
+
+不传 `profileId` 时，`taskSpace()` 保持原来的复用或创建行为。显式指定
+`profileId` 时只允许创建新的命名空间；同名空间已经存在或传入数字
+`spaceId` 都会报错，避免在无法核实 Profile 的情况下复用错误身份。
+`profiles()` 返回的 `id` 才是创建参数，显示名称不保证唯一。
 
 `spaceId` 是新版名称。`id` 仅作为已有脚本的兼容别名保留，不进入新版 Skill。
 `userPage()` 返回 claim/takeover 完成时用户正在看的 tab；它是边界快照，不是
@@ -291,6 +301,10 @@ load state。
 CSS selector 会在 document 和每一层 open shadow root 中查找，因而 Shadow DOM
 节点也可以通过 `loc=css:` 或 raw CSS 操作。selector 应描述元素在自身 tree scope
 内的结构；XPath 和 closed shadow root 不跨 shadow boundary。
+
+`text=...` 按页面文本定位最小的匹配元素。未加引号时会归一化空白、忽略大小写
+并做子串匹配；`text="..."` 使用大小写敏感的精确匹配。文本定位同样搜索 open
+shadow root；存在多个匹配时拒绝操作，不自动选择第一个。
 
 文件上传不操作系统文件选择器。已有 file input 时，`setInputFiles()` 直接设置
 文件；网站点击后才创建 input 时，先建立 `waitForFileChooser()`，再点击并通过
@@ -488,8 +502,8 @@ V2 API 的签名、options 校验、默认 help manifest 和
 
 ## 11. 实施状态
 
-公共 API schema、默认 V2 help、显式 legacy help、生成式 API 参考和用户页面
-边界已经实现。真实 Ego Lite E2E 已覆盖兼容接口、TaskSpace/Page、多 space、
+公共 API schema、默认 V2 help、显式 legacy help、生成式 API 参考、Profile 选择和
+用户页面边界已经实现。真实 Ego Lite E2E 已覆盖兼容接口、TaskSpace/Page、多 space、
 popup 盘点兜底、键鼠、CDP、snapshot 和视觉链路。site skills 暂时保持 legacy
 surface，不属于本阶段。
 
@@ -508,6 +522,7 @@ surface，不属于本阶段。
 - 多轮凭标签取回同一 Page，`goto()` 不增加 tab。
 - 多个 Page 的 session、事件和同号 ref 不串页。
 - 跨 space 操作按 gate 串行并落到正确 space。
+- 显式 Profile 只创建新空间；同名复用、数字 ID 和不存在的 Profile 均安全失败。
 - 页面预算在创建前拒绝，错误给出可执行的 close/goto 建议。
 - `pages()` 只返回受管 Page；`tabs()` 还返回未受管 tab，二者都会先完成盘点。
 - `waitForTimeout()` 校验毫秒参数，不激活 Page，也不阻塞其他 space 的操作。
