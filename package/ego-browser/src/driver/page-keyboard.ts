@@ -6,6 +6,10 @@ export type PageKeyboardServices = {
     timeoutMs?: number,
   ): Promise<any>;
   sleep(ms: number): Promise<void>;
+  withTemporaryClipboardText<T>(
+    text: string,
+    action: () => Promise<T>,
+  ): Promise<T>;
   platform?: string;
 };
 
@@ -95,33 +99,51 @@ export class PageKeyboardController {
     chord: string,
     options: PageKeyboardPressOptions = {},
   ): Promise<unknown> {
-    const tokens = splitChord(chord);
-    return this.#runObserved(async (sessionId) => {
-      const pressed: string[] = [];
-      let actionError: unknown;
-      try {
-        for (const token of tokens) {
-          pressed.push(token);
-          await this.#down(sessionId, token);
-        }
-        if (options.delay) await this.#services.sleep(options.delay);
-      } catch (error) {
-        actionError = error;
-      }
+    return this.#runObserved((sessionId) =>
+      this.pressInSession(sessionId, chord, options),
+    );
+  }
 
-      let releaseError: unknown;
-      // Releasing in reverse order prevents a failed shortcut from leaving a
-      // modifier held for every later mouse or keyboard action on this Page.
-      for (const token of pressed.reverse()) {
-        try {
-          await this.#up(sessionId, token);
-        } catch (error) {
-          releaseError ??= error;
-        }
+  /** Press a chord inside an existing Page action boundary. */
+  async pressInSession(
+    sessionId: string,
+    chord: string,
+    options: PageKeyboardPressOptions = {},
+  ): Promise<void> {
+    const tokens = splitChord(chord);
+    const pressed: string[] = [];
+    let actionError: unknown;
+    try {
+      for (const token of tokens) {
+        pressed.push(token);
+        await this.#down(sessionId, token);
       }
-      if (actionError) throw actionError;
-      if (releaseError) throw releaseError;
-    });
+      if (options.delay) await this.#services.sleep(options.delay);
+    } catch (error) {
+      actionError = error;
+    }
+
+    let releaseError: unknown;
+    // Releasing in reverse order prevents a failed shortcut from leaving a
+    // modifier held for every later mouse or keyboard action on this Page.
+    for (const token of pressed.reverse()) {
+      try {
+        await this.#up(sessionId, token);
+      } catch (error) {
+        releaseError ??= error;
+      }
+    }
+    if (actionError) throw actionError;
+    if (releaseError) throw releaseError;
+  }
+
+  async paste(text: string): Promise<unknown> {
+    assertText(text, "page.keyboard.paste");
+    return this.#runObserved((sessionId) =>
+      this.#services.withTemporaryClipboardText(text, () =>
+        this.pressInSession(sessionId, "ControlOrMeta+V"),
+      ),
+    );
   }
 
   async insertText(text: string): Promise<unknown> {

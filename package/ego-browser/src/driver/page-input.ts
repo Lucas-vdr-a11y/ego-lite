@@ -36,6 +36,7 @@ export async function setInputFilesInPage(
     refMap,
     selector,
     iframeSessions,
+    { strict: true },
   );
   let inputObjectId: string | undefined;
   try {

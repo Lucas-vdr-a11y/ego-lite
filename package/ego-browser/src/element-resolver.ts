@@ -95,10 +95,7 @@ export async function resolveElementCenter(
       candidateSessionId,
     );
     if (result.exceptionDetails) {
-      throw new ElementResolutionError(
-        `Invalid selector: ${selectorOrRef}: ${exceptionText(result)}`,
-        "permanent",
-      );
+      throw invalidSelectorError(selectorOrRef, result);
     }
     const value = result.result?.value;
     if (typeof value?.x === "number" && typeof value?.y === "number") {
@@ -117,7 +114,8 @@ export async function resolveElementObjectId(
   refMap,
   selectorOrRef,
   iframeSessions = new Map(),
-) {
+  options: { strict?: boolean } = {},
+): Promise<{ objectId: string; sessionId: string; frameId?: string }> {
   const refId = parseRef(selectorOrRef);
   if (refId) {
     const entry = refMap.get(refId);
@@ -190,7 +188,15 @@ export async function resolveElementObjectId(
     return resolveLocatorObjectId(cdp, sessionId, locator, iframeSessions);
   }
 
-  for (const candidateSessionId of pageSessions(sessionId, iframeSessions)) {
+  const sessions = pageSessions(sessionId, iframeSessions);
+  if (options.strict) {
+    return resolveRawSelectorObjectId(
+      cdp,
+      sessions,
+      parseRawSelector(selectorOrRef),
+    );
+  }
+  for (const candidateSessionId of sessions) {
     const result = await send(
       cdp,
       "Runtime.evaluate",
@@ -203,10 +209,7 @@ export async function resolveElementObjectId(
       candidateSessionId,
     );
     if (result.exceptionDetails) {
-      throw new ElementResolutionError(
-        `Invalid selector: ${selectorOrRef}: ${exceptionText(result)}`,
-        "permanent",
-      );
+      throw invalidSelectorError(selectorOrRef, result);
     }
     const objectId = result.result?.objectId;
     if (objectId) return { objectId, sessionId: candidateSessionId };
@@ -214,6 +217,91 @@ export async function resolveElementObjectId(
   throw new ElementResolutionError(
     `Element not found: ${selectorOrRef}`,
     "transient",
+  );
+}
+
+async function resolveRawSelectorObjectId(cdp, sessions, selector) {
+  const match = await findUniqueRawSelectorSession(cdp, sessions, selector);
+  const result = await send(
+    cdp,
+    "Runtime.evaluate",
+    {
+      expression: buildFindElementJs(selector.raw),
+      returnByValue: false,
+      awaitPromise: false,
+      objectGroup: "ego-browser",
+    },
+    match.sessionId,
+  );
+  if (result.exceptionDetails) {
+    throw invalidSelectorError(selector.raw, result);
+  }
+  const objectId = result.result?.objectId;
+  if (!objectId) {
+    throw new ElementResolutionError(
+      `Element not found: ${selector.raw}`,
+      "transient",
+    );
+  }
+  return { objectId, sessionId: match.sessionId };
+}
+
+async function findUniqueRawSelectorSession(cdp, sessions, selector) {
+  const mainCount = await rawSelectorCount(cdp, sessions[0], selector);
+  if (mainCount > 1) throw rawSelectorCountError(selector.raw, mainCount);
+  if (mainCount === 1) return { sessionId: sessions[0] };
+
+  const matches = [];
+  let count = 0;
+  for (const candidateSessionId of sessions.slice(1)) {
+    const candidateCount = await rawSelectorCount(
+      cdp,
+      candidateSessionId,
+      selector,
+    );
+    count += candidateCount;
+    if (candidateCount > 0) {
+      matches.push({ count: candidateCount, sessionId: candidateSessionId });
+    }
+  }
+  if (count === 0) {
+    throw new ElementResolutionError(
+      `Selector ${selector.raw} matched 0 elements`,
+      "transient",
+    );
+  }
+  if (count > 1) throw rawSelectorCountError(selector.raw, count);
+  return matches[0];
+}
+
+async function rawSelectorCount(cdp, sessionId, selector) {
+  const result = await send(
+    cdp,
+    "Runtime.evaluate",
+    {
+      expression: buildRawSelectorCountJs(selector),
+      returnByValue: true,
+      awaitPromise: false,
+    },
+    sessionId,
+  );
+  if (result.exceptionDetails) {
+    throw invalidSelectorError(selector.raw, result);
+  }
+  return Number(result.result?.value || 0);
+}
+
+function rawSelectorCountError(raw, count) {
+  return new ElementResolutionError(
+    `Selector ${raw} matched ${count} elements`,
+    "permanent",
+  );
+}
+
+function invalidSelectorError(raw, result) {
+  return new ElementResolutionError(
+    `Invalid selector: ${raw}: ${exceptionText(result)}`,
+    "permanent",
   );
 }
 
@@ -571,6 +659,20 @@ function buildFindElementJs(selector) {
     return `document.evaluate(${JSON.stringify(String(selector).slice(6))}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue`;
   }
   return buildCssFindJs(selector);
+}
+
+function parseRawSelector(input) {
+  const raw = String(input);
+  return raw.startsWith("xpath=")
+    ? { kind: "xpath", selector: raw.slice(6), raw }
+    : { kind: "css", selector: raw, raw };
+}
+
+function buildRawSelectorCountJs(selector) {
+  if (selector.kind === "xpath") {
+    return `document.evaluate(${JSON.stringify(selector.selector)}, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null).snapshotLength`;
+  }
+  return buildCssCountJs(selector.selector);
 }
 
 function buildLocatorFindJs(locator) {

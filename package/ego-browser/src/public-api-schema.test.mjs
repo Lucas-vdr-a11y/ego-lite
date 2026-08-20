@@ -23,7 +23,10 @@ test("the public API schema contains the v2 entry points and object methods", ()
     "Page.targetId",
     "Page.waitForURL",
     "Page.waitForTimeout",
+    "Page.focus",
+    "Page.press",
     "Page.keyboard.press",
+    "Page.keyboard.paste",
   ]) {
     assert(names.has(name), `missing public API schema entry: ${name}`);
   }
@@ -36,6 +39,8 @@ test("schema-driven option validation rejects unknown and invalid fields", () =>
     button: "left",
     clickCount: 2,
     delay: 0,
+    force: true,
+    timeout: 500,
   });
 
   assert.throws(
@@ -66,4 +71,9 @@ test("the generated reference contains signatures and option descriptions", () =
   );
   assert.match(markdown, /`as` — Permanent Page label\.<br>`timeout`/);
   assert.match(markdown, /Open and durably label a new Page/);
+  assert.match(
+    markdown,
+    /Maximum actionability wait in milliseconds; defaults to 3000/,
+  );
+  assert.match(markdown, /missing parent directories are created/);
 });

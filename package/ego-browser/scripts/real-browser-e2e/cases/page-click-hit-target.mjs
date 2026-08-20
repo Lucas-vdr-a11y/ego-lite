@@ -23,7 +23,7 @@ export function pageClickHitTargetCase() {
     });
 
     await assertRejects(
-      () => page.click("#covered-target"),
+      () => page.click("#covered-target", { timeout: 500 }),
       "intercepts pointer events",
       "high-level click rejects when another element covers its action point"
     );
@@ -44,12 +44,14 @@ export function pageClickHitTargetCase() {
       "low-level coordinate click still targets the topmost element"
     );
 
-    await page.evaluate("document.querySelector('#click-overlay').remove()");
+    await page.evaluate(() => {
+      setTimeout(() => document.querySelector("#click-overlay")?.remove(), 650);
+    });
     await page.click("#covered-target");
     assertEqual(
-      (await page.evaluate("window.__hitTargetClicks")).target,
-      1,
-      "the target becomes clickable after the overlay is removed"
+      JSON.stringify(await page.evaluate("window.__hitTargetClicks")),
+      JSON.stringify({ target: 1, overlay: 1 }),
+      "the high-level click waits until a temporary overlay is removed"
     );
 
     await page.evaluate(() => {
@@ -74,7 +76,7 @@ export function pageClickHitTargetCase() {
       document.body.append(target);
     });
     await assertRejects(
-      () => page.click("#hover-covered-target"),
+      () => page.click("#hover-covered-target", { timeout: 500 }),
       "intercepts pointer events",
       "click rechecks the hit target after mouse movement"
     );
@@ -101,6 +103,20 @@ export function pageClickHitTargetCase() {
       await page.evaluate("window.__descendantClicks"),
       1,
       "a descendant at the action point is a valid hit target"
+    );
+
+    await page.evaluate(() => {
+      for (const text of ["First duplicate", "Second duplicate"]) {
+        const button = document.createElement("button");
+        button.className = "strict-duplicate";
+        button.textContent = text;
+        document.body.append(button);
+      }
+    });
+    await assertRejects(
+      () => page.click("button.strict-duplicate"),
+      "matched 2 elements",
+      "raw CSS Page actions reject ambiguous selectors"
     );
 
     await page.close();

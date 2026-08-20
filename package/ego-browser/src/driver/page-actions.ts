@@ -24,20 +24,27 @@ export type PageClickOptions = {
   clickCount?: number;
   delay?: number;
   position?: { x: number; y: number };
+  force?: boolean;
+  timeout?: number;
 };
 
 export type PageFillOptions = {
   clearFirst?: boolean;
+  timeout?: number;
 };
 
 export type PageHoverOptions = {
   position?: { x: number; y: number };
+  force?: boolean;
+  timeout?: number;
 };
 
 export type PageDragAndDropOptions = {
   button?: MouseButton;
   sourcePosition?: { x: number; y: number };
   targetPosition?: { x: number; y: number };
+  force?: boolean;
+  timeout?: number;
 };
 
 export type PageMouseClickOptions = {
@@ -84,14 +91,18 @@ export async function clickInPage(
     refMap,
     selector,
     iframeSessions,
+    { strict: true },
   );
   try {
-    const point = await resolveElementPoint(
+    let point = await resolveElementPoint(
       services,
       target.sessionId,
       target.objectId,
       options.position,
       target.frameId,
+      "page.click",
+      options.force,
+      true,
     );
     const buttons = pressedButtons(button);
     await dispatchMouseEvent(services, target.sessionId, {
@@ -102,16 +113,39 @@ export async function clickInPage(
       buttons: 0,
       modifiers,
     });
+    if (target.frameId) {
+      // Moving into a same-process iframe can adjust the outer document's
+      // scroll position. Translate the frame-local point again before the
+      // press so native input uses the post-hover viewport coordinates.
+      const pagePoint = await pagePointForFrame(
+        services,
+        target.sessionId,
+        target.frameId,
+        point.local,
+      );
+      point = { ...pagePoint, local: point.local };
+      await dispatchMouseEvent(services, target.sessionId, {
+        type: "mouseMoved",
+        x: point.x,
+        y: point.y,
+        button: "none",
+        buttons: 0,
+        modifiers,
+      });
+    }
     for (let count = 1; count <= clickCount; count += 1) {
       // Moving the pointer or completing an earlier click can change layout.
       // Recheck before every press so hover-created overlays fail closed.
-      await assertElementReceivesPointerEvents(
-        services,
-        target.sessionId,
-        target.objectId,
-        point.local,
-        count === 1,
-      );
+      // A same-process iframe must keep its native move/press sequence
+      // contiguous; the initial check already covered its local hit target.
+      if (!options.force && !target.frameId) {
+        await assertElementReceivesPointerEvents(
+          services,
+          target.sessionId,
+          target.objectId,
+          point.local,
+        );
+      }
       await dispatchMouseEvent(services, target.sessionId, {
         type: "mousePressed",
         x: point.x,
@@ -168,6 +202,7 @@ export async function fillInPage(
     refMap,
     selector,
     iframeSessions,
+    { strict: true },
   );
   try {
     const preparationSource = `function fillPreparation(value, clearFirst) {
@@ -184,6 +219,13 @@ export async function fillInPage(
         return { x: (left + right) / 2, y: (top + bottom) / 2 };
       };
       const tag = this.nodeName.toLowerCase();
+      const view = this.ownerDocument.defaultView;
+      const rect = this.getBoundingClientRect();
+      const style = view?.getComputedStyle(this);
+      if (
+        !view || rect.width <= 0 || rect.height <= 0 ||
+        style?.visibility === "hidden" || style?.display === "none"
+      ) return { error: "element is not visible" };
       if (this.disabled) return { error: "element is disabled" };
       if (this.readOnly) return { error: "element is read only" };
 
@@ -241,7 +283,7 @@ export async function fillInPage(
     };
     let result = await prepare();
     if (typeof result?.error === "string") {
-      throw new Error(`page.fill failed: ${result.error}`);
+      throw fillPreparationError(result.error);
     }
     showAgentCursor(
       services,
@@ -283,7 +325,7 @@ export async function fillInPage(
       );
       result = await prepare();
       if (typeof result?.error === "string") {
-        throw new Error(`page.fill failed: ${result.error}`);
+        throw fillPreparationError(result.error);
       }
       if (result?.status !== "needsinput") {
         throw new Error("page.fill received an invalid preparation result");
@@ -314,6 +356,55 @@ export async function fillInPage(
         resolved.sessionId,
       )
       .catch(() => {});
+  }
+}
+
+/** Focus one strictly resolved element in an explicit Page session. */
+export async function focusInPage(
+  services: PageActionServices,
+  sessionId: string,
+  refMap: RefMap,
+  selector: string,
+  iframeSessions = new Map<string, string>(),
+): Promise<void> {
+  assertPageSelector(selector);
+  const resolved = await resolveElementObjectId(
+    cdpAdapter(services),
+    sessionId,
+    refMap,
+    selector,
+    iframeSessions,
+    { strict: true },
+  );
+  const source = `function focusElementForAction() {
+    if (!this.isConnected) return { error: "element is not connected" };
+    if (typeof this.focus !== "function") return { error: "element is not focusable" };
+    this.focus();
+    const active = this.ownerDocument.activeElement;
+    return active === this || this.contains(active)
+      ? { focused: true }
+      : { error: "element could not be focused" };
+  }`;
+  try {
+    const response = await services.cdp(
+      "Runtime.callFunctionOn",
+      {
+        functionDeclaration: source,
+        objectId: resolved.objectId,
+        returnByValue: true,
+        awaitPromise: false,
+      },
+      resolved.sessionId,
+    );
+    const result = runtimeValue(response, source);
+    if (typeof result?.error === "string") {
+      throw new ElementResolutionError(
+        `page.focus failed: ${result.error}`,
+        "transient",
+      );
+    }
+  } finally {
+    await releaseObject(services, resolved.sessionId, resolved.objectId);
   }
 }
 
@@ -419,6 +510,9 @@ async function clickResolvedElement(
     objectId,
     undefined,
     frameId,
+    "page.fill",
+    false,
+    true,
   );
   await dispatchMouseEvent(services, sessionId, {
     type: "mouseMoved",
@@ -433,7 +527,6 @@ async function clickResolvedElement(
     sessionId,
     objectId,
     point.local,
-    true,
   );
   await dispatchMouseEvent(services, sessionId, {
     type: "mousePressed",
@@ -472,6 +565,7 @@ export async function hoverInPage(
     refMap,
     selector,
     iframeSessions,
+    { strict: true },
   );
   try {
     const point = await resolveElementPoint(
@@ -480,6 +574,8 @@ export async function hoverInPage(
       resolved.objectId,
       options.position,
       resolved.frameId,
+      "page.hover",
+      options.force,
     );
     await dispatchMouseEvent(services, resolved.sessionId, {
       type: "mouseMoved",
@@ -513,6 +609,7 @@ export async function dragAndDropInPage(
     refMap,
     sourceSelector,
     iframeSessions,
+    { strict: true },
   );
   let target;
   try {
@@ -522,6 +619,7 @@ export async function dragAndDropInPage(
       refMap,
       targetSelector,
       iframeSessions,
+      { strict: true },
     );
     const sourcePoint = await resolveElementPoint(
       services,
@@ -529,6 +627,8 @@ export async function dragAndDropInPage(
       source.objectId,
       options.sourcePosition,
       source.frameId,
+      "page.dragAndDrop",
+      options.force,
     );
     const targetPoint = await resolveElementPoint(
       services,
@@ -536,6 +636,8 @@ export async function dragAndDropInPage(
       target.objectId,
       options.targetPosition,
       target.frameId,
+      "page.dragAndDrop",
+      options.force,
     );
     const button = options.button ?? "left";
     const buttons = pressedButtons(button);
@@ -709,6 +811,9 @@ async function resolveElementPoint(
   objectId: string,
   position?: { x: number; y: number },
   frameId?: string,
+  actionName = "page.click",
+  force = false,
+  checkEnabled = false,
 ): Promise<{ x: number; y: number; local: { x: number; y: number } }> {
   if (
     position !== undefined &&
@@ -717,13 +822,16 @@ async function resolveElementPoint(
       !Number.isFinite(position.x) ||
       !Number.isFinite(position.y))
   ) {
-    throw new TypeError("page.click position requires finite x and y offsets");
+    throw new TypeError(
+      `${actionName} position requires finite x and y offsets`,
+    );
   }
   const pointExpression = position
     ? "({x:rect.x+position.x,y:rect.y+position.y})"
     : "({x:rect.x+rect.width/2,y:rect.y+rect.height/2})";
-  const expression = `function(${position ? "position" : ""}) {
-    ${HIT_TARGET_HELPERS}
+  const expression = `async function(${position ? "position" : ""}) {
+    ${force ? "" : HIT_TARGET_HELPERS}
+    if (!this.isConnected) return { error: "element is not connected" };
     let rect = this.getBoundingClientRect();
     let point = ${pointExpression};
     const outsideViewport =
@@ -742,9 +850,38 @@ async function resolveElementPoint(
     ) {
       return { error: "element is not visible in the viewport" };
     }
-    const interceptor = interceptingElementAtPoint(this, point);
-    if (interceptor) {
-      return { error: describeHitTarget(interceptor) + " intercepts pointer events" };
+    if (${checkEnabled ? "true" : "false"}) {
+      const disabled = this.matches?.(":disabled") ||
+        this.closest?.('[aria-disabled="true"]');
+      if (disabled) return { error: "element is disabled" };
+    }
+    const firstRect = { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+    await new Promise((resolve) => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve();
+      };
+      const timer = setTimeout(finish, 100);
+      requestAnimationFrame(() => requestAnimationFrame(finish));
+    });
+    rect = this.getBoundingClientRect();
+    if (
+      Math.abs(rect.x - firstRect.x) > 0.25 ||
+      Math.abs(rect.y - firstRect.y) > 0.25 ||
+      Math.abs(rect.width - firstRect.width) > 0.25 ||
+      Math.abs(rect.height - firstRect.height) > 0.25
+    ) {
+      return { error: "element is not stable" };
+    }
+    point = ${pointExpression};
+    if (!${force ? "true" : "false"}) {
+      const interceptor = interceptingElementAtPoint(this, point);
+      if (interceptor) {
+        return { error: describeHitTarget(interceptor) + " intercepts pointer events" };
+      }
     }
     return point;
   }`;
@@ -755,22 +892,19 @@ async function resolveElementPoint(
       objectId,
       arguments: position ? [{ value: position }] : [],
       returnByValue: true,
-      awaitPromise: false,
+      awaitPromise: true,
     },
     sessionId,
   );
   const point = runtimeValue(response, expression);
   if (typeof point?.error === "string") {
-    if (point.error === "element is not visible in the viewport") {
-      throw new ElementResolutionError(
-        `page.click failed: ${point.error}`,
-        "transient",
-      );
-    }
-    throw new Error(`page.click failed: ${point.error}`);
+    throw new ElementResolutionError(
+      `${actionName} failed: ${point.error}`,
+      "transient",
+    );
   }
   if (!Number.isFinite(point?.x) || !Number.isFinite(point?.y)) {
-    throw new Error("page.click could not resolve the element position");
+    throw new Error(`${actionName} could not resolve the element position`);
   }
   const pagePoint = await pagePointForFrame(
     services,
@@ -819,7 +953,6 @@ async function assertElementReceivesPointerEvents(
   sessionId: string,
   objectId: string,
   point: { x: number; y: number },
-  retryDisconnected = false,
 ): Promise<void> {
   const expression = `function(point) {
     ${HIT_TARGET_HELPERS}
@@ -842,14 +975,23 @@ async function assertElementReceivesPointerEvents(
   );
   const result = runtimeValue(response, expression);
   if (typeof result?.error === "string") {
-    if (retryDisconnected && result.error === "element is not connected") {
-      throw new ElementResolutionError(
-        `page.click failed: ${result.error}`,
-        "transient",
-      );
-    }
-    throw new Error(`page.click failed: ${result.error}`);
+    throw new ElementResolutionError(
+      `page.click failed: ${result.error}`,
+      "transient",
+    );
   }
+}
+
+function fillPreparationError(message: string) {
+  const transient = new Set([
+    "element is not connected",
+    "element is not visible",
+    "element is disabled",
+    "element is read only",
+  ]);
+  return transient.has(message)
+    ? new ElementResolutionError(`page.fill failed: ${message}`, "transient")
+    : new Error(`page.fill failed: ${message}`);
 }
 
 // This is a compact adaptation of Playwright's composed-tree hit-target check.

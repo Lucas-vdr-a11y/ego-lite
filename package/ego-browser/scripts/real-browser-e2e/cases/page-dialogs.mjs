@@ -25,9 +25,17 @@ export function pageJavaScriptDialogHandoffCase() {
       JSON.stringify({ label: page.label, targetId: page.targetId })
     );
 
-    // Ego Lite hands the space to the user as soon as the site opens the dialog.
-    // The hard-stop output terminates this script before click() can return.
-    await page.click("#dialog-alert");
+    // Ego Lite may hand control to the user, which terminates this script. If
+    // it keeps Agent control, the Page layer must return the dialog instead of
+    // waiting for the blocked input command to time out.
+    const receipt = await page.click("#dialog-alert");
+    assertEqual(receipt.dialog?.type, "alert", "the action reports the dialog type");
+    assertEqual(
+      receipt.dialog?.message,
+      "Alert from real E2E",
+      "the action reports the dialog message"
+    );
+    cliLog(JSON.stringify({ dialogReceipt: true }));
   `;
 }
 

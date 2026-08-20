@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
   browserCdp,
@@ -137,5 +140,18 @@ test("captureScreenshot clips the currently visible scrolled viewport", async ()
     });
   } finally {
     restore();
+  }
+});
+
+test("captureScreenshot creates missing parent directories", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ego-browser-screenshot-test-"));
+  const outputPath = join(root, "nested", "screenshots", "page.png");
+  try {
+    await withCdpRuntime(async () => {
+      assert.equal(await captureScreenshot(outputPath), outputPath);
+    });
+    assert.equal(await readFile(outputPath, "utf8"), "png");
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });

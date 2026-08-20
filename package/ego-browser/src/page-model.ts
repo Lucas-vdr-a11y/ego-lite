@@ -14,6 +14,7 @@ import {
   type FileChooserOpenedEvent,
 } from "./browser-runtime.js";
 import { runtimeValue } from "./cdp-eval.js";
+import { withTemporaryClipboardText } from "./clipboard.js";
 import {
   captureScreenshotForSession,
   snapshotRaw,
@@ -25,6 +26,7 @@ import {
   clickInPage,
   dragAndDropInPage,
   fillInPage,
+  focusInPage,
   hoverInPage,
   mouseButtonInPage,
   mouseButtonMask,
@@ -115,6 +117,10 @@ type PageScreenshotOptions = Omit<CaptureScreenshotOptions, "full"> & {
 };
 
 type CdpOptions = {
+  timeout?: number;
+};
+
+type PagePressOptions = PageKeyboardPressOptions & {
   timeout?: number;
 };
 
@@ -232,6 +238,10 @@ type PageModelServices = {
     timeoutMs?: number,
   ): Promise<any>;
   showAgentMousePosition(x: number, y: number): Promise<void>;
+  withTemporaryClipboardText<T>(
+    text: string,
+    action: () => Promise<T>,
+  ): Promise<T>;
   snapshot(options?: SnapshotOptions): Promise<any>;
   screenshot(
     path: string | undefined,
@@ -272,8 +282,8 @@ export type PageActionReceipt = {
 
 const PAGE_CLOSE_CONFIRM_TIMEOUT_MS = 2_000;
 const PAGE_CLOSE_CONFIRM_INTERVAL_MS = 50;
-const PAGE_ACTION_RESOLUTION_ATTEMPTS = 3;
-const PAGE_ACTION_RESOLUTION_RETRY_MS = 50;
+const DEFAULT_PAGE_ACTION_TIMEOUT_MS = 3_000;
+const PAGE_ACTION_RESOLUTION_RETRY_MS = 500;
 const CONTROL_POLL_INTERVAL_MS = 20_000;
 const CONTROL_WAIT_TIMEOUT_MS = 600_000;
 
@@ -438,6 +448,19 @@ class PageKeyboard {
     return (await this.#controller.press(chord, options)) as PageActionReceipt;
   }
 
+  async pressInSession(
+    sessionId: string,
+    chord: string,
+    options: PageKeyboardPressOptions = {},
+  ): Promise<void> {
+    validatePublicApiOptions("Page.keyboard.press", options);
+    await this.#controller.pressInSession(sessionId, chord, options);
+  }
+
+  async paste(text: string): Promise<PageActionReceipt> {
+    return (await this.#controller.paste(text)) as PageActionReceipt;
+  }
+
   async insertText(text: string): Promise<void> {
     await this.#controller.insertText(text);
   }
@@ -536,6 +559,7 @@ const baseDefaultServices: Omit<PageModelServices, "ledger" | "pageBudget"> = {
       ego.animationHighlightMouseToPosition(x, y),
     );
   },
+  withTemporaryClipboardText,
   snapshot: snapshotRaw,
   screenshot: captureScreenshotForSession,
   pendingDialog,
@@ -1250,7 +1274,11 @@ class Page {
           this.keyboard.modifierMask(),
           iframeSessions,
         ),
-      true,
+      {
+        actionName: "page.click",
+        guardFileChooser: true,
+        timeout: options.timeout,
+      },
     );
   }
 
@@ -1271,7 +1299,11 @@ class Page {
           this.keyboard.modifierMask(),
           iframeSessions,
         ),
-      true,
+      {
+        actionName: "page.dblclick",
+        guardFileChooser: true,
+        timeout: options.timeout,
+      },
     );
   }
 
@@ -1280,16 +1312,19 @@ class Page {
     options: PageHoverOptions = {},
   ): Promise<PageActionReceipt> {
     validatePublicApiOptions("Page.hover", options);
-    return this.#runAction(selector, (sessionId, refMap, iframeSessions) =>
-      hoverInPage(
-        this.#services,
-        sessionId,
-        refMap,
-        selector,
-        options,
-        this.keyboard.modifierMask(),
-        iframeSessions,
-      ),
+    return this.#runAction(
+      selector,
+      (sessionId, refMap, iframeSessions) =>
+        hoverInPage(
+          this.#services,
+          sessionId,
+          refMap,
+          selector,
+          options,
+          this.keyboard.modifierMask(),
+          iframeSessions,
+        ),
+      { actionName: "page.hover", timeout: options.timeout },
     );
   }
 
@@ -1312,6 +1347,7 @@ class Page {
           this.keyboard.modifierMask(),
           iframeSessions,
         ),
+      { actionName: "page.dragAndDrop", timeout: options.timeout },
     );
   }
 
@@ -1321,16 +1357,65 @@ class Page {
     options: PageFillOptions = {},
   ): Promise<PageActionReceipt> {
     validatePublicApiOptions("Page.fill", options);
-    return this.#runAction(selector, (sessionId, refMap, iframeSessions) =>
-      fillInPage(
-        this.#services,
-        sessionId,
-        refMap,
-        selector,
-        value,
-        options,
-        iframeSessions,
-      ),
+    return this.#runAction(
+      selector,
+      (sessionId, refMap, iframeSessions) =>
+        fillInPage(
+          this.#services,
+          sessionId,
+          refMap,
+          selector,
+          value,
+          options,
+          iframeSessions,
+        ),
+      { actionName: "page.fill", timeout: options.timeout },
+    );
+  }
+
+  async focus(
+    selector: string,
+    options: { timeout?: number } = {},
+  ): Promise<PageActionReceipt> {
+    validatePublicApiOptions("Page.focus", options);
+    return this.#runAction(
+      selector,
+      (sessionId, refMap, iframeSessions) =>
+        focusInPage(
+          this.#services,
+          sessionId,
+          refMap,
+          selector,
+          iframeSessions,
+        ),
+      { actionName: "page.focus", timeout: options.timeout },
+    );
+  }
+
+  async press(
+    selector: string,
+    chord: string,
+    options: PagePressOptions = {},
+  ): Promise<PageActionReceipt> {
+    validatePublicApiOptions("Page.press", options);
+    const { timeout, ...pressOptions } = options;
+    return this.#runAction(
+      selector,
+      async (sessionId, refMap, iframeSessions) => {
+        await focusInPage(
+          this.#services,
+          sessionId,
+          refMap,
+          selector,
+          iframeSessions,
+        );
+        await this.keyboard.pressInSession(sessionId, chord, pressOptions);
+      },
+      {
+        actionName: "page.press",
+        guardFileChooser: true,
+        timeout,
+      },
     );
   }
 
@@ -1338,15 +1423,18 @@ class Page {
     selector: string,
     path: string | string[],
   ): Promise<PageActionReceipt> {
-    return this.#runAction(selector, (sessionId, refMap, iframeSessions) =>
-      setInputFilesInPage(
-        this.#services,
-        sessionId,
-        refMap,
-        selector,
-        path,
-        iframeSessions,
-      ),
+    return this.#runAction(
+      selector,
+      (sessionId, refMap, iframeSessions) =>
+        setInputFilesInPage(
+          this.#services,
+          sessionId,
+          refMap,
+          selector,
+          path,
+          iframeSessions,
+        ),
+      { actionName: "page.setInputFiles" },
     );
   }
 
@@ -1514,18 +1602,21 @@ class Page {
       refMap: RefMap,
       iframeSessions: Map<string, string>,
     ) => Promise<void>,
-    guardFileChooser = false,
+    options: {
+      actionName?: string;
+      guardFileChooser?: boolean;
+      timeout?: number;
+    } = {},
   ): Promise<PageActionReceipt> {
     const page = await this.#resolve();
     const selectors = Array.isArray(selector) ? selector : [selector];
+    const timeoutMs = options.timeout ?? DEFAULT_PAGE_ACTION_TIMEOUT_MS;
+    const actionName = options.actionName ?? "page action";
     const { receipt } = await this.#runActionBoundary(
       page,
       async (sessionId) => {
-        for (
-          let attempt = 1;
-          attempt <= PAGE_ACTION_RESOLUTION_ATTEMPTS;
-          attempt += 1
-        ) {
+        const deadline = this.#services.now() + timeoutMs;
+        while (true) {
           try {
             const refMap = await this.#refMapForAction(page, ...selectors);
             const iframeSessions = await this.#services.ensureFrameSessions(
@@ -1535,17 +1626,20 @@ class Page {
             return;
           } catch (error) {
             if (!isRetryableElementStateError(error)) throw error;
-            if (attempt === PAGE_ACTION_RESOLUTION_ATTEMPTS) {
+            const remainingMs = deadline - this.#services.now();
+            if (remainingMs <= 0) {
               throw new ElementResolutionError(
-                `The page state changed while resolving this action after ${attempt} attempts: ${error.message}. Take a new snapshot and use a current selector.`,
+                `${actionName} timed out after ${timeoutMs}ms: ${error.message}`,
                 "transient",
               );
             }
-            await this.#services.sleep(PAGE_ACTION_RESOLUTION_RETRY_MS);
+            await this.#services.sleep(
+              Math.min(PAGE_ACTION_RESOLUTION_RETRY_MS, remainingMs),
+            );
           }
         }
       },
-      guardFileChooser,
+      options.guardFileChooser,
     );
     return receipt;
   }

@@ -81,6 +81,7 @@ export async function runRealBrowserE2e() {
     markerName,
     timeoutMs = 45000,
     expectedOutput,
+    acceptedCompletionOutput,
   ) {
     console.log(`-- ${name}`);
     const source = egoSource(body, {
@@ -103,31 +104,49 @@ export async function runRealBrowserE2e() {
 
     const durationMs = Date.now() - startedAt;
     try {
-      if (!commandError && !expectedOutput) {
+      const output = [
+        commandResult?.stdout,
+        commandResult?.stderr,
+        commandError?.stdout,
+        commandError?.stderr,
+        commandError?.message,
+      ]
+        .filter(Boolean)
+        .join("\n");
+      const completedWithAcceptedOutput =
+        !commandError &&
+        acceptedCompletionOutput &&
+        output.includes(acceptedCompletionOutput);
+      const reportedExpectedTermination =
+        expectedOutput && output.includes(expectedOutput);
+      if (
+        !commandError &&
+        !reportedExpectedTermination &&
+        !completedWithAcceptedOutput
+      ) {
         throw new Error("the browser script completed instead of terminating");
       }
-      if (expectedOutput) {
-        const output = [
-          commandResult?.stdout,
-          commandResult?.stderr,
-          commandError?.stdout,
-          commandError?.stderr,
-          commandError?.message,
-        ]
-          .filter(Boolean)
-          .join("\n");
-        if (!output.includes(expectedOutput)) {
-          throw new Error(
-            `the browser script did not report the expected hard stop: ${expectedOutput}`,
-          );
-        }
+      if (commandError && expectedOutput && !reportedExpectedTermination) {
+        throw new Error(
+          `the browser script did not report the expected hard stop: ${expectedOutput}`,
+        );
       }
       // The marker is written only after openPage() has returned. Its presence
       // distinguishes the intended hard stop from an unrelated startup error.
       await stat(join(tempDir, markerName));
-      recordResult(name, "pass", durationMs, 1);
+      const assertions = completedWithAcceptedOutput
+        ? (extractAssertionCount(
+            commandResult?.stdout,
+            commandResult?.stderr,
+          ) ?? 1)
+        : 1;
+      recordResult(name, "pass", durationMs, assertions);
       console.log(
-        `-- ${name} passed (${formatDuration(durationMs)}, expected termination)`,
+        `-- ${name} passed (${formatDuration(durationMs)}, ${
+          completedWithAcceptedOutput
+            ? `${assertions} assertions, accepted completion`
+            : "expected termination"
+        })`,
       );
     } catch (error) {
       const message = error?.message || String(error);
@@ -151,6 +170,7 @@ export async function runRealBrowserE2e() {
         testCase.markerName,
         testCase.timeoutMs,
         testCase.expectedOutput,
+        testCase.acceptedCompletionOutput,
       );
       return;
     }

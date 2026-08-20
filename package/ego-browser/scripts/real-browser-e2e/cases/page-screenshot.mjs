@@ -22,7 +22,7 @@ export function pageScrolledScreenshotCase() {
     }));
     assert(scrollPosition.x > 0 && scrollPosition.y >= 1400, "fixture is scrolled in both axes");
 
-    const defaultPath = join(artifactDir, "scrolled-default.png");
+    const defaultPath = join(artifactDir, "nested", "scrolled-default.png");
     const rawPath = join(artifactDir, "scrolled-raw.png");
     await page.screenshot({ path: defaultPath, fullPage: false });
     await page.screenshot({ path: rawPath, fullPage: false, raw: true });

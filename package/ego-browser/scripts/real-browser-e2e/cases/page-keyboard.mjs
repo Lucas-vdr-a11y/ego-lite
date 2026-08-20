@@ -28,6 +28,12 @@ export function pageKeyboardInterfaceCase() {
         });
       }
     });
+    await page.focus("#text-area");
+    assertEqual(
+      await page.evaluate("document.activeElement?.id"),
+      "text-area",
+      "page.focus addresses one selector"
+    );
 
     // U+0020 through U+007E covers every printable ASCII character.
     const printable = Array.from(
@@ -119,7 +125,7 @@ export function pageKeyboardInterfaceCase() {
       "uppercase modifier keeps the shortcut trusted",
     );
 
-    await page.keyboard.press("ControlOrMeta+A");
+    await page.press("#text-area", "ControlOrMeta+A");
     await page.keyboard.type("replaced");
     await page.keyboard.press("ArrowLeft");
     await page.keyboard.press("Backspace");
@@ -150,6 +156,14 @@ export function pageKeyboardInterfaceCase() {
       await page.evaluate("document.querySelector('#text-area').value"),
       "direct 世界🙂",
       "insertText inserts one native text payload"
+    );
+
+    await page.press("#text-area", "ControlOrMeta+A");
+    await page.keyboard.paste("pasted\\t世界\\nnext");
+    assertEqual(
+      await page.evaluate("document.querySelector('#text-area').value"),
+      "pasted\\t世界\\nnext",
+      "paste uses native clipboard input and preserves tabs and newlines"
     );
 
     await page.evaluate("window.__pageKeyboardContractEvents = []");

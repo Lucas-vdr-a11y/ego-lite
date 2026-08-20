@@ -35,7 +35,7 @@ function createFixture(rootDir) {
   let dialogOnNextClick = null;
   const pendingDialogs = new Map();
   let rejectedClickPointsRemaining = 0;
-  let interceptNextClickPoint = false;
+  let interceptedClickPointsRemaining = 0;
   let fillElementKind = "input";
   let fillText = "";
   let ignoredFillInsertionsRemaining = 0;
@@ -166,6 +166,20 @@ function createFixture(rootDir) {
             },
           };
         }
+        if (
+          /return __egoQueryAllOpenShadow\([^;]+\)\.length;/.test(
+            params.expression,
+          )
+        ) {
+          return {
+            result: { type: "number", value: elementPresent ? 1 : 0 },
+          };
+        }
+        if (params.expression.includes("ORDERED_NODE_SNAPSHOT_TYPE")) {
+          return {
+            result: { type: "number", value: elementPresent ? 1 : 0 },
+          };
+        }
         if (params.expression.includes("innerWidth")) {
           return {
             result: {
@@ -197,6 +211,11 @@ function createFixture(rootDir) {
         return { result: { type: "string", value: "complete" } };
       }
       if (method === "Runtime.callFunctionOn") {
+        if (params.functionDeclaration.includes("focusElementForAction")) {
+          return {
+            result: { type: "object", value: { focused: true } },
+          };
+        }
         if (params.functionDeclaration.includes("resolveFileInputForUpload")) {
           const targetId = targetForSession(sessionId);
           return {
@@ -266,10 +285,10 @@ function createFixture(rootDir) {
         }
         if (params.functionDeclaration.includes("getBoundingClientRect")) {
           if (
-            interceptNextClickPoint &&
+            interceptedClickPointsRemaining > 0 &&
             params.functionDeclaration.includes("elementFromPoint")
           ) {
-            interceptNextClickPoint = false;
+            interceptedClickPointsRemaining -= 1;
             return {
               result: {
                 type: "object",
@@ -400,6 +419,14 @@ function createFixture(rootDir) {
     async showAgentMousePosition(x, y) {
       calls.push(["showAgentMousePosition", x, y]);
     },
+    async withTemporaryClipboardText(text, action) {
+      calls.push(["clipboard", "write", text]);
+      try {
+        return await action();
+      } finally {
+        calls.push(["clipboard", "restore"]);
+      }
+    },
     async snapshot(options = {}) {
       const tab = tabs.get(activeTarget);
       snapshotOptions.push({ ...options });
@@ -513,7 +540,10 @@ function createFixture(rootDir) {
       rejectedClickPointsRemaining = count;
     },
     interceptNextClickPoint() {
-      interceptNextClickPoint = true;
+      interceptedClickPointsRemaining = 1;
+    },
+    interceptClickPoints(count) {
+      interceptedClickPointsRemaining = count;
     },
     navigateOnNextClick(url) {
       navigateOnNextClickUrl = url;
@@ -657,8 +687,8 @@ test("v2 methods reject option fields that are absent from the public schema", a
 
     const page = await task.openPage("https://example.test/options");
     await assert.rejects(
-      () => page.click("button", { force: true }),
-      /page\.click received unknown option: force/,
+      () => page.click("button", { trial: true }),
+      /page\.click received unknown option: trial/,
     );
   });
 });
@@ -1619,6 +1649,100 @@ test("Page keyboard press and type use the addressed target session", async () =
   });
 });
 
+test("Page focus and selector-scoped press resolve and focus one element", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a", { platform: "darwin" });
+    const page = await task.openPage("https://example.test/editor");
+
+    assert.deepEqual(await page.focus("[contenteditable]"), {});
+    assert.deepEqual(
+      await page.press("[contenteditable]", "ControlOrMeta+A", {
+        delay: 5,
+        timeout: 200,
+      }),
+      {},
+    );
+
+    const focusCalls = fixture.calls.filter(
+      ([kind, method, params]) =>
+        kind === "cdp" &&
+        method === "Runtime.callFunctionOn" &&
+        params.functionDeclaration.includes("focusElementForAction"),
+    );
+    assert.equal(focusCalls.length, 2);
+    assert(focusCalls.every((call) => call[3] === `session:${page.targetId}`));
+    const keyDown = fixture.calls.find(
+      ([kind, method, params]) =>
+        kind === "cdp" &&
+        method === "Input.dispatchKeyEvent" &&
+        params.type === "rawKeyDown" &&
+        params.code === "KeyA",
+    );
+    assert.equal(keyDown[2].modifiers, 4);
+  });
+});
+
+test("Page keyboard paste restores the clipboard after the native shortcut", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a", { platform: "darwin" });
+    const page = await task.openPage("https://example.test/table");
+
+    assert.deepEqual(await page.keyboard.paste("a\tb\nc\td"), {});
+
+    const writeIndex = fixture.calls.findIndex(
+      (call) => call[0] === "clipboard" && call[1] === "write",
+    );
+    const pasteIndex = fixture.calls.findIndex(
+      ([kind, method, params]) =>
+        kind === "cdp" &&
+        method === "Input.dispatchKeyEvent" &&
+        params.type === "rawKeyDown" &&
+        params.code === "KeyV",
+    );
+    const restoreIndex = fixture.calls.findIndex(
+      (call) => call[0] === "clipboard" && call[1] === "restore",
+    );
+    assert(writeIndex >= 0 && writeIndex < pasteIndex);
+    assert(pasteIndex < restoreIndex);
+    assert.deepEqual(fixture.calls[writeIndex], [
+      "clipboard",
+      "write",
+      "a\tb\nc\td",
+    ]);
+  });
+});
+
+test("Page keyboard paste still restores the clipboard when input fails", async () => {
+  await withFixture(async (fixture) => {
+    let restored = false;
+    let failNextKey = true;
+    const task = taskForRound(fixture, "round-a", {
+      platform: "darwin",
+      async withTemporaryClipboardText(_text, action) {
+        try {
+          return await action();
+        } finally {
+          restored = true;
+        }
+      },
+      async cdp(method, params, sessionId, timeoutMs) {
+        if (method === "Input.dispatchKeyEvent" && failNextKey) {
+          failNextKey = false;
+          throw new Error("keyboard transport failed");
+        }
+        return fixture.services.cdp(method, params, sessionId, timeoutMs);
+      },
+    });
+    const page = await task.openPage("https://example.test/table");
+
+    await assert.rejects(
+      () => page.keyboard.paste("one\ttwo"),
+      /keyboard transport failed/,
+    );
+    assert.equal(restored, true);
+  });
+});
+
 test("Page keyboard type uses the main keyboard for digits and period", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
@@ -2358,6 +2482,11 @@ test("Page click scrolls the element into view before computing its point", asyn
         params.functionDeclaration.includes("getBoundingClientRect"),
     );
     assert.match(pointCall[2].functionDeclaration, /scrollIntoView/);
+    assert.match(
+      pointCall[2].functionDeclaration,
+      /setTimeout\(finish, 100\)/,
+      "stability sampling must not wait indefinitely for background animation frames",
+    );
   });
 });
 
@@ -2388,15 +2517,15 @@ test("Page click retries a transient visibility change before dispatching input"
   });
 });
 
-test("Page click reports a persistent transient state after bounded retries", async () => {
+test("Page click reports the last transient state after its timeout", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
     const page = await task.openPage("https://example.test/first");
-    fixture.rejectClickPoints(3);
+    fixture.rejectClickPoints(100);
 
     await assert.rejects(
-      () => page.click("#changing"),
-      /page state changed.*new snapshot.*current selector/i,
+      () => page.click("#changing", { timeout: 1_000 }),
+      /page\.click timed out after 1000ms.*not visible/i,
     );
     assert.equal(
       fixture.calls.filter(
@@ -2417,15 +2546,34 @@ test("Page click reports a persistent transient state after bounded retries", as
   });
 });
 
-test("Page click fails closed when another element intercepts the point", async () => {
+test("Page click waits for a temporary pointer interceptor", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
     const page = await task.openPage("https://example.test/first");
     fixture.interceptNextClickPoint();
 
+    assert.deepEqual(await page.click("#covered", { timeout: 100 }), {});
+    assert(
+      fixture.calls.some(
+        ([kind, method, params]) =>
+          kind === "cdp" &&
+          method === "Input.dispatchMouseEvent" &&
+          params.type === "mouseReleased",
+      ),
+      "input is dispatched after the overlay disappears",
+    );
+  });
+});
+
+test("Page click times out while a pointer interceptor remains", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a");
+    const page = await task.openPage("https://example.test/first");
+    fixture.interceptClickPoints(100);
+
     await assert.rejects(
-      () => page.click("#covered"),
-      /overlay.*intercepts pointer events/,
+      () => page.click("#covered", { timeout: 100 }),
+      /page\.click timed out after 100ms.*overlay.*intercepts pointer events/i,
     );
     assert.equal(
       fixture.calls.some(
@@ -2434,6 +2582,27 @@ test("Page click fails closed when another element intercepts the point", async 
       ),
       false,
       "an intercepted high-level click must not dispatch any mouse input",
+    );
+  });
+});
+
+test("Page click force bypasses only the pointer interception check", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a");
+    const page = await task.openPage("https://example.test/first");
+    fixture.interceptClickPoints(100);
+
+    assert.deepEqual(
+      await page.click("#intentionally-covered", { force: true }),
+      {},
+    );
+    assert(
+      fixture.calls.some(
+        ([kind, method, params]) =>
+          kind === "cdp" &&
+          method === "Input.dispatchMouseEvent" &&
+          params.type === "mouseReleased",
+      ),
     );
   });
 });

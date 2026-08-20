@@ -209,6 +209,65 @@ test("ambiguous text locators fail permanently instead of choosing one match", a
   );
 });
 
+test("ambiguous raw CSS selectors fail instead of choosing the first match", async () => {
+  const cdp = new FakeCDP(async (method, params) => {
+    if (method === "Runtime.evaluate") {
+      assert.match(params.expression, /querySelectorAll/);
+      return { result: { value: 3 } };
+    }
+    return {};
+  });
+
+  await assert.rejects(
+    () =>
+      resolveElementObjectId(
+        cdp,
+        "session:page",
+        new RefMap(),
+        "button.save",
+        new Map(),
+        { strict: true },
+      ),
+    (error) => {
+      assert.ok(error instanceof ElementResolutionError);
+      assert.equal(error.kind, "permanent");
+      assert.match(error.message, /Selector button\.save matched 3 elements/);
+      return true;
+    },
+  );
+});
+
+test("ambiguous raw XPath selectors fail instead of choosing the first match", async () => {
+  const cdp = new FakeCDP(async (method, params) => {
+    if (method === "Runtime.evaluate") {
+      assert.match(params.expression, /ORDERED_NODE_SNAPSHOT_TYPE/);
+      return { result: { value: 2 } };
+    }
+    return {};
+  });
+
+  await assert.rejects(
+    () =>
+      resolveElementObjectId(
+        cdp,
+        "session:page",
+        new RefMap(),
+        "xpath=//button",
+        new Map(),
+        { strict: true },
+      ),
+    (error) => {
+      assert.ok(error instanceof ElementResolutionError);
+      assert.equal(error.kind, "permanent");
+      assert.match(
+        error.message,
+        /Selector xpath=\/\/button matched 2 elements/,
+      );
+      return true;
+    },
+  );
+});
+
 test("semantic locators search cross-process iframe sessions", async () => {
   const cdp = new FakeCDP(async (method, _params, sessionId) => {
     if (method === "Accessibility.getFullAXTree") {

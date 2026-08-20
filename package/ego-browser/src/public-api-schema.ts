@@ -33,12 +33,17 @@ const timeout = option(
   "positiveMilliseconds",
   "Maximum duration in milliseconds.",
 );
+const actionTimeout = option(
+  "positiveMilliseconds",
+  "Maximum actionability wait in milliseconds; defaults to 3000.",
+);
 const delay = option("nonNegativeNumber", "Input delay in milliseconds.");
 const button = option("string", "Mouse button.", ["left", "middle", "right"]);
 const position = option(
   "point",
   "CSS-pixel offset from the element's top-left corner.",
 );
+const force = option("boolean", "Bypass pointer interception checks.");
 
 /**
  * Single source of truth for the v2 surface shown to Agents. Runtime option
@@ -212,7 +217,10 @@ export const PUBLIC_API_SCHEMA: readonly PublicApiEntry[] = [
     signature: "await page.screenshot({ path?, fullPage?, clip?, raw? })",
     summary: "Capture this Page to a PNG file.",
     options: {
-      path: option("string", "Absolute output path."),
+      path: option(
+        "string",
+        "Output path; missing parent directories are created.",
+      ),
       fullPage: option("boolean", "Capture the full scrollable page."),
       clip: option("clip", "CSS-pixel clipping rectangle."),
       raw: option("boolean", "Bypass device-pixel-ratio correction."),
@@ -328,45 +336,63 @@ export const PUBLIC_API_SCHEMA: readonly PublicApiEntry[] = [
   {
     name: "Page.click",
     signature:
-      "await page.click(selector, { button?, clickCount?, delay?, position? })",
+      "await page.click(selector, { button?, clickCount?, delay?, position?, force?, timeout? })",
     summary: "Click an element with native CDP input.",
     options: {
       button,
       clickCount: option("positiveInteger", "Number of clicks."),
       delay,
       position,
+      force,
+      timeout: actionTimeout,
     },
   },
   {
     name: "Page.dblclick",
-    signature: "await page.dblclick(selector, { button?, delay?, position? })",
+    signature:
+      "await page.dblclick(selector, { button?, delay?, position?, force?, timeout? })",
     summary: "Double-click an element with native CDP input.",
-    options: { button, delay, position },
+    options: { button, delay, position, force, timeout: actionTimeout },
   },
   {
     name: "Page.hover",
-    signature: "await page.hover(selector, { position? })",
+    signature: "await page.hover(selector, { position?, force?, timeout? })",
     summary: "Move the mouse over an element.",
-    options: { position },
+    options: { position, force, timeout: actionTimeout },
   },
   {
     name: "Page.dragAndDrop",
     signature:
-      "await page.dragAndDrop(source, target, { button?, sourcePosition?, targetPosition? })",
+      "await page.dragAndDrop(source, target, { button?, sourcePosition?, targetPosition?, force?, timeout? })",
     summary: "Drag from one element to another.",
     options: {
       button,
       sourcePosition: position,
       targetPosition: position,
+      force,
+      timeout: actionTimeout,
     },
   },
   {
     name: "Page.fill",
-    signature: "await page.fill(selector, value, { clearFirst? })",
+    signature: "await page.fill(selector, value, { clearFirst?, timeout? })",
     summary: "Focus and fill an input-like element, then verify its value.",
     options: {
       clearFirst: option("boolean", "Clear the current value before filling."),
+      timeout: actionTimeout,
     },
+  },
+  {
+    name: "Page.focus",
+    signature: "await page.focus(selector, { timeout? })",
+    summary: "Resolve one element and focus it.",
+    options: { timeout: actionTimeout },
+  },
+  {
+    name: "Page.press",
+    signature: "await page.press(selector, chord, { delay?, timeout? })",
+    summary: "Focus one element and press a key or shortcut chord.",
+    options: { delay, timeout: actionTimeout },
   },
   {
     name: "Page.setInputFiles",
@@ -478,6 +504,12 @@ export const PUBLIC_API_SCHEMA: readonly PublicApiEntry[] = [
     name: "Page.keyboard.insertText",
     signature: "await page.keyboard.insertText(text)",
     summary: "Insert text without synthesizing key presses.",
+  },
+  {
+    name: "Page.keyboard.paste",
+    signature: "await page.keyboard.paste(text)",
+    summary:
+      "Paste text into the focused element and restore the user clipboard.",
   },
 ] as const;
 

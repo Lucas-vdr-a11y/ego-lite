@@ -86,6 +86,7 @@ export const e2eCases = [
     expectedTermination: true,
     markerName: "dialog-hard-stop.json",
     expectedOutput: "The page has displayed a dialog that requires review.",
+    acceptedCompletionOutput: '"dialogReceipt":true',
   },
   {
     name: "Page JavaScript dialog recovery",

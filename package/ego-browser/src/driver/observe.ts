@@ -1,4 +1,5 @@
-import { join } from "node:path";
+import { mkdir } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { state } from "../state.js";
@@ -164,6 +165,7 @@ export async function captureScreenshotForSession(
     }
   }
   const result = await cdp("Page.captureScreenshot", params, sessionId);
+  await mkdir(dirname(outputPath), { recursive: true });
   await state.writeFile(outputPath, Buffer.from(result.data, "base64"));
   return outputPath;
 }

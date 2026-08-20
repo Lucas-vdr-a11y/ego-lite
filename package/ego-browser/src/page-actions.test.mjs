@@ -34,8 +34,12 @@ test("Page click translates same-process iframe coordinates to the Page viewport
         return { backendNodeId: 90 };
       }
       if (method === "DOM.getBoxModel") {
+        const callCount = calls.filter(
+          ([calledMethod]) => calledMethod === "DOM.getBoxModel",
+        ).length;
+        const y = callCount === 1 ? 200 : 219;
         return {
-          model: { content: [100, 200, 300, 200, 300, 400, 100, 400] },
+          model: { content: [100, y, 300, y, 300, y + 200, 100, y + 200] },
         };
       }
       return {};
@@ -57,19 +61,38 @@ test("Page click translates same-process iframe coordinates to the Page viewport
   const pointerEvents = calls
     .filter(([method]) => method === "Input.dispatchMouseEvent")
     .map(([, params]) => params);
-  assert.equal(pointerEvents.length, 3);
+  assert.equal(pointerEvents.length, 4);
   assert(
-    pointerEvents.every(({ x, y }) => x === 110 && y === 220),
-    "native input must use top-level Page coordinates",
+    pointerEvents[0].x === 110 && pointerEvents[0].y === 220,
+    "the initial move uses the first top-level Page coordinates",
+  );
+  assert(
+    pointerEvents.slice(1).every(({ x, y }) => x === 110 && y === 239),
+    "the press uses coordinates translated again after the pointer move",
   );
   const hitTest = calls.find(
     ([method, params]) =>
       method === "Runtime.callFunctionOn" &&
       params.functionDeclaration.includes("isConnected"),
   );
-  assert.deepEqual(
-    hitTest[1].arguments[0].value,
-    { x: 10, y: 20 },
-    "the iframe-local hit test must keep local coordinates",
+  assert.match(
+    hitTest[1].functionDeclaration,
+    /elementsFromPoint\(point\.x, point\.y\)/,
+    "the iframe-local actionability check uses its own document",
+  );
+  const moveIndex = calls.findLastIndex(
+    ([method, params]) =>
+      method === "Input.dispatchMouseEvent" && params.type === "mouseMoved",
+  );
+  const pressIndex = calls.findIndex(
+    ([method, params]) =>
+      method === "Input.dispatchMouseEvent" && params.type === "mousePressed",
+  );
+  assert.equal(
+    calls
+      .slice(moveIndex + 1, pressIndex)
+      .some(([method]) => method === "Runtime.callFunctionOn"),
+    false,
+    "same-process iframe input keeps mouseMoved and mousePressed contiguous",
   );
 });

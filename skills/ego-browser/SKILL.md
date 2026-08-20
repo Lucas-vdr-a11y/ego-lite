@@ -133,6 +133,8 @@ await page.dragAndDrop(source, target, {
   targetPosition,
 });
 await page.fill(selector, value, { clearFirst });
+await page.focus(selector);
+await page.press(selector, chord, { delay });
 await page.scrollBy(deltaY, { deltaX, behavior });
 await page.setInputFiles(selector, pathOrPaths);
 const chooserPromise = page.waitForFileChooser({ timeout });
@@ -147,6 +149,7 @@ await page.mouse.wheel(deltaX, deltaY);
 await page.keyboard.down(key);
 await page.keyboard.up(key);
 await page.keyboard.press(chord, { delay });
+await page.keyboard.paste(text);
 await page.keyboard.type(text, { delay });
 await page.keyboard.insertText(text);
 ```
@@ -178,6 +181,9 @@ Element actions accept:
 - `xpath=...`
 - raw CSS selectors
 
+Every selector action requires exactly one match. Narrow an ambiguous selector
+instead of relying on the first matching element.
+
 Unquoted text locators normalize whitespace, ignore case, and match a substring;
 quote the value for an exact, case-sensitive match, such as
 `text="Save changes"`. A text locator selects the smallest matching element and
@@ -206,14 +212,17 @@ spreadsheets, maps, and other interfaces that lack useful DOM semantics:
 ```js
 const path = await page.screenshot({ path: "/absolute/path/before.png" });
 await page.mouse.click(420, 260);
-await page.keyboard.type("hello");
+await page.keyboard.paste("hello\tworld");
 console.log({ screenshot: path });
 ```
 
 Inspect the screenshot with an image-viewing tool. Coordinates use CSS pixels.
 Keyboard names and `+`-separated chords follow Playwright syntax; use
-`ControlOrMeta` for portable shortcuts. Low-level mouse and keyboard methods
-do not return action receipts, so verify their effect explicitly.
+`ControlOrMeta` for portable shortcuts. Verify coordinate and raw keyboard
+input explicitly.
+
+`keyboard.paste()` is an ego-browser convenience for ordinary paste behavior.
+It restores the user's clipboard after sending the native paste shortcut.
 
 For rich-text editors and editable table cells, verify the first edit. If
 `fill()` says the target rejected the text, click it, use `page.keyboard`, and
