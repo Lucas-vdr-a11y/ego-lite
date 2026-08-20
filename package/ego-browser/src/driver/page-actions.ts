@@ -1004,6 +1004,36 @@ const HIT_TARGET_HELPERS = `
     const root = element.getRootNode ? element.getRootNode() : null;
     return root && root.nodeType === 11 ? root.host : null;
   }
+  function isInteractiveElement(element) {
+    if (
+      element?.matches?.(":disabled") ||
+      element?.getAttribute?.("aria-disabled") === "true"
+    ) {
+      return false;
+    }
+    const tag = String(element?.tagName || "").toUpperCase();
+    if (["BUTTON", "INPUT", "SELECT", "TEXTAREA", "OPTION", "SUMMARY", "LABEL"].includes(tag)) {
+      return true;
+    }
+    if (tag === "A" && element.hasAttribute?.("href")) return true;
+    if (element?.isContentEditable) return true;
+    return new Set([
+      "button",
+      "checkbox",
+      "link",
+      "menuitem",
+      "menuitemcheckbox",
+      "menuitemradio",
+      "option",
+      "radio",
+      "slider",
+      "spinbutton",
+      "switch",
+      "tab",
+      "textbox",
+      "treeitem"
+    ]).has(String(element?.getAttribute?.("role") || "").toLowerCase());
+  }
   function interceptingElementAtPoint(target, point) {
     const roots = [];
     let parent = target;
@@ -1025,7 +1055,16 @@ const HIT_TARGET_HELPERS = `
     }
     let current = hitElement;
     while (current && current !== target) current = composedParent(current);
-    return current === target ? null : hitElement || document.documentElement;
+    if (current === target) return null;
+
+    // A child with pointer-events:none can legitimately resolve to its
+    // interactive ancestor. A real pointer click reaches that ancestor, so it
+    // is compatible with the requested action rather than an overlay.
+    current = target;
+    while (current && current !== hitElement) current = composedParent(current);
+    if (current === hitElement && isInteractiveElement(hitElement)) return null;
+
+    return hitElement || document.documentElement;
   }
   function describeHitTarget(element) {
     const tag = String(element.tagName || "unknown").toLowerCase();

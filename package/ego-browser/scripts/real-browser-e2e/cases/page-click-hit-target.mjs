@@ -106,6 +106,27 @@ export function pageClickHitTargetCase() {
     );
 
     await page.evaluate(() => {
+      const menuItem = document.createElement("li");
+      menuItem.id = "ancestor-hit-target";
+      menuItem.setAttribute("role", "menuitem");
+      menuItem.style.cssText =
+        "position:fixed;left:100px;top:500px;width:240px;height:80px;z-index:10;list-style:none";
+      const label = document.createElement("span");
+      label.textContent = "Ancestor receives click";
+      label.style.pointerEvents = "none";
+      menuItem.append(label);
+      window.__ancestorHitClicks = 0;
+      menuItem.addEventListener("click", () => window.__ancestorHitClicks++);
+      document.body.append(menuItem);
+    });
+    await page.click('text="Ancestor receives click"');
+    assertEqual(
+      await page.evaluate("window.__ancestorHitClicks"),
+      1,
+      "an interactive ancestor at the action point receives the click"
+    );
+
+    await page.evaluate(() => {
       for (const text of ["First duplicate", "Second duplicate"]) {
         const button = document.createElement("button");
         button.className = "strict-duplicate";

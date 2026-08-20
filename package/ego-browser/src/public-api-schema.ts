@@ -509,7 +509,7 @@ export const PUBLIC_API_SCHEMA: readonly PublicApiEntry[] = [
     name: "Page.keyboard.paste",
     signature: "await page.keyboard.paste(text)",
     summary:
-      "Paste text into the focused element and restore the user clipboard.",
+      "Send native paste and restore the clipboard; the focused page interprets the text.",
   },
 ] as const;
 

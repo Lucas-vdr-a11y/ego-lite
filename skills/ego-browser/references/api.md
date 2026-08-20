@@ -81,11 +81,11 @@ High-level Page actions return a receipt that may contain `popups` or a synchron
 
 ## Page.keyboard
 
-| API                                            | Options                                | Purpose                                                             |
-| ---------------------------------------------- | -------------------------------------- | ------------------------------------------------------------------- |
-| `await page.keyboard.down(key)`                | —                                      | Press and hold a keyboard key.                                      |
-| `await page.keyboard.up(key)`                  | —                                      | Release a keyboard key.                                             |
-| `await page.keyboard.press(chord, { delay? })` | `delay` — Input delay in milliseconds. | Press and release a key or portable shortcut chord.                 |
-| `await page.keyboard.type(text, { delay? })`   | `delay` — Input delay in milliseconds. | Type text using physical keys where possible.                       |
-| `await page.keyboard.insertText(text)`         | —                                      | Insert text without synthesizing key presses.                       |
-| `await page.keyboard.paste(text)`              | —                                      | Paste text into the focused element and restore the user clipboard. |
+| API                                            | Options                                | Purpose                                                                            |
+| ---------------------------------------------- | -------------------------------------- | ---------------------------------------------------------------------------------- |
+| `await page.keyboard.down(key)`                | —                                      | Press and hold a keyboard key.                                                     |
+| `await page.keyboard.up(key)`                  | —                                      | Release a keyboard key.                                                            |
+| `await page.keyboard.press(chord, { delay? })` | `delay` — Input delay in milliseconds. | Press and release a key or portable shortcut chord.                                |
+| `await page.keyboard.type(text, { delay? })`   | `delay` — Input delay in milliseconds. | Type text using physical keys where possible.                                      |
+| `await page.keyboard.insertText(text)`         | —                                      | Insert text without synthesizing key presses.                                      |
+| `await page.keyboard.paste(text)`              | —                                      | Send native paste and restore the clipboard; the focused page interprets the text. |

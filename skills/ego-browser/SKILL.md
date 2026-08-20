@@ -23,21 +23,20 @@ console.log(await page.snapshot());
 EOF
 ```
 
-The heredoc runs in Node.js with all browser APIs preloaded. Use them directly,
-and run page JavaScript inside `page.evaluate()`. Do not import Playwright or
-launch another browser.
+The heredoc runs in Node.js with the browser APIs preloaded. Use them directly;
+run page JavaScript inside `page.evaluate()`. Do not import Playwright or launch
+another browser.
 
-When the user explicitly asks for ego-browser, start with the first real browser
-command and diagnose the CLI or installation if it fails. Console output is
-returned together when the script round finishes.
+When the user explicitly asks for ego-browser, start with a real browser command
+and diagnose the CLI or installation only if it fails.
 
 ## Spaces, rounds, and pages
 
 - Complete the user's goal within one task space.
 - Every heredoc starts a new Node.js process. Task spaces, tabs, and Page labels
-  survive across rounds; JavaScript variables do not.
-- In the first round, use a short goal name and print `task.spaceId`. In later
-  rounds, resume that numeric ID and restore Pages by label.
+  persist; JavaScript variables do not.
+- Name a new space after the goal and print `task.spaceId`. In later rounds,
+  resume that ID and restore Pages by label.
 - Reuse a Page with `goto()` instead of opening a new Page for every URL.
 - All time values are milliseconds.
 
@@ -48,36 +47,21 @@ const source = resumed.page("p1");
 await source.goto("https://example.com/releases");
 ```
 
-Do not inspect or select profiles in normal tasks. Call `profiles()` and pass a
-`profileId` only when the user explicitly requests a particular Ego Lite
-profile. Profile selection applies only when creating a new space and cannot
-change an existing one; use `help("profiles")` for this rare workflow.
+Do not inspect or select profiles unless the user explicitly requests a
+particular Ego Lite profile. A `profileId` applies only when creating a space;
+use `help("profiles")` for the exact workflow.
 
-The common TaskSpace surface is:
+Common TaskSpace API:
 
-```js
-task.spaceId;
-task.name;
-task.ownership;
-task.page(label);
-task.userPage();
+- State: `spaceId`, `name`, `ownership`, `page(label)`, `userPage()`
+- Pages: `pages()`, `tabs()`, `openPage(url, { as?, timeout? })`,
+  `adopt(page, { as? })`, `release(label)`
+- Control: `waitForControl(options)`, `handOff()`, `finish()`, `close()`
+- Advanced: `cdp(method, params, options)`
 
-await task.pages();
-await task.tabs();
-await task.openPage(url, { as, timeout });
-await task.adopt(unmanagedPage, { as });
-await task.release(label);
-await task.waitForControl({ interval, timeout });
-await task.handOff();
-await task.finish();
-await task.close();
-await task.cdp(method, params, { timeout });
-```
-
-Pages receive permanent labels such as `p1`, `p2`, and `p3` automatically. Use
-these labels by default; pass `{ as }` only when a custom label is specifically
-needed. A space manages at most eight Pages by default. If the budget is
-reached, close a temporary Page or navigate an existing one.
+Pages receive permanent labels such as `p1`, `p2`, and `p3`. Prefer these labels
+to custom `{ as }` values. A space manages at most eight Pages; close a temporary
+Page or reuse an existing one when the limit is reached.
 
 `task.pages()` returns managed Pages. `task.tabs()` returns every tab in the
 space as `{ label?, page, targetId, title, url, active, openedBy }`. A tab
@@ -91,81 +75,38 @@ if (active && !active.label) {
 }
 ```
 
-Use `release(label)` only to return an unknown-origin Page to the user while
-keeping its tab open. Close Agent-created Pages with `page.close()`.
-`task.ownership` and `page.openedBy` are conservative snapshots; treat an
-`openedBy` value of `"unknown"` as user-owned for lifecycle decisions.
+`release(label)` returns an unknown-origin Page to the user without closing its
+tab. Close Agent-created Pages with `page.close()`. Treat `openedBy: "unknown"`
+as user-owned when deciding whether a Page may be closed.
 
 ## Page operations
 
-The methods below use Playwright-style names and option shapes where they
-overlap. Ego-browser is not the full Playwright API and has no Locator API; use
-only the methods listed here.
+Page methods follow Playwright conventions where they overlap. Ego-browser is
+not the full Playwright API and has no Locator API. Common Page API:
 
-```js
-page.label;
-page.spaceId;
-page.openedBy;
-page.targetId;
-
-await page.goto(url, { timeout });
-await page.snapshot({ scope, includeActionMarks, includeStableLocator });
-await page.screenshot({ path, fullPage, clip, raw });
-await page.url();
-await page.title();
-await page.info();
-await page.events();
-await page.evaluate(fnOrString, argument);
-await page.fetch(url, options);
-await page.cdp(method, params, { timeout });
-
-await page.waitForURL(urlOrRegExp, { timeout });
-await page.waitForSelector(selector, { timeout, state });
-await page.waitForLoadState(state, { timeout, idleMs });
-await page.waitForTimeout(timeout);
-
-await page.click(selector, { button, clickCount, delay, position });
-await page.dblclick(selector, { button, delay, position });
-await page.hover(selector, { position });
-await page.dragAndDrop(source, target, {
-  button,
-  sourcePosition,
-  targetPosition,
-});
-await page.fill(selector, value, { clearFirst });
-await page.focus(selector);
-await page.press(selector, chord, { delay });
-await page.scrollBy(deltaY, { deltaX, behavior });
-await page.setInputFiles(selector, pathOrPaths);
-const chooserPromise = page.waitForFileChooser({ timeout });
-await page.close();
-
-await page.mouse.click(x, y, { button, clickCount, delay });
-await page.mouse.move(x, y, { steps });
-await page.mouse.down({ button, clickCount });
-await page.mouse.up({ button, clickCount });
-await page.mouse.wheel(deltaX, deltaY);
-
-await page.keyboard.down(key);
-await page.keyboard.up(key);
-await page.keyboard.press(chord, { delay });
-await page.keyboard.paste(text);
-await page.keyboard.type(text, { delay });
-await page.keyboard.insertText(text);
-```
+- State and observation: `label`, `spaceId`, `openedBy`, `targetId`, `url()`,
+  `title()`, `info()`, `events()`, `snapshot()`, `screenshot()`
+- Navigation and waits: `goto()`, `waitForURL()`, `waitForSelector()`,
+  `waitForLoadState()`, `waitForTimeout()`
+- Elements: `click()`, `dblclick()`, `hover()`, `dragAndDrop()`, `fill()`,
+  `focus()`, `press()`, `scrollBy()`, `setInputFiles()`,
+  `waitForFileChooser()`, `close()`
+- Pointer: `mouse.click()`, `move()`, `down()`, `up()`, `wheel()`
+- Keyboard: `keyboard.down()`, `up()`, `press()`, `type()`, `insertText()`,
+  `paste()`
+- Page code and protocols: `evaluate(fnOrString, argument)`,
+  `fetch(url, options)`, `cdp(method, params, options)`
 
 ### Semantic pages: snapshot and selectors
 
-For an ordinary DOM page, work in a short observe → act → observe loop. Start
-with `page.snapshot()`, which returns semantic text for the current viewport.
-Pass `{ scope: "full_page" }` only when content outside the viewport matters:
+For an ordinary DOM page, use an observe → act → observe loop.
+`page.snapshot()` returns semantic text for the current viewport; use
+`{ scope: "full_page" }` when content outside it matters:
 
 ```js
 const page = task.page("p1");
 console.log(await page.snapshot());
 
-// Suppose the snapshot shows [ref=21] on an email field and
-// loc=role:button[name='Sign in'] on a button.
 await page.fill("@21", "user@example.com");
 await page.click("loc=role:button[name='Sign in']");
 await page.waitForSelector("loc=css:#account-home");
@@ -177,32 +118,22 @@ Element actions accept:
 
 - snapshot refs such as `@21` or `ref=21`
 - `text=...` for page content
-- `loc=css:`, `loc=role:`, and `loc=href:` locators shown by snapshot or written directly
+- `loc=css:`, `loc=role:`, and `loc=href:` locators
 - `xpath=...`
 - raw CSS selectors
 
-Every selector action requires exactly one match. Narrow an ambiguous selector
-instead of relying on the first matching element.
+Selector actions require exactly one match. Unquoted text normalizes whitespace,
+ignores case, and matches a substring; quoted text such as
+`text="Save changes"` is exact and case-sensitive.
 
-Unquoted text locators normalize whitespace, ignore case, and match a substring;
-quote the value for an exact, case-sensitive match, such as
-`text="Save changes"`. A text locator selects the smallest matching element and
-must be unique.
+Snapshot node names are accessibility roles. Use a current ref for an immediate
+action and a generated locator for reuse. When a useful node has no ref,
+construct a selector from its role, text, or surrounding context. CSS searches
+nested open shadow roots; role locators also search frames when the top-level
+document has no match.
 
-Snapshot node names are accessibility roles. Use the current ref for an
-immediate action and a generated locator for reuse. A missing ref does not mean
-that an element is inert: use its role, text, and surrounding context to judge
-whether it is interactive. If it clearly represents the intended control, try
-a role locator or an exact text locator such as `text="Save changes"`, then
-verify the result with a fresh snapshot. CSS searches nested open shadow roots.
-If the top-level document has no role match, role locators also search ordinary
-iframes and OOPIFs.
-
-A snapshot is temporary: it describes one Page at one moment, and its refs
-belong only to that Page. After any action that may change the page—navigation,
-clicking, filling, keyboard input, opening a menu or dialog, page JavaScript, or
-raw CDP—take a fresh snapshot before choosing the next target. Also refresh
-before using a ref in a later round.
+Refs belong to one Page and one observed state. Take a fresh snapshot whenever
+the page may have changed and before using a ref in a later round.
 
 ### Visual pages: screenshot, mouse, and keyboard
 
@@ -216,24 +147,20 @@ await page.keyboard.paste("hello\tworld");
 console.log({ screenshot: path });
 ```
 
-Inspect the screenshot with an image-viewing tool. Coordinates use CSS pixels.
-Keyboard names and `+`-separated chords follow Playwright syntax; use
-`ControlOrMeta` for portable shortcuts. Verify coordinate and raw keyboard
-input explicitly.
+Inspect the screenshot with an image-viewing tool. Coordinates use CSS pixels;
+keyboard names and `+`-separated chords follow Playwright syntax. Use
+`ControlOrMeta` for portable shortcuts and verify the resulting page state.
 
-`keyboard.paste()` is an ego-browser convenience for ordinary paste behavior.
-It restores the user's clipboard after sending the native paste shortcut.
+`keyboard.paste()` sends the native paste shortcut and then restores the user's
+clipboard. The focused page decides how to interpret tabs and newlines.
 
-For rich-text editors and editable table cells, verify the first edit. If
-`fill()` says the target rejected the text, click it, use `page.keyboard`, and
-verify again. Canvas or virtualized grids usually need click plus keyboard or
-paste. Before bulk table entry, test a small 2×2 paste; do not send `Tab` after
-the final cell unless moving focus is intended.
+For rich-text editors and editable grids, validate a small edit and its result
+before repeating it at scale.
 
 ### Page JavaScript and CDP
 
 Use `page.evaluate()` for bulk extraction or complex in-page work. It accepts
-one JSON-serializable argument and must return a JSON-serializable value:
+one JSON-serializable argument and returns a JSON-serializable value:
 
 ```js
 const rows = await page.evaluate(
@@ -246,16 +173,14 @@ const rows = await page.evaluate(
 );
 ```
 
-Use `page.cdp()` only for Page, Runtime, DOM, Network, Input, and similar
-commands missing from the Page API. Use `task.cdp()` for Target and Browser
-commands. Raw CDP invalidates existing refs. `page.targetId` is for advanced
-`Target.*` commands only; do not persist it across rounds.
+Use `page.cdp()` for Page, Runtime, DOM, Network, Input, and similar commands
+missing from the Page API; use `task.cdp()` for Target and Browser commands.
+Raw CDP invalidates refs. Do not persist `page.targetId` across rounds.
 
 ## Action results, popups, and dialogs
 
-High-level navigation, selector actions, `mouse.click()`, and
-`keyboard.press()` return a lightweight receipt. New tabs are adopted and may
-appear in `receipt.popups`:
+High-level actions return a receipt. New tabs are adopted and may appear in
+`receipt.popups`:
 
 ```js
 const receipt = await page.click('a[target="_blank"]');
@@ -265,12 +190,8 @@ for (const popup of receipt.popups ?? []) {
 }
 ```
 
-A click that opens a new window continues on `task.page(popup.label)`, not on
-the source Page.
-
-A popup may initially be `about:blank`; wait for its URL when the destination
-matters. Slowly propagating popups appear on the next `pages()` or `tabs()`
-reconciliation.
+Continue a popup workflow on `task.page(popup.label)`. Wait for its URL when the
+destination matters.
 
 A synchronous JavaScript dialog may appear as `receipt.dialog` or in
 `page.info()`. Handle it before continuing:
@@ -280,18 +201,18 @@ await page.cdp("Page.handleJavaScriptDialog", { accept: true });
 // Use accept: false to dismiss it.
 ```
 
-Receipts record dispatched actions and popup or dialog observations. Verify the
-application state required by the task with state-based waits.
+Use state-based waits to verify the application result; a receipt only describes
+the dispatched action and immediate popup or dialog observations.
 
 ## Files and requests
 
-Set an existing file input directly with absolute paths:
+Set an existing file input with absolute paths:
 
 ```js
 await page.setInputFiles("input[type=file]", ["/absolute/path/report.pdf"]);
 ```
 
-If the site creates the input only after a click, start waiting first:
+If a click creates the file input, start waiting before the click:
 
 ```js
 const chooserPromise = page.waitForFileChooser({ timeout: 10_000 });
@@ -318,11 +239,9 @@ browser semantics.
 
 ## User control and completion
 
-Stop immediately when the user takes control, or when the space is inactive or
-not assigned to the Agent. Do not retry or route around the stop. Browser
-permission prompts, device choosers, and JavaScript dialogs can cause the same
-handoff; ask the user to handle them instead of taking control back
-automatically.
+Stop when the user takes control or the space is inactive or unassigned. Do not
+retry or route around the stop. Permission prompts, device choosers, and
+JavaScript dialogs may trigger the same handoff; ask the user to handle them.
 
 When the user must act in the browser, call `await task.handOff()`, end the
 round, and explain what they should do. After the user confirms, resume the
@@ -333,8 +252,7 @@ const task = await takeOverTaskSpace(7);
 const userPage = task.userPage();
 ```
 
-`userPage` may be unmanaged; adopt it before operating it. Use
-`waitForControl()` only when the user already knows what to do and the current
+Adopt `userPage` if it is unmanaged. Use `waitForControl()` only when the current
 script must wait in place. Claim a user-owned or inactive space only when the
 user explicitly asks:
 
@@ -342,10 +260,8 @@ user explicitly asks:
 const task = await claimTaskSpace(7);
 ```
 
-After verifying the result, call `task.close()` by default. Use
-`task.finish()` only when the user asks to keep the pages, must continue from
-the result page, or the result cannot be delivered through a URL, file, or
-summary.
+After verifying the result, call `task.close()` by default. Use `task.finish()`
+when the pages must remain available to the user.
 
 If the final output contains `[ego-browser:notice]`, finish the current browser
 task, tell the user an Ego Lite update is available, and run
