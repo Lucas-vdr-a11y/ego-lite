@@ -128,12 +128,12 @@ Use `page.snapshot()` first for ordinary DOM pages. It returns full-page semanti
 ```js
 const text = await page.snapshot();
 console.log(text);
-// After inspecting the output, use a real @N from it with this same Page.
+// For a node shown as [ref=21, ...], pass @21 or ref=21 without the brackets.
 ```
 
 Page actions accept these selectors:
 
-- `@N` refs such as `@21`
+- refs such as `@21`, or the `ref=21` portion displayed by snapshot
 - stable `loc=css:`, `loc=role:`, and `loc=href:` values returned by snapshot
 - `xpath=...`
 - raw CSS selectors

@@ -68,9 +68,11 @@ CDP session、事件缓冲、dialog 状态和 Network domain 状态都按 target
 
 ### 3.3 Page-scoped refs
 
-原生 snapshot 返回的 ref 仍使用 `@N` 形式。运行时按 targetId 保存 ref map：
+原生 snapshot 把 ref 显示为 `[ref=N, ...]`。Page 动作接受 `ref=N` 或 `@N`，但
+不接受包含方括号的完整注解。运行时按 targetId 保存 ref map：
 
 - `page.click('@21')` 只在该 Page 的 map 中解析。
+- `page.click('ref=21')` 与上面的写法等价。
 - 新进程第一次使用 ref 时，如果该 Page 没有 map，运行时会先对该 Page 重拍
   snapshot。
 - ref 不存在时直接报错，不会切到其他页面寻找同号 ref。
