@@ -266,13 +266,27 @@ test("an ordinary uncaught error still flushes the output logged before it", asy
   assert.equal(result.stdout, "partial result\n");
 });
 
-test("a top-level document ReferenceError explains the Page execution boundary", async () => {
-  const result = await runScript(`console.log(document.body);`);
+for (const [globalName, expression] of [
+  ["document", "document.body"],
+  ["window", "window.scrollY"],
+  ["location", "location.href"],
+  ["scrollY", "scrollY"],
+]) {
+  test(`a top-level ${globalName} ReferenceError explains the Node and Page execution boundary`, async () => {
+    const result = await runScript(`console.log(${expression});`);
 
-  assert.ok(result.error, "expected runMain to reject");
-  assert.match(result.error.message, /document is not defined/i);
-  assert.match(result.error.message, /page\.evaluate\(\)/i);
-});
+    assert.ok(result.error, "expected runMain to reject");
+    assert.match(
+      result.error.message,
+      new RegExp(`${globalName} is not defined`, "i"),
+    );
+    assert.match(
+      result.error.message,
+      /heredoc runs in Node\.js, not in the Page/i,
+    );
+    assert.match(result.error.message, /page\.evaluate\(\)/i);
+  });
+}
 
 test("a syntax error points to the invalid user-script line", async () => {
   const result = await runScript(`

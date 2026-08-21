@@ -24,9 +24,10 @@ console.log(await page.snapshot());
 EOF
 ```
 
-The heredoc runs in Node.js with the browser APIs preloaded. Use them directly;
-run page JavaScript inside `page.evaluate()`. Do not import Playwright or launch
-another browser.
+The heredoc always runs in Node.js, not in the web Page. Browser helpers and
+Node.js APIs belong in the heredoc; Page globals such as `window`, `document`,
+`location`, and DOM APIs do not. Put browser-side JavaScript inside
+`page.evaluate()`. Do not import Playwright or launch another browser.
 
 The Node.js runtime uses ESM. When a script needs local files, load built-ins
 with dynamic imports such as `await import("node:fs/promises")`.
@@ -111,9 +112,10 @@ them. Supported Page API:
 - Page code and protocols: `evaluate(fnOrString, argument)`,
   `fetch(url, options)`, `cdp(method, params, options)`
 
-`page.evaluate()` callbacks run inside the Page, so they cannot read variables
-from the surrounding Node.js script. Define browser-side helpers inside the
-callback or pass one JSON-serializable value as its second argument.
+This boundary is strict. `page.evaluate()` callbacks run only inside the Page;
+they cannot read variables or Node.js modules from the surrounding heredoc.
+Define browser-side helpers inside the callback or pass one JSON-serializable
+value as its second argument.
 
 ### Semantic pages: snapshot and selectors
 
@@ -190,6 +192,8 @@ console.log({ screenshot: path });
 Inspect the screenshot with an image-viewing tool. Coordinates use CSS pixels;
 keyboard names and `+`-separated chords follow Playwright syntax. Use
 `ControlOrMeta` for portable shortcuts and verify the resulting page state.
+`mouse.wheel()` sends the event at the current mouse position. In each heredoc,
+move or click over the intended scrollable area before using it.
 
 `keyboard.paste()` sends the native paste shortcut and then restores the user's
 clipboard. Pass `{ text, html }` when a rich editor needs structured clipboard
@@ -202,8 +206,10 @@ await page.keyboard.paste({
 });
 ```
 
-For rich-text editors and editable grids, validate a small edit and its result
-before repeating it at scale.
+For rich-text editors and editable grids, validate a small edit before repeating
+it at scale. Canvas-backed editors may not expose visible content through DOM
+text or selectors; verify those results with a screenshot or an
+application-specific visible state.
 
 ### Page JavaScript and CDP
 

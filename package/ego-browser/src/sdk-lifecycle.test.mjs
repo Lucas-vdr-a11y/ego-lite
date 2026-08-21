@@ -50,17 +50,25 @@ test("disposeEgoSdk releases native callbacks and rejects pending CDP work", () 
   assert.match(result.stderr, /sdk lifecycle ok/);
 });
 
-test("the embedded SDK explains that document belongs inside Page.evaluate", () => {
+test("the embedded SDK explains that browser globals belong inside Page.evaluate", () => {
   const sdkUrl = new URL("../dist/src/index.js", import.meta.url).href;
   const script = `
     globalThis.ego = {};
     await import(${JSON.stringify(sdkUrl)});
-    try {
-      document.body;
-      throw new Error("document guard did not run");
-    } catch (error) {
-      if (!/document is not defined/i.test(error.message)) throw error;
-      if (!/page\\.evaluate\\(\\)/i.test(error.message)) throw error;
+    const checks = [
+      ["document", () => document.body],
+      ["location", () => location.href],
+      ["scrollY", () => scrollY],
+    ];
+    for (const [name, read] of checks) {
+      try {
+        read();
+        throw new Error(name + " guard did not run");
+      } catch (error) {
+        if (!error.message.includes(name + " is not defined")) throw error;
+        if (!/heredoc runs in Node\.js, not in the Page/i.test(error.message)) throw error;
+        if (!/page\\.evaluate\\(\\)/i.test(error.message)) throw error;
+      }
     }
   `;
   const result = spawnSync(

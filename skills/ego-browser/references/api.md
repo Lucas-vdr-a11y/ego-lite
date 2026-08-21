@@ -76,13 +76,13 @@ For an explicit popup wait, arm it before the action: `const popupPromise = page
 
 ## Page.mouse
 
-| API                                                              | Options                                                                                                                      | Purpose                                              |
-| ---------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
-| `await page.mouse.click(x, y, { button?, clickCount?, delay? })` | `button` (left, middle, right) — Mouse button.<br>`clickCount` — Number of clicks.<br>`delay` — Input delay in milliseconds. | Click CSS-pixel coordinates with native CDP input.   |
-| `await page.mouse.move(x, y, { steps? })`                        | `steps` — Number of movement steps.                                                                                          | Move the mouse to CSS-pixel coordinates.             |
-| `await page.mouse.down({ button?, clickCount? })`                | `button` (left, middle, right) — Mouse button.<br>`clickCount` — Click count reported to the page.                           | Press a mouse button at the current Page position.   |
-| `await page.mouse.up({ button?, clickCount? })`                  | `button` (left, middle, right) — Mouse button.<br>`clickCount` — Click count reported to the page.                           | Release a mouse button at the current Page position. |
-| `await page.mouse.wheel(deltaX, deltaY)`                         | —                                                                                                                            | Send a wheel event at the current Page position.     |
+| API                                                              | Options                                                                                                                      | Purpose                                                                                                                  |
+| ---------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `await page.mouse.click(x, y, { button?, clickCount?, delay? })` | `button` (left, middle, right) — Mouse button.<br>`clickCount` — Number of clicks.<br>`delay` — Input delay in milliseconds. | Click CSS-pixel coordinates with native CDP input.                                                                       |
+| `await page.mouse.move(x, y, { steps? })`                        | `steps` — Number of movement steps.                                                                                          | Move the mouse to CSS-pixel coordinates.                                                                                 |
+| `await page.mouse.down({ button?, clickCount? })`                | `button` (left, middle, right) — Mouse button.<br>`clickCount` — Click count reported to the page.                           | Press a mouse button at the current Page position.                                                                       |
+| `await page.mouse.up({ button?, clickCount? })`                  | `button` (left, middle, right) — Mouse button.<br>`clickCount` — Click count reported to the page.                           | Release a mouse button at the current Page position.                                                                     |
+| `await page.mouse.wheel(deltaX, deltaY)`                         | —                                                                                                                            | Send a wheel event at the current Page position; move or click over the intended scroll container first in each process. |
 
 ## Page.keyboard
 

@@ -1447,6 +1447,8 @@ class Page {
     return this.#services.gate.withPage(page, async ({ sessionId }) => {
       await this.#activate(page.targetId);
       const deadline = this.#services.now() + timeoutMs;
+      let lastUrl = "";
+      let lastTitle = "";
       try {
         while (this.#services.now() <= deadline) {
           const remaining = Math.max(1, deadline - this.#services.now());
@@ -1461,7 +1463,12 @@ class Page {
               sessionId,
               Math.min(1_000, remaining),
             );
-            if (runtimeValue(response, source) === true) return true as const;
+            const state = runtimeValue(response, source);
+            if (isWaitForFunctionState(state)) {
+              lastUrl = state.url;
+              lastTitle = state.title;
+              if (state.matched) return true as const;
+            }
           } catch (error) {
             if (!isRetryablePageEvaluationError(error)) {
               throw enrichPageCallbackReferenceError(
@@ -1481,7 +1488,13 @@ class Page {
         // guaranteed to identify the same elements.
         this.#services.pageRefs.clear(page.targetId);
       }
-      throw new Error(`page.waitForFunction timed out after ${timeoutMs}ms`);
+      throw waitForFunctionTimeoutError(
+        this.spaceId,
+        this.label,
+        timeoutMs,
+        lastUrl,
+        lastTitle,
+      );
     });
   }
 
@@ -2349,11 +2362,44 @@ function waitForFunctionExpression(
   serializedArgument: unknown,
 ): string {
   if (typeof expression === "string") {
-    return `(async function __egoWaitForFunction() { return Boolean(await (${expression})); })()`;
+    return `(async function __egoWaitForFunction() { return { matched: Boolean(await (${expression})), url: location.href, title: document.title }; })()`;
   }
   const source = expression.toString();
   const argument = hasArgument ? JSON.stringify(serializedArgument) : "";
-  return `(async function __egoWaitForFunction() { return Boolean(await (${source})(${argument})); })()`;
+  return `(async function __egoWaitForFunction() { return { matched: Boolean(await (${source})(${argument})), url: location.href, title: document.title }; })()`;
+}
+
+function isWaitForFunctionState(
+  value: unknown,
+): value is { matched: boolean; url: string; title: string } {
+  if (!value || typeof value !== "object") return false;
+  const state = value as Record<string, unknown>;
+  return (
+    typeof state.matched === "boolean" &&
+    typeof state.url === "string" &&
+    typeof state.title === "string"
+  );
+}
+
+function waitForFunctionTimeoutError(
+  spaceId: number,
+  pageLabel: string,
+  timeoutMs: number,
+  lastUrl: string,
+  lastTitle: string,
+): Error {
+  const title = lastTitle
+    ? `; last title was ${JSON.stringify(lastTitle)}`
+    : "";
+  const popup = peekUnhandledPageNotices().find(
+    (notice) => notice.spaceId === spaceId && notice.openerLabel === pageLabel,
+  );
+  const popupHint = popup
+    ? ` Popup ${popup.label} opened from ${pageLabel} at ${JSON.stringify(popup.url)}; inspect task.page(${JSON.stringify(popup.label)}) before retrying the preceding action.`
+    : "";
+  return new Error(
+    `page.waitForFunction timed out after ${timeoutMs}ms on page ${pageLabel}; last URL was ${JSON.stringify(lastUrl)}${title}.${popupHint}`,
+  );
 }
 
 function isRetryablePageEvaluationError(error: unknown): boolean {

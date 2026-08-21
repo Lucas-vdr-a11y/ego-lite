@@ -511,7 +511,8 @@ export const PUBLIC_API_SCHEMA: readonly PublicApiEntry[] = [
   {
     name: "Page.mouse.wheel",
     signature: "await page.mouse.wheel(deltaX, deltaY)",
-    summary: "Send a wheel event at the current Page position.",
+    summary:
+      "Send a wheel event at the current Page position; move or click over the intended scroll container first in each process.",
   },
   {
     name: "Page.keyboard.down",

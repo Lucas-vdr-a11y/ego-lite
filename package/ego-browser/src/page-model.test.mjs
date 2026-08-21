@@ -138,8 +138,12 @@ function createFixture(rootDir) {
         if (params.expression.includes("__egoWaitForFunction")) {
           return {
             result: {
-              type: "boolean",
-              value: waitFunctionResults.shift() ?? false,
+              type: "object",
+              value: {
+                matched: waitFunctionResults.shift() ?? false,
+                url: tab.url,
+                title: tab.title,
+              },
             },
           };
         }
@@ -973,7 +977,18 @@ test("Page.waitForFunction validates input and reports its timeout", async () =>
           timeout: 60,
           polling: 25,
         }),
-      /page\.waitForFunction timed out after 60ms/,
+      (error) => {
+        assert.match(
+          error.message,
+          /page\.waitForFunction timed out after 60ms/,
+        );
+        assert.match(error.message, /page p1/);
+        assert.match(
+          error.message,
+          /last URL was "https:\/\/example\.test\/first"/,
+        );
+        return true;
+      },
     );
     await assert.rejects(
       () => page.waitForFunction(42),
@@ -994,6 +1009,30 @@ test("Page.waitForFunction validates input and reports its timeout", async () =>
     await assert.rejects(
       () => page.waitForFunction(() => false, { timeout: 60 }),
       /options are the third argument.*pass undefined.*Expected: await page\.waitForFunction\(fnOrString, argument\?, \{ timeout\?, polling\? \}\)/,
+    );
+  });
+});
+
+test("Page.waitForFunction timeout points to an unhandled popup", async () => {
+  await withFixture(async (fixture) => {
+    resetPageNotices();
+    const task = taskForRound(fixture, "round-a");
+    const page = await openTestPage(task, "https://example.test/source");
+    fixture.openPopupOnNextClick("https://example.test/popup");
+    await page.click("#open-popup");
+
+    await assert.rejects(
+      () =>
+        page.waitForFunction(() => false, undefined, {
+          timeout: 60,
+          polling: 25,
+        }),
+      (error) => {
+        assert.match(error.message, /popup p2 opened from p1/i);
+        assert.match(error.message, /task\.page\("p2"\)/);
+        assert.match(error.message, /before retrying the preceding action/i);
+        return true;
+      },
     );
   });
 });
