@@ -21,6 +21,7 @@ test("the public API schema contains the v2 entry points and object methods", ()
     "TaskSpace.openPage",
     "Page.snapshot",
     "Page.targetId",
+    "Page.waitForEvent",
     "Page.waitForURL",
     "Page.waitForTimeout",
     "Page.focus",
@@ -87,6 +88,14 @@ test("the generated reference contains signatures and option descriptions", () =
   assert.match(
     markdown,
     /`await page\.goto\(url, \{ referer\?, timeout\?, waitUntil\? \}\)`/,
+  );
+  assert.match(
+    markdown,
+    /`await page\.waitForEvent\("popup", \{ timeout\? \}\)`/,
+  );
+  assert.match(
+    markdown,
+    /const popupPromise = page\.waitForEvent\("popup"\); await page\.click\(selector\)/,
   );
   assert.match(markdown, /`as` — Permanent Page label\.<br>`timeout`/);
   assert.match(markdown, /Open and durably label a new Page/);

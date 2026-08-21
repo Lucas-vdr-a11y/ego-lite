@@ -15,7 +15,7 @@ import { PageRefRegistry } from "../dist/src/page-ref-registry.js";
 import {
   consumeUnhandledPageNotices,
   resetPageNotices,
-} from "../dist/src/output-sink.js";
+} from "../dist/src/page-discovery.js";
 
 async function withFixture(fn) {
   const rootDir = await mkdtemp(join(tmpdir(), "ego-page-model-test-"));
@@ -2652,6 +2652,76 @@ test("Page waitForURL follows a popup from about:blank without activating it", a
       ).length,
       activationCallsBefore,
     );
+  });
+});
+
+test("Page.waitForEvent arms before a click and resolves the opened popup", async () => {
+  await withFixture(async (fixture) => {
+    resetPageNotices();
+    const task = taskForRound(fixture, "round-a");
+    const source = await task.openPage("https://example.test/source");
+    fixture.openPopupOnNextClick("https://example.test/popup");
+
+    const popupPromise = source.waitForEvent("popup", { timeout: 1_000 });
+    const receipt = await source.click("#open-popup");
+    const popup = await popupPromise;
+
+    assert.equal(popup.label, receipt.popups[0].label);
+    assert.equal(await popup.url(), "https://example.test/popup");
+    assert.deepEqual(consumeUnhandledPageNotices(), []);
+  });
+});
+
+test("Page.waitForEvent rejects unsupported events and times out cleanly", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a");
+    const source = await task.openPage("https://example.test/source");
+
+    assert.throws(
+      () => source.waitForEvent("download", { timeout: 10 }),
+      /only supports the popup event/,
+    );
+    await assert.rejects(
+      source.waitForEvent("popup", { timeout: 5 }),
+      /page\.waitForEvent\("popup"\) timed out after 5ms/,
+    );
+  });
+});
+
+test("Page.waitForURL immediately reports a matching popup opened by this Page", async () => {
+  await withFixture(async (fixture) => {
+    resetPageNotices();
+    const task = taskForRound(fixture, "round-a");
+    const source = await task.openPage("https://example.test/source");
+    fixture.openPopupOnNextClick("https://example.test/drive/home");
+    await source.click("#open-popup");
+
+    await assert.rejects(
+      source.waitForURL(/\/drive\/home/, { timeout: 15_000 }),
+      (error) => {
+        assert.equal(error.code, "EGO_URL_OPENED_IN_POPUP");
+        assert.match(error.message, /p1 did not navigate/);
+        assert.match(error.message, /popup p2 opened/);
+        assert.match(error.message, /task\.page\("p2"\)/);
+        assert.match(error.message, /triggering action already succeeded/i);
+        assert.doesNotMatch(error.message, /timed out/);
+        return true;
+      },
+    );
+  });
+});
+
+test("Page.waitForURL still succeeds when the opener itself reaches the URL", async () => {
+  await withFixture(async (fixture) => {
+    resetPageNotices();
+    const task = taskForRound(fixture, "round-a");
+    const source = await task.openPage("https://example.test/source");
+    const expectedUrl = "https://example.test/drive/home";
+    fixture.openPopupOnNextClick(expectedUrl);
+    fixture.navigateOnNextClick(expectedUrl);
+    await source.click("#open-popup");
+
+    await source.waitForURL(/\/drive\/home/, { timeout: 500 });
   });
 });
 

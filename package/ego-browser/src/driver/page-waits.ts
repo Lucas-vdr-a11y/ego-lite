@@ -43,6 +43,10 @@ export type PageWaitForURLOptions = {
   timeout?: number;
 };
 
+export type PageWaitForURLHooks = {
+  interrupt?: (lastUrl: string) => Error | undefined;
+};
+
 const VISIBILITY_FUNCTION =
   "function(){if(typeof this.checkVisibility==='function')return this.checkVisibility({checkOpacity:true,checkVisibilityCSS:true});const s=getComputedStyle(this);const r=this.getBoundingClientRect();return s.display!=='none'&&s.visibility!=='hidden'&&s.opacity!=='0'&&r.width>0&&r.height>0;}";
 
@@ -123,6 +127,7 @@ export async function waitForURLInPage(
   sessionId: string,
   expected: string | RegExp,
   options: PageWaitForURLOptions = {},
+  hooks: PageWaitForURLHooks = {},
 ): Promise<void> {
   if (
     !(
@@ -167,6 +172,8 @@ export async function waitForURLInPage(
         if (pattern!.test(lastUrl)) return;
       }
     }
+    const interruption = hooks.interrupt?.(lastUrl);
+    if (interruption) throw interruption;
     const waitMs = deadline - services.now();
     if (waitMs <= 0) break;
     await services.sleep(Math.min(100, waitMs));

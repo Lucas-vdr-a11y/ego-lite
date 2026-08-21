@@ -82,8 +82,12 @@ import {
   clearSpacePageNotices,
   forgetPageNotice,
   markPageObserved,
+  peekUnhandledPageNotices,
+  refreshUnhandledPageNotice,
   recordUnhandledPage,
-} from "./output-sink.js";
+  subscribeUnhandledPageNotices,
+  type UnhandledPageNotice,
+} from "./page-discovery.js";
 import { validatePublicApiOptions } from "./public-api-schema.js";
 import { parseRef, type RefMap } from "./ref-map.js";
 import { state } from "./state.js";
@@ -143,6 +147,10 @@ type WaitForControlOptions = {
 };
 
 type PageWaitForFileChooserOptions = {
+  timeout?: number;
+};
+
+type PageWaitForEventOptions = {
   timeout?: number;
 };
 
@@ -1033,6 +1041,17 @@ class TaskSpace {
       }
       return;
     }
+    if (event?.method === "Target.targetInfoChanged") {
+      const info = event.params?.targetInfo;
+      if (
+        info?.type === "page" &&
+        typeof info.targetId === "string" &&
+        typeof info.url === "string"
+      ) {
+        refreshUnhandledPageNotice(this.id, info.targetId, info.url);
+      }
+      return;
+    }
     const info = event?.params?.targetInfo;
     if (
       event?.method !== "Target.targetCreated" ||
@@ -1185,6 +1204,7 @@ class Page {
   readonly spaceId: number;
   readonly mouse: PageMouse;
   readonly keyboard: PageKeyboard;
+  readonly #task: TaskSpace;
   readonly #services: PageModelServices;
   readonly #spaceName: string;
   #targetId?: string;
@@ -1199,6 +1219,7 @@ class Page {
   ) {
     this.label = label;
     this.spaceId = task.id;
+    this.#task = task;
     this.#spaceName = task.name;
     this.#services = services;
     this.#targetId = entry?.targetId;
@@ -1282,8 +1303,63 @@ class Page {
     validatePublicApiOptions("Page.waitForURL", options);
     const page = await this.#resolve();
     return this.#services.gate.withPage(page, ({ sessionId }) =>
-      waitForURLInPage(this.#services, sessionId, expected, options),
+      waitForURLInPage(this.#services, sessionId, expected, options, {
+        interrupt: (lastUrl) =>
+          matchingPopupWaitError(this.spaceId, this.label, lastUrl, expected),
+      }),
     );
+  }
+
+  /** Wait for the next popup opened by this Page. */
+  waitForEvent(
+    event: "popup",
+    options: PageWaitForEventOptions = {},
+  ): Promise<Page> {
+    if (event !== "popup") {
+      throw new TypeError("page.waitForEvent only supports the popup event");
+    }
+    validatePublicApiOptions("Page.waitForEvent", options);
+    const timeoutMs = options.timeout ?? 10_000;
+
+    // Subscribe synchronously so the common `const pending = waitForEvent();
+    // await click()` pattern cannot miss a popup created by the click.
+    return new Promise<Page>((resolve, reject) => {
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const finish = (operation: () => void) => {
+        if (settled) return;
+        settled = true;
+        unsubscribe();
+        if (timer) clearTimeout(timer);
+        operation();
+      };
+      const onNotice = (notice: UnhandledPageNotice) => {
+        if (
+          notice.spaceId !== this.spaceId ||
+          notice.openerLabel !== this.label
+        ) {
+          return;
+        }
+        finish(() => {
+          markPageObserved(notice.spaceId, notice.targetId);
+          resolve(this.#task.page(notice.label));
+        });
+      };
+      const unsubscribe = subscribeUnhandledPageNotices(onNotice);
+      timer = setTimeout(() => {
+        finish(() =>
+          reject(
+            new Error(
+              `page.waitForEvent("popup") timed out after ${timeoutMs}ms`,
+            ),
+          ),
+        );
+      }, timeoutMs);
+
+      // Resolve the source after arming the listener. A stale Page should fail
+      // the waiter, but no popup may be lost while that validation is pending.
+      void this.#resolve().catch((error) => finish(() => reject(error)));
+    });
   }
 
   /** Wait without activating this Page or occupying the native operation gate. */
@@ -2288,6 +2364,38 @@ function unhandledFileChooserError(): Error & { code: string } {
   ) as Error & { code: string };
   error.code = "EGO_FILE_CHOOSER_OPENED";
   return error;
+}
+
+function matchingPopupWaitError(
+  spaceId: number,
+  openerLabel: string,
+  lastUrl: string,
+  expected: string | RegExp,
+): (Error & { code: string }) | undefined {
+  const popup = peekUnhandledPageNotices().find(
+    (notice) =>
+      notice.spaceId === spaceId &&
+      notice.openerLabel === openerLabel &&
+      typeof notice.url === "string" &&
+      urlMatches(notice.url, expected),
+  );
+  if (!popup) return undefined;
+
+  const error = new Error(
+    `page ${openerLabel} did not navigate from ${JSON.stringify(lastUrl)}, ` +
+      `but popup ${popup.label} opened from it at ${JSON.stringify(popup.url)}. ` +
+      `The triggering action already succeeded; do not repeat it. Continue with ` +
+      `task.page(${JSON.stringify(popup.label)}).`,
+  ) as Error & { code: string };
+  error.code = "EGO_URL_OPENED_IN_POPUP";
+  return error;
+}
+
+function urlMatches(url: string, expected: string | RegExp): boolean {
+  if (typeof expected === "string") return url === expected;
+  const pattern = new RegExp(expected.source, expected.flags);
+  pattern.lastIndex = 0;
+  return pattern.test(url);
 }
 
 function assertCdpCall(

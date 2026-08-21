@@ -4,11 +4,13 @@ import assert from "node:assert/strict";
 import {
   bufferOutput,
   flushSink,
-  markPageObserved,
   markHardStop,
-  recordUnhandledPage,
   resetSink,
 } from "../dist/src/output-sink.js";
+import {
+  markPageObserved,
+  recordUnhandledPage,
+} from "../dist/src/page-discovery.js";
 
 function fakeStream() {
   const chunks = [];

@@ -249,6 +249,13 @@ export const PUBLIC_API_SCHEMA: readonly PublicApiEntry[] = [
     options: { timeout },
   },
   {
+    name: "Page.waitForEvent",
+    signature: 'await page.waitForEvent("popup", { timeout? })',
+    summary:
+      "Wait for this Page's next popup; call before the triggering action.",
+    options: { timeout },
+  },
+  {
     name: "Page.waitForTimeout",
     signature: "await page.waitForTimeout(timeout)",
     summary:
@@ -579,6 +586,8 @@ export function publicApiMarkdown(): string {
     "Generated from `package/ego-browser/src/public-api-schema.ts`.",
     "",
     'High-level Page actions return a receipt that may contain `popups` or a synchronous `dialog`. Handle a returned dialog with `page.cdp("Page.handleJavaScriptDialog", { accept: true })` or `{ accept: false }` before continuing; prompts may also include `promptText`.',
+    "",
+    'For an explicit popup wait, arm it before the action: `const popupPromise = page.waitForEvent("popup"); await page.click(selector); const popup = await popupPromise;`. The default workflow can read `receipt.popups` instead.',
   ];
   for (const [group, entries] of groups) {
     lines.push(

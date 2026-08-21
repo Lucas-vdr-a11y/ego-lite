@@ -19,6 +19,7 @@ import { pageScrolledScreenshotCase } from "./page-screenshot.mjs";
 import { pageSnapshotLocatorCase } from "./page-snapshot-locators.mjs";
 import { pageShadowDomCase } from "./page-shadow-dom.mjs";
 import { pageTextLocatorCase } from "./page-text-locators.mjs";
+import { pagePopupWaiterCase } from "./page-popup-waiter.mjs";
 import { pageOopifActionCase, pageOopifRestoreCase } from "./page-oopif.mjs";
 import { pageLoadStatesCase } from "./page-load-states.mjs";
 import {
@@ -101,6 +102,7 @@ export const e2eCases = [
   { name: "Page snapshot locator quality", body: pageSnapshotLocatorCase },
   { name: "Page open Shadow DOM locators", body: pageShadowDomCase },
   { name: "Page text locators", body: pageTextLocatorCase },
+  { name: "Page popup waiter and URL diagnostic", body: pagePopupWaiterCase },
   { name: "Page OOPIF actions", body: pageOopifActionCase },
   { name: "Page OOPIF restore and close", body: pageOopifRestoreCase },
   { name: "Page load states", body: pageLoadStatesCase },

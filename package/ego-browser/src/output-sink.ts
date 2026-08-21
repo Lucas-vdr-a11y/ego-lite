@@ -1,4 +1,9 @@
 import { formatCliLogValue } from "./format.js";
+import {
+  consumeUnhandledPageNotices,
+  resetPageNotices,
+  type UnhandledPageNotice,
+} from "./page-discovery.js";
 
 /**
  * Round output stays buffered until completion because bytes written before a hard
@@ -11,20 +16,10 @@ type WritableLike = { write(chunk: string): unknown };
 
 export type RoundConsole = Pick<Console, "log" | "info" | "warn" | "error">;
 
-export type UnhandledPageNotice = {
-  spaceId: number;
-  targetId: string;
-  label: string;
-  openerLabel?: string;
-  url?: string;
-};
-
 let buffer: string[] = [];
 let hardStopMessage: string | null = null;
 let flushed = false;
 let lifecycleHooked = false;
-const pendingPageNotices = new Map<string, UnhandledPageNotice>();
-const observedPages = new Set<string>();
 
 /** Buffer one already-formatted cliLog chunk (the trailing newline is included). */
 export function bufferOutput(chunk: string): void {
@@ -56,54 +51,6 @@ export function markHardStop(message: string): void {
   if (hardStopMessage === null) {
     hardStopMessage = message;
   }
-}
-
-/** Queue a discovered Page for the round summary unless agent code used it. */
-export function recordUnhandledPage(notice: UnhandledPageNotice): void {
-  const key = pageKey(notice.spaceId, notice.targetId);
-  if (observedPages.has(key)) return;
-  pendingPageNotices.set(key, {
-    ...pendingPageNotices.get(key),
-    ...notice,
-  });
-}
-
-/** Mark a Page as used during this round so it needs no automatic summary. */
-export function markPageObserved(spaceId: number, targetId: string): void {
-  const key = pageKey(spaceId, targetId);
-  observedPages.add(key);
-  pendingPageNotices.delete(key);
-}
-
-/** Remove round output state for a Page that no longer exists. */
-export function forgetPageNotice(spaceId: number, targetId: string): void {
-  const key = pageKey(spaceId, targetId);
-  pendingPageNotices.delete(key);
-  observedPages.delete(key);
-}
-
-/** Remove pending Page output when its task space reaches a terminal state. */
-export function clearSpacePageNotices(spaceId: number): void {
-  const prefix = `${spaceId}:`;
-  for (const key of pendingPageNotices.keys()) {
-    if (key.startsWith(prefix)) pendingPageNotices.delete(key);
-  }
-  for (const key of observedPages) {
-    if (key.startsWith(prefix)) observedPages.delete(key);
-  }
-}
-
-/** Drain Page notices once. Exported so behavior tests can inspect the round. */
-export function consumeUnhandledPageNotices(): UnhandledPageNotice[] {
-  const notices = [...pendingPageNotices.values()];
-  pendingPageNotices.clear();
-  return notices;
-}
-
-/** Clear only Page notice state for Page-model behavior tests. */
-export function resetPageNotices(): void {
-  pendingPageNotices.clear();
-  observedPages.clear();
 }
 
 /**
@@ -157,10 +104,6 @@ function formatPageNotices(notices: UnhandledPageNotice[]): string {
 
 function oneLine(value: string): string {
   return value.replace(/\s+/g, " ").trim();
-}
-
-function pageKey(spaceId: number, targetId: string): string {
-  return `${spaceId}:${targetId}`;
 }
 
 /**
