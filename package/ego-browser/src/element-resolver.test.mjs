@@ -144,6 +144,69 @@ test("CSS locators search nested open shadow roots", async () => {
   assert.deepEqual(point, { x: 12, y: 34, sessionId: undefined });
 });
 
+test("invalid numeric CSS ids suggest a valid attribute selector", async () => {
+  const cdp = new FakeCDP(async (method) => {
+    if (method === "Runtime.evaluate") {
+      return {
+        exceptionDetails: {
+          exception: {
+            description:
+              "SyntaxError: Failed to execute 'querySelectorAll' on 'Document'",
+          },
+        },
+      };
+    }
+    return {};
+  });
+
+  await assert.rejects(
+    () =>
+      resolveElementObjectId(
+        cdp,
+        "session:page",
+        new RefMap(),
+        "#73503e10-2be7-42d1-a053-c77402da1f80",
+        new Map(),
+        { strict: true },
+      ),
+    (error) => {
+      assert.ok(error instanceof ElementResolutionError);
+      assert.equal(error.kind, "permanent");
+      assert.match(
+        error.message,
+        /\[id="73503e10-2be7-42d1-a053-c77402da1f80"\]/,
+      );
+      return true;
+    },
+  );
+});
+
+test("malformed role locators fail before raw CSS evaluation", async () => {
+  const cdp = new FakeCDP(async () => {
+    throw new Error("malformed role locator must not reach CDP");
+  });
+
+  await assert.rejects(
+    () =>
+      resolveElementObjectId(
+        cdp,
+        "session:page",
+        new RefMap(),
+        'loc=role:button[name^="View flight details"]',
+        new Map(),
+        { strict: true },
+      ),
+    (error) => {
+      assert.ok(error instanceof ElementResolutionError);
+      assert.equal(error.kind, "permanent");
+      assert.match(error.message, /loc=role:<role>\[name="<exact name>"\]/);
+      assert.match(error.message, /text=\.\.\./);
+      return true;
+    },
+  );
+  assert.deepEqual(cdp.calls, []);
+});
+
 test("text locators normalize whitespace and search nested open shadow roots", async () => {
   const cdp = new FakeCDP(async (method, params) => {
     if (method === "Runtime.evaluate") {

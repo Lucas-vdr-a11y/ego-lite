@@ -93,7 +93,10 @@ import {
   subscribeUnhandledPageNotices,
   type UnhandledPageNotice,
 } from "./page-discovery.js";
-import { validatePublicApiOptions } from "./public-api-schema.js";
+import {
+  publicApiEntry,
+  validatePublicApiOptions,
+} from "./public-api-schema.js";
 import { parseRef, type RefMap } from "./ref-map.js";
 import { state } from "./state.js";
 
@@ -198,7 +201,9 @@ type PageFetchPayload = {
   responseType: "text" | "base64";
 };
 
-type PageFetchResult = PageFetchResponse & { bodyBase64?: string };
+type PageFetchResult =
+  | (PageFetchResponse & { bodyBase64?: string })
+  | { fetchError: string };
 
 type PageTarget = {
   spaceId: number;
@@ -1409,6 +1414,17 @@ class Page {
     argument?: unknown,
     options: PageWaitForFunctionOptions = {},
   ): Promise<true> {
+    if (
+      arguments.length === 2 &&
+      typeof expression === "function" &&
+      expression.length === 0 &&
+      looksLikeWaitForFunctionOptions(argument)
+    ) {
+      const signature = publicApiEntry("Page.waitForFunction")?.signature;
+      throw new TypeError(
+        `page.waitForFunction options are the third argument; pass undefined when omitting the callback argument. Expected: ${signature}`,
+      );
+    }
     validatePublicApiOptions("Page.waitForFunction", options);
     // Passing `undefined` is how callers omit the optional argument while
     // supplying the third options parameter, matching Playwright's shape.
@@ -1471,8 +1487,8 @@ class Page {
 
   /**
    * Run window.fetch inside this Page and return a CDP-serializable response.
-   * Unlike a Node fetch, relative URLs, cookies, CORS, and service workers all
-   * use the addressed document's browser context.
+   * Relative URLs, cookies, and service workers use the addressed document's
+   * browser context. Browser CORS still applies.
    */
   async fetch(
     url: string,
@@ -1491,6 +1507,9 @@ class Page {
         payload,
         payload.timeoutMs + 1_000,
       );
+      if ("fetchError" in response) {
+        throw new Error(response.fetchError);
+      }
       if (!saveAs) return response;
       if (typeof response.bodyBase64 !== "string") {
         throw new Error("page.fetch received no binary response body");
@@ -2411,7 +2430,7 @@ async function fetchInPage({
   options,
   timeoutMs,
   responseType,
-}: PageFetchPayload): Promise<PageFetchResponse> {
+}: PageFetchPayload): Promise<PageFetchResult> {
   const controller = new AbortController();
   const timer = window.setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -2441,12 +2460,35 @@ async function fetchInPage({
     return { ...metadata, bodyBase64: btoa(binary) } as PageFetchResult;
   } catch (error) {
     if (controller.signal.aborted) {
-      throw new Error(`page.fetch timed out after ${timeoutMs}ms`);
+      return { fetchError: `page.fetch timed out after ${timeoutMs}ms` };
     }
-    throw error;
+    let requestUrl = url;
+    try {
+      requestUrl = new URL(url, window.location.href).href;
+    } catch {
+      // Keep the caller's URL when it cannot be resolved in the Page.
+    }
+    const detail =
+      error instanceof Error
+        ? `${error.name}: ${error.message}`
+        : String(error);
+    return {
+      fetchError:
+        `page.fetch uses window.fetch and obeys browser CORS. ` +
+        `Request ${JSON.stringify(requestUrl)} from ${JSON.stringify(window.location.origin)} failed: ${detail}`,
+    };
   } finally {
     window.clearTimeout(timer);
   }
+}
+
+function looksLikeWaitForFunctionOptions(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const keys = Object.keys(value);
+  return (
+    keys.length > 0 &&
+    keys.every((key) => key === "timeout" || key === "polling")
+  );
 }
 
 function assertUrl(url: string): void {

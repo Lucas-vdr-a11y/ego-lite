@@ -86,7 +86,7 @@ export async function resolveElementCenter(
     return { ...boxModelCenter(result.model), sessionId: effectiveSessionId };
   }
 
-  const locator = parseLocator(selectorOrRef);
+  const locator = parseLocatorOrThrow(selectorOrRef);
   if (locator) {
     return resolveLocatorCenter(cdp, sessionId, locator, iframeSessions);
   }
@@ -195,7 +195,7 @@ export async function resolveElementObjectId(
     };
   }
 
-  const locator = parseLocator(selectorOrRef);
+  const locator = parseLocatorOrThrow(selectorOrRef);
   if (locator) {
     return resolveLocatorObjectId(
       cdp,
@@ -413,10 +413,24 @@ async function rawSelectorCountError(cdp, contexts, selector, count) {
 }
 
 function invalidSelectorError(raw, result) {
+  const hint = numericCssIdHint(raw);
   return new ElementResolutionError(
-    `Invalid selector: ${raw}: ${exceptionText(result)}`,
+    `Invalid selector: ${raw}${hint ? `. ${hint}` : ""}: ${exceptionText(result)}`,
     "permanent",
   );
+}
+
+function numericCssIdHint(raw) {
+  const value = String(raw || "").trim();
+  const prefix = value.startsWith("loc=css:")
+    ? "loc=css:"
+    : value.startsWith("css:")
+      ? "css:"
+      : "";
+  const match = /^#([0-9][A-Za-z0-9_-]*)$/.exec(value.slice(prefix.length));
+  if (!match) return undefined;
+  const selector = `[id=${JSON.stringify(match[1])}]`;
+  return `CSS ids beginning with a digit must be escaped; use ${prefix}${selector}`;
 }
 
 function resolveFrameSession(frameId, sessionId, iframeSessions) {
@@ -1559,6 +1573,24 @@ function parseLocator(input) {
       name: parseLocatorName(roleMatch[2]),
       raw: value,
     };
+  }
+  return null;
+}
+
+function parseLocatorOrThrow(input) {
+  const locator = parseLocator(input);
+  if (locator) return locator;
+
+  const value = String(input || "").trim();
+  if (
+    value.startsWith("loc=") ||
+    value.startsWith("role:") ||
+    value.startsWith("text=")
+  ) {
+    throw new ElementResolutionError(
+      `Invalid locator: ${value}. Expected loc=role:<role>[name="<exact name>"], loc=css:<selector>, loc=href:<substring>, or text=... for text matching`,
+      "permanent",
+    );
   }
   return null;
 }

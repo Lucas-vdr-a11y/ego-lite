@@ -295,7 +295,8 @@ export const PUBLIC_API_SCHEMA: readonly PublicApiEntry[] = [
   {
     name: "Page.fetch",
     signature: "await page.fetch(url, options?)",
-    summary: "Run window.fetch in this Page and return a structured response.",
+    summary:
+      "Run window.fetch in this Page, obey browser CORS, and return a structured response.",
     options: {
       timeout,
       saveAs: option(

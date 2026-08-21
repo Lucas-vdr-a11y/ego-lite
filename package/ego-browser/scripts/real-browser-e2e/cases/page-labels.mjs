@@ -1036,6 +1036,13 @@ export function pageFetchCase() {
       "page.fetch enforces a millisecond timeout"
     );
 
+    const crossOriginUrl = baseUrl.replace("127.0.0.1", "localhost") + "/api/request-info";
+    await assertRejects(
+      () => source.fetch(crossOriginUrl, { timeout: 2_000 }),
+      "page.fetch uses window.fetch and obeys browser CORS",
+      "page.fetch explains browser CORS failures"
+    );
+
     await source.close();
     await comparison.close();
   `;

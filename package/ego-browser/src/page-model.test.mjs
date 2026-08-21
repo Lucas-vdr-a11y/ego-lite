@@ -57,6 +57,7 @@ function createFixture(rootDir) {
   let timeoutNextLifecycleEvaluate = false;
   let timeoutNextUrlEvaluate = false;
   let waitFunctionResults = [];
+  let fetchFailure = null;
   let nowMs = 1_000;
   const pageEvents = new Map();
   const networkSessions = new Set();
@@ -334,6 +335,16 @@ function createFixture(rootDir) {
           };
         }
         if (params.functionDeclaration.includes("window.fetch")) {
+          if (fetchFailure) {
+            const message = fetchFailure;
+            fetchFailure = null;
+            return {
+              result: {
+                type: "object",
+                value: { fetchError: message },
+              },
+            };
+          }
           const binary =
             params.arguments?.[0]?.value?.responseType === "base64";
           return {
@@ -668,6 +679,9 @@ function createFixture(rootDir) {
     setWaitFunctionResults(results) {
       waitFunctionResults = [...results];
     },
+    failNextFetch(message) {
+      fetchFailure = message;
+    },
     setSession(targetId, sessionId) {
       sessionOverrides.set(targetId, sessionId);
     },
@@ -976,6 +990,10 @@ test("Page.waitForFunction validates input and reports its timeout", async () =>
     await assert.rejects(
       () => page.waitForFunction(() => true, undefined, { polling: 0 }),
       /polling must be a positive number of milliseconds/,
+    );
+    await assert.rejects(
+      () => page.waitForFunction(() => false, { timeout: 60 }),
+      /options are the third argument.*pass undefined.*Expected: await page\.waitForFunction\(fnOrString, argument\?, \{ timeout\?, polling\? \}\)/,
     );
   });
 });
@@ -1537,6 +1555,26 @@ test("Page fetch validates its JSON options and millisecond timeout", async () =
     await assert.rejects(
       () => page.fetch("/api/text", { headers: cyclic }),
       /headers must be an object with string values/,
+    );
+  });
+});
+
+test("Page fetch reports browser CORS failures without an evaluation wrapper", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a");
+    const page = await openTestPage(task, "https://example.test/fetch");
+    fixture.failNextFetch(
+      'page.fetch uses window.fetch and obeys browser CORS. Request "https://cdn.example.test/image.png" from "https://example.test" failed: TypeError: Failed to fetch',
+    );
+
+    await assert.rejects(
+      () => page.fetch("https://cdn.example.test/image.png"),
+      (error) => {
+        assert.match(error.message, /page\.fetch uses window\.fetch/);
+        assert.match(error.message, /obeys browser CORS/);
+        assert.doesNotMatch(error.message, /JavaScript evaluation failed/);
+        return true;
+      },
     );
   });
 });

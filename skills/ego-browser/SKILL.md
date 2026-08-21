@@ -117,19 +117,38 @@ callback or pass one JSON-serializable value as its second argument.
 
 ### Semantic pages: snapshot and selectors
 
-For an ordinary DOM page, use an observe → act → observe loop.
+Prefer snapshots and semantic selectors for ordinary DOM pages. Use screenshots
+and coordinates only when useful DOM semantics are unavailable.
+
+Before choosing an unfamiliar target, take a snapshot. When the next step
+depends on an action's result, keep the action, an expected-state wait, and the
+next snapshot in the same heredoc. Print the snapshot last so the next round
+can act on it directly. If no decision depends on intermediate states, batch
+deterministic actions and observe only after the last verified result.
+The final snapshot is the next round's starting view of the changed page;
+without it, that round usually has to spend a separate browser call observing
+before it can choose the next target.
+
+Wait for the expected result: use `waitForURL()` for navigation,
+`waitForSelector()` for element state, or `waitForFunction()` for application
+state. Avoid fixed delays when an observable condition exists. A snapshot
+captures the current moment; it does not wait for the page to become stable.
 `page.snapshot()` captures the current viewport. For content outside it, use
 `page.snapshot({ scope: "full_page" })`.
 
 ```js
+// Round 1: inspect and choose targets from this output.
 const page = task.page("p1");
 console.log(await page.snapshot());
+```
 
+```js
+// Next round: act using the previous output, verify, then prepare the next round.
+const page = task.page("p1");
 await page.fill("@21", "user@example.com");
 await page.click("loc=role:button[name='Sign in']");
-await page.selectOption("#country", "nl");
-await page.waitForSelector("loc=css:#account-home");
-await page.click("text=Save changes");
+await page.waitForSelector("loc=css:#account-home", { state: "visible" });
+console.log(await page.snapshot());
 ```
 
 Element actions accept:
@@ -202,9 +221,11 @@ const rows = await page.evaluate(
 );
 ```
 
-Use `page.cdp()` for Page, Runtime, DOM, Network, Input, and similar commands
-missing from the Page API; use `task.cdp()` for Target and Browser commands.
-Raw CDP invalidates refs. Do not persist `page.targetId` across rounds.
+Use documented Page methods first. If a wrapper is missing or does not work
+reliably on the current page, use `page.cdp()` as a lower-level path for
+diagnosis or control. It accepts Page, Runtime, DOM, Network, Input, and similar
+commands; use `task.cdp()` for Target and Browser commands. Raw CDP invalidates
+refs. Do not persist `page.targetId` across rounds.
 
 ## Action results, popups, and dialogs
 
@@ -230,8 +251,8 @@ await page.cdp("Page.handleJavaScriptDialog", { accept: true });
 // Use accept: false to dismiss it.
 ```
 
-Use state-based waits to verify the application result; a receipt only describes
-the dispatched action and immediate popup or dialog observations.
+A receipt describes only the dispatched action and immediate popup or dialog
+observations; it does not verify the resulting application state.
 
 ## Files and requests
 
@@ -250,8 +271,8 @@ const chooser = await chooserPromise;
 await chooser.setFiles("/absolute/path/report.pdf");
 ```
 
-Use `page.fetch()` for requests that need the Page's relative URL, cookies,
-CORS, or service worker. It returns
+`page.fetch()` runs `window.fetch()` in the Page: relative URLs, cookies, and
+service workers use that Page, and browser CORS still applies. It returns
 `{ ok, status, statusText, url, headers, body }`:
 
 ```js
