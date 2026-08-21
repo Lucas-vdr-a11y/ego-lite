@@ -1,9 +1,7 @@
 export function pagePopupWaiterCase() {
   return `
     const task = await taskSpace(taskName);
-    const source = await task.openPage(baseUrl + "/?page=popup-waiter", {
-      as: "popup-waiter-source",
-    });
+    const source = await newPageAt(task, baseUrl + "/?page=popup-waiter");
     try {
       await source.evaluate((popupUrl) => {
         const button = document.createElement("button");

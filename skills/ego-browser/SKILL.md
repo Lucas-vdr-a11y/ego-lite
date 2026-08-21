@@ -16,7 +16,8 @@ Run JavaScript through a heredoc:
 ```bash
 ego-browser nodejs <<'EOF'
 const task = await taskSpace("inspect example page");
-const page = await task.openPage("https://example.com");
+const page = await task.newPage();
+await page.goto("https://example.com");
 
 console.log({ taskSpaceId: task.spaceId, page: page.label });
 console.log(await page.snapshot());
@@ -26,6 +27,9 @@ EOF
 The heredoc runs in Node.js with the browser APIs preloaded. Use them directly;
 run page JavaScript inside `page.evaluate()`. Do not import Playwright or launch
 another browser.
+
+The Node.js runtime uses ESM. When a script needs local files, load built-ins
+with dynamic imports such as `await import("node:fs/promises")`.
 
 Ego-browser deliberately exposes a small custom API. It is not Playwright, even
 where method names and options look similar. Use only the TaskSpace, Page,
@@ -62,14 +66,16 @@ use `help("profiles")` for the exact workflow.
 Supported TaskSpace API:
 
 - State: `spaceId`, `name`, `ownership`, `page(label)`, `userPage()`
-- Pages: `await task.pages()`, `await task.tabs()`, `openPage(url, { as?, timeout? })`,
+- Pages: `await task.pages()`, `await task.tabs()`, `newPage()`,
   `adopt(page, { as? })`, `release(label)`
 - Control: `waitForControl(options)`, `handOff()`, `finish()`, `close()`
 - Advanced: `cdp(method, params, options)`
 
 Pages receive permanent labels such as `p1`, `p2`, and `p3`. Prefer these labels
-to custom `{ as }` values. A space manages at most eight Pages; close a temporary
-Page or reuse an existing one when the limit is reached.
+to custom `{ as }` values. Reuse or close Pages as the task proceeds; the runtime
+reports the configured Page budget when it is reached.
+
+`task.newPage()` creates a blank Page. Navigate it separately with `page.goto()`.
 
 `await task.pages()` returns managed Pages. `await task.tabs()` returns every tab in the
 space as `{ label?, page, targetId, title, url, active, openedBy }`. A tab
@@ -97,7 +103,7 @@ them. Supported Page API:
 - Navigation and waits: `goto()`, `waitForURL()`, `waitForSelector()`,
   `waitForLoadState()`, `waitForFunction()`, `waitForTimeout()`
 - Elements: `click()`, `dblclick()`, `hover()`, `dragAndDrop()`, `fill()`,
-  `focus()`, `press()`, `scrollBy()`, `setInputFiles()`,
+  `selectOption()`, `focus()`, `press()`, `setInputFiles()`,
   `waitForFileChooser()`, `close()`
 - Pointer: `mouse.click()`, `move()`, `down()`, `up()`, `wheel()`
 - Keyboard: `keyboard.down()`, `up()`, `press()`, `type()`, `insertText()`,
@@ -121,6 +127,7 @@ console.log(await page.snapshot());
 
 await page.fill("@21", "user@example.com");
 await page.click("loc=role:button[name='Sign in']");
+await page.selectOption("#country", "nl");
 await page.waitForSelector("loc=css:#account-home");
 await page.click("text=Save changes");
 ```
@@ -144,8 +151,9 @@ interactive ancestor or unique editable descendant; `fill()` and
 Snapshot node names are accessibility roles. Use a ref now or `loc=...` to find
 the element again. After the page changes, take a new snapshot. When a useful
 node has no ref, construct a selector from its role, text, or surrounding
-context. CSS searches nested open shadow roots; role locators also search
-frames when the top-level document has no match.
+context. CSS searches nested open shadow roots. Actions use an actionable match
+in the top document first, then search frames when the top document has none.
+Multiple actionable matches in the selected document or frame are ambiguous.
 
 ### Visual pages: screenshot, mouse, and keyboard
 
@@ -155,6 +163,7 @@ spreadsheets, maps, and other interfaces that lack useful DOM semantics:
 ```js
 const path = await page.screenshot({ path: "/absolute/path/before.png" });
 await page.mouse.click(420, 260);
+await page.mouse.wheel(0, 600);
 await page.keyboard.paste("hello\tworld");
 console.log({ screenshot: path });
 ```
@@ -252,6 +261,12 @@ const response = await page.fetch("/api/items", {
   body: JSON.stringify({ limit: 20 }),
   timeout: 10_000,
 });
+```
+
+Save binary responses without converting them to text:
+
+```js
+await page.fetch("/image.png", { saveAs: "/absolute/path/image.png" });
 ```
 
 Use standard Node.js `fetch()` for background requests that do not need Page

@@ -1,9 +1,7 @@
 export function v1V2ActionParityCase() {
   return `
     const task = await taskSpace(taskName);
-    const page = await task.openPage(baseUrl + "/?workflow=parity", {
-      as: "workflow-parity",
-    });
+    const page = await newPageAt(task, baseUrl + "/?workflow=parity");
 
     await page.evaluate(() => {
       window.__parityEvents = [];
@@ -111,9 +109,7 @@ export function v1V2ActionParityCase() {
 export function portableKeyboardWorkflowCase() {
   return `
     const task = await taskSpace(taskName);
-    const page = await task.openPage(baseUrl + "/?workflow=keyboard", {
-      as: "workflow-keyboard",
-    });
+    const page = await newPageAt(task, baseUrl + "/?workflow=keyboard");
 
     await page.fill("#text-input", "portable clipboard");
     await page.keyboard.press("ControlOrMeta+A");
@@ -165,7 +161,7 @@ export function portableKeyboardWorkflowCase() {
 export function pureCdpWorkflowCase() {
   return `
     const task = await taskSpace(taskName);
-    const page = await task.openPage("about:blank", { as: "workflow-cdp" });
+    const page = await newPageAt(task, "about:blank");
     const destination = baseUrl + "/?workflow=cdp";
 
     await page.cdp("Page.navigate", { url: destination }, { timeout: 5_000 });
@@ -249,12 +245,8 @@ export function pureCdpWorkflowCase() {
 export function snapshotWorkflowCase() {
   return `
     const task = await taskSpace(taskName);
-    const first = await task.openPage(baseUrl + "/?workflow=snapshot-a", {
-      as: "workflow-snapshot-a",
-    });
-    const second = await task.openPage(baseUrl + "/?workflow=snapshot-b", {
-      as: "workflow-snapshot-b",
-    });
+    const first = await newPageAt(task, baseUrl + "/?workflow=snapshot-a");
+    const second = await newPageAt(task, baseUrl + "/?workflow=snapshot-b");
 
     const firstSnapshot = await first.snapshot();
     const secondSnapshot = await second.snapshot();
@@ -287,7 +279,7 @@ export function snapshotWorkflowCase() {
 export function visualWorkflowCase() {
   return `
     const task = await taskSpace(taskName);
-    const page = await task.openPage(baseUrl + "/visual", { as: "workflow-visual" });
+    const page = await newPageAt(task, baseUrl + "/visual");
     const snapshot = await page.snapshot();
     assert(
       !snapshot.includes("CLICK") && !snapshot.includes("DONE"),

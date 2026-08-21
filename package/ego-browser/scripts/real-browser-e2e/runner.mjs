@@ -147,7 +147,7 @@ export async function runRealBrowserE2e() {
           `the browser script did not report the expected hard stop: ${expectedOutput}`,
         );
       }
-      // The marker is written only after openPage() has returned. Its presence
+      // The marker is written only after newPage() and goto() have returned. Its presence
       // distinguishes the intended hard stop from an unrelated startup error.
       await stat(join(tempDir, markerName));
       const assertions = completedWithAcceptedOutput

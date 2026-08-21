@@ -1,9 +1,7 @@
 export function pageJavaScriptDialogHandoffCase() {
   return `
     const task = await taskSpace(taskName);
-    const page = await task.openPage(baseUrl + "/?page-dialogs=" + Date.now(), {
-      as: "page-dialogs",
-    });
+    const page = await newPageAt(task, baseUrl + "/?page-dialogs=" + Date.now());
 
     await page.evaluate(() => {
       const button = document.createElement("button");

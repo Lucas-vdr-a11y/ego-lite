@@ -41,7 +41,8 @@ Read the ego-browser skill for the default workflow and examples.
 Typical usage:
   ego-browser <<'JS'
   const task = await taskSpace('demo')
-  const page = await task.openPage('https://example.com', { as: 'p1' })
+  const page = await task.newPage()
+  await page.goto('https://example.com')
   console.log(await page.snapshot())
   JS
 
@@ -51,7 +52,8 @@ Helpers are pre-imported and the browser connection is prepared automatically.
 export const USAGE = `Usage:
   ego-browser <<'JS'
   const task = await taskSpace('demo')
-  const page = await task.openPage('https://example.com', { as: 'p1' })
+  const page = await task.newPage()
+  await page.goto('https://example.com')
   console.log(await page.snapshot())
   JS
 `;

@@ -1,7 +1,18 @@
 export function pageLoadStatesCase() {
   return `
     const task = await taskSpace(taskName);
-    const page = await task.openPage("about:blank", { as: "page-load-states" });
+    const page = await newPageAt(task, "about:blank");
+    await assertRejects(
+      () => page.goto(baseUrl + "/streamed-page?ms=600", { timeout: 100 }),
+      "timed out",
+      "goto owns and reports its load timeout"
+    );
+    assertIncludes(
+      await page.url(),
+      "/streamed-page?ms=600",
+      "a Page remains addressable after goto times out"
+    );
+    await page.waitForLoadState("load", { timeout: 2_000 });
     const referer = baseUrl + "/navigation-source";
     await page.goto(baseUrl + "/streamed-page?ms=1000", {
       referer,

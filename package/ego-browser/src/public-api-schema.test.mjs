@@ -19,7 +19,7 @@ test("the public API schema contains the v2 entry points and object methods", ()
     "TaskSpace.userPage",
     "TaskSpace.pages",
     "TaskSpace.tabs",
-    "TaskSpace.openPage",
+    "TaskSpace.newPage",
     "Page.snapshot",
     "Page.targetId",
     "Page.waitForEvent",
@@ -28,12 +28,14 @@ test("the public API schema contains the v2 entry points and object methods", ()
     "Page.waitForFunction",
     "Page.focus",
     "Page.press",
+    "Page.selectOption",
     "Page.keyboard.press",
     "Page.keyboard.paste",
   ]) {
     assert(names.has(name), `missing public API schema entry: ${name}`);
   }
   assert.equal(names.has("TaskSpace.listPages"), false);
+  assert.equal(names.has("Page.scrollBy"), false);
 });
 
 test("schema-driven option validation rejects unknown and invalid fields", () => {
@@ -45,6 +47,7 @@ test("schema-driven option validation rejects unknown and invalid fields", () =>
     force: true,
     timeout: 500,
   });
+  validatePublicApiOptions("Page.fetch", { saveAs: "/tmp/image.png" });
   for (const waitUntil of [
     "commit",
     "domcontentloaded",
@@ -63,7 +66,7 @@ test("schema-driven option validation rejects unknown and invalid fields", () =>
   );
   assert.throws(
     () => validatePublicApiOptions("Page.click", { trial: true }),
-    /unknown option: trial/,
+    /unknown option: trial\. Expected: await page\.click\(selector, \{ button\?, clickCount\?, delay\?, position\?, force\?, timeout\? \}\)/,
   );
   assert.throws(
     () => validatePublicApiOptions("Page.goto", { timeout: 0 }),
@@ -88,13 +91,14 @@ test("the generated reference contains signatures and option descriptions", () =
   assert.match(markdown, /`await profiles\(\)`/);
   assert.match(markdown, /`await listTaskSpaces\(\)`/);
   assert.match(markdown, /`await taskSpace\(nameOrId, \{ profileId\? \}\)`/);
-  assert.match(
-    markdown,
-    /`await task\.openPage\(url, \{ as\?, timeout\? \}\)`/,
-  );
+  assert.match(markdown, /`await task\.newPage\(\)`/);
   assert.match(
     markdown,
     /`await page\.goto\(url, \{ referer\?, timeout\?, waitUntil\? \}\)`/,
+  );
+  assert.match(
+    markdown,
+    /`await page\.selectOption\(selector, valueOrValues, \{ timeout\? \}\)`/,
   );
   assert.match(
     markdown,
@@ -108,8 +112,8 @@ test("the generated reference contains signatures and option descriptions", () =
     markdown,
     /const popupPromise = page\.waitForEvent\("popup"\); await page\.click\(selector\)/,
   );
-  assert.match(markdown, /`as` — Permanent Page label\.<br>`timeout`/);
-  assert.match(markdown, /Open and durably label a new Page/);
+  assert.doesNotMatch(markdown, /task\.openPage/);
+  assert.match(markdown, /Create and durably label a blank Page/);
   assert.match(
     markdown,
     /Maximum actionability wait in milliseconds; defaults to 3000/,

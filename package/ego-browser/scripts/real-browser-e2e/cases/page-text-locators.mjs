@@ -1,9 +1,7 @@
 export function pageTextLocatorCase() {
   return `
     const task = await taskSpace(taskName);
-    const page = await task.openPage(baseUrl + "/?page=text-locators", {
-      as: "text-locators",
-    });
+    const page = await newPageAt(task, baseUrl + "/?page=text-locators");
     try {
       await page.evaluate(() => {
         const region = document.createElement("section");

@@ -1,7 +1,7 @@
 export function pageShadowDomCase() {
   return `
     const task = await taskSpace(taskName);
-    const page = await task.openPage(baseUrl + "/?page=shadow-dom", { as: "shadow-dom" });
+    const page = await newPageAt(task, baseUrl + "/?page=shadow-dom");
     try {
       const snapshot = await page.snapshot({ scope: "full_page" });
       assertIncludes(snapshot, "Shadow field", "snapshot exposes the shadow input");

@@ -1,9 +1,7 @@
 export function pageDragAndDrawCase() {
   return `
     const task = await taskSpace(taskName);
-    const page = await task.openPage(baseUrl + "/pointer-workbench", {
-      as: "pointer-workbench",
-    });
+    const page = await newPageAt(task, baseUrl + "/pointer-workbench");
     const beforePath = join(artifactDir, "pointer-workbench-before.png");
     const afterPath = join(artifactDir, "pointer-workbench-after.png");
     await page.screenshot({ path: beforePath });

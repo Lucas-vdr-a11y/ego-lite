@@ -1,9 +1,7 @@
 export function pageSnapshotLocatorCase() {
   return `
     const task = await taskSpace(taskName);
-    const page = await task.openPage(baseUrl + "/?workflow=page-snapshot-locators", {
-      as: "page-snapshot-locators",
-    });
+    const page = await newPageAt(task, baseUrl + "/?workflow=page-snapshot-locators");
 
     await page.evaluate(() => {
       const region = document.createElement("section");

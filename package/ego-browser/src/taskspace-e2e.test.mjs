@@ -271,7 +271,7 @@ test("cli e2e exposes the unified helperContext surface (help present, internals
     `
     cliLog(JSON.stringify({
       helpType: typeof help,
-      publicHelp: help("TaskSpace.openPage"),
+      publicHelp: help("TaskSpace.newPage"),
       legacyHint: help("click"),
       newTabType: typeof newTab,
       helperContextType: typeof helperContext,
@@ -284,7 +284,7 @@ test("cli e2e exposes the unified helperContext surface (help present, internals
   assert.deepEqual(firstJsonLine(result.stdout), {
     helpType: "function",
     publicHelp:
-      "TaskSpace.openPage\n\nOpen and durably label a new Page. Options: as: Permanent Page label. timeout: Maximum duration in milliseconds.\n\nawait task.openPage(url, { as?, timeout? })",
+      "TaskSpace.newPage\n\nCreate and durably label a blank Page.\n\nawait task.newPage()",
     legacyHint:
       'Legacy helper hidden from default help: click. Use help("legacy", "click").',
     newTabType: "undefined",

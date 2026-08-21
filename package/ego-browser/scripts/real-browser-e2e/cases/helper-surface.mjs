@@ -55,7 +55,7 @@ export function helperSurfaceCase() {
     }
     assertEqual(typeof globalThis.newTab, "undefined", "internal newTab is not exposed");
     const defaultHelp = help();
-    assertIncludes(defaultHelp, "TaskSpace.openPage", "default help presents the v2 object API");
+    assertIncludes(defaultHelp, "TaskSpace.newPage", "default help presents the v2 object API");
     assertIncludes(defaultHelp, "TaskSpace.pages", "default help presents managed Pages");
     assertIncludes(defaultHelp, "TaskSpace.tabs", "default help presents tab inventory");
     assertIncludes(defaultHelp, "profiles", "default help presents browser profile selection");

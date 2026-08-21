@@ -123,13 +123,9 @@ export const PUBLIC_API_SCHEMA: readonly PublicApiEntry[] = [
     summary: "List managed Pages and unmanaged tabs in this space.",
   },
   {
-    name: "TaskSpace.openPage",
-    signature: "await task.openPage(url, { as?, timeout? })",
-    summary: "Open and durably label a new Page.",
-    options: {
-      as: option("string", "Permanent Page label."),
-      timeout,
-    },
+    name: "TaskSpace.newPage",
+    signature: "await task.newPage()",
+    summary: "Create and durably label a blank Page.",
   },
   {
     name: "TaskSpace.adopt",
@@ -302,6 +298,10 @@ export const PUBLIC_API_SCHEMA: readonly PublicApiEntry[] = [
     summary: "Run window.fetch in this Page and return a structured response.",
     options: {
       timeout,
+      saveAs: option(
+        "nonEmptyString",
+        "Write the response body to this path without text conversion.",
+      ),
       method: option("string", "HTTP method."),
       headers: option("stringRecord", "Request headers."),
       body: option("string", "Request body."),
@@ -415,11 +415,17 @@ export const PUBLIC_API_SCHEMA: readonly PublicApiEntry[] = [
     name: "Page.fill",
     signature: "await page.fill(selector, value, { clearFirst?, timeout? })",
     summary:
-      "Fill the selected field, its editing host, or its unique fillable descendant, then verify the value.",
+      "Fill the selected field, its editing host, or its unique fillable descendant, then confirm editing took effect.",
     options: {
       clearFirst: option("boolean", "Clear the current value before filling."),
       timeout: actionTimeout,
     },
+  },
+  {
+    name: "Page.selectOption",
+    signature: "await page.selectOption(selector, valueOrValues, { timeout? })",
+    summary: "Select one or more option values and return the selected values.",
+    options: { timeout: actionTimeout },
   },
   {
     name: "Page.focus",
@@ -455,19 +461,6 @@ export const PUBLIC_API_SCHEMA: readonly PublicApiEntry[] = [
     name: "FileChooser.setFiles",
     signature: "await fileChooser.setFiles(pathOrPaths)",
     summary: "Set files on an intercepted chooser without a system dialog.",
-  },
-  {
-    name: "Page.scrollBy",
-    signature: "await page.scrollBy(deltaY, { deltaX?, behavior? })",
-    summary: "Scroll this Page by CSS-pixel deltas.",
-    options: {
-      deltaX: option("finiteNumber", "Horizontal CSS-pixel delta."),
-      behavior: option("string", "Scroll behavior.", [
-        "auto",
-        "instant",
-        "smooth",
-      ]),
-    },
   },
   {
     name: "Page.close",
@@ -569,18 +562,39 @@ export function validatePublicApiOptions(name: string, value: unknown): void {
     throw new Error(`public API schema has no options for ${name}`);
   }
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new TypeError(`${displayName(name)} options must be an object`);
+    throw new TypeError(
+      validationMessage(
+        entry,
+        `${displayName(name)} options must be an object`,
+      ),
+    );
   }
   for (const [key, optionValue] of Object.entries(value)) {
     const specification = entry.options[key];
     if (!specification) {
       throw new TypeError(
-        `${displayName(name)} received unknown option: ${key}`,
+        validationMessage(
+          entry,
+          `${displayName(name)} received unknown option: ${key}`,
+        ),
       );
     }
     if (optionValue === undefined) continue;
-    validateOptionValue(displayName(name), key, optionValue, specification);
+    try {
+      validateOptionValue(displayName(name), key, optionValue, specification);
+    } catch (error) {
+      if (error instanceof TypeError) {
+        throw new TypeError(validationMessage(entry, error.message), {
+          cause: error,
+        });
+      }
+      throw error;
+    }
   }
+}
+
+function validationMessage(entry: PublicApiEntry, message: string): string {
+  return `${message}. Expected: ${entry.signature}`;
 }
 
 export function publicApiMarkdown(): string {

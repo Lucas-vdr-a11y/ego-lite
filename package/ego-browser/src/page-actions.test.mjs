@@ -26,6 +26,9 @@ test("Page click translates same-process iframe coordinates to the Page viewport
         return { object: { objectId: "iframe-button" } };
       }
       if (method === "Runtime.callFunctionOn") {
+        if (params.functionDeclaration.includes("actionable: false")) {
+          return { result: { value: { actionable: true } } };
+        }
         return params.functionDeclaration.includes("getBoundingClientRect")
           ? { result: { value: { x: 10, y: 20 } } }
           : { result: { value: { ok: true } } };

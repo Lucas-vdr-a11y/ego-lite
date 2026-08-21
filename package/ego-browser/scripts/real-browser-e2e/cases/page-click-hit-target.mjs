@@ -1,9 +1,7 @@
 export function pageClickHitTargetCase() {
   return `
     const task = await taskSpace(taskName);
-    const page = await task.openPage(baseUrl + "/?workflow=page-click-hit-target", {
-      as: "page-click-hit-target",
-    });
+    const page = await newPageAt(task, baseUrl + "/?workflow=page-click-hit-target");
 
     await page.evaluate(() => {
       const target = document.createElement("button");
@@ -138,6 +136,38 @@ export function pageClickHitTargetCase() {
       () => page.click("button.strict-duplicate"),
       "matched 2 elements",
       "raw CSS Page actions reject ambiguous selectors"
+    );
+
+    await page.evaluate(() => {
+      const hiddenButton = document.createElement("button");
+      hiddenButton.className = "usable-duplicate";
+      hiddenButton.hidden = true;
+      const visibleButton = document.createElement("button");
+      visibleButton.className = "usable-duplicate";
+      visibleButton.textContent = "Only usable action";
+      visibleButton.addEventListener("click", () => window.__usableDuplicateClicks++);
+      window.__usableDuplicateClicks = 0;
+      document.body.append(hiddenButton, visibleButton);
+
+      const hiddenInput = document.createElement("input");
+      hiddenInput.className = "fillable-duplicate";
+      hiddenInput.hidden = true;
+      const visibleInput = document.createElement("input");
+      visibleInput.className = "fillable-duplicate";
+      visibleInput.id = "visible-fillable-duplicate";
+      document.body.append(hiddenInput, visibleInput);
+    });
+    await page.click(".usable-duplicate");
+    assertEqual(
+      await page.evaluate("window.__usableDuplicateClicks"),
+      1,
+      "click uses the sole visible, enabled duplicate"
+    );
+    await page.fill(".fillable-duplicate", "filled");
+    assertEqual(
+      await page.evaluate("document.querySelector('#visible-fillable-duplicate').value"),
+      "filled",
+      "fill uses the sole visible, enabled duplicate"
     );
 
     await page.close();

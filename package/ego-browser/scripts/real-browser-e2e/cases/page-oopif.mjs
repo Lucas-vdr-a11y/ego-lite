@@ -1,9 +1,7 @@
 export function pageOopifActionCase() {
   return `
     const task = await taskSpace(taskName);
-    const page = await task.openPage(baseUrl + "/?page-api=oopif", {
-      as: "oopif-page",
-    });
+    const page = await newPageAt(task, baseUrl + "/?page-api=oopif");
     const snapshot = await page.snapshot({ scope: "full_page" });
     assertIncludes(snapshot, "Run iframe action", "snapshot includes cross-site iframe content");
     assertIncludes(snapshot, "Iframe field", "snapshot includes the iframe input");
@@ -28,33 +26,56 @@ export function pageOopifActionCase() {
       "Page.fill writes through the iframe session"
     );
 
-    const sameOrigin = await task.openPage(baseUrl + "/same-origin-frame", {
-      as: "same-origin-frame",
-    });
+    const sameOrigin = await newPageAt(task, baseUrl + "/same-origin-frame");
     assertIncludes(
       await sameOrigin.snapshot({ scope: "full_page" }),
       "Run iframe action",
       "snapshot includes same-process iframe content"
     );
-    await sameOrigin.click('loc=role:button[name="Run iframe action"]');
-    await sameOrigin.fill('loc=role:textbox[name="Iframe field"]', "same process");
+    await sameOrigin.evaluate(() => {
+      const frame = document.querySelector("#fixture-frame");
+      frame.style.cssText =
+        "position:fixed;left:20px;top:80px;width:500px;height:300px;z-index:20";
+      const covered = document.createElement("button");
+      covered.id = "covered-frame-duplicate";
+      covered.textContent = "Run iframe action";
+      covered.style.cssText =
+        "position:fixed;left:100px;top:120px;width:220px;height:60px;z-index:10";
+      covered.addEventListener("click", () => covered.dataset.clicked = "true");
+      document.body.append(covered);
+    });
+    await sameOrigin.click('text="Run iframe action"');
+    await sameOrigin.fill('loc=css:#iframe-field', "same process");
     const sameOriginState = await sameOrigin.evaluate(() => {
       const frame = document.querySelector("#fixture-frame");
       return {
+        coveredClicked: document.querySelector("#covered-frame-duplicate")?.dataset.clicked,
         result: frame?.contentDocument?.querySelector("#iframe-result")?.textContent,
         value: frame?.contentDocument?.querySelector("#iframe-field")?.value,
       };
     });
+    assertEqual(
+      sameOriginState.coveredClicked,
+      undefined,
+      "the covered top-document duplicate is not clicked"
+    );
     assertEqual(sameOriginState.result, "clicked:true", "Page.click works in a same-process iframe");
     assertEqual(sameOriginState.value, "same process", "Page.fill works in a same-process iframe");
     await sameOrigin.close();
+    await writeFile(
+      join(tempDir, "oopif-page.json"),
+      JSON.stringify({ label: page.label })
+    );
   `;
 }
 
 export function pageOopifRestoreCase() {
   return `
     const task = await taskSpace(taskName);
-    const page = task.page("oopif-page");
+    const saved = JSON.parse(
+      await readFile(join(tempDir, "oopif-page.json"), "utf8")
+    );
+    const page = task.page(saved.label);
     const snapshot = await page.snapshot({ scope: "full_page" });
     assertIncludes(snapshot, "Run iframe action", "a later round observes the iframe");
     await page.click('text="Run iframe action"');
@@ -74,7 +95,7 @@ export function pageOopifRestoreCase() {
     await page.close();
     await assertRejects(
       () => page.snapshot(),
-      "page oopif-page was closed",
+      "page " + page.label + " was closed",
       "closing the Page retires its OOPIF-capable handle"
     );
   `;

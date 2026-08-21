@@ -159,6 +159,12 @@ export function egoSource(body, context) {
       throw new Error(message + ": expected rejection");
     }
 
+    async function newPageAt(task, url, options = {}) {
+      const page = await task.newPage();
+      await page.goto(url, options);
+      return page;
+    }
+
     async function waitForJsValue(expression, expected, message, debugExpression = null) {
       const deadline = Date.now() + 2000;
       let last;

@@ -194,8 +194,8 @@ test("taskSpace returns the new object model for a resolved space", async () => 
       assert.equal(task.spaceId, 7);
       assert.equal(task.name, "Research");
       assert.equal(task.ownership, "agent");
-      assert.equal(typeof task.openPage, "function");
-      assert.equal(task.newPage, undefined);
+      assert.equal(typeof task.newPage, "function");
+      assert.equal(task.openPage, undefined);
       assert.equal(typeof task.page, "function");
       assert.equal(typeof task.pages, "function");
       assert.equal(typeof task.tabs, "function");
@@ -598,7 +598,7 @@ test("claimTaskSpace returns a TaskSpace after claiming and selecting", async ()
         ownership: "agent",
       });
       assert.equal(task.spaceId, 7);
-      assert.equal(typeof task.openPage, "function");
+      assert.equal(typeof task.newPage, "function");
     },
   );
   assert.deepEqual(calls, [
@@ -642,7 +642,7 @@ test("takeOverTaskSpace returns a TaskSpace when a space is specified", async ()
       const task = await takeOverTaskSpace(7);
       assert.equal(task.spaceId, 7);
       assert.equal(task.ownership, "agent");
-      assert.equal(typeof task.openPage, "function");
+      assert.equal(typeof task.newPage, "function");
     },
   );
   assert.deepEqual(calls, [

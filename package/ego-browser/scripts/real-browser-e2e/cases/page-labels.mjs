@@ -2,7 +2,7 @@ export function pageLabelCreateCase() {
   return `
     const task = await taskSpace(taskName);
     await openOrReuseTab(baseUrl + "/?inventory=unknown", { wait: true, timeout: 10 });
-    const page = await task.openPage(baseUrl + "/?managed=p1");
+    const page = await newPageAt(task, baseUrl + "/?managed=p1");
     assertEqual(page.label, "p1", "first managed page receives p1");
     assertEqual(page.spaceId, task.id, "page carries its task-space id");
     assertEqual(typeof page.targetId, "string", "new page exposes its target id");
@@ -45,6 +45,42 @@ export function pageLabelRestoreCase() {
     const fetched = await page.fetch("/api/text", { timeout: 2_000 });
     assertEqual(fetched.status, 200, "a restored Page can make a page-context request");
     assertEqual(fetched.body, "server text fixture", "the restored Page fetch returns its body");
+    const selected = await page.selectOption("#dropdown", "beta");
+    assertEqual(JSON.stringify(selected), JSON.stringify(["beta"]), "selectOption returns selected values");
+    assertEqual(
+      await page.evaluate("window.__fixtureState.dropdownValue"),
+      "beta",
+      "selectOption dispatches the page's change behavior"
+    );
+    await page.evaluate(() => {
+      const select = document.createElement("select");
+      select.id = "transparent-dropdown";
+      select.style.cssText = "display:block;width:160px;height:32px;opacity:0";
+      select.innerHTML = '<option value="alpha">Alpha</option><option value="gamma">Gamma</option>';
+      select.addEventListener("change", () => {
+        window.__fixtureState.transparentDropdownValue = select.value;
+      });
+      document.body.append(select);
+    });
+    assertEqual(
+      JSON.stringify(await page.selectOption("#transparent-dropdown", "gamma")),
+      JSON.stringify(["gamma"]),
+      "selectOption accepts an opacity-zero native control"
+    );
+    assertEqual(
+      await page.evaluate("window.__fixtureState.transparentDropdownValue"),
+      "gamma",
+      "the transparent select dispatches its change behavior"
+    );
+    const downloadedPath = join(tempDir, "page-fetch-image.png");
+    const downloaded = await page.fetch("/api/image.png", { saveAs: downloadedPath });
+    assertEqual(downloaded.savedPath, downloadedPath, "page.fetch reports its binary output path");
+    assertEqual(downloaded.body, undefined, "binary page.fetch does not expose a text body");
+    assertEqual(
+      (await readFile(downloadedPath)).subarray(0, 8).toString("hex"),
+      "89504e470d0a1a0a",
+      "page.fetch preserves binary response bytes"
+    );
     const before = await listTabs();
     await page.goto(baseUrl + "/nav-target?managed=restored");
     const after = await listTabs();
@@ -71,7 +107,7 @@ export function pageLabelCloseCase() {
       "a closed label fails closed"
     );
 
-    const next = await task.openPage(baseUrl + "/secondary?managed=p2");
+    const next = await newPageAt(task, baseUrl + "/secondary?managed=p2");
     assertEqual(next.label, "p2", "closed labels are never reused");
     await closeTab(next.targetId);
     for (let attempt = 0; attempt < 20; attempt += 1) {
@@ -88,7 +124,7 @@ export function pageLabelCloseCase() {
       "page p2 was closed",
       "reconciliation permanently retires an externally closed label"
     );
-    const afterExternalClose = await task.openPage(baseUrl + "/secondary?managed=p3");
+    const afterExternalClose = await newPageAt(task, baseUrl + "/secondary?managed=p3");
     assertEqual(afterExternalClose.label, "p3", "reconciliation frees budget without reusing labels");
     await afterExternalClose.close();
   `;
@@ -97,7 +133,7 @@ export function pageLabelCloseCase() {
 export function pageLabelHardStopCase() {
   return `
     const task = await taskSpace(taskName);
-    const page = await task.openPage(baseUrl + "/secondary?managed=hard-stop");
+    const page = await newPageAt(task, baseUrl + "/secondary?managed=hard-stop");
     await writeFile(
       join(tempDir, "hard-stop-page.json"),
       JSON.stringify({ label: page.label, targetId: page.targetId })
@@ -124,19 +160,19 @@ export function pageBudgetCase() {
     const task = await taskSpace(taskName);
     const managed = [];
     for (let index = 0; index < 3; index += 1) {
-      managed.push(await task.openPage(baseUrl + "/secondary?budget=" + index));
+      managed.push(await newPageAt(task, baseUrl + "/secondary?budget=" + index));
       const inventory = await task.tabs();
       assertEqual(
         inventory.filter((item) => item.label !== undefined).length,
         index + 1,
-        "each openPage is visible to managed-page inventory"
+        "each newPage is visible to managed-page inventory"
       );
     }
     const beforeReject = await listTabs();
     await assertRejects(
-      () => task.openPage(baseUrl + "/secondary?budget=blocked"),
+      () => newPageAt(task, baseUrl + "/secondary?budget=blocked"),
       "Page budget reached (3/3)",
-      "openPage applies managed-page backpressure"
+      "newPage applies managed-page backpressure"
     );
     const afterReject = await listTabs();
     assertEqual(afterReject.length, beforeReject.length, "budget rejects before creating a browser tab");
@@ -189,9 +225,7 @@ export function pageAdoptionCase() {
     assertEqual(adoptedAgain.targetId, source.targetId, "a released tab can be adopted again");
     await task.release(adoptedAgain.label);
 
-    const agentPage = await task.openPage(baseUrl + "/secondary?release=agent", {
-      as: "agent-owned",
-    });
+    const agentPage = await newPageAt(task, baseUrl + "/secondary?release=agent");
     await assertRejects(
       () => task.release(agentPage.label),
       "was created by the agent; close it instead",
@@ -204,12 +238,8 @@ export function pageAdoptionCase() {
 export function pageBasicOperationsCase() {
   return `
     const task = await taskSpace(taskName);
-    const first = await task.openPage(baseUrl + "/?page-api=first", {
-      as: "page-api-first",
-    });
-    const second = await task.openPage(baseUrl + "/secondary?page-api=second", {
-      as: "page-api-second",
-    });
+    const first = await newPageAt(task, baseUrl + "/?page-api=first");
+    const second = await newPageAt(task, baseUrl + "/secondary?page-api=second");
     assertEqual((await currentTab()).targetId, second.targetId, "second page starts active");
 
     assertIncludes(await first.url(), "page-api=first", "page.url reads its own target");
@@ -227,7 +257,11 @@ export function pageBasicOperationsCase() {
       "waitForTimeout does not activate its Page"
     );
     const baselineSnapshot = await first.snapshot();
-    assertIncludes(baselineSnapshot, 'page-api-first', "snapshot identifies its source Page");
+    assertIncludes(
+      baselineSnapshot,
+      "[" + first.label + " ",
+      "snapshot identifies its source Page"
+    );
     assertIncludes(baselineSnapshot, 'space "' + taskName + '"', "snapshot identifies its task space");
     await first.evaluate(() => {
       const marker = document.createElement("p");
@@ -417,15 +451,9 @@ export function pageActionsAndPopupCase() {
       .filter((item) => item.label === undefined)
       .map((item) => item.targetId);
     assert(unknownBefore.length > 0, "the control-boundary inventory keeps pre-existing tabs untracked");
-    const source = await task.openPage(baseUrl + "/?page-actions=source", {
-      as: "page-actions-source",
-    });
-    const comparison = await task.openPage(baseUrl + "/secondary?page-actions=comparison", {
-      as: "page-actions-comparison",
-    });
-    const budgetFiller = await task.openPage(baseUrl + "/secondary?page-actions=budget", {
-      as: "page-actions-budget",
-    });
+    const source = await newPageAt(task, baseUrl + "/?page-actions=source");
+    const comparison = await newPageAt(task, baseUrl + "/secondary?page-actions=comparison");
+    const budgetFiller = await newPageAt(task, baseUrl + "/secondary?page-actions=budget");
 
     assertEqual((await currentTab()).targetId, budgetFiller.targetId, "the budget page starts active");
     await source.evaluate(() => {
@@ -442,6 +470,30 @@ export function pageActionsAndPopupCase() {
         (event) => event.data === "page-filled" && event.trusted === true
       ),
       "page.fill uses native text input without synthetic duplicate events"
+    );
+    await source.evaluate(() => {
+      const price = document.createElement("input");
+      price.id = "formatted-price";
+      price.inputMode = "numeric";
+      price.value = "$600,000";
+      window.__formattedPricePointerDowns = 0;
+      price.addEventListener("pointerdown", () => window.__formattedPricePointerDowns++);
+      price.addEventListener("input", () => {
+        const digits = price.value.replace(/\\D/g, "");
+        price.value = digits ? "$" + Number(digits).toLocaleString("en-US") : "";
+      });
+      document.body.append(price);
+    });
+    await source.fill("#formatted-price", "610000");
+    assertEqual(
+      await source.evaluate("document.querySelector('#formatted-price').value"),
+      "$610,000",
+      "page.fill accepts application formatting"
+    );
+    assertEqual(
+      await source.evaluate("window.__formattedPricePointerDowns"),
+      0,
+      "a semantically equivalent formatted value is not typed twice"
     );
     assertEqual((await currentTab()).targetId, source.targetId, "page.fill activates and keeps its page current");
 
@@ -648,8 +700,16 @@ export function pageActionsAndPopupCase() {
     assertEqual(rawState.rawClickTrusted, true, "page.mouse.click uses trusted input");
 
     await source.evaluate("window.scrollTo(0, 0)");
-    const scrolled = await source.scrollBy(300);
-    assert(scrolled.y > 0, "page.scrollBy scrolls the addressed document");
+    await source.mouse.move(10, 10);
+    await source.mouse.wheel(0, 300);
+    assertEqual(
+      await source.waitForFunction("window.scrollY > 0", undefined, {
+        timeout: 2_000,
+        polling: 25,
+      }),
+      true,
+      "page.mouse.wheel scrolls the addressed document asynchronously"
+    );
     const innerScrollPoint = await source.evaluate(() => {
       const element = document.querySelector("#inner-scroll");
       element.scrollIntoView({ block: "center" });
@@ -745,9 +805,9 @@ export function pageActionsAndPopupCase() {
       "tabs that existed before the action remain untracked"
     );
     await assertRejects(
-      () => task.openPage(baseUrl + "/secondary?page-actions=blocked"),
+      () => newPageAt(task, baseUrl + "/secondary?page-actions=blocked"),
       "Page budget reached (4/3)",
-      "an adopted popup can exceed the budget and backpressure later openPage calls"
+      "an adopted popup can exceed the budget and backpressure later newPage calls"
     );
 
     await reconciledPopup.page.close();
@@ -760,12 +820,8 @@ export function pageActionsAndPopupCase() {
 export function pageComplexEvaluateCase() {
   return `
     const task = await taskSpace(taskName);
-    const source = await task.openPage(baseUrl + "/?page-evaluate=complex", {
-      as: "complex-evaluate-source",
-    });
-    const comparison = await task.openPage(baseUrl + "/secondary?page-evaluate=comparison", {
-      as: "complex-evaluate-comparison",
-    });
+    const source = await newPageAt(task, baseUrl + "/?page-evaluate=complex");
+    const comparison = await newPageAt(task, baseUrl + "/secondary?page-evaluate=comparison");
     assertEqual((await currentTab()).targetId, comparison.targetId, "comparison page starts active");
 
     const complexInput = {
@@ -937,12 +993,8 @@ export function pageComplexEvaluateCase() {
 export function pageFetchCase() {
   return `
     const task = await taskSpace(taskName);
-    const source = await task.openPage(baseUrl + "/nested/page-fetch/source", {
-      as: "page-fetch-source",
-    });
-    const comparison = await task.openPage(baseUrl + "/secondary?page-fetch=comparison", {
-      as: "page-fetch-comparison",
-    });
+    const source = await newPageAt(task, baseUrl + "/nested/page-fetch/source");
+    const comparison = await newPageAt(task, baseUrl + "/secondary?page-fetch=comparison");
     await source.evaluate(() => {
       document.cookie = "egoPageFetch=page-cookie; path=/";
     });

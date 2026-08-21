@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -43,9 +43,12 @@ function createFixture(rootDir) {
   let interceptedClickPointsRemaining = 0;
   let fillElementKind = "input";
   let fillText = "";
+  let fillTransform = null;
+  let fillInsertionCount = 0;
   let ignoredFillInsertionsRemaining = 0;
   let focusResult = { focused: true };
   let unsafeFillActivationTarget = null;
+  let selectedValues = [];
   let navigateOnNextClickUrl = null;
   let elementPresent = true;
   let elementVisible = true;
@@ -121,6 +124,16 @@ function createFixture(rootDir) {
       if (method === "Runtime.evaluate") {
         const targetId = targetForSession(sessionId);
         const tab = tabs.get(targetId);
+        if (params.expression.includes("__egoActionableMatches")) {
+          return params.returnByValue === false
+            ? {
+                result: {
+                  type: "object",
+                  objectId: elementVisible ? `element:${targetId}` : undefined,
+                },
+              }
+            : { result: { type: "number", value: elementVisible ? 1 : 0 } };
+        }
         if (params.expression.includes("__egoWaitForFunction")) {
           return {
             result: {
@@ -284,20 +297,24 @@ function createFixture(rootDir) {
                 status: "needsinput",
                 kind: fillElementKind,
                 cursorPoint: { x: 40, y: 60 },
+                before: fillText,
               },
             },
           };
         }
-        if (params.functionDeclaration.includes("verifyFilledValue")) {
-          const expected = params.arguments?.[0]?.value ?? "";
-          const clearFirst = params.arguments?.[1]?.value ?? true;
+        if (params.functionDeclaration.includes("selectOptionsForAction")) {
+          selectedValues = [...(params.arguments?.[0]?.value ?? [])];
+          return {
+            result: { type: "object", value: { selected: selectedValues } },
+          };
+        }
+        if (params.functionDeclaration.includes("readFilledValue")) {
           return {
             result: {
               type: "object",
               value: {
-                matches: clearFirst
-                  ? fillText === expected
-                  : fillText.includes(expected),
+                actual: fillText,
+                type: fillElementKind === "input" ? "text" : "",
               },
             },
           };
@@ -317,6 +334,8 @@ function createFixture(rootDir) {
           };
         }
         if (params.functionDeclaration.includes("window.fetch")) {
+          const binary =
+            params.arguments?.[0]?.value?.responseType === "base64";
           return {
             result: {
               type: "object",
@@ -329,7 +348,12 @@ function createFixture(rootDir) {
                   "content-type": "text/plain",
                   "x-fixture": "page-fetch",
                 },
-                body: "short and stout",
+                ...(binary
+                  ? {
+                      bodyBase64:
+                        Buffer.from("\x89PNG\r\n\x1a\n").toString("base64"),
+                    }
+                  : { body: "short and stout" }),
               },
             },
           };
@@ -395,7 +419,10 @@ function createFixture(rootDir) {
         if (ignoredFillInsertionsRemaining > 0) {
           ignoredFillInsertionsRemaining -= 1;
         } else {
-          fillText = params.text;
+          fillInsertionCount += 1;
+          fillText = fillTransform
+            ? fillTransform(params.text, fillText, fillInsertionCount)
+            : params.text;
         }
         return {};
       }
@@ -605,9 +632,16 @@ function createFixture(rootDir) {
     navigateOnNextClick(url) {
       navigateOnNextClickUrl = url;
     },
-    configureFill({ kind = "input", initialText = "", ignoreInsertions = 0 }) {
+    configureFill({
+      kind = "input",
+      initialText = "",
+      ignoreInsertions = 0,
+      transform = null,
+    }) {
       fillElementKind = kind;
       fillText = initialText;
+      fillTransform = transform;
+      fillInsertionCount = 0;
       ignoredFillInsertionsRemaining = ignoreInsertions;
     },
     configureFocusResult(result) {
@@ -637,6 +671,9 @@ function createFixture(rootDir) {
     setSession(targetId, sessionId) {
       sessionOverrides.set(targetId, sessionId);
     },
+    selectedValues() {
+      return [...selectedValues];
+    },
     emitPageEvent(targetId, method, params = {}) {
       const sessionId = `session:${targetId}`;
       const events = pageEvents.get(sessionId) || [];
@@ -662,6 +699,12 @@ function taskForRound(fixture, roundId, overrides = {}) {
   );
 }
 
+async function openTestPage(task, url, gotoOptions = {}) {
+  const page = await task.newPage();
+  await page.goto(url, gotoOptions);
+  return page;
+}
+
 async function waitForLedgerTarget(ledger, spaceId, targetId) {
   for (let attempt = 0; attempt < 50; attempt += 1) {
     const entry = Object.entries((await ledger.read(spaceId)).pages).find(
@@ -681,7 +724,7 @@ test("background discovery does not adopt the pre-existing tab baseline", async 
     const task = taskForRound(fixture, "round-a", { ledger });
 
     await initializeTaskSpaceHandle(task);
-    const page = await task.openPage("https://example.test/managed");
+    const page = await openTestPage(task, "https://example.test/managed");
 
     assert.equal(page.label, "p1");
     assert.deepEqual((await ledger.read(7)).unmanagedTargets, {
@@ -697,7 +740,7 @@ test("background target discovery adopts a delayed popup and reports its opener"
     const ledger = new PageLedgerStore({ rootDir: fixture.rootDir });
     const task = taskForRound(fixture, "round-a", { ledger });
     await initializeTaskSpaceHandle(task);
-    const source = await task.openPage("https://example.test/source");
+    const source = await openTestPage(task, "https://example.test/source");
     fixture.addExternalTab("target-delayed", "https://example.test/delayed", {
       openerId: source.targetId,
     });
@@ -731,7 +774,7 @@ test("using a delayed popup suppresses its notice before round output", async ()
     const ledger = new PageLedgerStore({ rootDir: fixture.rootDir });
     const task = taskForRound(fixture, "round-a", { ledger });
     await initializeTaskSpaceHandle(task);
-    const source = await task.openPage("https://example.test/source");
+    const source = await openTestPage(task, "https://example.test/source");
     fixture.addExternalTab("target-delayed", "https://example.test/delayed", {
       openerId: source.targetId,
     });
@@ -757,7 +800,7 @@ test("tab reconciliation reports a late page without requiring an explicit wait"
   await withFixture(async (fixture) => {
     resetPageNotices();
     const task = taskForRound(fixture, "round-a");
-    const source = await task.openPage("https://example.test/source");
+    const source = await openTestPage(task, "https://example.test/source");
     fixture.addExternalTab("target-delayed", "https://example.test/delayed", {
       openerId: source.targetId,
     });
@@ -847,7 +890,8 @@ test("Page.waitForTimeout validates and waits in milliseconds without activating
         waits.push(ms);
       },
     });
-    const page = await task.openPage("https://example.test/timer");
+    const page = await openTestPage(task, "https://example.test/timer");
+    waits.length = 0;
     fixture.calls.length = 0;
 
     await page.waitForTimeout(125);
@@ -868,8 +912,8 @@ test("Page.waitForTimeout validates and waits in milliseconds without activating
 test("Page.waitForFunction polls one Page with one JSON argument", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
-    const first = await task.openPage("https://example.test/first");
-    const second = await task.openPage("https://example.test/second");
+    const first = await openTestPage(task, "https://example.test/first");
+    const second = await openTestPage(task, "https://example.test/second");
     fixture.setWaitFunctionResults([false, false, true]);
     fixture.calls.length = 0;
 
@@ -907,7 +951,7 @@ test("Page.waitForFunction polls one Page with one JSON argument", async () => {
 test("Page.waitForFunction validates input and reports its timeout", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
-    const page = await task.openPage("https://example.test/first");
+    const page = await openTestPage(task, "https://example.test/first");
 
     await assert.rejects(
       () =>
@@ -939,7 +983,7 @@ test("Page.waitForFunction validates input and reports its timeout", async () =>
 test("Page.evaluate explains that its callback cannot capture Node variables", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
-    const page = await task.openPage("https://example.test/first");
+    const page = await openTestPage(task, "https://example.test/first");
 
     await assert.rejects(
       () => page.evaluate(() => missingClosureForE2E),
@@ -963,12 +1007,12 @@ test("v2 methods reject option fields that are absent from the public schema", a
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
     await assert.rejects(
-      () => task.openPage("https://example.test/unknown", { reuse: true }),
-      /task\.openPage received unknown option: reuse/,
+      () => task.newPage({ reuse: true }),
+      /task\.newPage does not accept arguments/,
     );
     assert.equal(fixture.tabs.size, 0, "validation runs before creating a tab");
 
-    const page = await task.openPage("https://example.test/options");
+    const page = await openTestPage(task, "https://example.test/options");
     await assert.rejects(
       () => page.click("button", { trial: true }),
       /page\.click received unknown option: trial/,
@@ -999,7 +1043,7 @@ test("TaskSpace uses spaceId and owns handoff, finish, and close", async () => {
     await task.handOff();
 
     const finishTask = taskForRound(fixture, "round-b", services);
-    await finishTask.openPage("https://example.test/managed");
+    await finishTask.newPage();
     await finishTask.finish();
     assert.deepEqual((await ledger.read(7)).pages, {});
 
@@ -1024,7 +1068,10 @@ test("handoff preserves user-created tabs as unknown and captures the active use
     const firstRound = taskForRound(fixture, "round-a", {
       async handOffTaskSpace() {},
     });
-    const agentPage = await firstRound.openPage("https://example.test/agent");
+    const agentPage = await openTestPage(
+      firstRound,
+      "https://example.test/agent",
+    );
     await firstRound.handOff();
     assert.equal(agentPage.label, "p1");
     fixture.addExternalTab("target-user", "https://example.test/user-created", {
@@ -1061,7 +1108,7 @@ test("failed native handoff removes the pending user-control boundary", async ()
         throw new Error("native handoff failed");
       },
     });
-    await task.openPage("https://example.test/agent");
+    await openTestPage(task, "https://example.test/agent");
 
     await assert.rejects(() => task.handOff(), /native handoff failed/);
     assert.equal((await ledger.read(7)).userControlPending, false);
@@ -1077,7 +1124,7 @@ test("TaskSpace keeps Page state when native finish fails", async () => {
         throw new Error("native finish failed");
       },
     });
-    await task.openPage("https://example.test/managed");
+    await openTestPage(task, "https://example.test/managed");
 
     await assert.rejects(() => task.finish(), /native finish failed/);
 
@@ -1090,7 +1137,10 @@ test("TaskSpace keeps Page state when native finish fails", async () => {
 test("a page label restores in a new round and goto reuses its target", async () => {
   await withFixture(async (fixture) => {
     const firstRound = taskForRound(fixture, "round-a");
-    const created = await firstRound.openPage("https://example.test/first");
+    const created = await openTestPage(
+      firstRound,
+      "https://example.test/first",
+    );
 
     assert.equal(created.label, "p1");
     assert.equal(created.spaceId, 7);
@@ -1119,11 +1169,12 @@ test("a page label restores in a new round and goto reuses its target", async ()
 test("Page.goto accepts Playwright-style navigation options", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
-    const page = await task.openPage("https://example.test/first");
+    const page = await openTestPage(task, "https://example.test/first");
     fixture.setDocumentLifecycle({
       readyState: "interactive",
       domContentLoaded: true,
     });
+    fixture.calls.length = 0;
 
     await page.goto("https://example.test/second", {
       referer: "https://example.test/source",
@@ -1179,7 +1230,9 @@ test("Page.goto commit waits for this navigation without waiting for the DOM", a
         committed = true;
       },
     });
-    const page = await task.openPage("https://example.test/first");
+    const page = await openTestPage(task, "https://example.test/first");
+    commitChecks = 0;
+    committed = false;
     fixture.setDocumentLifecycle({
       readyState: "loading",
       domContentLoaded: false,
@@ -1207,7 +1260,7 @@ test("Page.goto commit waits for this navigation without waiting for the DOM", a
 test("Page.goto starts network tracking before a network-idle navigation", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
-    const page = await task.openPage("https://example.test/first");
+    const page = await openTestPage(task, "https://example.test/first");
     const callsBeforeGoto = fixture.calls.length;
 
     await page.goto("https://example.test/second", {
@@ -1228,63 +1281,26 @@ test("Page.goto starts network tracking before a network-idle navigation", async
   });
 });
 
-test("openPage waits for the document created by this call, not an already-complete placeholder", async () => {
+test("newPage creates a managed blank Page and leaves navigation to goto", async () => {
   await withFixture(async (fixture) => {
     const requestedUrl = "https://example.test/created-document";
-    const baseCreateTab = fixture.services.createTab;
-    const baseCdp = fixture.services.cdp;
-    let now = 10_000;
-    let targetId;
-    let sleepCount = 0;
+    const task = taskForRound(fixture, "round-a");
 
-    const task = taskForRound(fixture, "round-a", {
-      async createTab(url) {
-        targetId = await baseCreateTab(url);
-        fixture.tabs.get(targetId).url = "chrome://newtab/";
-        return targetId;
-      },
-      async cdp(method, params, sessionId, timeoutMs) {
-        if (method === "Runtime.evaluate") {
-          if (params.expression === "document.readyState") {
-            return { result: { type: "string", value: "complete" } };
-          }
-          if (params.expression.includes("performance.timeOrigin")) {
-            const tab = fixture.tabs.get(targetId);
-            return {
-              result: {
-                type: "object",
-                value: {
-                  readyState: "complete",
-                  url: tab.url,
-                  timeOrigin: tab.url === requestedUrl ? now : now - 5_000,
-                },
-              },
-            };
-          }
-        }
-        return baseCdp(method, params, sessionId, timeoutMs);
-      },
-      now: () => now,
-      async sleep(ms) {
-        sleepCount += 1;
-        now += ms;
-        fixture.tabs.get(targetId).url = requestedUrl;
-      },
-    });
+    const page = await task.newPage();
 
-    const page = await task.openPage(requestedUrl);
+    assert.equal(fixture.tabs.get(page.targetId).url, "about:blank");
+    assert.equal(page.label, "p1");
 
-    assert.equal(page.targetId, targetId);
-    assert.equal(sleepCount, 1);
-    assert.equal(fixture.tabs.get(targetId).url, requestedUrl);
+    await page.goto(requestedUrl);
+    assert.equal(fixture.tabs.get(page.targetId).url, requestedUrl);
   });
 });
 
 test("snapshot activates the addressed page, not whichever tab was current", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
-    const first = await task.openPage("https://example.test/first");
-    await task.openPage("https://example.test/second");
+    const first = await openTestPage(task, "https://example.test/first");
+    await openTestPage(task, "https://example.test/second");
 
     assert.equal(fixture.activeTarget(), "target-2");
     assert.match(
@@ -1298,7 +1314,7 @@ test("snapshot activates the addressed page, not whichever tab was current", asy
 test("snapshot defaults to the viewport, reports its source, and validates options", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
-    const page = await task.openPage("https://example.test/before");
+    const page = await openTestPage(task, "https://example.test/before");
 
     assert.match(
       await page.snapshot(),
@@ -1327,8 +1343,8 @@ test("snapshot defaults to the viewport, reports its source, and validates optio
 test("metadata reads stay target-scoped while evaluate and screenshot activate their Page", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
-    const first = await task.openPage("https://example.test/first");
-    await task.openPage("https://example.test/second");
+    const first = await openTestPage(task, "https://example.test/first");
+    await openTestPage(task, "https://example.test/second");
 
     assert.equal(fixture.activeTarget(), "target-2");
     assert.equal(await first.url(), "https://example.test/first");
@@ -1404,7 +1420,7 @@ test("metadata reads stay target-scoped while evaluate and screenshot activate t
 test("Page evaluate rejects ambiguous or non-serializable arguments", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
-    const page = await task.openPage("https://example.test/evaluate");
+    const page = await openTestPage(task, "https://example.test/evaluate");
     const cyclic = {};
     cyclic.self = cyclic;
 
@@ -1426,7 +1442,10 @@ test("Page evaluate rejects ambiguous or non-serializable arguments", async () =
 test("Page evaluate preserves a large nested JSON argument", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
-    const page = await task.openPage("https://example.test/evaluate-complex");
+    const page = await openTestPage(
+      task,
+      "https://example.test/evaluate-complex",
+    );
     const argument = {
       marker: "复杂 input 😀 quotes: \" ' ` and a newline\n",
       config: {
@@ -1453,8 +1472,8 @@ test("Page evaluate preserves a large nested JSON argument", async () => {
 test("Page fetch activates its target and returns a structured non-2xx response", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
-    const first = await task.openPage("https://example.test/first");
-    await task.openPage("https://example.test/second");
+    const first = await openTestPage(task, "https://example.test/first");
+    await openTestPage(task, "https://example.test/second");
 
     const response = await first.fetch("/api/teapot", {
       method: "POST",
@@ -1491,6 +1510,7 @@ test("Page fetch activates its target and returns a structured non-2xx response"
             body: "payload",
           },
           timeoutMs: 250,
+          responseType: "text",
         },
       },
     ]);
@@ -1502,7 +1522,7 @@ test("Page fetch activates its target and returns a structured non-2xx response"
 test("Page fetch validates its JSON options and millisecond timeout", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
-    const page = await task.openPage("https://example.test/fetch");
+    const page = await openTestPage(task, "https://example.test/fetch");
     const cyclic = {};
     cyclic.self = cyclic;
 
@@ -1521,6 +1541,20 @@ test("Page fetch validates its JSON options and millisecond timeout", async () =
   });
 });
 
+test("Page fetch saves a binary response without converting it to text", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a");
+    const page = await openTestPage(task, "https://example.test/fetch");
+    const path = join(fixture.rootDir, "downloads", "image.png");
+
+    const response = await page.fetch("/image.png", { saveAs: path });
+
+    assert.equal(response.savedPath, path);
+    assert.equal(response.body, undefined);
+    assert.deepEqual(await readFile(path), Buffer.from("\x89PNG\r\n\x1a\n"));
+  });
+});
+
 test("Page click fails closed when native mouse dispatch times out", async () => {
   await withFixture(async (fixture) => {
     fixture.tabs.set("target-user", {
@@ -1530,8 +1564,8 @@ test("Page click fails closed when native mouse dispatch times out", async () =>
       active: false,
     });
     const task = taskForRound(fixture, "round-a", { pageBudget: 2 });
-    const first = await task.openPage("https://example.test/first");
-    await task.openPage("https://example.test/second");
+    const first = await openTestPage(task, "https://example.test/first");
+    await openTestPage(task, "https://example.test/second");
     fixture.openPopupOnNextClick("https://example.test/popup");
     fixture.timeoutNextMouseDispatch();
 
@@ -1568,7 +1602,7 @@ test("Page click fails closed when native mouse dispatch times out", async () =>
 test("Page click returns a pending JavaScript dialog without waiting for input completion", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
-    const page = await task.openPage("https://example.test/dialog");
+    const page = await openTestPage(task, "https://example.test/dialog");
     fixture.openDialogOnNextClick();
 
     assert.deepEqual(await page.click("#open-dialog"), {
@@ -1613,8 +1647,8 @@ test("Page click returns a pending JavaScript dialog without waiting for input c
 test("Page fill uses its target session and reports no popup when none opened", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
-    const first = await task.openPage("https://example.test/first");
-    await task.openPage("https://example.test/second");
+    const first = await openTestPage(task, "https://example.test/first");
+    await openTestPage(task, "https://example.test/second");
 
     assert.deepEqual(await first.fill("#text-input", "filled"), {});
     const insertText = fixture.calls.find(
@@ -1669,7 +1703,7 @@ test("Page fill uses its target session and reports no popup when none opened", 
 test("Page fill retries an unchanged contenteditable once with a real click", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
-    const page = await task.openPage("https://example.test/editor");
+    const page = await openTestPage(task, "https://example.test/editor");
     fixture.configureFill({
       kind: "contenteditable",
       initialText: "old text",
@@ -1702,7 +1736,7 @@ test("Page fill retries an unchanged contenteditable once with a real click", as
 test("Page fill refuses a pointer fallback that would activate an interactive descendant", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
-    const page = await task.openPage("https://example.test/editor");
+    const page = await openTestPage(task, "https://example.test/editor");
     fixture.configureFill({
       kind: "contenteditable",
       initialText: "linked text",
@@ -1735,7 +1769,7 @@ test("Page fill refuses a pointer fallback that would activate an interactive de
 test("Page fill rejects when a contenteditable still ignores the pointer fallback", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
-    const page = await task.openPage("https://example.test/editor");
+    const page = await openTestPage(task, "https://example.test/editor");
     fixture.configureFill({
       kind: "contenteditable",
       initialText: "old text",
@@ -1750,32 +1784,111 @@ test("Page fill rejects when a contenteditable still ignores the pointer fallbac
   });
 });
 
-test("Page fill does not click a regular input when the site rejects its value", async () => {
+test("Page fill retries an unchanged regular input once with a real click", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
-    const page = await task.openPage("https://example.test/form");
+    const page = await openTestPage(task, "https://example.test/form");
     fixture.configureFill({ kind: "input", ignoreInsertions: 1 });
     fixture.calls.length = 0;
 
-    await assert.rejects(
-      () => page.fill("input[name=email]", "user@example.test"),
-      /did not accept the text/i,
+    assert.deepEqual(
+      await page.fill("input[name=email]", "user@example.test"),
+      {},
     );
+    assert.equal(fixture.fillText(), "user@example.test");
+    assert.deepEqual(
+      fixture.calls
+        .filter(
+          ([kind, method]) =>
+            kind === "cdp" && method === "Input.dispatchMouseEvent",
+        )
+        .map(([, , params]) => params.type),
+      ["mouseMoved", "mousePressed", "mouseReleased"],
+    );
+  });
+});
+
+test("Page fill accepts application formatting without a pointer retry", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a");
+    const page = await openTestPage(task, "https://example.test/formatted");
+    fixture.configureFill({
+      kind: "input",
+      initialText: "$600,000",
+      transform: (text) => `$${Number(text).toLocaleString("en-US")}`,
+    });
+    fixture.calls.length = 0;
+
+    assert.deepEqual(await page.fill("#price", "610000"), {});
+    assert.equal(fixture.fillText(), "$610,000");
     assert.equal(
-      fixture.calls.some(
-        ([kind, method]) =>
-          kind === "cdp" && method === "Input.dispatchMouseEvent",
-      ),
-      false,
-      "only contenteditable elements may receive the pointer fallback",
+      fixture.calls.filter(
+        ([kind, method]) => kind === "cdp" && method === "Input.insertText",
+      ).length,
+      1,
+      "a semantically equivalent formatted value must not be typed twice",
     );
+  });
+});
+
+test("Page fill retries an appended value and accepts the transformed retry", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a");
+    const page = await openTestPage(task, "https://example.test/formatted");
+    fixture.configureFill({
+      kind: "input",
+      initialText: "$600,000",
+      transform: (text, current, attempt) =>
+        attempt === 1
+          ? current + text
+          : `$${Number(text).toLocaleString("en-US")}`,
+    });
+    fixture.calls.length = 0;
+
+    assert.deepEqual(await page.fill("#price", "610000"), {});
+    assert.equal(fixture.fillText(), "$610,000");
+    assert.equal(
+      fixture.calls.filter(
+        ([kind, method]) => kind === "cdp" && method === "Input.insertText",
+      ).length,
+      2,
+    );
+  });
+});
+
+test("Page fill accepts a controlled component transformation", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a");
+    const page = await openTestPage(task, "https://example.test/controlled");
+    fixture.configureFill({
+      kind: "input",
+      initialText: "old",
+      transform: (text) => text.toUpperCase(),
+    });
+
+    assert.deepEqual(await page.fill("#controlled", "hello"), {});
+    assert.equal(fixture.fillText(), "HELLO");
+  });
+});
+
+test("Page selectOption selects values through the addressed Page", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a");
+    const page = await openTestPage(task, "https://example.test/form");
+
+    assert.deepEqual(await page.selectOption("#country", "nl"), ["nl"]);
+    assert.deepEqual(await page.selectOption("#tags", ["one", "two"]), [
+      "one",
+      "two",
+    ]);
+    assert.deepEqual(fixture.selectedValues(), ["one", "two"]);
   });
 });
 
 test("Page action receipts do not inject observation probes", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
-    const page = await task.openPage("https://example.test/before");
+    const page = await openTestPage(task, "https://example.test/before");
     fixture.navigateOnNextClick("https://example.test/after");
     fixture.calls.length = 0;
 
@@ -1796,8 +1909,8 @@ test("Page action receipts do not inject observation probes", async () => {
 test("Page pointer methods dispatch through the addressed target session", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
-    const first = await task.openPage("https://example.test/first");
-    await task.openPage("https://example.test/second");
+    const first = await openTestPage(task, "https://example.test/first");
+    await openTestPage(task, "https://example.test/second");
 
     await first.dblclick("button.primary");
     await first.hover("button.primary");
@@ -1845,7 +1958,7 @@ test("Page pointer methods dispatch through the addressed target session", async
 test("Page mouse movement updates the Ego Lite agent cursor", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
-    const page = await task.openPage("https://example.test/first");
+    const page = await openTestPage(task, "https://example.test/first");
 
     await page.click("button.primary");
     await page.hover("button.primary");
@@ -1879,7 +1992,7 @@ test("agent cursor rendering failures do not make successful page input retryabl
         throw new Error("agent cursor overlay unavailable");
       },
     });
-    const page = await task.openPage("https://example.test/first");
+    const page = await openTestPage(task, "https://example.test/first");
 
     await page.click("button.primary");
 
@@ -1906,7 +2019,7 @@ test("agent cursor animation does not delay page input completion", async () => 
         return animation;
       },
     });
-    const page = await task.openPage("https://example.test/first");
+    const page = await openTestPage(task, "https://example.test/first");
 
     const outcome = await Promise.race([
       page.mouse.move(20, 30).then(() => "action-complete"),
@@ -1923,8 +2036,8 @@ test("agent cursor animation does not delay page input completion", async () => 
 test("Page mouse primitives preserve button state on one target", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
-    const first = await task.openPage("https://example.test/first");
-    await task.openPage("https://example.test/second");
+    const first = await openTestPage(task, "https://example.test/first");
+    await openTestPage(task, "https://example.test/second");
 
     await first.mouse.move(20, 30);
     await first.mouse.down();
@@ -1962,7 +2075,7 @@ test("Page mouse primitives preserve button state on one target", async () => {
 test("Page mouse mirrors Playwright state, steps, and keyboard modifiers", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a", { platform: "darwin" });
-    const page = await task.openPage("https://example.test/first");
+    const page = await openTestPage(task, "https://example.test/first");
 
     await page.keyboard.down("Shift");
     await page.mouse.move(30, 20, { steps: 3 });
@@ -2016,19 +2129,20 @@ test("Page mouse mirrors Playwright state, steps, and keyboard modifiers", async
   });
 });
 
-test("Page scrollBy evaluates in the addressed page", async () => {
+test("Page mouse.wheel scrolls the addressed page", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
-    const first = await task.openPage("https://example.test/first");
-    await task.openPage("https://example.test/second");
+    const first = await openTestPage(task, "https://example.test/first");
+    await openTestPage(task, "https://example.test/second");
 
-    assert.deepEqual(await first.scrollBy(450), { x: 0, y: 450 });
+    await first.mouse.wheel(0, 450);
 
     const scrollCall = fixture.calls.find(
       ([kind, method, params]) =>
         kind === "cdp" &&
-        method === "Runtime.callFunctionOn" &&
-        params.functionDeclaration.includes("window.scrollBy"),
+        method === "Input.dispatchMouseEvent" &&
+        params.type === "mouseWheel" &&
+        params.deltaY === 450,
     );
     assert.equal(scrollCall[3], `session:${first.targetId}`);
     assert.equal(fixture.activeTarget(), first.targetId);
@@ -2038,8 +2152,8 @@ test("Page scrollBy evaluates in the addressed page", async () => {
 test("Page keyboard press and type use the addressed target session", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
-    const first = await task.openPage("https://example.test/first");
-    await task.openPage("https://example.test/second");
+    const first = await openTestPage(task, "https://example.test/first");
+    await openTestPage(task, "https://example.test/second");
 
     await first.keyboard.press("Meta+A");
     await first.keyboard.type("hello 世界");
@@ -2080,7 +2194,7 @@ test("Page keyboard press and type use the addressed target session", async () =
 test("Page focus and selector-scoped press resolve and focus one element", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a", { platform: "darwin" });
-    const page = await task.openPage("https://example.test/editor");
+    const page = await openTestPage(task, "https://example.test/editor");
 
     assert.deepEqual(await page.focus("[contenteditable]"), {});
     assert.deepEqual(
@@ -2113,7 +2227,7 @@ test("Page focus and selector-scoped press resolve and focus one element", async
 test("Page focus accepts a uniquely retargeted descendant", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
-    const page = await task.openPage("https://example.test/editor");
+    const page = await openTestPage(task, "https://example.test/editor");
     fixture.configureFocusResult({ focused: true, retargeted: "descendant" });
 
     assert.deepEqual(await page.focus("#editor-wrapper"), {});
@@ -2123,7 +2237,7 @@ test("Page focus accepts a uniquely retargeted descendant", async () => {
 test("Page focus reports ambiguous candidates once as a permanent failure", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
-    const page = await task.openPage("https://example.test/editor");
+    const page = await openTestPage(task, "https://example.test/editor");
     fixture.configureFocusResult({
       error: "element contains multiple editable targets",
       details: {
@@ -2163,7 +2277,7 @@ test("Page focus reports ambiguous candidates once as a permanent failure", asyn
 test("Page keyboard paste restores the clipboard after the native shortcut", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a", { platform: "darwin" });
-    const page = await task.openPage("https://example.test/table");
+    const page = await openTestPage(task, "https://example.test/table");
 
     assert.deepEqual(await page.keyboard.paste("a\tb\nc\td"), {});
 
@@ -2193,7 +2307,7 @@ test("Page keyboard paste restores the clipboard after the native shortcut", asy
 test("Page keyboard paste forwards plain-text and HTML clipboard representations", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a", { platform: "darwin" });
-    const page = await task.openPage("https://example.test/table");
+    const page = await openTestPage(task, "https://example.test/table");
     const content = {
       text: "A\tB",
       html: "<table><tr><td>A</td><td>B</td></tr></table>",
@@ -2230,7 +2344,7 @@ test("Page keyboard paste still restores the clipboard when input fails", async 
         return fixture.services.cdp(method, params, sessionId, timeoutMs);
       },
     });
-    const page = await task.openPage("https://example.test/table");
+    const page = await openTestPage(task, "https://example.test/table");
 
     await assert.rejects(
       () => page.keyboard.paste("one\ttwo"),
@@ -2243,7 +2357,7 @@ test("Page keyboard paste still restores the clipboard when input fails", async 
 test("Page keyboard type uses the main keyboard for digits and period", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
-    const page = await task.openPage("https://example.test/first");
+    const page = await openTestPage(task, "https://example.test/first");
 
     await page.keyboard.type("0123456789.");
 
@@ -2272,7 +2386,7 @@ test("Page keyboard type uses the main keyboard for digits and period", async ()
 test("Page keyboard mirrors Playwright key state and the US layout", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a", { platform: "darwin" });
-    const page = await task.openPage("https://example.test/first");
+    const page = await openTestPage(task, "https://example.test/first");
 
     await page.keyboard.down("Shift");
     await page.keyboard.down("a");
@@ -2321,7 +2435,7 @@ test("Page keyboard mirrors Playwright key state and the US layout", async () =>
 test("Page keyboard maps portable editing shortcuts on macOS", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a", { platform: "darwin" });
-    const page = await task.openPage("https://example.test/first");
+    const page = await openTestPage(task, "https://example.test/first");
 
     await page.keyboard.press("ControlOrMeta+A");
     await page.keyboard.press("ControlOrMeta+C");
@@ -2359,7 +2473,7 @@ test("Page keyboard maps portable editing shortcuts on macOS", async () => {
 test("Page keyboard accepts case-insensitive modifier names", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a", { platform: "darwin" });
-    const page = await task.openPage("https://example.test/first");
+    const page = await openTestPage(task, "https://example.test/first");
 
     await page.keyboard.press("ALT+CONTROL+META+SHIFT+A");
     await page.keyboard.press("CONTROLORMETA+A");
@@ -2382,7 +2496,7 @@ test("Page keyboard accepts case-insensitive modifier names", async () => {
 test("Page keyboard maps portable editing shortcuts on Windows", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a", { platform: "win32" });
-    const page = await task.openPage("https://example.test/first");
+    const page = await openTestPage(task, "https://example.test/first");
 
     await page.keyboard.press("ControlOrMeta+A");
     await page.keyboard.press("ControlOrMeta+C");
@@ -2415,7 +2529,7 @@ test("Page keyboard maps portable editing shortcuts on Windows", async () => {
 test("Page keyboard type emits physical keys when possible and inserts unsupported text", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a", { platform: "darwin" });
-    const page = await task.openPage("https://example.test/first");
+    const page = await openTestPage(task, "https://example.test/first");
 
     await page.keyboard.type("Aé", { delay: 12 });
 
@@ -2445,7 +2559,7 @@ test("Page keyboard type emits physical keys when possible and inserts unsupport
 test("Page keyboard releases pressed modifiers when a chord fails", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a", { platform: "darwin" });
-    const page = await task.openPage("https://example.test/first");
+    const page = await openTestPage(task, "https://example.test/first");
 
     await assert.rejects(
       () => page.keyboard.press("Shift+DefinitelyUnknown"),
@@ -2469,7 +2583,7 @@ test("Page keyboard releases pressed modifiers when a chord fails", async () => 
 test("low-level Page input skips action observers and returns no receipt", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a", { platform: "darwin" });
-    const page = await task.openPage("https://example.test/first");
+    const page = await openTestPage(task, "https://example.test/first");
     fixture.calls.length = 0;
 
     assert.equal(await page.mouse.move(10, 20), undefined);
@@ -2480,8 +2594,6 @@ test("low-level Page input skips action observers and returns no receipt", async
     assert.equal(await page.keyboard.up("Shift"), undefined);
     assert.equal(await page.keyboard.type("a"), undefined);
     assert.equal(await page.keyboard.insertText("é"), undefined);
-    assert.deepEqual(await page.scrollBy(50), { x: 0, y: 50 });
-
     assert.equal(
       fixture.calls.some(
         ([kind, method, params]) =>
@@ -2498,8 +2610,8 @@ test("low-level Page input skips action observers and returns no receipt", async
 test("Page keyboard omits synthetic dispatch while file input stays target-scoped", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
-    const first = await task.openPage("https://example.test/first");
-    await task.openPage("https://example.test/second");
+    const first = await openTestPage(task, "https://example.test/first");
+    await openTestPage(task, "https://example.test/second");
 
     assert.equal(first.keyboard.dispatch, undefined);
     await first.setInputFiles("#upload", ["/tmp/one.txt", "/tmp/two.txt"]);
@@ -2516,7 +2628,7 @@ test("Page keyboard omits synthetic dispatch while file input stays target-scope
 test("Page.setInputFiles resolves labels without opening a system chooser", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
-    const page = await task.openPage("https://example.test/upload");
+    const page = await openTestPage(task, "https://example.test/upload");
 
     await page.setInputFiles("label[for=upload]", [
       "/tmp/one.txt",
@@ -2550,7 +2662,10 @@ test("Page.setInputFiles resolves labels without opening a system chooser", asyn
 test("Page.waitForFileChooser handles a dynamically created file input", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
-    const page = await task.openPage("https://example.test/dynamic-upload");
+    const page = await openTestPage(
+      task,
+      "https://example.test/dynamic-upload",
+    );
     fixture.openFileChooserOnNextClick({
       backendNodeId: 91,
       mode: "selectMultiple",
@@ -2584,7 +2699,10 @@ test("Page.waitForFileChooser handles a dynamically created file input", async (
 test("FileChooser.setFiles uses the current Page session after reconnect", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
-    const page = await task.openPage("https://example.test/dynamic-upload");
+    const page = await openTestPage(
+      task,
+      "https://example.test/dynamic-upload",
+    );
     fixture.openFileChooserOnNextClick({ backendNodeId: 92 });
 
     const chooserPromise = page.waitForFileChooser();
@@ -2607,7 +2725,7 @@ test("FileChooser.setFiles uses the current Page session after reconnect", async
 test("unhandled file choosers are cancelled before a system dialog appears", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
-    const page = await task.openPage("https://example.test/upload-guard");
+    const page = await openTestPage(task, "https://example.test/upload-guard");
     fixture.openFileChooserOnNextClick();
 
     await assert.rejects(
@@ -2631,8 +2749,8 @@ test("unhandled file choosers are cancelled before a system dialog appears", asy
 test("Page and TaskSpace CDP commands preserve their intended scope", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
-    const first = await task.openPage("https://example.test/first");
-    await task.openPage("https://example.test/second");
+    const first = await openTestPage(task, "https://example.test/first");
+    await openTestPage(task, "https://example.test/second");
 
     const pageResult = await first.cdp(
       "Runtime.evaluate",
@@ -2673,8 +2791,8 @@ test("Page and TaskSpace CDP commands preserve their intended scope", async () =
 test("Page waits and events remain isolated to the addressed target", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
-    const first = await task.openPage("https://example.test/first");
-    const second = await task.openPage("https://example.test/second");
+    const first = await openTestPage(task, "https://example.test/first");
+    const second = await openTestPage(task, "https://example.test/second");
 
     assert.equal(
       await first.waitForSelector("#ready", {
@@ -2745,7 +2863,7 @@ test("Page waitForURL follows a popup from about:blank without activating it", a
         }
       },
     });
-    const source = await task.openPage("https://example.test/source");
+    const source = await openTestPage(task, "https://example.test/source");
     fixture.openPopupOnNextClick("about:blank");
     const receipt = await source.click("#open-popup");
     popupTargetId = receipt.popups[0].targetId;
@@ -2780,7 +2898,7 @@ test("Page.waitForEvent arms before a click and resolves the opened popup", asyn
   await withFixture(async (fixture) => {
     resetPageNotices();
     const task = taskForRound(fixture, "round-a");
-    const source = await task.openPage("https://example.test/source");
+    const source = await openTestPage(task, "https://example.test/source");
     fixture.openPopupOnNextClick("https://example.test/popup");
 
     const popupPromise = source.waitForEvent("popup", { timeout: 1_000 });
@@ -2796,7 +2914,7 @@ test("Page.waitForEvent arms before a click and resolves the opened popup", asyn
 test("Page.waitForEvent rejects unsupported events and times out cleanly", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
-    const source = await task.openPage("https://example.test/source");
+    const source = await openTestPage(task, "https://example.test/source");
 
     assert.throws(
       () => source.waitForEvent("download", { timeout: 10 }),
@@ -2813,7 +2931,7 @@ test("Page.waitForURL immediately reports a matching popup opened by this Page",
   await withFixture(async (fixture) => {
     resetPageNotices();
     const task = taskForRound(fixture, "round-a");
-    const source = await task.openPage("https://example.test/source");
+    const source = await openTestPage(task, "https://example.test/source");
     fixture.openPopupOnNextClick("https://example.test/drive/home");
     await source.click("#open-popup");
 
@@ -2836,7 +2954,7 @@ test("Page.waitForURL still succeeds when the opener itself reaches the URL", as
   await withFixture(async (fixture) => {
     resetPageNotices();
     const task = taskForRound(fixture, "round-a");
-    const source = await task.openPage("https://example.test/source");
+    const source = await openTestPage(task, "https://example.test/source");
     const expectedUrl = "https://example.test/drive/home";
     fixture.openPopupOnNextClick(expectedUrl);
     fixture.navigateOnNextClick(expectedUrl);
@@ -2849,7 +2967,7 @@ test("Page.waitForURL still succeeds when the opener itself reaches the URL", as
 test("Page waitForURL validates its matcher and reports the last URL", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
-    const page = await task.openPage("about:blank");
+    const page = await openTestPage(task, "about:blank");
 
     await assert.rejects(
       () => page.waitForURL("https://example.test/never", { timeout: 10 }),
@@ -2874,7 +2992,7 @@ test("Page waitForURL retries a transient evaluation timeout", async () => {
   await withFixture(async (fixture) => {
     const expectedUrl = "https://example.test/after-timeout";
     const task = taskForRound(fixture, "round-a");
-    const page = await task.openPage(expectedUrl);
+    const page = await openTestPage(task, expectedUrl);
     fixture.timeoutNextUrlEvaluation();
 
     await page.waitForURL(expectedUrl, { timeout: 2_000 });
@@ -2885,7 +3003,7 @@ test("Page waitForURL retries a transient evaluation timeout", async () => {
 test("Page waitForSelector supports Playwright-style element states", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
-    const page = await task.openPage("https://example.test/first");
+    const page = await openTestPage(task, "https://example.test/first");
 
     fixture.setElementState({ present: true, visible: false });
     assert.equal(
@@ -2918,7 +3036,7 @@ test("Page waitForSelector supports Playwright-style element states", async () =
 test("Page wait methods reject invalid states and millisecond timeouts", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
-    const page = await task.openPage("https://example.test/first");
+    const page = await openTestPage(task, "https://example.test/first");
 
     fixture.setDocumentLifecycle({
       readyState: "interactive",
@@ -2962,8 +3080,8 @@ test("Page wait methods reject invalid states and millisecond timeouts", async (
 test("Page actions resolve snapshot refs inside the addressed page", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
-    const first = await task.openPage("https://example.test/first");
-    const second = await task.openPage("https://example.test/second");
+    const first = await openTestPage(task, "https://example.test/first");
+    const second = await openTestPage(task, "https://example.test/second");
 
     await first.snapshot();
     await second.snapshot();
@@ -2999,7 +3117,10 @@ test("Page actions resolve snapshot refs inside the addressed page", async () =>
 test("a new round refreshes the addressed Page before resolving a ref", async () => {
   await withFixture(async (fixture) => {
     const firstRound = taskForRound(fixture, "round-a");
-    const created = await firstRound.openPage("https://example.test/first");
+    const created = await openTestPage(
+      firstRound,
+      "https://example.test/first",
+    );
     await created.snapshot();
     const snapshotsBefore = fixture.calls.filter(
       ([kind]) => kind === "snapshot",
@@ -3025,7 +3146,7 @@ test("a new round refreshes the addressed Page before resolving a ref", async ()
 test("an unknown Page ref fails after one target-scoped refresh", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
-    const page = await task.openPage("https://example.test/first");
+    const page = await openTestPage(task, "https://example.test/first");
 
     await assert.rejects(() => page.click("@99"), /Unknown ref: 99/);
     assert.deepEqual(
@@ -3038,7 +3159,7 @@ test("an unknown Page ref fails after one target-scoped refresh", async () => {
 test("Page click scrolls the element into view before computing its point", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
-    const page = await task.openPage("https://example.test/first");
+    const page = await openTestPage(task, "https://example.test/first");
 
     await page.click("#offscreen");
 
@@ -3060,7 +3181,7 @@ test("Page click scrolls the element into view before computing its point", asyn
 test("Page click retries a transient visibility change before dispatching input", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
-    const page = await task.openPage("https://example.test/first");
+    const page = await openTestPage(task, "https://example.test/first");
     fixture.rejectNextClickPoint();
 
     assert.deepEqual(await page.click("#temporarily-hidden"), {});
@@ -3087,7 +3208,7 @@ test("Page click retries a transient visibility change before dispatching input"
 test("Page click reports the last transient state after its timeout", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
-    const page = await task.openPage("https://example.test/first");
+    const page = await openTestPage(task, "https://example.test/first");
     fixture.rejectClickPoints(100);
 
     await assert.rejects(
@@ -3116,7 +3237,7 @@ test("Page click reports the last transient state after its timeout", async () =
 test("Page click waits for a temporary pointer interceptor", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
-    const page = await task.openPage("https://example.test/first");
+    const page = await openTestPage(task, "https://example.test/first");
     fixture.interceptNextClickPoint();
 
     assert.deepEqual(await page.click("#covered", { timeout: 100 }), {});
@@ -3135,7 +3256,7 @@ test("Page click waits for a temporary pointer interceptor", async () => {
 test("Page click times out while a pointer interceptor remains", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
-    const page = await task.openPage("https://example.test/first");
+    const page = await openTestPage(task, "https://example.test/first");
     fixture.interceptClickPoints(100);
 
     await assert.rejects(
@@ -3156,7 +3277,7 @@ test("Page click times out while a pointer interceptor remains", async () => {
 test("Page click force bypasses only the pointer interception check", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
-    const page = await task.openPage("https://example.test/first");
+    const page = await openTestPage(task, "https://example.test/first");
     fixture.interceptClickPoints(100);
 
     assert.deepEqual(
@@ -3177,7 +3298,7 @@ test("Page click force bypasses only the pointer interception check", async () =
 test("close leaves an anchor tab and the next page gets a new label", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
-    const first = await task.openPage("https://example.test/first");
+    const first = await openTestPage(task, "https://example.test/first");
 
     await first.close();
     assert.equal(fixture.tabs.has("target-1"), false);
@@ -3191,7 +3312,7 @@ test("close leaves an anchor tab and the next page gets a new label", async () =
       /page p1 was closed/,
     );
 
-    const second = await task.openPage("https://example.test/second");
+    const second = await openTestPage(task, "https://example.test/second");
     assert.equal(second.label, "p2");
     assert.equal(second.targetId, "target-3");
   });
@@ -3217,7 +3338,7 @@ test("close waits for the target to disappear before retiring its label", async 
         return [...fixture.tabs.values()];
       },
     });
-    const page = await task.openPage("https://example.test/first");
+    const page = await openTestPage(task, "https://example.test/first");
 
     await page.close();
 
@@ -3237,7 +3358,7 @@ test("close keeps the page managed when the target never disappears", async () =
         return fixture.services.cdp(method, params, sessionId, timeoutMs);
       },
     });
-    const page = await task.openPage("https://example.test/first");
+    const page = await openTestPage(task, "https://example.test/first");
 
     await assert.rejects(() => page.close(), /did not close within 2000ms/);
 
@@ -3265,7 +3386,7 @@ test("a ledger failure closes the newly created uncommitted tab", async () => {
     );
 
     await assert.rejects(
-      () => task.openPage("https://example.test/uncommitted"),
+      () => openTestPage(task, "https://example.test/uncommitted"),
       /ledger unavailable/,
     );
     assert.equal(fixture.tabs.size, 0);
@@ -3286,7 +3407,7 @@ test("pages returns managed Page handles while tabs returns the complete invento
       active: false,
     });
     const task = taskForRound(fixture, "round-a");
-    const managed = await task.openPage("https://example.test/managed");
+    const managed = await openTestPage(task, "https://example.test/managed");
     fixture.tabs.set("target-popup", {
       targetId: "target-popup",
       url: "https://example.test/popup",
@@ -3331,7 +3452,7 @@ test("pages returns managed Page handles while tabs returns the complete invento
 test("tabs automatically manages a tab created during agent control", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
-    await task.openPage("https://example.test/managed");
+    await openTestPage(task, "https://example.test/managed");
     fixture.tabs.set("target-popup", {
       targetId: "target-popup",
       url: "https://example.test/popup",
@@ -3428,7 +3549,7 @@ test("adopt applies the managed-page budget before changing the ledger", async (
       active: false,
     });
     const task = taskForRound(fixture, "round-a", { pageBudget: 1 });
-    await task.openPage("https://example.test/managed");
+    await openTestPage(task, "https://example.test/managed");
     const untracked = (await task.tabs()).find(
       (item) => item.targetId === "target-user",
     ).page;
@@ -3471,7 +3592,7 @@ test("release leaves an adopted page open and retires its label", async () => {
 test("release refuses to orphan a page created by the agent", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
-    const created = await task.openPage("https://example.test/agent");
+    const created = await openTestPage(task, "https://example.test/agent");
 
     await assert.rejects(
       () => task.release(created.label),
@@ -3485,7 +3606,7 @@ test("release refuses to orphan a page created by the agent", async () => {
 test("tabs retires a managed label when its browser tab disappeared", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a");
-    const page = await task.openPage("https://example.test/managed");
+    const page = await openTestPage(task, "https://example.test/managed");
     fixture.tabs.delete(page.targetId);
 
     assert.deepEqual(await task.tabs(), []);
@@ -3496,14 +3617,14 @@ test("tabs retires a managed label when its browser tab disappeared", async () =
   });
 });
 
-test("openPage rejects before creating a tab when the managed budget is full", async () => {
+test("newPage rejects before creating a tab when the managed budget is full", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a", { pageBudget: 2 });
-    const first = await task.openPage("https://example.test/first");
-    await task.openPage("https://example.test/second");
+    const first = await openTestPage(task, "https://example.test/first");
+    await openTestPage(task, "https://example.test/second");
 
     await assert.rejects(
-      () => task.openPage("https://example.test/third"),
+      () => openTestPage(task, "https://example.test/third"),
       (error) => {
         assert.match(
           error.message,
@@ -3528,20 +3649,20 @@ test("openPage rejects before creating a tab when the managed budget is full", a
     );
 
     await first.close();
-    const replacement = await task.openPage("https://example.test/third");
+    const replacement = await openTestPage(task, "https://example.test/third");
     assert.equal(replacement.label, "p3");
     assert.equal(fixture.tabs.size, 2);
   });
 });
 
-test("a tab closed outside the runtime frees budget on the next openPage", async () => {
+test("a tab closed outside the runtime frees budget on the next newPage", async () => {
   await withFixture(async (fixture) => {
     const task = taskForRound(fixture, "round-a", { pageBudget: 2 });
-    const first = await task.openPage("https://example.test/first");
-    await task.openPage("https://example.test/second");
+    const first = await openTestPage(task, "https://example.test/first");
+    await openTestPage(task, "https://example.test/second");
     fixture.tabs.delete(first.targetId);
 
-    const replacement = await task.openPage("https://example.test/third");
+    const replacement = await openTestPage(task, "https://example.test/third");
 
     assert.equal(replacement.label, "p3");
     assert.equal(fixture.tabs.size, 2);
@@ -3552,10 +3673,10 @@ test("a tab closed outside the runtime frees budget on the next openPage", async
   });
 });
 
-test("openPage never closes a managed page when native returns its target again", async () => {
+test("newPage never closes a managed page when native returns its target again", async () => {
   await withFixture(async (fixture) => {
     const firstTask = taskForRound(fixture, "round-a");
-    const first = await firstTask.openPage("https://example.test/first");
+    const first = await openTestPage(firstTask, "https://example.test/first");
     const closeCallsBefore = fixture.calls.filter(
       ([kind, method]) => kind === "cdp" && method === "Target.closeTarget",
     ).length;
@@ -3566,7 +3687,7 @@ test("openPage never closes a managed page when native returns its target again"
     });
 
     await assert.rejects(
-      () => secondTask.openPage("https://example.test/second"),
+      () => openTestPage(secondTask, "https://example.test/second"),
       /did not create a distinct tab.*already page p1/,
     );
 

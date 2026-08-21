@@ -1,9 +1,7 @@
 export function pageScrolledScreenshotCase() {
   return `
     const task = await taskSpace(taskName);
-    const page = await task.openPage(baseUrl + "/?workflow=page-scrolled-screenshot", {
-      as: "page-scrolled-screenshot",
-    });
+    const page = await newPageAt(task, baseUrl + "/?workflow=page-scrolled-screenshot");
 
     await page.evaluate(() => {
       document.documentElement.style.cssText = "margin:0;padding:0";

@@ -48,6 +48,19 @@ export async function startFixtureServer(taskName) {
       res.end("server text fixture");
       return;
     }
+    if (url.pathname === "/api/image.png") {
+      const png = Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+        "base64",
+      );
+      res.writeHead(200, {
+        "content-type": "image/png",
+        "content-length": png.length,
+        "access-control-allow-origin": "*",
+      });
+      res.end(png);
+      return;
+    }
     if (url.pathname === "/api/header") {
       res.writeHead(200, {
         "content-type": "text/plain",

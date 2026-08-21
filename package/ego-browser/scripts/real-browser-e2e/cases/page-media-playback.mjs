@@ -1,9 +1,7 @@
 export function pageMediaPlaybackCase() {
   return `
     const task = await taskSpace(taskName);
-    const page = await task.openPage(baseUrl + "/media-workbench", {
-      as: "media-workbench",
-    });
+    const page = await newPageAt(task, baseUrl + "/media-workbench");
     await page.waitForSelector('body[data-media-ready="true"]', {
       timeout: 10_000,
     });
@@ -43,9 +41,7 @@ export function pageMediaPlaybackCase() {
       "video can be unmuted through the UI"
     );
 
-    const other = await task.openPage(baseUrl + "/?workflow=media-page-switch", {
-      as: "media-other",
-    });
+    const other = await newPageAt(task, baseUrl + "/?workflow=media-page-switch");
     await other.snapshot();
 
     await page.click("#audio-play");

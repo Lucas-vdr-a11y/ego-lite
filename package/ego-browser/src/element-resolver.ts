@@ -1,4 +1,12 @@
 import { parseRef } from "./ref-map.js";
+import { HIT_TARGET_HELPERS } from "./driver/action-target.js";
+
+type ElementActionability = "pointer" | "visible";
+type PageRuntimeContext = {
+  sessionId: string;
+  frameId?: string;
+  contextId?: number;
+};
 
 export class ElementResolutionError extends Error {
   kind: "transient" | "permanent";
@@ -114,7 +122,11 @@ export async function resolveElementObjectId(
   refMap,
   selectorOrRef,
   iframeSessions = new Map(),
-  options: { strict?: boolean } = {},
+  options: {
+    strict?: boolean;
+    strictGlobal?: boolean;
+    actionability?: ElementActionability;
+  } = {},
 ): Promise<{ objectId: string; sessionId: string; frameId?: string }> {
   const refId = parseRef(selectorOrRef);
   if (refId) {
@@ -185,34 +197,43 @@ export async function resolveElementObjectId(
 
   const locator = parseLocator(selectorOrRef);
   if (locator) {
-    return resolveLocatorObjectId(cdp, sessionId, locator, iframeSessions);
+    return resolveLocatorObjectId(
+      cdp,
+      sessionId,
+      locator,
+      iframeSessions,
+      options,
+    );
   }
 
-  const sessions = pageSessions(sessionId, iframeSessions);
+  const contexts = await runtimePageContexts(cdp, sessionId, iframeSessions);
   if (options.strict) {
     return resolveRawSelectorObjectId(
       cdp,
-      sessions,
+      contexts,
       parseRawSelector(selectorOrRef),
+      { actionability: options.actionability },
     );
   }
-  for (const candidateSessionId of sessions) {
-    const result = await send(
+  for (const context of contexts) {
+    const result = await evaluateInContext(
       cdp,
-      "Runtime.evaluate",
-      {
-        expression: buildFindElementJs(selectorOrRef),
-        returnByValue: false,
-        awaitPromise: false,
-        objectGroup: "ego-browser",
-      },
-      candidateSessionId,
+      context,
+      buildFindElementJs(selectorOrRef),
+      false,
+      "ego-browser",
     );
     if (result.exceptionDetails) {
       throw invalidSelectorError(selectorOrRef, result);
     }
     const objectId = result.result?.objectId;
-    if (objectId) return { objectId, sessionId: candidateSessionId };
+    if (objectId) {
+      return {
+        objectId,
+        sessionId: context.sessionId,
+        ...(context.frameId ? { frameId: context.frameId } : {}),
+      };
+    }
   }
   throw new ElementResolutionError(
     `Element not found: ${selectorOrRef}`,
@@ -220,18 +241,23 @@ export async function resolveElementObjectId(
   );
 }
 
-async function resolveRawSelectorObjectId(cdp, sessions, selector) {
-  const match = await findUniqueRawSelectorSession(cdp, sessions, selector);
-  const result = await send(
+async function resolveRawSelectorObjectId(
+  cdp,
+  contexts,
+  selector,
+  { actionability = undefined }: { actionability?: ElementActionability } = {},
+) {
+  const match = await findUniqueRawSelectorContext(cdp, contexts, selector, {
+    actionability,
+  });
+  const result = await evaluateInContext(
     cdp,
-    "Runtime.evaluate",
-    {
-      expression: buildFindElementJs(selector.raw),
-      returnByValue: false,
-      awaitPromise: false,
-      objectGroup: "ego-browser",
-    },
-    match.sessionId,
+    match,
+    match.actionable
+      ? `(() => ${buildActionableElementsJs(buildRawSelectorElementsJs(selector), actionability)}[0] || null)()`
+      : buildFindElementJs(selector.raw),
+    false,
+    "ego-browser",
   );
   if (result.exceptionDetails) {
     throw invalidSelectorError(selector.raw, result);
@@ -243,27 +269,93 @@ async function resolveRawSelectorObjectId(cdp, sessions, selector) {
       "transient",
     );
   }
-  return { objectId, sessionId: match.sessionId };
+  return {
+    objectId,
+    sessionId: match.sessionId,
+    ...(match.frameId ? { frameId: match.frameId } : {}),
+  };
 }
 
-async function findUniqueRawSelectorSession(cdp, sessions, selector) {
-  const mainCount = await rawSelectorCount(cdp, sessions[0], selector);
-  if (mainCount > 1) {
-    throw await rawSelectorCountError(cdp, [sessions[0]], selector, mainCount);
+async function findUniqueRawSelectorContext(
+  cdp,
+  contexts,
+  selector,
+  { actionability = undefined }: { actionability?: ElementActionability } = {},
+) {
+  if (actionability) {
+    const mainCount = await rawSelectorCount(cdp, contexts[0], selector);
+    const mainActionable = mainCount
+      ? await rawSelectorActionableCount(
+          cdp,
+          contexts[0],
+          selector,
+          actionability,
+        )
+      : 0;
+    if (mainActionable === 1) {
+      return { ...contexts[0], actionable: true };
+    }
+    if (mainActionable > 1) {
+      throw await rawSelectorCountError(
+        cdp,
+        [contexts[0]],
+        selector,
+        mainCount,
+      );
+    }
+    const matches = [];
+    let totalCount = mainCount;
+    let actionableCount = 0;
+    for (const context of contexts.slice(1)) {
+      const count = await rawSelectorCount(cdp, context, selector);
+      totalCount += count;
+      if (count === 0) continue;
+      const actionable = await rawSelectorActionableCount(
+        cdp,
+        context,
+        selector,
+        actionability,
+      );
+      actionableCount += actionable;
+      if (actionable > 0) matches.push({ ...context, actionable });
+    }
+    if (totalCount === 0) {
+      throw new ElementResolutionError(
+        `Selector ${selector.raw} matched 0 elements`,
+        "transient",
+      );
+    }
+    if (actionableCount === 1) {
+      return { ...matches[0], actionable: true };
+    }
+    if (actionableCount === 0) {
+      const blocker = await firstActionabilityBlocker(
+        cdp,
+        contexts,
+        buildRawSelectorElementsJs(selector),
+        actionability,
+      );
+      throw new ElementResolutionError(
+        `Selector ${selector.raw} matched ${totalCount} elements, but none can receive input${blocker ? `; ${blocker}` : ""}`,
+        "transient",
+      );
+    }
+    throw await rawSelectorCountError(cdp, matches, selector, totalCount);
   }
-  if (mainCount === 1) return { sessionId: sessions[0] };
+
+  const mainCount = await rawSelectorCount(cdp, contexts[0], selector);
+  if (mainCount > 1) {
+    throw await rawSelectorCountError(cdp, [contexts[0]], selector, mainCount);
+  }
+  if (mainCount === 1) return contexts[0];
 
   const matches = [];
   let count = 0;
-  for (const candidateSessionId of sessions.slice(1)) {
-    const candidateCount = await rawSelectorCount(
-      cdp,
-      candidateSessionId,
-      selector,
-    );
+  for (const context of contexts.slice(1)) {
+    const candidateCount = await rawSelectorCount(cdp, context, selector);
     count += candidateCount;
     if (candidateCount > 0) {
-      matches.push({ count: candidateCount, sessionId: candidateSessionId });
+      matches.push({ count: candidateCount, ...context });
     }
   }
   if (count === 0) {
@@ -273,26 +365,17 @@ async function findUniqueRawSelectorSession(cdp, sessions, selector) {
     );
   }
   if (count > 1) {
-    throw await rawSelectorCountError(
-      cdp,
-      matches.map((match) => match.sessionId),
-      selector,
-      count,
-    );
+    throw await rawSelectorCountError(cdp, matches, selector, count);
   }
   return matches[0];
 }
 
-async function rawSelectorCount(cdp, sessionId, selector) {
-  const result = await send(
+async function rawSelectorCount(cdp, context, selector) {
+  const result = await evaluateInContext(
     cdp,
-    "Runtime.evaluate",
-    {
-      expression: buildRawSelectorCountJs(selector),
-      returnByValue: true,
-      awaitPromise: false,
-    },
-    sessionId,
+    context,
+    buildRawSelectorCountJs(selector),
+    true,
   );
   if (result.exceptionDetails) {
     throw invalidSelectorError(selector.raw, result);
@@ -300,12 +383,30 @@ async function rawSelectorCount(cdp, sessionId, selector) {
   return Number(result.result?.value || 0);
 }
 
-async function rawSelectorCountError(cdp, sessions, selector, count) {
+async function rawSelectorActionableCount(
+  cdp,
+  context,
+  selector,
+  actionability: ElementActionability,
+) {
+  const result = await evaluateInContext(
+    cdp,
+    context,
+    `(() => ${buildActionableElementsJs(buildRawSelectorElementsJs(selector), actionability)}.length)()`,
+    true,
+  );
+  if (result.exceptionDetails) {
+    throw invalidSelectorError(selector.raw, result);
+  }
+  return Number(result.result?.value || 0);
+}
+
+async function rawSelectorCountError(cdp, contexts, selector, count) {
   return ambiguityError(
     `Selector ${selector.raw} matched ${count} elements`,
     await collectMatchDiagnostics(
       cdp,
-      sessions,
+      contexts,
       buildRawSelectorElementsJs(selector),
     ),
   );
@@ -357,6 +458,63 @@ function pageContexts(sessionId, iframeSessions) {
   return contexts;
 }
 
+async function runtimePageContexts(
+  cdp,
+  sessionId,
+  iframeSessions,
+): Promise<PageRuntimeContext[]> {
+  const contexts = pageContexts(sessionId, iframeSessions);
+  return Promise.all(
+    contexts.map(async (context) => {
+      if (!context.frameId) return context;
+      try {
+        const result = await send(
+          cdp,
+          "Page.createIsolatedWorld",
+          {
+            frameId: context.frameId,
+            worldName: "ego-browser-locator",
+            grantUniveralAccess: true,
+          },
+          context.sessionId,
+        );
+        if (!Number.isInteger(result?.executionContextId)) {
+          throw new Error("Page.createIsolatedWorld returned no context id");
+        }
+        return { ...context, contextId: result.executionContextId };
+      } catch (error) {
+        throw new ElementResolutionError(
+          `Frame ${context.frameId} is not ready: ${error?.message || String(error)}`,
+          "transient",
+        );
+      }
+    }),
+  );
+}
+
+function evaluateInContext(
+  cdp,
+  context: PageRuntimeContext,
+  expression: string,
+  returnByValue: boolean,
+  objectGroup?: string,
+) {
+  return send(
+    cdp,
+    "Runtime.evaluate",
+    {
+      expression,
+      returnByValue,
+      awaitPromise: false,
+      ...(context.contextId !== undefined
+        ? { contextId: context.contextId }
+        : {}),
+      ...(objectGroup ? { objectGroup } : {}),
+    },
+    context.sessionId,
+  );
+}
+
 async function resolveLocatorCenter(cdp, sessionId, locator, iframeSessions) {
   const sessions = pageSessions(sessionId, iframeSessions);
   if (locator.kind === "role") {
@@ -378,16 +536,18 @@ async function resolveLocatorCenter(cdp, sessionId, locator, iframeSessions) {
   const match =
     sessions.length === 1
       ? { sessionId: sessions[0] }
-      : await findUniqueLocatorSession(cdp, sessions, locator);
-  const result = await send(
+      : await findUniqueLocatorContext(
+          cdp,
+          sessions.map((candidateSessionId) => ({
+            sessionId: candidateSessionId,
+          })),
+          locator,
+        );
+  const result = await evaluateInContext(
     cdp,
-    "Runtime.evaluate",
-    {
-      expression: buildLocatorCenterJs(locator),
-      returnByValue: true,
-      awaitPromise: false,
-    },
-    match.sessionId,
+    match,
+    buildLocatorCenterJs(locator),
+    true,
   );
   if (result.exceptionDetails) {
     throw new ElementResolutionError(
@@ -401,7 +561,7 @@ async function resolveLocatorCenter(cdp, sessionId, locator, iframeSessions) {
     if (kind === "permanent") {
       throw await locatorCountError(
         cdp,
-        [match.sessionId],
+        [match],
         locator,
         matchCount(value.error),
       );
@@ -417,8 +577,16 @@ async function resolveLocatorCenter(cdp, sessionId, locator, iframeSessions) {
   return { x: value.x, y: value.y, sessionId: match.sessionId };
 }
 
-async function resolveLocatorObjectId(cdp, sessionId, locator, iframeSessions) {
-  const sessions = pageSessions(sessionId, iframeSessions);
+async function resolveLocatorObjectId(
+  cdp,
+  sessionId,
+  locator,
+  iframeSessions,
+  options: {
+    strictGlobal?: boolean;
+    actionability?: ElementActionability;
+  } = {},
+) {
   if (locator.kind === "role") {
     const match = await findUniqueRoleMatch(
       cdp,
@@ -426,6 +594,10 @@ async function resolveLocatorObjectId(cdp, sessionId, locator, iframeSessions) {
       locator.role,
       locator.name,
       locator.raw,
+      {
+        strictGlobal: options.strictGlobal,
+        actionability: options.actionability,
+      },
     );
     const result = await send(
       cdp,
@@ -449,17 +621,19 @@ async function resolveLocatorObjectId(cdp, sessionId, locator, iframeSessions) {
       ...(match.frameId ? { frameId: match.frameId } : {}),
     };
   }
-  const match = await findUniqueLocatorSession(cdp, sessions, locator);
-  const result = await send(
+  const contexts = await runtimePageContexts(cdp, sessionId, iframeSessions);
+  const match = await findUniqueLocatorContext(cdp, contexts, locator, {
+    strictGlobal: options.strictGlobal,
+    actionability: options.actionability,
+  });
+  const result = await evaluateInContext(
     cdp,
-    "Runtime.evaluate",
-    {
-      expression: buildLocatorFindJs(locator),
-      returnByValue: false,
-      awaitPromise: false,
-      objectGroup: "ego-browser",
-    },
-    match.sessionId,
+    match,
+    match.actionable
+      ? buildLocatorActionableFindJs(locator, options.actionability)
+      : buildLocatorFindJs(locator),
+    false,
+    "ego-browser",
   );
   const objectId = result.result?.objectId;
   if (!objectId) {
@@ -468,23 +642,101 @@ async function resolveLocatorObjectId(cdp, sessionId, locator, iframeSessions) {
       "transient",
     );
   }
-  return { objectId, sessionId: match.sessionId };
+  return {
+    objectId,
+    sessionId: match.sessionId,
+    ...(match.frameId ? { frameId: match.frameId } : {}),
+  };
 }
 
-async function findUniqueLocatorSession(cdp, sessions, locator) {
+async function findUniqueLocatorContext(
+  cdp,
+  contexts,
+  locator,
+  {
+    strictGlobal = false,
+    actionability = undefined,
+  }: {
+    strictGlobal?: boolean;
+    actionability?: ElementActionability;
+  } = {},
+) {
+  if (actionability) {
+    const mainCount = await locatorCount(cdp, contexts[0], locator);
+    const mainActionable = mainCount
+      ? await locatorActionableCount(cdp, contexts[0], locator, actionability)
+      : 0;
+    if (mainActionable === 1) {
+      return { count: 1, ...contexts[0], actionable: true };
+    }
+    if (mainActionable > 1) {
+      throw await locatorCountError(cdp, [contexts[0]], locator, mainCount);
+    }
+    const matches = [];
+    let totalCount = mainCount;
+    let actionableCount = 0;
+    for (const context of contexts.slice(1)) {
+      const count = await locatorCount(cdp, context, locator);
+      totalCount += count;
+      if (count === 0) continue;
+      const actionable = await locatorActionableCount(
+        cdp,
+        context,
+        locator,
+        actionability,
+      );
+      actionableCount += actionable;
+      if (actionable > 0) {
+        matches.push({
+          count,
+          actionable,
+          ...context,
+        });
+      }
+    }
+    if (totalCount === 0) {
+      throw new ElementResolutionError(
+        `Locator ${locator.raw} matched 0 elements`,
+        "transient",
+      );
+    }
+    if (actionableCount === 1) {
+      return { ...matches[0], count: 1, actionable: true };
+    }
+    if (actionableCount === 0) {
+      const blocker = await firstActionabilityBlocker(
+        cdp,
+        contexts,
+        buildLocatorElementsJs(locator),
+        actionability,
+      );
+      throw new ElementResolutionError(
+        `Locator ${locator.raw} matched ${totalCount} elements, but none can receive input${blocker ? `; ${blocker}` : ""}`,
+        "transient",
+      );
+    }
+    throw await locatorCountError(cdp, matches, locator, totalCount);
+  }
+
   const matches = [];
   let count = 0;
-  const mainCount = await locatorCount(cdp, sessions[0], locator);
-  if (mainCount > 1) {
-    throw await locatorCountError(cdp, [sessions[0]], locator, mainCount);
+  const mainCount = await locatorCount(cdp, contexts[0], locator);
+  if (mainCount > 1 && !strictGlobal) {
+    throw await locatorCountError(cdp, [contexts[0]], locator, mainCount);
   }
-  if (mainCount === 1) return { count: 1, sessionId: sessions[0] };
+  if (mainCount === 1 && !strictGlobal) {
+    return { count: 1, ...contexts[0] };
+  }
+  count += mainCount;
+  if (mainCount > 0) {
+    matches.push({ count: mainCount, ...contexts[0] });
+  }
 
-  for (const candidateSessionId of sessions.slice(1)) {
-    const candidateCount = await locatorCount(cdp, candidateSessionId, locator);
+  for (const context of contexts.slice(1)) {
+    const candidateCount = await locatorCount(cdp, context, locator);
     count += candidateCount;
     if (candidateCount > 0) {
-      matches.push({ count: candidateCount, sessionId: candidateSessionId });
+      matches.push({ count: candidateCount, ...context });
     }
   }
   if (count === 0) {
@@ -494,17 +746,25 @@ async function findUniqueLocatorSession(cdp, sessions, locator) {
     );
   }
   if (count > 1) {
-    throw await locatorCountError(
-      cdp,
-      matches.map((match) => match.sessionId),
-      locator,
-      count,
-    );
+    throw await locatorCountError(cdp, matches, locator, count);
   }
   return matches[0];
 }
 
-async function findUniqueRoleMatch(cdp, contexts, role, name, raw) {
+async function findUniqueRoleMatch(
+  cdp,
+  contexts,
+  role,
+  name,
+  raw,
+  {
+    strictGlobal = false,
+    actionability = undefined,
+  }: {
+    strictGlobal?: boolean;
+    actionability?: ElementActionability;
+  } = {},
+) {
   const matchesIn = async (selectedContexts) => {
     const matches = [];
     for (const context of selectedContexts) {
@@ -517,7 +777,7 @@ async function findUniqueRoleMatch(cdp, contexts, role, name, raw) {
       for (const node of result.nodes || []) {
         if (
           !node.ignored &&
-          extractAxString(node.role) === role &&
+          normalizeRole(extractAxString(node.role)) === normalizeRole(role) &&
           extractAxString(node.name) === name &&
           node.backendDOMNodeId !== undefined &&
           node.backendDOMNodeId !== null
@@ -533,33 +793,174 @@ async function findUniqueRoleMatch(cdp, contexts, role, name, raw) {
     return matches;
   };
 
-  // Preserve Page locator behavior: a top-level match wins. Only fall back to
-  // frames when the Page document has no match at all.
-  const mainMatches = await matchesIn(contexts.slice(0, 1));
-  const matches =
-    mainMatches.length > 0 ? mainMatches : await matchesIn(contexts.slice(1));
-  if (matches.length === 0) {
+  const rawMainMatches = await matchesIn(contexts.slice(0, 1));
+  let cachedFrameMatches;
+  const matchesWithFrameProvenance = async () => {
+    cachedFrameMatches ||= matchesIn(contexts.slice(1));
+    const frames = await cachedFrameMatches;
+    const framedNodeKeys = new Set(
+      frames
+        .filter((match) => match.frameId)
+        .map((match) => `${match.sessionId}\u0000${match.backendNodeId}`),
+    );
+    const main = rawMainMatches.filter(
+      (match) =>
+        !framedNodeKeys.has(`${match.sessionId}\u0000${match.backendNodeId}`),
+    );
+    return { main, frames };
+  };
+  if (strictGlobal) {
+    const { main, frames } = await matchesWithFrameProvenance();
+    const matches = [...main, ...frames];
+    if (matches.length === 0) {
+      throw new ElementResolutionError(
+        `Locator ${raw} matched 0 elements`,
+        "transient",
+      );
+    }
+    if (matches.length === 1) return matches[0];
+    throw ambiguityError(`Locator ${raw} matched ${matches.length} elements`);
+  }
+
+  if (!actionability) {
+    const matches =
+      rawMainMatches.length > 0
+        ? rawMainMatches
+        : (await matchesWithFrameProvenance()).frames;
+    if (matches.length === 0) {
+      throw new ElementResolutionError(
+        `Locator ${raw} matched 0 elements`,
+        "transient",
+      );
+    }
+    if (matches.length === 1) return matches[0];
+    throw ambiguityError(`Locator ${raw} matched ${matches.length} elements`);
+  }
+
+  const classify = async (matches) => {
+    const actionable = [];
+    let blocker;
+    for (const match of matches) {
+      const result = await roleMatchActionability(cdp, match, actionability);
+      if (result.actionable) actionable.push(match);
+      else blocker ||= result.blocker;
+    }
+    return { actionable, blocker };
+  };
+  const provenance = await matchesWithFrameProvenance();
+  const mainMatches = provenance.main;
+  const main = await classify(mainMatches);
+  if (main.actionable.length === 1) return main.actionable[0];
+  if (main.actionable.length > 1) {
+    throw ambiguityError(
+      `Locator ${raw} matched ${mainMatches.length} elements`,
+    );
+  }
+
+  const frames = provenance.frames;
+  const frame = await classify(frames);
+  const total = mainMatches.length + frames.length;
+  if (total === 0) {
     throw new ElementResolutionError(
       `Locator ${raw} matched 0 elements`,
       "transient",
     );
   }
-  if (matches.length > 1) {
-    throw ambiguityError(`Locator ${raw} matched ${matches.length} elements`);
+  if (frame.actionable.length === 1) return frame.actionable[0];
+  if (frame.actionable.length === 0) {
+    const blocker = main.blocker || frame.blocker;
+    throw new ElementResolutionError(
+      `Locator ${raw} matched ${total} elements, but none can receive input${blocker ? `; ${blocker}` : ""}`,
+      "transient",
+    );
   }
-  return matches[0];
+  throw ambiguityError(`Locator ${raw} matched ${total} elements`);
 }
 
-async function locatorCount(cdp, sessionId, locator) {
-  const result = await send(
+/** Classify one AX match with the same rules used for DOM selectors. */
+async function roleMatchActionability(
+  cdp,
+  match,
+  actionability: ElementActionability,
+): Promise<{ actionable: boolean; blocker?: string }> {
+  let objectId;
+  try {
+    const resolved = await send(
+      cdp,
+      "DOM.resolveNode",
+      {
+        backendNodeId: match.backendNodeId,
+        objectGroup: "ego-browser",
+      },
+      match.sessionId,
+    );
+    objectId = resolved.object?.objectId;
+    if (!objectId) return { actionable: false };
+    const result = await send(
+      cdp,
+      "Runtime.callFunctionOn",
+      {
+        functionDeclaration: `function() {
+          ${actionability === "pointer" ? HIT_TARGET_HELPERS : ""}
+          if (!this.isConnected) return { actionable: false };
+          const rect = this.getBoundingClientRect();
+          const view = this.ownerDocument?.defaultView;
+          if (!view || rect.width <= 0 || rect.height <= 0) return { actionable: false };
+          const style = view.getComputedStyle(this);
+          const visible = !this.closest?.("[hidden], [inert]") &&
+            style.display !== "none" &&
+            style.visibility !== "hidden" &&
+            !this.matches?.(":disabled") &&
+            this.getAttribute?.("aria-disabled") !== "true";
+          if (!visible) return { actionable: false };
+          if (${JSON.stringify(actionability)} === "pointer") {
+            const point = { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+            const offscreen = point.x < 0 || point.y < 0 ||
+              point.x >= view.innerWidth || point.y >= view.innerHeight;
+            if (!offscreen) {
+              const interceptor = interceptingElementAtPoint(this, point);
+              if (interceptor) {
+                return {
+                  actionable: false,
+                  blocker: describeHitTarget(interceptor) + " intercepts pointer events"
+                };
+              }
+            }
+          }
+          return { actionable: true };
+        }`,
+        objectId,
+        returnByValue: true,
+        awaitPromise: false,
+      },
+      match.sessionId,
+    );
+    const value = result.result?.value;
+    if (typeof value === "boolean") return { actionable: value };
+    return {
+      actionable: value?.actionable === true,
+      ...(typeof value?.blocker === "string" ? { blocker: value.blocker } : {}),
+    };
+  } catch {
+    return { actionable: false };
+  } finally {
+    if (objectId) {
+      await send(
+        cdp,
+        "Runtime.releaseObject",
+        { objectId },
+        match.sessionId,
+      ).catch(() => {});
+    }
+  }
+}
+
+async function locatorCount(cdp, context, locator) {
+  const result = await evaluateInContext(
     cdp,
-    "Runtime.evaluate",
-    {
-      expression: buildLocatorCountJs(locator),
-      returnByValue: true,
-      awaitPromise: false,
-    },
-    sessionId,
+    context,
+    buildLocatorCountJs(locator),
+    true,
   );
   if (result.exceptionDetails) {
     throw new ElementResolutionError(
@@ -570,7 +971,28 @@ async function locatorCount(cdp, sessionId, locator) {
   return Number(result.result?.value || 0);
 }
 
-async function locatorCountError(cdp, sessions, locator, count) {
+async function locatorActionableCount(
+  cdp,
+  context,
+  locator,
+  actionability: ElementActionability,
+) {
+  const result = await evaluateInContext(
+    cdp,
+    context,
+    buildLocatorActionableCountJs(locator, actionability),
+    true,
+  );
+  if (result.exceptionDetails) {
+    throw new ElementResolutionError(
+      `Invalid selector: ${locator.raw}: ${exceptionText(result)}`,
+      "permanent",
+    );
+  }
+  return Number(result.result?.value || 0);
+}
+
+async function locatorCountError(cdp, contexts, locator, count) {
   if (locator.kind === "role") {
     return ambiguityError(`Locator ${locator.raw} matched ${count} elements`);
   }
@@ -578,7 +1000,7 @@ async function locatorCountError(cdp, sessions, locator, count) {
     `Locator ${locator.raw} matched ${count} elements`,
     await collectMatchDiagnostics(
       cdp,
-      sessions,
+      contexts,
       buildLocatorElementsJs(locator),
     ),
   );
@@ -589,7 +1011,7 @@ function matchCount(message) {
   return match ? Number(match[1]) : 0;
 }
 
-async function collectMatchDiagnostics(cdp, sessions, elementsExpression) {
+async function collectMatchDiagnostics(cdp, contexts, elementsExpression) {
   const combined: {
     visible: number;
     hidden: number;
@@ -602,16 +1024,12 @@ async function collectMatchDiagnostics(cdp, sessions, elementsExpression) {
     }>;
   } = { visible: 0, hidden: 0, candidates: [] };
   try {
-    for (const sessionId of sessions) {
-      const result = await send(
+    for (const context of contexts) {
+      const result = await evaluateInContext(
         cdp,
-        "Runtime.evaluate",
-        {
-          expression: buildMatchDiagnosticsJs(elementsExpression),
-          returnByValue: true,
-          awaitPromise: false,
-        },
-        sessionId,
+        context,
+        buildMatchDiagnosticsJs(elementsExpression),
+        true,
       );
       const value = result.result?.value;
       if (
@@ -687,7 +1105,7 @@ async function findBackendNodeIdByRoleName(
       continue;
     }
     if (
-      extractAxString(node.role) !== role ||
+      normalizeRole(extractAxString(node.role)) !== normalizeRole(role) ||
       extractAxString(node.name) !== name
     ) {
       continue;
@@ -720,7 +1138,7 @@ async function findUniqueBackendNodeIdByRoleName(cdp, sessionId, role, name) {
       continue;
     }
     if (
-      extractAxString(node.role) === role &&
+      normalizeRole(extractAxString(node.role)) === normalizeRole(role) &&
       extractAxString(node.name) === name
     ) {
       matches.push(node);
@@ -801,6 +1219,91 @@ function buildLocatorFindJs(locator) {
     return `(() => ${textElementsJs(locator)}[0] || null)()`;
   }
   return `(() => ${hrefElementsJs(locator.href)}[0] || null)()`;
+}
+
+function buildLocatorActionableFindJs(
+  locator,
+  actionability: ElementActionability,
+) {
+  return `(() => ${buildActionableElementsJs(buildLocatorElementsJs(locator), actionability)}[0] || null)()`;
+}
+
+function buildLocatorActionableCountJs(
+  locator,
+  actionability: ElementActionability,
+) {
+  return `(() => ${buildActionableElementsJs(buildLocatorElementsJs(locator), actionability)}.length)()`;
+}
+
+function buildActionableElementsJs(
+  elementsExpression,
+  actionability: ElementActionability,
+) {
+  return `(() => {
+            ${actionability === "pointer" ? HIT_TARGET_HELPERS : ""}
+            const __egoActionableMatches = Array.from(${elementsExpression} || []).filter((element) => {
+              if (!element?.isConnected || element.closest?.("[hidden], [inert]")) return false;
+              const view = element.ownerDocument?.defaultView;
+              if (!view) return false;
+              const rect = element.getBoundingClientRect();
+              const style = view.getComputedStyle(element);
+              const visible = rect.width > 0 && rect.height > 0 &&
+                style.display !== "none" &&
+                style.visibility !== "hidden" &&
+                !element.matches?.(":disabled") &&
+                element.getAttribute?.("aria-disabled") !== "true";
+              if (!visible) return false;
+              if (${JSON.stringify(actionability)} !== "pointer") return true;
+              const point = { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+              const offscreen = point.x < 0 || point.y < 0 ||
+                point.x >= view.innerWidth || point.y >= view.innerHeight;
+              return offscreen || !interceptingElementAtPoint(element, point);
+            });
+            return __egoActionableMatches;
+          })()`;
+}
+
+async function firstActionabilityBlocker(
+  cdp,
+  contexts,
+  elementsExpression,
+  actionability: ElementActionability,
+): Promise<string | undefined> {
+  if (actionability !== "pointer") return undefined;
+  for (const context of contexts) {
+    try {
+      const result = await evaluateInContext(
+        cdp,
+        context,
+        `(() => {
+          ${HIT_TARGET_HELPERS}
+          for (const element of Array.from(${elementsExpression} || [])) {
+            if (!element?.isConnected || element.closest?.("[hidden], [inert]")) continue;
+            const view = element.ownerDocument?.defaultView;
+            const rect = element.getBoundingClientRect();
+            const style = view?.getComputedStyle(element);
+            if (!view || rect.width <= 0 || rect.height <= 0 ||
+                style.display === "none" || style.visibility === "hidden" ||
+                element.matches?.(":disabled") ||
+                element.getAttribute?.("aria-disabled") === "true") continue;
+            const point = { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+            if (point.x < 0 || point.y < 0 ||
+                point.x >= view.innerWidth || point.y >= view.innerHeight) continue;
+            const interceptor = interceptingElementAtPoint(element, point);
+            if (interceptor) {
+              return describeHitTarget(interceptor) + " intercepts pointer events";
+            }
+          }
+          return null;
+        })()`,
+        true,
+      );
+      if (typeof result.result?.value === "string") return result.result.value;
+    } catch {
+      // Keep the original actionability error when diagnostics fail.
+    }
+  }
+  return undefined;
 }
 
 function buildLocatorCountJs(locator) {
@@ -1052,7 +1555,7 @@ function parseLocator(input) {
   if (roleMatch) {
     return {
       kind: "role",
-      role: roleMatch[1],
+      role: normalizeRole(roleMatch[1]),
       name: parseLocatorName(roleMatch[2]),
       raw: value,
     };
@@ -1079,6 +1582,16 @@ function normalizeText(value) {
   return String(value ?? "")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function normalizeRole(value) {
+  const role = String(value || "").toLowerCase();
+  return (
+    {
+      listboxoption: "option",
+      textfield: "textbox",
+    }[role] || role
+  );
 }
 
 function boxModelCenter(model: any = {}) {

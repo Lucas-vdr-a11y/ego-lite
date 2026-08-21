@@ -1,9 +1,7 @@
 export function pageKeyboardInterfaceCase() {
   return `
     const task = await taskSpace(taskName);
-    const page = await task.openPage(baseUrl + "/?workflow=page-keyboard-interface", {
-      as: "page-keyboard-interface",
-    });
+    const page = await newPageAt(task, baseUrl + "/?workflow=page-keyboard-interface");
 
     await page.evaluate(() => {
       const input = document.querySelector("#text-area");

@@ -1,3 +1,6 @@
+import { mkdir, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
+
 import {
   browserCdp,
   browserEgo,
@@ -33,6 +36,7 @@ import {
   mouseButtonInPage,
   mouseButtonMask,
   moveMouseInPage,
+  selectOptionInPage,
   wheelInPage,
   type MouseButton,
   type PageClickOptions,
@@ -78,6 +82,7 @@ import {
   type PageOrigin,
 } from "./page-ledger.js";
 import { PageRefRegistry } from "./page-ref-registry.js";
+import { preparePageSnapshotResult } from "./snapshot-result.js";
 import {
   clearSpacePageNotices,
   forgetPageNotice,
@@ -110,11 +115,6 @@ function isRetryableElementStateError(
     !error.message.startsWith("Unknown ref:")
   );
 }
-
-type OpenPageOptions = {
-  as?: string;
-  timeout?: number;
-};
 
 type AdoptPageOptions = {
   as?: string;
@@ -161,6 +161,7 @@ type PageWaitForFunctionOptions = {
 
 export type PageFetchOptions = {
   timeout?: number;
+  saveAs?: string;
   method?: string;
   headers?: Record<string, string>;
   body?: string;
@@ -186,14 +187,18 @@ export type PageFetchResponse = {
   statusText: string;
   url: string;
   headers: Record<string, string>;
-  body: string;
+  body?: string;
+  savedPath?: string;
 };
 
 type PageFetchPayload = {
   url: string;
   options: Record<string, unknown>;
   timeoutMs: number;
+  responseType: "text" | "base64";
 };
+
+type PageFetchResult = PageFetchResponse & { bodyBase64?: string };
 
 type PageTarget = {
   spaceId: number;
@@ -531,12 +536,12 @@ const baseDefaultServices: Omit<PageModelServices, "ledger" | "pageBudget"> = {
   gate: defaultGate,
   pageRefs: defaultPageRefs,
   async createTab(url) {
-    const result = await invokeEgo("task.openPage", () =>
+    const result = await invokeEgo("task.newPage", () =>
       browserEgo().createTab(url),
     );
     const targetId = result?.targetId || result?.result?.targetId;
     if (typeof targetId !== "string" || targetId.length === 0) {
-      throw new Error("task.openPage returned no targetId");
+      throw new Error("task.newPage returned no targetId");
     }
     return targetId;
   },
@@ -907,35 +912,30 @@ class TaskSpace {
     });
   }
 
-  async openPage(
-    url = "about:blank",
-    options: OpenPageOptions = {},
-  ): Promise<Page> {
-    assertUrl(url);
-    validatePublicApiOptions("TaskSpace.openPage", options);
-    const timeoutMs = options.timeout ?? 15_000;
+  async newPage(...args: unknown[]): Promise<Page> {
+    if (args.length > 0) {
+      throw new TypeError("task.newPage does not accept arguments");
+    }
     return this.#services.gate.withSpace(this.id, async () => {
       const { ledger, tabs } = await this.#reconcilePages();
       const managedCount = Object.keys(ledger.pages).length;
       if (managedCount >= this.#services.pageBudget) {
         throw pageBudgetError(this, this.#services.pageBudget, ledger, tabs);
       }
-      const creationStartedAtMs = this.#services.now();
-      const targetId = await this.#services.createTab(url);
+      const targetId = await this.#services.createTab("about:blank");
       this.#services.setPreferredTarget(targetId);
       const existingManaged = Object.entries(ledger.pages).find(
         ([, page]) => page.targetId === targetId,
       );
       if (existingManaged) {
         throw new Error(
-          `task.openPage did not create a distinct tab; target ${targetId} is already page ${existingManaged[0]}`,
+          `task.newPage did not create a distinct tab; target ${targetId} is already page ${existingManaged[0]}`,
         );
       }
       const existedBeforeCreate = tabs.some((tab) => tab.targetId === targetId);
       let entry: ManagedPage;
       try {
         entry = await this.#services.ledger.addPage(this.id, targetId, {
-          as: options.as,
           openedBy: "agent",
         });
       } catch (error) {
@@ -951,23 +951,8 @@ class TaskSpace {
         }
         throw error;
       }
-      const page = new Page(this, entry.label, this.#services, entry);
-      try {
-        const sessionId = await this.#services.ensureSession(targetId);
-        await waitForCreatedDocument(
-          this.#services,
-          sessionId,
-          url,
-          creationStartedAtMs,
-          timeoutMs,
-        );
-      } catch (error) {
-        throw new Error(
-          `page ${entry.label} was created but did not finish loading; retrieve it with task.page('${entry.label}'): ${error?.message || error}`,
-          { cause: error },
-        );
-      }
-      return page;
+      await this.#services.ensureSession(targetId);
+      return new Page(this, entry.label, this.#services, entry);
     });
   }
 
@@ -1282,7 +1267,7 @@ class Page {
   async snapshot(options: PageSnapshotOptions = {}): Promise<string> {
     validatePublicApiOptions("Page.snapshot", options);
     const page = await this.#resolve();
-    return this.#services.gate.withPage(page, async () => {
+    return this.#services.gate.withPage(page, async ({ sessionId }) => {
       await this.#activate(page.targetId);
       const result = await this.#services.snapshot({
         ...options,
@@ -1290,6 +1275,16 @@ class Page {
         includeActionMarks: options.includeActionMarks ?? true,
         includeStableLocator: options.includeStableLocator ?? true,
       });
+      const iframeSessions =
+        Array.isArray(result?.refs) && result.refs.length > 0
+          ? await this.#services.ensureFrameSessions(page.targetId)
+          : new Map<string, string>();
+      await preparePageSnapshotResult(
+        this.#services,
+        sessionId,
+        iframeSessions,
+        result,
+      );
       this.#services.pageRefs.replace(page.targetId, result?.refs || []);
       const content = result?.content || "";
       const header = await this.#snapshotHeader(page);
@@ -1484,11 +1479,11 @@ class Page {
     options: PageFetchOptions = {},
   ): Promise<PageFetchResponse> {
     assertUrl(url);
-    const payload = pageFetchPayload(url, options);
+    const { payload, saveAs } = pageFetchPayload(url, options);
     const page = await this.#resolve();
     return this.#services.gate.withPage(page, async ({ sessionId }) => {
       await this.#activate(page.targetId);
-      return evaluateInSession<PageFetchResponse>(
+      const response = await evaluateInSession<PageFetchResult>(
         this.#services,
         sessionId,
         fetchInPage,
@@ -1496,6 +1491,14 @@ class Page {
         payload,
         payload.timeoutMs + 1_000,
       );
+      if (!saveAs) return response;
+      if (typeof response.bodyBase64 !== "string") {
+        throw new Error("page.fetch received no binary response body");
+      }
+      await mkdir(dirname(saveAs), { recursive: true });
+      await writeFile(saveAs, Buffer.from(response.bodyBase64, "base64"));
+      const { bodyBase64: _bodyBase64, ...metadata } = response;
+      return { ...metadata, savedPath: saveAs };
     });
   }
 
@@ -1537,7 +1540,7 @@ class Page {
     const page = await this.#resolve();
     return this.#services.gate.withPage(page, async ({ sessionId }) => {
       await this.#activate(page.targetId);
-      const refMap = await this.#refMapForAction(page, selector);
+      const refMap = await this.#refMapForAction(page, sessionId, selector);
       const iframeSessions = await this.#services.ensureFrameSessions(
         page.targetId,
       );
@@ -1711,6 +1714,58 @@ class Page {
     );
   }
 
+  async selectOption(
+    selector: string,
+    valueOrValues: string | string[],
+    options: { timeout?: number } = {},
+  ): Promise<string[]> {
+    validatePublicApiOptions("Page.selectOption", options);
+    const values =
+      typeof valueOrValues === "string" ? [valueOrValues] : valueOrValues;
+    if (
+      !Array.isArray(values) ||
+      values.length === 0 ||
+      values.some((value) => typeof value !== "string")
+    ) {
+      throw new TypeError(
+        "page.selectOption valueOrValues must be a string or a non-empty string array",
+      );
+    }
+    const timeoutMs = options.timeout ?? DEFAULT_PAGE_ACTION_TIMEOUT_MS;
+    const page = await this.#resolve();
+    return this.#runInputBoundary(page, async (sessionId) => {
+      const deadline = this.#services.now() + timeoutMs;
+      while (true) {
+        try {
+          const refMap = await this.#refMapForAction(page, sessionId, selector);
+          const iframeSessions = await this.#services.ensureFrameSessions(
+            page.targetId,
+          );
+          return await selectOptionInPage(
+            this.#services,
+            sessionId,
+            refMap,
+            selector,
+            values,
+            iframeSessions,
+          );
+        } catch (error) {
+          if (!isRetryableElementStateError(error)) throw error;
+          const remainingMs = deadline - this.#services.now();
+          if (remainingMs <= 0) {
+            throw new ElementResolutionError(
+              `page.selectOption timed out after ${timeoutMs}ms: ${error.message}`,
+              "transient",
+            );
+          }
+          await this.#services.sleep(
+            Math.min(PAGE_ACTION_RESOLUTION_RETRY_MS, remainingMs),
+          );
+        }
+      }
+    });
+  }
+
   async focus(
     selector: string,
     options: { timeout?: number } = {},
@@ -1815,36 +1870,6 @@ class Page {
         }
       }
     })();
-  }
-
-  async scrollBy(
-    deltaY: number,
-    options: { deltaX?: number; behavior?: ScrollBehavior } = {},
-  ): Promise<{ x: number; y: number }> {
-    validatePublicApiOptions("Page.scrollBy", options);
-    if (!Number.isFinite(deltaY)) {
-      throw new TypeError("page.scrollBy requires a finite deltaY");
-    }
-    return this.#runValueAction((sessionId) =>
-      evaluateInSession<{ x: number; y: number }>(
-        this.#services,
-        sessionId,
-        function (input) {
-          window.scrollBy({
-            left: input.deltaX,
-            top: input.deltaY,
-            behavior: input.behavior,
-          });
-          return { x: window.scrollX, y: window.scrollY };
-        },
-        true,
-        {
-          deltaX: options.deltaX ?? 0,
-          deltaY,
-          behavior: options.behavior ?? "auto",
-        },
-      ),
-    );
   }
 
   async close(): Promise<void> {
@@ -1965,7 +1990,11 @@ class Page {
         const deadline = this.#services.now() + timeoutMs;
         while (true) {
           try {
-            const refMap = await this.#refMapForAction(page, ...selectors);
+            const refMap = await this.#refMapForAction(
+              page,
+              sessionId,
+              ...selectors,
+            );
             const iframeSessions = await this.#services.ensureFrameSessions(
               page.targetId,
             );
@@ -2004,13 +2033,6 @@ class Page {
       if (isPageDialogOpenedError(error)) return;
       throw error;
     }
-  }
-
-  async #runValueAction<T>(
-    operation: (sessionId: string) => Promise<T>,
-  ): Promise<T> {
-    const page = await this.#resolve();
-    return this.#runInputBoundary(page, operation);
   }
 
   async #runObservedAction(
@@ -2121,6 +2143,7 @@ class Page {
 
   async #refMapForAction(
     page: PageTarget,
+    sessionId: string,
     ...selectors: string[]
   ): Promise<RefMap> {
     let refs = this.#services.pageRefs.forTarget(page.targetId);
@@ -2135,6 +2158,16 @@ class Page {
       includeActionMarks: true,
       includeStableLocator: true,
     });
+    const iframeSessions =
+      Array.isArray(result?.refs) && result.refs.length > 0
+        ? await this.#services.ensureFrameSessions(page.targetId)
+        : new Map<string, string>();
+    await preparePageSnapshotResult(
+      this.#services,
+      sessionId,
+      iframeSessions,
+      result,
+    );
     refs = this.#services.pageRefs.replace(page.targetId, result?.refs || []);
     return refs;
   }
@@ -2356,16 +2389,20 @@ function serializeJsonValue(value: unknown, message: string): unknown {
 function pageFetchPayload(
   url: string,
   options: PageFetchOptions,
-): PageFetchPayload {
+): { payload: PageFetchPayload; saveAs?: string } {
   validatePublicApiOptions("Page.fetch", options);
-  const { timeout = 20_000, ...requestOptions } = options;
+  const { timeout = 20_000, saveAs, ...requestOptions } = options;
   return {
-    url,
-    options: serializeJsonValue(
-      requestOptions,
-      "page.fetch options must be JSON-serializable",
-    ) as Record<string, unknown>,
-    timeoutMs: timeout,
+    payload: {
+      url,
+      options: serializeJsonValue(
+        requestOptions,
+        "page.fetch options must be JSON-serializable",
+      ) as Record<string, unknown>,
+      timeoutMs: timeout,
+      responseType: saveAs ? "base64" : "text",
+    },
+    ...(saveAs ? { saveAs } : {}),
   };
 }
 
@@ -2373,6 +2410,7 @@ async function fetchInPage({
   url,
   options,
   timeoutMs,
+  responseType,
 }: PageFetchPayload): Promise<PageFetchResponse> {
   const controller = new AbortController();
   const timer = window.setTimeout(() => controller.abort(), timeoutMs);
@@ -2385,14 +2423,22 @@ async function fetchInPage({
     response.headers.forEach((value, key) => {
       headers[key] = value;
     });
-    return {
+    const metadata = {
       ok: response.ok,
       status: response.status,
       statusText: response.statusText,
       url: response.url,
       headers,
-      body: await response.text(),
     };
+    if (responseType === "text") {
+      return { ...metadata, body: await response.text() };
+    }
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    let binary = "";
+    for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+      binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+    }
+    return { ...metadata, bodyBase64: btoa(binary) } as PageFetchResult;
   } catch (error) {
     if (controller.signal.aborted) {
       throw new Error(`page.fetch timed out after ${timeoutMs}ms`);
@@ -2401,71 +2447,6 @@ async function fetchInPage({
   } finally {
     window.clearTimeout(timer);
   }
-}
-
-async function waitForCreatedDocument(
-  services: PageModelServices,
-  sessionId: string,
-  requestedUrl: string,
-  creationStartedAtMs: number,
-  timeoutMs: number,
-): Promise<void> {
-  const deadline = services.now() + timeoutMs;
-  while (services.now() <= deadline) {
-    const remaining = Math.max(1, deadline - services.now());
-    const response = await services.cdp(
-      "Runtime.evaluate",
-      {
-        // createTab() can return while the target still exposes an already
-        // complete Chrome placeholder document. Read all three values in one
-        // evaluation so openPage resolves only after the requested navigation
-        // has committed a document created during this call.
-        expression:
-          "({readyState:document.readyState,url:location.href,timeOrigin:performance.timeOrigin})",
-        returnByValue: true,
-      },
-      sessionId,
-      Math.min(1_000, remaining),
-    );
-    const observation = response?.result?.value;
-    if (
-      isCreatedDocumentReady(observation, requestedUrl, creationStartedAtMs)
-    ) {
-      return;
-    }
-    await services.sleep(Math.min(100, remaining));
-  }
-  throw new Error(`task.openPage timed out after ${timeoutMs}ms`);
-}
-
-function isCreatedDocumentReady(
-  observation: any,
-  requestedUrl: string,
-  creationStartedAtMs: number,
-): boolean {
-  if (
-    observation?.readyState !== "complete" ||
-    typeof observation?.url !== "string" ||
-    typeof observation?.timeOrigin !== "number" ||
-    observation.timeOrigin < creationStartedAtMs
-  ) {
-    return false;
-  }
-
-  if (isBrowserPlaceholderUrl(requestedUrl)) {
-    return observation.url === requestedUrl;
-  }
-  return !isBrowserPlaceholderUrl(observation.url);
-}
-
-function isBrowserPlaceholderUrl(url: string): boolean {
-  return (
-    url === "" ||
-    url === ":" ||
-    url === "about:blank" ||
-    url === "chrome://newtab/" ||
-    url === "chrome://new-tab-page/"
-  );
 }
 
 function assertUrl(url: string): void {

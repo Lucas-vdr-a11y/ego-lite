@@ -19,7 +19,8 @@ The build emits a single ESM file `dist/out/index.js`. The ego-browser browser d
 ```bash
 ego-browser nodejs <<'EOF'
 const task = await taskSpace('demo')
-const page = await task.openPage('https://example.com', { as: 'main' })
+const page = await task.newPage()
+await page.goto('https://example.com')
 console.log(await page.snapshot())
 EOF
 ```
@@ -90,6 +91,15 @@ existing scripts.
 
 - The browser runtime owns tabs, task spaces, CDP transport, snapshots, and event delivery. This package keeps only agent-facing ergonomics.
 - Snapshot helpers use the browser runtime contract: `ego.snapshot({ scope, includeActionMarks, includeStableLocator })`.
+- Page selectors search the top document first. Input actions search frames
+  when the top document has no actionable match, then require one actionable
+  frame match.
+- Pointer actions require a real hit target. DOM-backed actions such as
+  `selectOption()` require a rendered, enabled control but may operate on an
+  opacity-zero native control used by a custom widget.
+- `fill()` verifies that editing took effect, not that application formatting
+  preserved the requested string byte-for-byte. Business postconditions remain
+  explicit Page reads or waits.
 - New public APIs must be added to `public-api-schema.ts`; runtime validation,
   default `help()`, the generated reference, and the Skill must remain aligned.
 - Embedded hosts should await the exported `disposeEgoSdk()` hook before

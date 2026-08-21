@@ -290,6 +290,107 @@ test("ambiguous raw CSS selectors fail instead of choosing the first match", asy
   );
 });
 
+test("action resolution uses the sole usable CSS match", async () => {
+  const cdp = new FakeCDP(async (method, params) => {
+    if (method !== "Runtime.evaluate") return {};
+    if (params.expression.includes("__egoActionableMatches")) {
+      return params.returnByValue
+        ? { result: { value: 1 } }
+        : { result: { objectId: "visible-button" } };
+    }
+    return { result: { value: 2 } };
+  });
+
+  assert.deepEqual(
+    await resolveElementObjectId(
+      cdp,
+      "session:page",
+      new RefMap(),
+      "button.save",
+      new Map(),
+      { strict: true, actionability: "visible" },
+    ),
+    { objectId: "visible-button", sessionId: "session:page" },
+  );
+});
+
+test("action resolution prefers a sole actionable Page match over iframe matches", async () => {
+  const cdp = new FakeCDP(async (method, params, sessionId) => {
+    if (method !== "Runtime.evaluate") return {};
+    if (params.expression.includes("__egoActionableMatches")) {
+      return params.returnByValue
+        ? { result: { value: 1 } }
+        : { result: { objectId: `button:${sessionId}` } };
+    }
+    return { result: { value: 1 } };
+  });
+
+  assert.deepEqual(
+    await resolveElementObjectId(
+      cdp,
+      "session:page",
+      new RefMap(),
+      "button.save",
+      new Map([["frame-child", "session:frame-child"]]),
+      { strict: true, actionability: "pointer" },
+    ),
+    { objectId: "button:session:page", sessionId: "session:page" },
+  );
+});
+
+test("pointer action resolution skips a covered Page match for a frame match", async () => {
+  const cdp = new FakeCDP(async (method, params, sessionId) => {
+    if (method !== "Runtime.evaluate") return {};
+    if (params.expression.includes("__egoActionableMatches")) {
+      assert.match(params.expression, /elementsFromPoint/);
+      if (params.returnByValue) {
+        return {
+          result: { value: sessionId === "session:frame-child" ? 1 : 0 },
+        };
+      }
+      return { result: { objectId: "frame-button" } };
+    }
+    return { result: { value: 1 } };
+  });
+
+  assert.deepEqual(
+    await resolveElementObjectId(
+      cdp,
+      "session:page",
+      new RefMap(),
+      "button.move",
+      new Map([["frame-child", "session:frame-child"]]),
+      { strict: true, actionability: "pointer" },
+    ),
+    { objectId: "frame-button", sessionId: "session:frame-child" },
+  );
+});
+
+test("visible action resolution permits opacity-zero native controls", async () => {
+  const cdp = new FakeCDP(async (method, params) => {
+    if (method !== "Runtime.evaluate") return {};
+    if (params.expression.includes("__egoActionableMatches")) {
+      assert.doesNotMatch(params.expression, /style\.opacity/);
+      return params.returnByValue
+        ? { result: { value: 1 } }
+        : { result: { objectId: "transparent-select" } };
+    }
+    return { result: { value: 1 } };
+  });
+
+  assert.deepEqual(
+    await resolveElementObjectId(
+      cdp,
+      "session:page",
+      new RefMap(),
+      "select.sort",
+      new Map(),
+      { strict: true, actionability: "visible" },
+    ),
+    { objectId: "transparent-select", sessionId: "session:page" },
+  );
+});
+
 test("ambiguous raw XPath selectors fail instead of choosing the first match", async () => {
   const cdp = new FakeCDP(async (method, params) => {
     if (method === "Runtime.evaluate") {
@@ -358,7 +459,114 @@ test("semantic locators search cross-process iframe sessions", async () => {
   });
 });
 
-test("a Page document match wins before iframe fallback", async () => {
+test("text locators search same-process iframe execution contexts", async () => {
+  const cdp = new FakeCDP(async (method, params, sessionId) => {
+    assert.equal(sessionId, "session:page");
+    if (method === "Page.createIsolatedWorld") {
+      assert.equal(params.frameId, "frame-child");
+      return { executionContextId: 77 };
+    }
+    if (method === "Runtime.evaluate") {
+      const inFrame = params.contextId === 77;
+      if (params.returnByValue) {
+        return { result: { value: inFrame ? 1 : 0 } };
+      }
+      return {
+        result: inFrame
+          ? { objectId: "same-process-upload" }
+          : { type: "undefined" },
+      };
+    }
+    return {};
+  });
+
+  assert.deepEqual(
+    await resolveElementObjectId(
+      cdp,
+      "session:page",
+      new RefMap(),
+      'text="Upload"',
+      new Map([["frame-child", "session:page"]]),
+      { strict: true },
+    ),
+    {
+      objectId: "same-process-upload",
+      sessionId: "session:page",
+      frameId: "frame-child",
+    },
+  );
+});
+
+test("snapshot role aliases resolve against standard accessibility roles", async () => {
+  const cdp = new FakeCDP(async (method) => {
+    if (method === "Accessibility.getFullAXTree") {
+      return {
+        nodes: [
+          {
+            role: { value: "option" },
+            name: { value: "Upload" },
+            backendDOMNodeId: 201,
+          },
+        ],
+      };
+    }
+    if (method === "DOM.resolveNode") {
+      return { object: { objectId: "upload-option" } };
+    }
+    return {};
+  });
+
+  assert.deepEqual(
+    await resolveElementObjectId(
+      cdp,
+      "session:page",
+      new RefMap(),
+      'loc=role:listboxoption[name="Upload"]',
+    ),
+    { objectId: "upload-option", sessionId: "session:page" },
+  );
+});
+
+test("same-process frame role matches keep their frame provenance", async () => {
+  const cdp = new FakeCDP(async (method, params) => {
+    if (method === "Accessibility.getFullAXTree") {
+      return {
+        nodes: [
+          {
+            role: { value: "option" },
+            name: { value: "Upload" },
+            backendDOMNodeId: 201,
+          },
+        ],
+      };
+    }
+    if (method === "DOM.resolveNode") {
+      return { object: { objectId: "upload-option" } };
+    }
+    if (method === "Runtime.callFunctionOn") {
+      return { result: { value: { actionable: true } } };
+    }
+    return {};
+  });
+
+  assert.deepEqual(
+    await resolveElementObjectId(
+      cdp,
+      "session:page",
+      new RefMap(),
+      'loc=role:listboxoption[name="Upload"]',
+      new Map([["frame-child", "session:page"]]),
+      { actionability: "pointer" },
+    ),
+    {
+      objectId: "upload-option",
+      sessionId: "session:page",
+      frameId: "frame-child",
+    },
+  );
+});
+
+test("a unique interactable frame role wins over a blocked Page duplicate", async () => {
   const cdp = new FakeCDP(async (method, _params, sessionId) => {
     if (method === "Accessibility.getFullAXTree") {
       return {
@@ -374,6 +582,10 @@ test("a Page document match wins before iframe fallback", async () => {
     if (method === "DOM.resolveNode") {
       return { object: { objectId: `node:${sessionId}` } };
     }
+    if (method === "Runtime.callFunctionOn") {
+      assert.match(_params.functionDeclaration, /elementsFromPoint/);
+      return { result: { value: sessionId === "session:frame-child" } };
+    }
     return {};
   });
 
@@ -384,7 +596,78 @@ test("a Page document match wins before iframe fallback", async () => {
       new RefMap(),
       'loc=role:button[name="Duplicate"]',
       new Map([["frame-child", "session:frame-child"]]),
+      { actionability: "pointer" },
+    ),
+    { objectId: "node:session:frame-child", sessionId: "session:frame-child" },
+  );
+});
+
+test("role actions prefer the actionable Page match over a frame match", async () => {
+  const cdp = new FakeCDP(async (method, _params, sessionId) => {
+    if (method === "Accessibility.getFullAXTree") {
+      return {
+        nodes: [
+          {
+            role: { value: "button" },
+            name: { value: "Duplicate" },
+            backendDOMNodeId: sessionId === "session:page" ? 1 : 2,
+          },
+        ],
+      };
+    }
+    if (method === "DOM.resolveNode") {
+      return { object: { objectId: `node:${sessionId}` } };
+    }
+    if (method === "Runtime.callFunctionOn") {
+      return { result: { value: true } };
+    }
+    return {};
+  });
+
+  assert.deepEqual(
+    await resolveElementObjectId(
+      cdp,
+      "session:page",
+      new RefMap(),
+      'loc=role:button[name="Duplicate"]',
+      new Map([["frame-child", "session:frame-child"]]),
+      { actionability: "pointer" },
     ),
     { objectId: "node:session:page", sessionId: "session:page" },
+  );
+});
+
+test("strict global role validation rejects a hidden duplicate", async () => {
+  const cdp = new FakeCDP(async (method, _params, sessionId) => {
+    if (method === "Accessibility.getFullAXTree") {
+      return {
+        nodes: [
+          {
+            role: { value: "textbox" },
+            name: { value: "Prompt" },
+            backendDOMNodeId: sessionId === "session:page" ? 1 : 2,
+          },
+        ],
+      };
+    }
+    return {};
+  });
+
+  await assert.rejects(
+    () =>
+      resolveElementObjectId(
+        cdp,
+        "session:page",
+        new RefMap(),
+        'loc=role:textbox[name="Prompt"]',
+        new Map([["frame-child", "session:frame-child"]]),
+        { strictGlobal: true },
+      ),
+    (error) => {
+      assert.ok(error instanceof ElementResolutionError);
+      assert.equal(error.kind, "permanent");
+      assert.match(error.message, /matched 2 elements/);
+      return true;
+    },
   );
 });

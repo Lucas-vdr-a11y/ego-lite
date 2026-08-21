@@ -5,8 +5,8 @@ import {
 } from "../element-resolver.js";
 import { RefMap } from "../ref-map.js";
 import {
-  COMPOSED_PARENT_HELPER,
   EDIT_ACTION_TARGET_HELPERS,
+  HIT_TARGET_HELPERS,
 } from "./action-target.js";
 
 type PageActionServices = {
@@ -36,6 +36,104 @@ export type PageFillOptions = {
   clearFirst?: boolean;
   timeout?: number;
 };
+
+/** Select option values from one visible, enabled select element. */
+export async function selectOptionInPage(
+  services: PageActionServices,
+  sessionId: string,
+  refMap: RefMap,
+  selector: string,
+  values: string[],
+  iframeSessions = new Map<string, string>(),
+): Promise<string[]> {
+  assertPageSelector(selector);
+  const resolved = await resolveElementObjectId(
+    cdpAdapter(services),
+    sessionId,
+    refMap,
+    selector,
+    iframeSessions,
+    { strict: true, actionability: "visible" },
+  );
+  const source = `function selectOptionsForAction(values) {
+    ${EDIT_ACTION_TARGET_HELPERS}
+    let select = String(this.tagName || "").toUpperCase() === "SELECT"
+      ? this
+      : null;
+    if (!select && this.control?.tagName === "SELECT") select = this.control;
+    if (!select) {
+      const candidates = composedDescendantMatches(
+        this,
+        (element) => String(element.tagName || "").toUpperCase() === "SELECT",
+        true,
+      );
+      if (candidates.length > 1) {
+        return { error: "element contains multiple select controls" };
+      }
+      select = candidates[0] || null;
+    }
+    if (!select) return { error: "element is not a select control" };
+    if (!select.isConnected) return { error: "element is not connected" };
+    const view = select.ownerDocument.defaultView;
+    const rect = select.getBoundingClientRect();
+    const style = view?.getComputedStyle(select);
+    if (
+      !view || rect.width <= 0 || rect.height <= 0 ||
+      style?.display === "none" || style?.visibility === "hidden"
+    ) return { error: "element is not visible" };
+    if (select.disabled) return { error: "element is disabled" };
+    if (!select.multiple && values.length > 1) {
+      return { error: "multiple values require a multiple select" };
+    }
+    const options = Array.from(select.options);
+    const selected = [];
+    const selectedOptions = [];
+    for (const value of values) {
+      const option = options.find((candidate) => candidate.value === value);
+      if (!option) return { error: 'option value "' + value + '" was not found' };
+      if (option.disabled) return { error: 'option value "' + value + '" is disabled' };
+      selectedOptions.push(option);
+    }
+    for (const option of options) option.selected = selectedOptions.includes(option);
+    for (const option of select.selectedOptions) selected.push(option.value);
+    select.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    return { selected };
+  }`;
+  try {
+    const response = await services.cdp(
+      "Runtime.callFunctionOn",
+      {
+        functionDeclaration: source,
+        objectId: resolved.objectId,
+        arguments: [{ value: values }],
+        returnByValue: true,
+        awaitPromise: false,
+      },
+      resolved.sessionId,
+    );
+    const result = runtimeValue(response, source);
+    if (typeof result?.error === "string") {
+      const transient = new Set([
+        "element is not connected",
+        "element is not visible",
+        "element is disabled",
+      ]);
+      throw transient.has(result.error)
+        ? new ElementResolutionError(
+            `page.selectOption failed: ${result.error}`,
+            "transient",
+          )
+        : new Error(`page.selectOption failed: ${result.error}`);
+    }
+    if (!Array.isArray(result?.selected)) {
+      throw new Error("page.selectOption received an invalid selection result");
+    }
+    return result.selected;
+  } finally {
+    await releaseObject(services, resolved.sessionId, resolved.objectId);
+  }
+}
 
 export type PageHoverOptions = {
   position?: { x: number; y: number };
@@ -75,6 +173,12 @@ type MouseMoveState = PageMouseMoveOptions & {
 const INPUT_EVENT_DELAY_MS = 25;
 const FILL_VERIFICATION_ATTEMPTS = 5;
 const FILL_VERIFICATION_INTERVAL_MS = 50;
+type FillOutcome =
+  | "exact"
+  | "equivalent"
+  | "transformed"
+  | "appended"
+  | "unchanged";
 
 /** Click an element through one explicit target session and Page ref map. */
 export async function clickInPage(
@@ -95,7 +199,7 @@ export async function clickInPage(
     refMap,
     selector,
     iframeSessions,
-    { strict: true },
+    { strict: true, actionability: "pointer" },
   );
   try {
     let point = await resolveElementPoint(
@@ -206,7 +310,7 @@ export async function fillInPage(
     refMap,
     selector,
     iframeSessions,
-    { strict: true },
+    { strict: true, actionability: "visible" },
   );
   let actionObjectId: string | undefined;
   try {
@@ -229,6 +333,9 @@ export async function fillInPage(
         return { x: (left + right) / 2, y: (top + bottom) / 2 };
       };
       const tag = this.nodeName.toLowerCase();
+      const observed = tag === "input" || tag === "textarea"
+        ? this.value
+        : (this.innerText ?? this.textContent ?? "");
       const view = this.ownerDocument.defaultView;
       const rect = this.getBoundingClientRect();
       const style = view?.getComputedStyle(this);
@@ -265,7 +372,13 @@ export async function fillInPage(
       this.focus();
       const cursorPoint = visibleCursorPoint();
       const kind = this.isContentEditable ? "contenteditable" : tag;
-      if (!clearFirst) return { status: "needsinput", kind, cursorPoint };
+      const details = {
+        status: "needsinput",
+        kind,
+        cursorPoint,
+        before: String(observed)
+      };
+      if (!clearFirst) return details;
       if (tag === "input" || tag === "textarea") {
         this.select();
       } else {
@@ -275,7 +388,7 @@ export async function fillInPage(
         selection?.removeAllRanges();
         selection?.addRange(range);
       }
-      return { status: "needsinput", kind, cursorPoint };
+      return details;
     }`;
     const prepare = async () => {
       const preparation = await services.cdp(
@@ -311,22 +424,26 @@ export async function fillInPage(
     }
 
     await dispatchFillInput(services, resolved.sessionId, value, clearFirst);
-    if (
-      await verifyFilledValue(
-        services,
-        resolved.sessionId,
-        actionObjectId,
-        value,
-        clearFirst,
-      )
-    ) {
+    let outcome = await verifyFillOutcome(
+      services,
+      resolved.sessionId,
+      actionObjectId,
+      String(result?.before ?? ""),
+      value,
+      clearFirst,
+    );
+    if (fillOutcomeAccepted(outcome)) {
       return;
     }
 
-    if (result?.kind === "contenteditable") {
-      // Some editors do not install their internal editing state until they
-      // receive a real pointer activation. Retry only after proving that the
-      // ordinary fill had no observable effect, which avoids duplicate input.
+    if (
+      result?.kind === "contenteditable" ||
+      result?.kind === "input" ||
+      result?.kind === "textarea"
+    ) {
+      // Some controls append because their editing state is not installed
+      // until a real pointer activation. Retry only an unchanged or appended
+      // result so application formatting is never typed twice.
       await clickResolvedElement(
         services,
         resolved.sessionId,
@@ -341,15 +458,15 @@ export async function fillInPage(
         throw new Error("page.fill received an invalid preparation result");
       }
       await dispatchFillInput(services, resolved.sessionId, value, clearFirst);
-      if (
-        await verifyFilledValue(
-          services,
-          resolved.sessionId,
-          actionObjectId,
-          value,
-          clearFirst,
-        )
-      ) {
+      outcome = await verifyFillOutcome(
+        services,
+        resolved.sessionId,
+        actionObjectId,
+        String(result?.before ?? ""),
+        value,
+        clearFirst,
+      );
+      if (fillOutcomeAccepted(outcome)) {
         return;
       }
     }
@@ -427,7 +544,7 @@ export async function focusInPage(
     refMap,
     selector,
     iframeSessions,
-    { strict: true },
+    { strict: true, actionability: "visible" },
   );
   const source = `function focusElementForAction() {
     if (!this.isConnected) return { error: "element is not connected" };
@@ -557,36 +674,34 @@ async function dispatchFillInput(
   }
 }
 
-async function verifyFilledValue(
+async function verifyFillOutcome(
   services: PageActionServices,
   sessionId: string,
   objectId: string,
+  before: string,
   value: string,
   clearFirst: boolean,
-): Promise<boolean> {
-  const source = `function verifyFilledValue(value, clearFirst) {
+): Promise<FillOutcome> {
+  const source = `function readFilledValue() {
     if (!this.isConnected) return { error: "element is not connected" };
     const tag = this.nodeName.toLowerCase();
     const observed = tag === "input" || tag === "textarea"
       ? this.value
       : (this.innerText ?? this.textContent ?? "");
-    const normalize = (text) => String(text)
-      .replace(/\\r\\n?/g, "\\n")
-      .replace(/\\u200b/g, "");
-    const actual = normalize(observed);
-    const expected = normalize(value);
     return {
-      matches: clearFirst ? actual === expected : actual.includes(expected),
+      actual: String(observed),
+      type: tag === "input" ? this.type.toLowerCase() : ""
     };
   }`;
-  let consecutiveMatches = 0;
+  let prior;
+  let consecutiveReads = 0;
+  let lastOutcome: FillOutcome = "unchanged";
   for (let attempt = 0; attempt < FILL_VERIFICATION_ATTEMPTS; attempt += 1) {
     const response = await services.cdp(
       "Runtime.callFunctionOn",
       {
         functionDeclaration: source,
         objectId,
-        arguments: [{ value }, { value: clearFirst }],
         returnByValue: true,
         awaitPromise: false,
       },
@@ -598,17 +713,77 @@ async function verifyFilledValue(
       // could duplicate text on a replacement element.
       throw new Error(`page.fill could not verify the result: ${result.error}`);
     }
-    if (result?.matches === true) {
-      consecutiveMatches += 1;
-      if (consecutiveMatches === 2) return true;
+    const outcome = classifyFillOutcome(
+      before,
+      value,
+      String(result?.actual ?? ""),
+      clearFirst,
+      String(result?.type ?? ""),
+    );
+    lastOutcome = outcome;
+    const reading = `${outcome}\u0000${String(result?.actual ?? "")}`;
+    if (reading === prior) {
+      consecutiveReads += 1;
+      if (consecutiveReads === 2) return outcome;
     } else {
-      consecutiveMatches = 0;
+      prior = reading;
+      consecutiveReads = 1;
     }
     if (attempt + 1 < FILL_VERIFICATION_ATTEMPTS) {
       await services.sleep(FILL_VERIFICATION_INTERVAL_MS);
     }
   }
-  return false;
+  return lastOutcome;
+}
+
+function fillOutcomeAccepted(outcome: FillOutcome): boolean {
+  return (
+    outcome === "exact" || outcome === "equivalent" || outcome === "transformed"
+  );
+}
+
+function classifyFillOutcome(
+  beforeValue: string,
+  expectedValue: string,
+  actualValue: string,
+  clearFirst: boolean,
+  inputType: string,
+): FillOutcome {
+  const normalize = (text: string) =>
+    String(text)
+      .replace(/\r\n?/g, "\n")
+      .replace(/\u200b/g, "");
+  const before = normalize(beforeValue);
+  const expected = normalize(expectedValue);
+  const actual = normalize(actualValue);
+  if (clearFirst ? actual === expected : actual.includes(expected)) {
+    return "exact";
+  }
+  if (
+    inputType === "number" &&
+    expected.trim() !== "" &&
+    actual.trim() !== "" &&
+    Number(actual) === Number(expected)
+  ) {
+    return "equivalent";
+  }
+  const integerExpected = expected.normalize("NFKC").trim();
+  if (/^\d+$/.test(integerExpected)) {
+    const actualDigits = actual.normalize("NFKC").replace(/\D/g, "");
+    if (actualDigits === integerExpected) return "equivalent";
+    const beforeDigits = before.normalize("NFKC").replace(/\D/g, "");
+    if (
+      clearFirst &&
+      beforeDigits.length > 0 &&
+      actualDigits === beforeDigits + integerExpected
+    ) {
+      return "appended";
+    }
+  }
+  if (clearFirst && actual === before + expected && before.length > 0) {
+    return "appended";
+  }
+  return actual === before ? "unchanged" : "transformed";
 }
 
 async function clickResolvedElement(
@@ -723,7 +898,7 @@ export async function hoverInPage(
     refMap,
     selector,
     iframeSessions,
-    { strict: true },
+    { strict: true, actionability: "pointer" },
   );
   try {
     const point = await resolveElementPoint(
@@ -767,7 +942,7 @@ export async function dragAndDropInPage(
     refMap,
     sourceSelector,
     iframeSessions,
-    { strict: true },
+    { strict: true, actionability: "pointer" },
   );
   let target;
   try {
@@ -777,7 +952,7 @@ export async function dragAndDropInPage(
       refMap,
       targetSelector,
       iframeSessions,
-      { strict: true },
+      { strict: true, actionability: "pointer" },
     );
     const sourcePoint = await resolveElementPoint(
       services,
@@ -1159,95 +1334,6 @@ function exceptionDescription(response: any): string {
     "page action evaluation failed"
   );
 }
-
-// This is a compact adaptation of Playwright's composed-tree hit-target check.
-// It handles ordinary descendants, slots, and nested shadow roots without
-// exposing an injected helper or trusting only document.elementFromPoint().
-const HIT_TARGET_HELPERS = `
-  ${COMPOSED_PARENT_HELPER}
-  function isExplicitInteractiveElement(element) {
-    if (
-      element?.matches?.(":disabled") ||
-      element?.getAttribute?.("aria-disabled") === "true"
-    ) {
-      return false;
-    }
-    const tag = String(element?.tagName || "").toUpperCase();
-    if (["BUTTON", "INPUT", "SELECT", "TEXTAREA", "OPTION", "SUMMARY", "LABEL"].includes(tag)) {
-      return true;
-    }
-    if (tag === "A" && element.hasAttribute?.("href")) return true;
-    if (
-      element?.hasAttribute?.("contenteditable") &&
-      element.getAttribute("contenteditable") !== "false"
-    ) return true;
-    return new Set([
-      "button",
-      "checkbox",
-      "link",
-      "menuitem",
-      "menuitemcheckbox",
-      "menuitemradio",
-      "option",
-      "radio",
-      "slider",
-      "spinbutton",
-      "switch",
-      "tab",
-      "textbox",
-      "treeitem"
-    ]).has(String(element?.getAttribute?.("role") || "").toLowerCase());
-  }
-  function isInteractiveElement(element) {
-    return isExplicitInteractiveElement(element) || Boolean(element?.isContentEditable);
-  }
-  function hitElementAtPoint(target, point) {
-    const roots = [];
-    let parent = target;
-    while (parent) {
-      const root = parent.getRootNode ? parent.getRootNode() : null;
-      if (!root || typeof root.elementsFromPoint !== "function") break;
-      roots.push(root);
-      if (root.nodeType === 9) break;
-      parent = root.host;
-    }
-    let hitElement;
-    for (let index = roots.length - 1; index >= 0; index -= 1) {
-      const root = roots[index];
-      const elements = root.elementsFromPoint(point.x, point.y);
-      const innerElement = elements[0] || root.elementFromPoint(point.x, point.y);
-      if (!innerElement) break;
-      hitElement = innerElement;
-      if (index > 0 && innerElement !== roots[index - 1].host) break;
-    }
-    return hitElement;
-  }
-  function interceptingElementAtPoint(target, point) {
-    const hitElement = hitElementAtPoint(target, point);
-    let current = hitElement;
-    while (current && current !== target) current = composedParent(current);
-    if (current === target) return null;
-
-    // A child with pointer-events:none can legitimately resolve to its
-    // interactive ancestor. A real pointer click reaches that ancestor, so it
-    // is compatible with the requested action rather than an overlay.
-    current = target;
-    while (current && current !== hitElement) current = composedParent(current);
-    if (current === hitElement && isInteractiveElement(hitElement)) return null;
-
-    return hitElement || document.documentElement;
-  }
-  function describeHitTarget(element) {
-    const tag = String(element.tagName || "unknown").toLowerCase();
-    const id = element.id
-      ? ' id="' + String(element.id).slice(0, 80).replaceAll('"', '&quot;') + '"'
-      : "";
-    const href = tag === "a" && element.hasAttribute?.("href")
-      ? ' href="' + String(element.getAttribute("href")).slice(0, 120).replaceAll('"', '&quot;') + '"'
-      : "";
-    return "<" + tag + id + href + ">";
-  }
-`;
 
 function assertPageSelector(selector: unknown): asserts selector is string {
   if (typeof selector !== "string" || selector.trim().length === 0) {

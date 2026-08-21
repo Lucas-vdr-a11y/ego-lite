@@ -25,9 +25,7 @@ export function profileSelectionCase() {
       profileId: selectedProfile.id,
     });
     try {
-      const page = await explicitTask.openPage(baseUrl + "/?profile=explicit", {
-        as: "profile-check",
-      });
+      const page = await newPageAt(explicitTask, baseUrl + "/?profile=explicit");
       assertEqual(
         await page.title(),
         "ego-lite helper e2e",
