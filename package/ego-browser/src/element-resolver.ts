@@ -248,7 +248,9 @@ async function resolveRawSelectorObjectId(cdp, sessions, selector) {
 
 async function findUniqueRawSelectorSession(cdp, sessions, selector) {
   const mainCount = await rawSelectorCount(cdp, sessions[0], selector);
-  if (mainCount > 1) throw rawSelectorCountError(selector.raw, mainCount);
+  if (mainCount > 1) {
+    throw await rawSelectorCountError(cdp, [sessions[0]], selector, mainCount);
+  }
   if (mainCount === 1) return { sessionId: sessions[0] };
 
   const matches = [];
@@ -270,7 +272,14 @@ async function findUniqueRawSelectorSession(cdp, sessions, selector) {
       "transient",
     );
   }
-  if (count > 1) throw rawSelectorCountError(selector.raw, count);
+  if (count > 1) {
+    throw await rawSelectorCountError(
+      cdp,
+      matches.map((match) => match.sessionId),
+      selector,
+      count,
+    );
+  }
   return matches[0];
 }
 
@@ -291,10 +300,14 @@ async function rawSelectorCount(cdp, sessionId, selector) {
   return Number(result.result?.value || 0);
 }
 
-function rawSelectorCountError(raw, count) {
-  return new ElementResolutionError(
-    `Selector ${raw} matched ${count} elements`,
-    "permanent",
+async function rawSelectorCountError(cdp, sessions, selector, count) {
+  return ambiguityError(
+    `Selector ${selector.raw} matched ${count} elements`,
+    await collectMatchDiagnostics(
+      cdp,
+      sessions,
+      buildRawSelectorElementsJs(selector),
+    ),
   );
 }
 
@@ -384,7 +397,16 @@ async function resolveLocatorCenter(cdp, sessionId, locator, iframeSessions) {
   }
   const value = result.result?.value;
   if (value?.error) {
-    throw new ElementResolutionError(value.error, matchCountKind(value.error));
+    const kind = matchCountKind(value.error);
+    if (kind === "permanent") {
+      throw await locatorCountError(
+        cdp,
+        [match.sessionId],
+        locator,
+        matchCount(value.error),
+      );
+    }
+    throw new ElementResolutionError(value.error, kind);
   }
   if (typeof value?.x !== "number" || typeof value?.y !== "number") {
     throw new ElementResolutionError(
@@ -454,10 +476,7 @@ async function findUniqueLocatorSession(cdp, sessions, locator) {
   let count = 0;
   const mainCount = await locatorCount(cdp, sessions[0], locator);
   if (mainCount > 1) {
-    throw new ElementResolutionError(
-      `Locator ${locator.raw} matched ${mainCount} elements`,
-      "permanent",
-    );
+    throw await locatorCountError(cdp, [sessions[0]], locator, mainCount);
   }
   if (mainCount === 1) return { count: 1, sessionId: sessions[0] };
 
@@ -475,9 +494,11 @@ async function findUniqueLocatorSession(cdp, sessions, locator) {
     );
   }
   if (count > 1) {
-    throw new ElementResolutionError(
-      `Locator ${locator.raw} matched ${count} elements`,
-      "permanent",
+    throw await locatorCountError(
+      cdp,
+      matches.map((match) => match.sessionId),
+      locator,
+      count,
     );
   }
   return matches[0];
@@ -524,10 +545,7 @@ async function findUniqueRoleMatch(cdp, contexts, role, name, raw) {
     );
   }
   if (matches.length > 1) {
-    throw new ElementResolutionError(
-      `Locator ${raw} matched ${matches.length} elements`,
-      "permanent",
-    );
+    throw ambiguityError(`Locator ${raw} matched ${matches.length} elements`);
   }
   return matches[0];
 }
@@ -550,6 +568,96 @@ async function locatorCount(cdp, sessionId, locator) {
     );
   }
   return Number(result.result?.value || 0);
+}
+
+async function locatorCountError(cdp, sessions, locator, count) {
+  if (locator.kind === "role") {
+    return ambiguityError(`Locator ${locator.raw} matched ${count} elements`);
+  }
+  return ambiguityError(
+    `Locator ${locator.raw} matched ${count} elements`,
+    await collectMatchDiagnostics(
+      cdp,
+      sessions,
+      buildLocatorElementsJs(locator),
+    ),
+  );
+}
+
+function matchCount(message) {
+  const match = /matched (\d+)/.exec(message);
+  return match ? Number(match[1]) : 0;
+}
+
+async function collectMatchDiagnostics(cdp, sessions, elementsExpression) {
+  const combined: {
+    visible: number;
+    hidden: number;
+    candidates: Array<{
+      tag?: string;
+      role?: string;
+      name?: string;
+      visible?: boolean;
+      disabled?: boolean;
+    }>;
+  } = { visible: 0, hidden: 0, candidates: [] };
+  try {
+    for (const sessionId of sessions) {
+      const result = await send(
+        cdp,
+        "Runtime.evaluate",
+        {
+          expression: buildMatchDiagnosticsJs(elementsExpression),
+          returnByValue: true,
+          awaitPromise: false,
+        },
+        sessionId,
+      );
+      const value = result.result?.value;
+      if (
+        typeof value?.visible !== "number" ||
+        typeof value?.hidden !== "number" ||
+        !Array.isArray(value?.candidates)
+      ) {
+        continue;
+      }
+      combined.visible += value.visible;
+      combined.hidden += value.hidden;
+      combined.candidates.push(
+        ...value.candidates.slice(0, 3 - combined.candidates.length),
+      );
+    }
+    return combined.visible + combined.hidden > 0 ? combined : undefined;
+  } catch {
+    // Diagnostics must never replace the original strict-selector failure.
+    return undefined;
+  }
+}
+
+function ambiguityError(message, diagnostics = undefined) {
+  const visibility = diagnostics
+    ? ` (${diagnostics.visible} visible, ${diagnostics.hidden} hidden)`
+    : "";
+  const candidates = diagnostics?.candidates?.length
+    ? ` Candidates: ${diagnostics.candidates
+        .map(
+          (candidate, index) => `${index + 1}. ${formatCandidate(candidate)}`,
+        )
+        .join("; ")}.`
+    : "";
+  return new ElementResolutionError(
+    `${message}${visibility}.${candidates} Use a current snapshot ref or a more specific role, text, or CSS selector.`,
+    "permanent",
+  );
+}
+
+function formatCandidate(candidate) {
+  const tag = candidate?.tag || "element";
+  const role = candidate?.role ? ` role=${candidate.role}` : "";
+  const name = candidate?.name ? ` ${JSON.stringify(candidate.name)}` : "";
+  const states = [candidate?.visible === false ? "hidden" : "visible"];
+  if (candidate?.disabled) states.push("disabled");
+  return `${tag}${role}${name} (${states.join(", ")})`;
 }
 
 async function findBackendNodeIdByRoleName(
@@ -675,6 +783,16 @@ function buildRawSelectorCountJs(selector) {
   return buildCssCountJs(selector.selector);
 }
 
+function buildRawSelectorElementsJs(selector) {
+  if (selector.kind === "xpath") {
+    return `(() => {
+              const result = document.evaluate(${JSON.stringify(selector.selector)}, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+              return Array.from({ length: result.snapshotLength }, (_, index) => result.snapshotItem(index));
+            })()`;
+  }
+  return buildCssQueryAllJs(selector.selector);
+}
+
 function buildLocatorFindJs(locator) {
   if (locator.kind === "css") {
     return buildCssFindJs(locator.selector);
@@ -693,6 +811,63 @@ function buildLocatorCountJs(locator) {
     return `(() => ${textElementsJs(locator)}.length)()`;
   }
   return `(() => ${hrefElementsJs(locator.href)}.length)()`;
+}
+
+function buildLocatorElementsJs(locator) {
+  if (locator.kind === "css") {
+    return buildCssQueryAllJs(locator.selector);
+  }
+  if (locator.kind === "text") {
+    return textElementsJs(locator);
+  }
+  return hrefElementsJs(locator.href);
+}
+
+function buildMatchDiagnosticsJs(elementsExpression) {
+  return `(() => {
+            const __egoDescribeMatches = (values) => {
+              const elements = Array.from(values || []).filter(Boolean);
+              const normalize = (value) =>
+                String(value ?? "").replace(/\\s+/g, " ").trim();
+              const visible = (element) => {
+                const style = getComputedStyle(element);
+                const rect = element.getBoundingClientRect();
+                return !element.closest("[hidden], [inert]") &&
+                  style.display !== "none" &&
+                  style.visibility !== "hidden" &&
+                  style.opacity !== "0" &&
+                  rect.width > 0 && rect.height > 0;
+              };
+              const candidates = elements.slice(0, 3).map((element) => {
+                const isVisible = visible(element);
+                const name = normalize(
+                  element.getAttribute?.("aria-label") ||
+                  element.getAttribute?.("alt") ||
+                  element.getAttribute?.("title") ||
+                  element.value ||
+                  element.innerText ||
+                  element.textContent
+                ).slice(0, 80);
+                return {
+                  tag: String(element.tagName || "element").toLowerCase(),
+                  role: element.getAttribute?.("role") || undefined,
+                  name: name || undefined,
+                  visible: isVisible,
+                  disabled: Boolean(
+                    element.disabled ||
+                    element.getAttribute?.("aria-disabled") === "true"
+                  )
+                };
+              });
+              const visibleCount = elements.filter(visible).length;
+              return {
+                visible: visibleCount,
+                hidden: elements.length - visibleCount,
+                candidates
+              };
+            };
+            return __egoDescribeMatches(${elementsExpression});
+          })()`;
 }
 
 function buildLocatorCenterJs(locator) {

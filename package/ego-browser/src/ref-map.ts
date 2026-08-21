@@ -22,17 +22,12 @@ export class RefMap {
       role,
       name,
       nth,
-      selector: undefined,
       frameId,
     });
   }
 
   get(refId) {
     return this.map.get(refId);
-  }
-
-  remove(refId) {
-    this.map.delete(refId);
   }
 
   clear() {

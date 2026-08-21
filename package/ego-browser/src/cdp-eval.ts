@@ -1,8 +1,6 @@
 import { browserCdp } from "./browser-runtime.js";
 import { state } from "./state.js";
 
-class TimeoutError extends Error {}
-
 let hasWarnedAboutFunctionJs = false;
 
 /**
@@ -84,10 +82,7 @@ async function runtimeEvaluate(
     );
     return runtimeValue(response, expression);
   } catch (error) {
-    if (
-      error instanceof TimeoutError ||
-      /timed out/i.test(error?.message || "")
-    ) {
+    if (/timed out/i.test(error?.message || "")) {
       throw new Error(
         `Runtime.evaluate timed out; expression: ${jsSnippet(expression)}`,
       );

@@ -32,7 +32,7 @@ console.log(await help())
 JS
 ```
 
-Flags: `-h | --help`, `--doctor`, `--reload`, `--debug-clicks`.
+Use `-h` or `--help` to print the local CLI usage.
 
 ## Skill workspace
 
@@ -53,7 +53,7 @@ EOF
 Site learnings under `agentWorkspace()/learnings/<site>/` are always active and read on every helper call. Validate them with:
 
 ```bash
-npm run validate:site-skills    # alias: validate:learnings
+npm run validate:site-skills
 ```
 
 ## Source layout

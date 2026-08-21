@@ -69,7 +69,6 @@ async function runScript(code, ego) {
       stdinText: code,
       stdout,
       stderr,
-      services: { printUpdateBanner() {} },
     });
   } catch (err) {
     error = err;
@@ -273,6 +272,37 @@ test("a top-level document ReferenceError explains the Page execution boundary",
   assert.ok(result.error, "expected runMain to reject");
   assert.match(result.error.message, /document is not defined/i);
   assert.match(result.error.message, /page\.evaluate\(\)/i);
+});
+
+test("a syntax error points to the invalid user-script line", async () => {
+  const result = await runScript(`
+const task = await taskSpace(556);
+const rows = (await task.pages()).map(page => ({ title: await page.title() }));
+console.log(rows);
+`);
+
+  assert.ok(result.error, "expected runMain to reject");
+  assert.match(result.error.message, /syntax error at line 3, column \d+/i);
+  assert.match(result.error.message, /3 \| const rows =/);
+  assert.match(result.error.message, /\^/);
+  assert.doesNotMatch(result.error.message, /node:internal\/vm/);
+});
+
+test("the direct CLI rejects removed placeholder commands", async () => {
+  for (const command of ["--doctor", "--reload", "--debug-clicks"]) {
+    const stdout = captureStream();
+    const stderr = captureStream();
+    const exitCode = await runMain({
+      argv: [command],
+      stdinText: "",
+      stdout,
+      stderr,
+    });
+
+    assert.equal(exitCode, 2, command);
+    assert.equal(stdout.text(), "", command);
+    assert.match(stderr.text(), /^Usage:/, command);
+  }
 });
 
 test("the direct CLI prints an ordinary uncaught error once", () => {

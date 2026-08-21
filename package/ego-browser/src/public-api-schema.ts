@@ -57,6 +57,12 @@ export const PUBLIC_API_SCHEMA: readonly PublicApiEntry[] = [
     summary: "List browser profiles available for new task spaces.",
   },
   {
+    name: "listTaskSpaces",
+    signature: "await listTaskSpaces()",
+    summary:
+      "List Agent-owned and user-owned spaces available to reuse or claim.",
+  },
+  {
     name: "taskSpace",
     signature: "await taskSpace(nameOrId, { profileId? })",
     summary:

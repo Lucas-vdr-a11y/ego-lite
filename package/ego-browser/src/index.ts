@@ -60,10 +60,9 @@ export function installEgoSdk(
   if (target === globalThis) installPageContextGuard(target);
   const context = options.context || helpers.helperContext();
   const readySignal = Promise.resolve(options.ready);
-  let readyError = null;
-  readySignal.catch((error) => {
-    readyError = error;
-  });
+  // The host may reject readiness before a helper is called. Mark the promise
+  // as observed while preserving the same rejection for every helper await.
+  void readySignal.catch(() => {});
   const installed: Record<string, HelperFunction> = {};
   for (const [name, value] of Object.entries(context)) {
     if (typeof value !== "function") {
@@ -73,9 +72,6 @@ export function installEgoSdk(
       ? value
       : async (...args: unknown[]) => {
           await readySignal;
-          if (readyError) {
-            throw readyError;
-          }
           return value(...args);
         };
     Object.defineProperty(target, name, {

@@ -64,6 +64,29 @@ test("listTaskSpaces normalizes the current taskSpaces binding shape", async () 
   );
 });
 
+test("listTaskSpaces preserves claimable user-created space metadata", async () => {
+  const userSpace = {
+    taskId: "research",
+    id: 3,
+    name: "research",
+    createdBy: "user",
+    ownership: "user",
+    profileId: "Default",
+    profileName: "Work",
+    recentTabTitles: ["Project notes", "Reference"],
+  };
+  await withEgo(
+    {
+      async listTaskSpaces() {
+        return { taskSpaces: [userSpace] };
+      },
+    },
+    async () => {
+      assert.deepEqual(await listTaskSpaces(), [userSpace]);
+    },
+  );
+});
+
 test("listTaskSpaces rejects legacy taskIds results", async () => {
   await withEgo(
     {

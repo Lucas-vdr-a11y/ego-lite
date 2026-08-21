@@ -11,10 +11,12 @@ export async function serverFetch(url, options: any = {}) {
   const response = await fetch(url, {
     ...fetchOptions,
     headers: { "User-Agent": "Mozilla/5.0", ...headers },
-    signal: AbortSignal.timeout(timeout * 1000)
+    signal: AbortSignal.timeout(timeout * 1000),
   });
   if (!response.ok) {
-    throw new Error(`${fetchOptions.method || "GET"} ${url} failed: HTTP ${response.status}`);
+    throw new Error(
+      `${fetchOptions.method || "GET"} ${url} failed: HTTP ${response.status}`,
+    );
   }
   return response.text();
 }

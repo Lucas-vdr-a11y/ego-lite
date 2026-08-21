@@ -111,7 +111,7 @@ npm run typecheck
 npm test
 
 # 5. Validate site learnings
-npm run validate:site-skills    # alias: validate:learnings
+npm run validate:site-skills
 ```
 
 **Calling the CLI directly** (for local debugging):
@@ -122,12 +122,7 @@ console.log(await help())
 JS
 ```
 
-**CLI debug flags** (see `src/run.ts`):
-
-- `--help` / `-h`: print usage
-- `--doctor`: check browser and connection state
-- `--reload`: force-rebuild the CDP connection on next call
-- `--debug-clicks`: equivalent to `EGO_BROWSER_DEBUG_CLICKS=1`
+Use `--help` or `-h` to print the local CLI usage.
 
 **Key environment variables**:
 
@@ -135,7 +130,6 @@ JS
 | ----------------------------- | -------------------------------------------------------------------------------- |
 | `EGO_BROWSER_AGENT_WORKSPACE` | Override skill workspace root (defaults to `skills/ego-browser` inside the repo) |
 | `EGO_BROWSER_NAME`            | Browser instance name (default `default`)                                        |
-| `EGO_BROWSER_DEBUG_CLICKS`    | Enable click debug logging                                                       |
 
 ---
 
@@ -236,7 +230,7 @@ learnings/<site>/
    cd package/ego-browser
    npm run validate:site-skills
    ```
-5. Add at least one behavior test in the `test/site-skills.test.js` style.
+5. Add a colocated behavior test under `package/ego-browser/src/`.
 
 **Hard constraints for learning packs**:
 
@@ -249,8 +243,7 @@ learnings/<site>/
 ## 8. Testing & Quality
 
 - Test framework: `node --test` with `node:assert/strict`
-- Tests are colocated in `package/ego-browser/src/**/*.test.mjs`, with a small
-  set of package tests in `package/ego-browser/test/*.test.js`.
+- Tests are colocated in `package/ego-browser/src/**/*.test.mjs`.
 - Unit tests use temporary workspaces, overrides, or a fake Ego binding.
 - `npm run e2e` is the self-contained real-browser suite. It builds the current
   checkout, launches it through `--sdk-path`, uses a unique temporary space,

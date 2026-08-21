@@ -23,6 +23,8 @@ jobs:
           cache: npm
           cache-dependency-path: package/ego-browser/package-lock.json
       - run: npm ci
+      - run: npm run style:check
+      - run: npm audit --registry=https://registry.npmjs.org --audit-level=moderate
       - run: npm test
       - run: npm run validate:site-skills
 

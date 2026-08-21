@@ -76,8 +76,9 @@ export { uploadFile } from "./driver/files.js";
 export { browserFetch, serverFetch } from "./http.js";
 
 /**
- * List all task spaces.
- * @returns {Promise<Array<{taskId:string,id:number,name:string,createdBy?:string,ownership?:string,recentTabTitles?:string[]}>>}
+ * List Agent-owned and user-owned spaces exposed by Ego Lite.
+ * Use the numeric id as the stable locator; display names may be duplicated.
+ * @returns {Promise<Array<{taskId:string,id:number,name:string,createdBy?:string,ownership?:string,profileId?:string,profileName?:string,recentTabTitles?:string[]}>>}
  */
 export async function listTaskSpaces() {
   const ego = globalThis.ego;

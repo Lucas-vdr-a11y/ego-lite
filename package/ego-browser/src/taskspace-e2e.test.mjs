@@ -94,7 +94,6 @@ async function runTaskspaceScript(ego, code) {
       stdinText: code,
       stdout,
       stderr,
-      services: { printUpdateBanner() {} },
     });
     return { exitCode, stdout: stdout.text(), stderr: stderr.text() };
   } finally {

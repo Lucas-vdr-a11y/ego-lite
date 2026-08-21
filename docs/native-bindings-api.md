@@ -148,9 +148,10 @@ Returns the selected `id` synchronously.
 Throws `TypeError` when `id` is missing, not a number, or extra arguments are
 provided. The thrown error has `error_code: 'EGO_INVALID_ARGUMENT'`.
 
-Use `ego.createTaskSpace(name)` to create a new agent-owned task space. Use
-`ego.claimTaskSpace(id, name?)` to take ownership of an existing user-owned space
-before selecting it.
+Use `ego.createTaskSpace(name)` to create a new agent-owned task space. Regular
+Spaces created by the user are returned by `ego.listTaskSpaces()` with
+`ownership: 'user'`. Pass their numeric `id` to
+`ego.claimTaskSpace(id, name?)` before selecting them.
 
 ## Profiles
 
@@ -385,7 +386,9 @@ contains a stable code such as `EGO_SNAPSHOT_FAILED`,
 
 ### `await ego.listTaskSpaces()`
 
-Lists known task spaces.
+Lists Agent task spaces and regular user-created Spaces that are available to
+the native task-space bridge. Listing is read-only: it does not select or claim
+a Space.
 
 ```js
 const spaces = await ego.listTaskSpaces();
@@ -402,6 +405,16 @@ Returns:
 {
   taskSpaces: [
     {
+      taskId: 'research',
+      id: 3,
+      name: 'research',
+      createdBy: 'user',
+      ownership: 'user',
+      profileId: 'Default',
+      profileName: 'Work',
+      recentTabTitles: ['Project notes', 'Reference'],
+    },
+    {
       taskId: 'checkout-flow',
       id: 7,
       name: 'checkout-flow',
@@ -412,6 +425,12 @@ Returns:
   ],
 }
 ```
+
+`id` is the locator for `ego.claimTaskSpace()` and other task-space APIs.
+`name` and `taskId` are display values and may be duplicated. A regular Space
+created in the Ego Lite UI has `createdBy: 'user'` and `ownership: 'user'`.
+`recentTabTitles` may help the caller identify the intended Space without
+claiming it.
 
 Throws `TypeError` when any argument is passed.
 The thrown error has `error_code: 'EGO_INVALID_ARGUMENT'`.
@@ -480,8 +499,9 @@ object:
 
 ### `await ego.claimTaskSpace(id, name?)`
 
-Claims an existing space by numeric id and turns it into an agent-owned task
-space. Pass `name` to rename the space while claiming it.
+Claims a Space returned by `ego.listTaskSpaces()` and turns it into an
+agent-owned task space. This includes regular Spaces created by the user. Pass
+`name` to rename the Space while claiming it.
 
 ```js
 const spaces = await ego.listTaskSpaces();
@@ -506,6 +526,10 @@ Returns:
   name: 'checkout-flow',
 }
 ```
+
+Claiming a regular user Space keeps its browser profile, tabs, active tab, and
+numeric `id`; it does not create a replacement Space. The caller must have the
+user's approval before taking ownership.
 
 Throws `TypeError` when `id` is missing or not a number, when `name` is present
 but not a string, or when extra arguments are provided. The thrown error has
@@ -545,7 +569,8 @@ Throws `TypeError` when any argument is passed. The thrown error has
 ### `await ego.completeTaskSpace()`
 
 Completes the current task space by removing agent task state while leaving the
-space open as a normal space.
+Space open for the user. It remains discoverable through
+`ego.listTaskSpaces()` under the same numeric `id` with user ownership.
 
 ```js
 await ego.completeTaskSpace();

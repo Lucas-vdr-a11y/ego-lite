@@ -52,8 +52,8 @@ Run from `package/ego-browser/`:
 - `npm test` — build, typecheck, then `node --test` over `src/**/*.test.mjs`.
 - `npm run e2e` — self-contained real-browser E2E suite using the current
   checkout through `--sdk-path`.
-- `npm run validate:site-skills` (alias `validate:learnings`) — validate learned site skills.
-- `node dist/out/index.js <<'JS' ... JS` — run the built CLI from this checkout (requires an `ego` runtime for real browser work; `--doctor`, `--reload`, `-h` also supported).
+- `npm run validate:site-skills` — validate learned site skills.
+- `node dist/out/index.js <<'JS' ... JS` — run the built CLI from this checkout (requires an `ego` runtime for real browser work; `-h` is also supported).
 
 ## Code Conventions & Common Patterns
 

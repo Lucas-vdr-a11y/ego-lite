@@ -111,7 +111,6 @@ await page.fill("@21", "user@example.com");
 await page.click("loc=role:button[name='Sign in']");
 await page.waitForSelector("loc=css:#account-home");
 await page.click("text=Save changes");
-await page.click("button.save");
 ```
 
 Element actions accept:
@@ -130,14 +129,11 @@ When a selector identifies a wrapper, `focus()` and `press()` may use its
 interactive ancestor or unique editable descendant; `fill()` and
 `setInputFiles()` only continue to a unique compatible control.
 
-Snapshot node names are accessibility roles. Use a current ref for an immediate
-action and a generated locator for reuse. When a useful node has no ref,
-construct a selector from its role, text, or surrounding context. CSS searches
-nested open shadow roots; role locators also search frames when the top-level
-document has no match.
-
-Refs belong to one Page and one observed state. Take a fresh snapshot whenever
-the page may have changed and before using a ref in a later round.
+Snapshot node names are accessibility roles. Use a ref now or `loc=...` to find
+the element again. After the page changes, take a new snapshot. When a useful
+node has no ref, construct a selector from its role, text, or surrounding
+context. CSS searches nested open shadow roots; role locators also search
+frames when the top-level document has no match.
 
 ### Visual pages: screenshot, mouse, and keyboard
 
@@ -266,10 +262,14 @@ const userPage = task.userPage();
 
 Adopt `userPage` if it is unmanaged. Use `waitForControl()` only when the current
 script must wait in place. Claim a user-owned or inactive space only when the
-user explicitly asks:
+user explicitly asks. Find its numeric id first; names may be duplicated:
 
 ```js
+const spaces = await listTaskSpaces();
+console.log(spaces.filter((space) => space.ownership === "user"));
+
 const task = await claimTaskSpace(7);
+const userPage = task.userPage();
 ```
 
 After verifying the result, call `task.close()` by default. Use `task.finish()`

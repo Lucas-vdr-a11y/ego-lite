@@ -187,8 +187,22 @@ test("quoted text locators use exact case-sensitive matching", async () => {
 });
 
 test("ambiguous text locators fail permanently instead of choosing one match", async () => {
-  const cdp = new FakeCDP(async (method) => {
+  const cdp = new FakeCDP(async (method, params) => {
     if (method === "Runtime.evaluate") {
+      if (params.expression.includes("__egoDescribeMatches")) {
+        return {
+          result: {
+            value: {
+              visible: 2,
+              hidden: 0,
+              candidates: [
+                { tag: "button", name: "Save draft", visible: true },
+                { tag: "button", name: "Save changes", visible: true },
+              ],
+            },
+          },
+        };
+      }
       return {
         result: {
           value: { error: "Locator text=Save matched 2 elements" },
@@ -204,6 +218,9 @@ test("ambiguous text locators fail permanently instead of choosing one match", a
       assert.ok(error instanceof ElementResolutionError);
       assert.equal(error.kind, "permanent");
       assert.match(error.message, /matched 2 elements/);
+      assert.match(error.message, /2 visible, 0 hidden/);
+      assert.match(error.message, /button "Save draft"/);
+      assert.match(error.message, /current snapshot ref|more specific/i);
       return true;
     },
   );
@@ -212,6 +229,38 @@ test("ambiguous text locators fail permanently instead of choosing one match", a
 test("ambiguous raw CSS selectors fail instead of choosing the first match", async () => {
   const cdp = new FakeCDP(async (method, params) => {
     if (method === "Runtime.evaluate") {
+      if (params.expression.includes("__egoDescribeMatches")) {
+        return {
+          result: {
+            value: {
+              visible: 2,
+              hidden: 1,
+              candidates: [
+                {
+                  tag: "button",
+                  role: "button",
+                  name: "Create",
+                  visible: true,
+                  disabled: false,
+                },
+                {
+                  tag: "button",
+                  role: "button",
+                  name: "Create menu",
+                  visible: true,
+                  disabled: false,
+                },
+                {
+                  tag: "button",
+                  name: "Create",
+                  visible: false,
+                  disabled: true,
+                },
+              ],
+            },
+          },
+        };
+      }
       assert.match(params.expression, /querySelectorAll/);
       return { result: { value: 3 } };
     }
@@ -232,6 +281,10 @@ test("ambiguous raw CSS selectors fail instead of choosing the first match", asy
       assert.ok(error instanceof ElementResolutionError);
       assert.equal(error.kind, "permanent");
       assert.match(error.message, /Selector button\.save matched 3 elements/);
+      assert.match(error.message, /2 visible, 1 hidden/);
+      assert.match(error.message, /button role=button "Create" \(visible\)/);
+      assert.match(error.message, /button "Create" \(hidden, disabled\)/);
+      assert.match(error.message, /current snapshot ref|more specific/i);
       return true;
     },
   );

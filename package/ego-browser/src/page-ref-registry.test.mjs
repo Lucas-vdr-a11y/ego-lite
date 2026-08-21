@@ -19,7 +19,6 @@ test("Page refs preserve native frame provenance and an explicit ref id", () => 
     role: "button",
     name: "Run iframe action",
     nth: undefined,
-    selector: undefined,
     frameId: "frame-target",
   });
   assert.equal(

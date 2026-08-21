@@ -11,6 +11,7 @@ test("the public API schema contains the v2 entry points and object methods", ()
   const names = new Set(PUBLIC_API_SCHEMA.map((entry) => entry.name));
   for (const name of [
     "profiles",
+    "listTaskSpaces",
     "taskSpace",
     "claimTaskSpace",
     "takeOverTaskSpace",
@@ -80,6 +81,7 @@ test("schema-driven option validation rejects unknown and invalid fields", () =>
 test("the generated reference contains signatures and option descriptions", () => {
   const markdown = publicApiMarkdown();
   assert.match(markdown, /`await profiles\(\)`/);
+  assert.match(markdown, /`await listTaskSpaces\(\)`/);
   assert.match(markdown, /`await taskSpace\(nameOrId, \{ profileId\? \}\)`/);
   assert.match(
     markdown,
