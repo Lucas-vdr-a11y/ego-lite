@@ -6,8 +6,8 @@ description: ego-browser (ego lite) is a real Chromium browser designed from the
 # ego-browser
 
 For installation, connection, or runtime problems, read
-`references/install.md`. Use `help()` or `references/api.md` for uncommon
-options.
+`references/install.md`. Use `help()` or `references/api.md` for signatures and
+uncommon options of APIs named below.
 
 ## Run browser scripts
 
@@ -26,6 +26,14 @@ EOF
 The heredoc runs in Node.js with the browser APIs preloaded. Use them directly;
 run page JavaScript inside `page.evaluate()`. Do not import Playwright or launch
 another browser.
+
+Ego-browser deliberately exposes a small custom API. It is not Playwright, even
+where method names and options look similar. Use only the TaskSpace, Page,
+FileChooser, mouse, and keyboard APIs explicitly listed in this Skill. Do not
+infer Playwright methods such as `locator()`, `getByRole()`, `context()`,
+`expect()`, or `route()`. When the listed API does not cover an operation, use
+the documented `page.evaluate()` or `page.cdp()` escape hatches instead of
+guessing another method.
 
 When the user explicitly asks for ego-browser, start with a real browser command
 and diagnose the CLI or installation only if it fails.
@@ -51,7 +59,7 @@ Do not inspect or select profiles unless the user explicitly requests a
 particular Ego Lite profile. A `profileId` applies only when creating a space;
 use `help("profiles")` for the exact workflow.
 
-Common TaskSpace API:
+Supported TaskSpace API:
 
 - State: `spaceId`, `name`, `ownership`, `page(label)`, `userPage()`
 - Pages: `await task.pages()`, `await task.tabs()`, `openPage(url, { as?, timeout? })`,
@@ -81,8 +89,8 @@ as user-owned when deciding whether a Page may be closed.
 
 ## Page operations
 
-Page methods follow Playwright conventions where they overlap. Ego-browser is
-not the full Playwright API and has no Locator API. Common Page API:
+Page methods follow Playwright conventions only where this Skill documents
+them. Supported Page API:
 
 - State and observation: `label`, `spaceId`, `openedBy`, `targetId`, `url()`,
   `title()`, `info()`, `events()`, `snapshot()`, `screenshot()`
