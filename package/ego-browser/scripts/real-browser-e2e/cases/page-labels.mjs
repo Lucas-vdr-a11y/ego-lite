@@ -277,6 +277,16 @@ export function pageBasicOperationsCase() {
       }, 75);
     });
     assertEqual(
+      await first.waitForFunction(
+        ({ selector, expected }) =>
+          document.querySelector(selector)?.textContent === expected,
+        { selector: "#page-wait-ready", expected: "Ready" },
+        { timeout: 2_000, polling: 25 }
+      ),
+      true,
+      "page.waitForFunction polls the addressed Page with one JSON argument"
+    );
+    assertEqual(
       await first.waitForSelector("#page-wait-ready", {
         timeout: 2_000,
         state: "visible",

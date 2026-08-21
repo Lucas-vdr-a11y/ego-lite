@@ -54,7 +54,7 @@ use `help("profiles")` for the exact workflow.
 Common TaskSpace API:
 
 - State: `spaceId`, `name`, `ownership`, `page(label)`, `userPage()`
-- Pages: `pages()`, `tabs()`, `openPage(url, { as?, timeout? })`,
+- Pages: `await task.pages()`, `await task.tabs()`, `openPage(url, { as?, timeout? })`,
   `adopt(page, { as? })`, `release(label)`
 - Control: `waitForControl(options)`, `handOff()`, `finish()`, `close()`
 - Advanced: `cdp(method, params, options)`
@@ -63,7 +63,7 @@ Pages receive permanent labels such as `p1`, `p2`, and `p3`. Prefer these labels
 to custom `{ as }` values. A space manages at most eight Pages; close a temporary
 Page or reuse an existing one when the limit is reached.
 
-`task.pages()` returns managed Pages. `task.tabs()` returns every tab in the
+`await task.pages()` returns managed Pages. `await task.tabs()` returns every tab in the
 space as `{ label?, page, targetId, title, url, active, openedBy }`. A tab
 without a label is unmanaged; adopt it before operating:
 
@@ -87,7 +87,7 @@ not the full Playwright API and has no Locator API. Common Page API:
 - State and observation: `label`, `spaceId`, `openedBy`, `targetId`, `url()`,
   `title()`, `info()`, `events()`, `snapshot()`, `screenshot()`
 - Navigation and waits: `goto()`, `waitForURL()`, `waitForSelector()`,
-  `waitForLoadState()`, `waitForTimeout()`
+  `waitForLoadState()`, `waitForFunction()`, `waitForTimeout()`
 - Elements: `click()`, `dblclick()`, `hover()`, `dragAndDrop()`, `fill()`,
   `focus()`, `press()`, `scrollBy()`, `setInputFiles()`,
   `waitForFileChooser()`, `close()`
@@ -96,6 +96,10 @@ not the full Playwright API and has no Locator API. Common Page API:
   `paste()`
 - Page code and protocols: `evaluate(fnOrString, argument)`,
   `fetch(url, options)`, `cdp(method, params, options)`
+
+`page.evaluate()` callbacks run inside the Page, so they cannot read variables
+from the surrounding Node.js script. Define browser-side helpers inside the
+callback or pass one JSON-serializable value as its second argument.
 
 ### Semantic pages: snapshot and selectors
 

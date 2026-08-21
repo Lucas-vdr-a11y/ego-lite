@@ -154,6 +154,11 @@ type PageWaitForEventOptions = {
   timeout?: number;
 };
 
+type PageWaitForFunctionOptions = {
+  timeout?: number;
+  polling?: number;
+};
+
 export type PageFetchOptions = {
   timeout?: number;
   method?: string;
@@ -1403,6 +1408,72 @@ class Page {
     return this.#evaluate(expression, hasArgument, argument, true);
   }
 
+  /** Wait until a Page expression returns a truthy value. */
+  async waitForFunction(
+    expression: string | ((argument: any) => unknown | Promise<unknown>),
+    argument?: unknown,
+    options: PageWaitForFunctionOptions = {},
+  ): Promise<true> {
+    validatePublicApiOptions("Page.waitForFunction", options);
+    // Passing `undefined` is how callers omit the optional argument while
+    // supplying the third options parameter, matching Playwright's shape.
+    const hasArgument = arguments.length >= 2 && argument !== undefined;
+    const serializedArgument = validateEvaluateInput(
+      "page.waitForFunction",
+      expression,
+      hasArgument,
+      argument,
+    );
+    const timeoutMs = options.timeout ?? 10_000;
+    const pollingMs = options.polling ?? 100;
+    const source = waitForFunctionExpression(
+      expression,
+      hasArgument,
+      serializedArgument,
+    );
+    const page = await this.#resolve();
+
+    return this.#services.gate.withPage(page, async ({ sessionId }) => {
+      await this.#activate(page.targetId);
+      const deadline = this.#services.now() + timeoutMs;
+      try {
+        while (this.#services.now() <= deadline) {
+          const remaining = Math.max(1, deadline - this.#services.now());
+          try {
+            const response = await this.#services.cdp(
+              "Runtime.evaluate",
+              {
+                expression: source,
+                returnByValue: true,
+                awaitPromise: true,
+              },
+              sessionId,
+              Math.min(1_000, remaining),
+            );
+            if (runtimeValue(response, source) === true) return true as const;
+          } catch (error) {
+            if (!isRetryablePageEvaluationError(error)) {
+              throw enrichPageCallbackReferenceError(
+                error,
+                "page.waitForFunction",
+              );
+            }
+            if (this.#services.now() >= deadline) break;
+          }
+
+          const waitMs = deadline - this.#services.now();
+          if (waitMs <= 0) break;
+          await this.#services.sleep(Math.min(pollingMs, waitMs));
+        }
+      } finally {
+        // The predicate may mutate the DOM, so snapshot refs are no longer
+        // guaranteed to identify the same elements.
+        this.#services.pageRefs.clear(page.targetId);
+      }
+      throw new Error(`page.waitForFunction timed out after ${timeoutMs}ms`);
+    });
+  }
+
   /**
    * Run window.fetch inside this Page and return a CDP-serializable response.
    * Unlike a Node fetch, relative URLs, cookies, CORS, and service workers all
@@ -1842,6 +1913,7 @@ class Page {
     activate = false,
   ): Promise<T> {
     const serializedArgument = validateEvaluateInput(
+      "page.evaluate",
       expression,
       hasArgument,
       argument,
@@ -1850,13 +1922,20 @@ class Page {
     return this.#services.gate.withPage(page, async ({ sessionId }) => {
       if (activate) await this.#activate(page.targetId);
       try {
-        return await evaluateInSession<T>(
-          this.#services,
-          sessionId,
-          expression,
-          hasArgument,
-          serializedArgument,
-        );
+        try {
+          return await evaluateInSession<T>(
+            this.#services,
+            sessionId,
+            expression,
+            hasArgument,
+            serializedArgument,
+          );
+        } catch (error) {
+          if (typeof expression === "function") {
+            throw enrichPageCallbackReferenceError(error, "page.evaluate");
+          }
+          throw error;
+        }
       } finally {
         if (activate) this.#services.pageRefs.clear(page.targetId);
       }
@@ -2180,34 +2259,77 @@ async function evaluateInSession<T>(
 }
 
 function validateEvaluateInput(
+  apiName: string,
   expression: unknown,
   hasArgument: boolean,
   argument: unknown,
 ): unknown {
   if (typeof expression !== "string" && typeof expression !== "function") {
-    throw new TypeError(
-      "page.evaluate expects a function or string expression",
-    );
+    throw new TypeError(`${apiName} expects a function or string expression`);
   }
   if (typeof expression === "string") {
     if (expression.length === 0) {
-      throw new TypeError("page.evaluate expression must not be empty");
+      throw new TypeError(`${apiName} expression must not be empty`);
     }
     if (hasArgument) {
       throw new TypeError(
-        "page.evaluate string expression does not accept an argument",
+        `${apiName} string expression does not accept an argument`,
       );
     }
     return undefined;
   }
-  return hasArgument ? serializeEvaluateArgument(argument) : undefined;
+  return hasArgument ? serializeEvaluateArgument(apiName, argument) : undefined;
 }
 
-function serializeEvaluateArgument(argument: unknown): unknown {
+function serializeEvaluateArgument(
+  apiName: string,
+  argument: unknown,
+): unknown {
   return serializeJsonValue(
     argument,
-    "page.evaluate argument must be JSON-serializable",
+    `${apiName} argument must be JSON-serializable`,
   );
+}
+
+function waitForFunctionExpression(
+  expression: string | ((argument: any) => unknown | Promise<unknown>),
+  hasArgument: boolean,
+  serializedArgument: unknown,
+): string {
+  if (typeof expression === "string") {
+    return `(async function __egoWaitForFunction() { return Boolean(await (${expression})); })()`;
+  }
+  const source = expression.toString();
+  const argument = hasArgument ? JSON.stringify(serializedArgument) : "";
+  return `(async function __egoWaitForFunction() { return Boolean(await (${source})(${argument})); })()`;
+}
+
+function isRetryablePageEvaluationError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return (
+    error.message.includes("CDP request timed out: Runtime.evaluate") ||
+    error.message.includes("Execution context was destroyed") ||
+    error.message.includes("Cannot find context with specified id") ||
+    error.message.includes("Inspected target navigated")
+  );
+}
+
+function enrichPageCallbackReferenceError(
+  error: unknown,
+  apiName: string,
+): unknown {
+  if (
+    !(error instanceof Error) ||
+    !/\bReferenceError: .* is not defined/.test(error.message) ||
+    error.message.includes("cannot access variables from the Node.js script")
+  ) {
+    return error;
+  }
+  error.message +=
+    `\n${apiName}() callbacks run inside the Page and cannot access variables ` +
+    "from the Node.js script. Define the value inside the callback or pass " +
+    "JSON data as the second argument.";
+  return error;
 }
 
 function serializeJsonValue(value: unknown, message: string): unknown {

@@ -280,7 +280,21 @@ export const PUBLIC_API_SCHEMA: readonly PublicApiEntry[] = [
   {
     name: "Page.evaluate",
     signature: "await page.evaluate(fnOrString, argument?)",
-    summary: "Run JavaScript in this Page with JSON-serializable data.",
+    summary:
+      "Run JavaScript in this Page; callbacks receive JSON data but cannot capture Node.js variables.",
+  },
+  {
+    name: "Page.waitForFunction",
+    signature:
+      "await page.waitForFunction(fnOrString, argument?, { timeout?, polling? })",
+    summary: "Wait until a Page function or expression returns a truthy value.",
+    options: {
+      timeout,
+      polling: option(
+        "positiveMilliseconds",
+        "Polling interval in milliseconds; defaults to 100.",
+      ),
+    },
   },
   {
     name: "Page.fetch",

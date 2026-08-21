@@ -53,6 +53,7 @@ function createFixture(rootDir) {
   let domContentLoaded = true;
   let timeoutNextLifecycleEvaluate = false;
   let timeoutNextUrlEvaluate = false;
+  let waitFunctionResults = [];
   let nowMs = 1_000;
   const pageEvents = new Map();
   const networkSessions = new Set();
@@ -120,6 +121,14 @@ function createFixture(rootDir) {
       if (method === "Runtime.evaluate") {
         const targetId = targetForSession(sessionId);
         const tab = tabs.get(targetId);
+        if (params.expression.includes("__egoWaitForFunction")) {
+          return {
+            result: {
+              type: "boolean",
+              value: waitFunctionResults.shift() ?? false,
+            },
+          };
+        }
         if (
           timeoutNextLifecycleEvaluate &&
           (params.expression === "document.readyState" ||
@@ -219,6 +228,21 @@ function createFixture(rootDir) {
         return { result: { type: "string", value: "complete" } };
       }
       if (method === "Runtime.callFunctionOn") {
+        if (params.functionDeclaration.includes("missingClosureForE2E")) {
+          return {
+            result: {
+              type: "object",
+              subtype: "error",
+              description:
+                "ReferenceError: missingClosureForE2E is not defined",
+            },
+            exceptionDetails: {
+              text: "Uncaught",
+              lineNumber: 0,
+              columnNumber: 0,
+            },
+          };
+        }
         if (params.functionDeclaration.includes("focusElementForAction")) {
           return {
             result: { type: "object", value: focusResult },
@@ -607,6 +631,9 @@ function createFixture(rootDir) {
     timeoutNextUrlEvaluation() {
       timeoutNextUrlEvaluate = true;
     },
+    setWaitFunctionResults(results) {
+      waitFunctionResults = [...results];
+    },
     setSession(targetId, sessionId) {
       sessionOverrides.set(targetId, sessionId);
     },
@@ -834,6 +861,100 @@ test("Page.waitForTimeout validates and waits in milliseconds without activating
     await assert.rejects(
       () => page.waitForTimeout(Number.POSITIVE_INFINITY),
       /page\.waitForTimeout requires a non-negative number of milliseconds/,
+    );
+  });
+});
+
+test("Page.waitForFunction polls one Page with one JSON argument", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a");
+    const first = await task.openPage("https://example.test/first");
+    const second = await task.openPage("https://example.test/second");
+    fixture.setWaitFunctionResults([false, false, true]);
+    fixture.calls.length = 0;
+
+    assert.equal(
+      await first.waitForFunction(
+        ({ selector }) => Boolean(document.querySelector(selector)),
+        { selector: "#ready" },
+        { timeout: 250, polling: 25 },
+      ),
+      true,
+    );
+
+    const probes = fixture.calls.filter(
+      ([kind, method, params, sessionId]) =>
+        kind === "cdp" &&
+        method === "Runtime.evaluate" &&
+        params.expression.includes("__egoWaitForFunction") &&
+        sessionId === "session:target-1",
+    );
+    assert.equal(probes.length, 3);
+    assert.match(probes[0][2].expression, /"selector":"#ready"/);
+    assert(
+      fixture.calls.some(
+        ([kind, method, params]) =>
+          kind === "cdp" &&
+          method === "Target.activateTarget" &&
+          params.targetId === first.targetId,
+      ),
+      "waitForFunction activates the addressed Page",
+    );
+    assert.equal(second.targetId, "target-2");
+  });
+});
+
+test("Page.waitForFunction validates input and reports its timeout", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a");
+    const page = await task.openPage("https://example.test/first");
+
+    await assert.rejects(
+      () =>
+        page.waitForFunction(() => false, undefined, {
+          timeout: 60,
+          polling: 25,
+        }),
+      /page\.waitForFunction timed out after 60ms/,
+    );
+    await assert.rejects(
+      () => page.waitForFunction(42),
+      /page\.waitForFunction expects a function or string expression/,
+    );
+    await assert.rejects(
+      () => page.waitForFunction("document.readyState", { ignored: true }),
+      /string expression does not accept an argument/,
+    );
+    await assert.rejects(
+      () => page.waitForFunction(() => true, undefined, { timeout: 0 }),
+      /timeout must be a positive number of milliseconds/,
+    );
+    await assert.rejects(
+      () => page.waitForFunction(() => true, undefined, { polling: 0 }),
+      /polling must be a positive number of milliseconds/,
+    );
+  });
+});
+
+test("Page.evaluate explains that its callback cannot capture Node variables", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a");
+    const page = await task.openPage("https://example.test/first");
+
+    await assert.rejects(
+      () => page.evaluate(() => missingClosureForE2E),
+      (error) => {
+        assert.match(
+          error.message,
+          /ReferenceError: missingClosureForE2E is not defined/,
+        );
+        assert.match(
+          error.message,
+          /page\.evaluate\(\) callbacks run inside the Page and cannot access variables from the Node\.js script/,
+        );
+        assert.match(error.message, /pass JSON data as the second argument/);
+        return true;
+      },
     );
   });
 });

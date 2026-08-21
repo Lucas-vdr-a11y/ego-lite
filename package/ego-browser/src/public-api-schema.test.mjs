@@ -25,6 +25,7 @@ test("the public API schema contains the v2 entry points and object methods", ()
     "Page.waitForEvent",
     "Page.waitForURL",
     "Page.waitForTimeout",
+    "Page.waitForFunction",
     "Page.focus",
     "Page.press",
     "Page.keyboard.press",
@@ -73,6 +74,10 @@ test("schema-driven option validation rejects unknown and invalid fields", () =>
     /waitUntil must be one of commit, domcontentloaded, load, networkidle/,
   );
   assert.throws(
+    () => validatePublicApiOptions("Page.waitForFunction", { polling: 0 }),
+    /polling must be a positive number of milliseconds/,
+  );
+  assert.throws(
     () => validatePublicApiOptions("Page.click", { button: "primary" }),
     /button must be one of left, middle, right/,
   );
@@ -94,6 +99,10 @@ test("the generated reference contains signatures and option descriptions", () =
   assert.match(
     markdown,
     /`await page\.waitForEvent\("popup", \{ timeout\? \}\)`/,
+  );
+  assert.match(
+    markdown,
+    /`await page\.waitForFunction\(fnOrString, argument\?, \{ timeout\?, polling\? \}\)`/,
   );
   assert.match(
     markdown,
