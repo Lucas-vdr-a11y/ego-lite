@@ -297,27 +297,28 @@ async function validateRoleLocatorBackendNodes(
 ): Promise<Set<number>> {
   const valid = new Set<number>();
   if (entries.length === 0) return valid;
-  const contexts = pageContexts(sessionId, iframeSessions);
-  let trees;
-  try {
-    trees = await Promise.all(
-      contexts.map((context) =>
-        send(
-          cdp,
-          "Accessibility.getFullAXTree",
-          context.frameId ? { frameId: context.frameId } : {},
-          context.sessionId,
-        ),
-      ),
-    );
-  } catch {
-    return valid;
-  }
+  const available = (
+    await Promise.all(
+      pageContexts(sessionId, iframeSessions).map(async (context) => {
+        try {
+          const tree = await send(
+            cdp,
+            "Accessibility.getFullAXTree",
+            context.frameId ? { frameId: context.frameId } : {},
+            context.sessionId,
+          );
+          return { context, tree };
+        } catch {
+          // A detached frame must not discard locators from healthy contexts.
+          return undefined;
+        }
+      }),
+    )
+  ).filter((item) => item !== undefined);
 
   for (const entry of entries) {
-    const matchesIn = (contextIndex: number) => {
-      const context = contexts[contextIndex];
-      return (trees[contextIndex]?.nodes || [])
+    const rawMatches = available.flatMap(({ context, tree }) =>
+      (tree?.nodes || [])
         .filter(
           (node) =>
             !node.ignored &&
@@ -329,24 +330,18 @@ async function validateRoleLocatorBackendNodes(
           backendNodeId: node.backendDOMNodeId,
           frameId: context.frameId,
           sessionId: context.sessionId,
-        }));
-    };
-    const rawMain = matchesIn(0);
-    const frameMatches = contexts
-      .slice(1)
-      .flatMap((_, offset) => matchesIn(offset + 1));
+        })),
+    );
     const framedNodeKeys = new Set(
-      frameMatches
+      rawMatches
         .filter((match) => match.frameId)
         .map((match) => `${match.sessionId}\u0000${match.backendNodeId}`),
     );
-    const matches = [
-      ...rawMain.filter(
-        (match) =>
-          !framedNodeKeys.has(`${match.sessionId}\u0000${match.backendNodeId}`),
-      ),
-      ...frameMatches,
-    ];
+    const matches = rawMatches.filter(
+      (match) =>
+        match.frameId ||
+        !framedNodeKeys.has(`${match.sessionId}\u0000${match.backendNodeId}`),
+    );
     if (
       matches.length === 1 &&
       matches[0].backendNodeId === entry.candidate.backendNodeId &&
@@ -372,33 +367,40 @@ async function validateDomLocatorBackendNodes(
   const valid = new Set<number>();
   if (entries.length === 0) return valid;
 
-  let contexts: PageRuntimeContext[];
-  let countsByContext: number[][];
-  try {
-    contexts = await runtimePageContexts(cdp, sessionId, iframeSessions);
-    countsByContext = await Promise.all(
-      contexts.map(async (context) => {
-        const result = await evaluateInContext(
-          cdp,
-          context,
-          buildBatchLocatorCountJs(entries.map((entry) => entry.locator)),
-          true,
-        );
-        const counts = result.result?.value;
-        if (
-          result.exceptionDetails ||
-          !Array.isArray(counts) ||
-          counts.length !== entries.length ||
-          counts.some((count) => !Number.isInteger(count) || count < -1)
-        ) {
-          throw new Error("invalid batched locator count result");
+  const candidateContexts = await availableRuntimePageContexts(
+    cdp,
+    sessionId,
+    iframeSessions,
+  );
+  const countedContexts = (
+    await Promise.all(
+      candidateContexts.map(async (context) => {
+        try {
+          const result = await evaluateInContext(
+            cdp,
+            context,
+            buildBatchLocatorCountJs(entries.map((entry) => entry.locator)),
+            true,
+          );
+          const counts = result.result?.value;
+          if (
+            result.exceptionDetails ||
+            !Array.isArray(counts) ||
+            counts.length !== entries.length ||
+            counts.some((count) => !Number.isInteger(count) || count < -1)
+          ) {
+            return undefined;
+          }
+          return { context, counts };
+        } catch {
+          // Count failures are scoped to the frame that disappeared.
+          return undefined;
         }
-        return counts;
       }),
-    );
-  } catch {
-    return valid;
-  }
+    )
+  ).filter((item) => item !== undefined);
+  const contexts = countedContexts.map(({ context }) => context);
+  const countsByContext = countedContexts.map(({ counts }) => counts);
 
   const contextForEntry = entries.map((_, entryIndex) => {
     let total = 0;
@@ -755,31 +757,51 @@ async function runtimePageContexts(
 ): Promise<PageRuntimeContext[]> {
   const contexts = pageContexts(sessionId, iframeSessions);
   return Promise.all(
-    contexts.map(async (context) => {
-      if (!context.frameId) return context;
-      try {
-        const result = await send(
-          cdp,
-          "Page.createIsolatedWorld",
-          {
-            frameId: context.frameId,
-            worldName: "ego-browser-locator",
-            grantUniveralAccess: true,
-          },
-          context.sessionId,
-        );
-        if (!Number.isInteger(result?.executionContextId)) {
-          throw new Error("Page.createIsolatedWorld returned no context id");
-        }
-        return { ...context, contextId: result.executionContextId };
-      } catch (error) {
-        throw new ElementResolutionError(
-          `Frame ${context.frameId} is not ready: ${error?.message || String(error)}`,
-          "transient",
-        );
-      }
-    }),
+    contexts.map((context) => runtimePageContext(cdp, context)),
   );
+}
+
+async function availableRuntimePageContexts(
+  cdp,
+  sessionId,
+  iframeSessions,
+): Promise<PageRuntimeContext[]> {
+  const settled = await Promise.allSettled(
+    pageContexts(sessionId, iframeSessions).map((context) =>
+      runtimePageContext(cdp, context),
+    ),
+  );
+  return settled.flatMap((result) =>
+    result.status === "fulfilled" ? [result.value] : [],
+  );
+}
+
+async function runtimePageContext(
+  cdp,
+  context: PageRuntimeContext,
+): Promise<PageRuntimeContext> {
+  if (!context.frameId) return context;
+  try {
+    const result = await send(
+      cdp,
+      "Page.createIsolatedWorld",
+      {
+        frameId: context.frameId,
+        worldName: "ego-browser-locator",
+        grantUniveralAccess: true,
+      },
+      context.sessionId,
+    );
+    if (!Number.isInteger(result?.executionContextId)) {
+      throw new Error("Page.createIsolatedWorld returned no context id");
+    }
+    return { ...context, contextId: result.executionContextId };
+  } catch (error) {
+    throw new ElementResolutionError(
+      `Frame ${context.frameId} is not ready: ${error?.message || String(error)}`,
+      "transient",
+    );
+  }
 }
 
 function evaluateInContext(

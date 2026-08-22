@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { execFile } from "node:child_process";
 import {
   mkdir,
   readFile,
@@ -43,41 +42,10 @@ type PageLedgerStoreOptions = {
 };
 
 const DEFAULT_STALE_AFTER_MS = 30 * 24 * 60 * 60 * 1000;
-let runtimeInstanceIdPromise: Promise<string> | undefined;
 
 /** Stable across Agent rounds and Node-service restarts in one Ego Lite run. */
-export function runtimeInstanceId(): Promise<string> {
-  runtimeInstanceIdPromise ||= browserHostInstanceId();
-  return runtimeInstanceIdPromise;
-}
-
-async function browserHostInstanceId(): Promise<string> {
-  const parentPid = process.ppid;
-  const startedAt = await processStartToken(parentPid);
-  return `browser-host:${parentPid}:${startedAt || "unknown"}`;
-}
-
-async function processStartToken(pid: number): Promise<string | undefined> {
-  if (process.platform === "win32") return undefined;
-  return new Promise((resolve) => {
-    execFile(
-      "ps",
-      ["-o", "lstart=", "-p", String(pid)],
-      {
-        encoding: "utf8",
-        env: { ...process.env, LC_ALL: "C" },
-        timeout: 1_000,
-      },
-      (error, stdout) => {
-        if (error) {
-          resolve(undefined);
-          return;
-        }
-        const token = stdout.trim().replace(/\s+/g, "_");
-        resolve(token || undefined);
-      },
-    );
-  });
+export function runtimeInstanceId(parentPid = process.ppid): string {
+  return `browser-host:${parentPid}`;
 }
 
 type AddPageOptions = {
@@ -375,13 +343,25 @@ export class PageLedgerStore {
     } catch (error) {
       throw new Error(`invalid page ledger ${path}: ${error.message}`);
     }
+    const storedBrowserInstanceId = ledgerBrowserInstanceId(parsed);
     if (
       browserInstanceId !== undefined &&
-      ledgerBrowserInstanceId(parsed) !== browserInstanceId
+      storedBrowserInstanceId !== undefined &&
+      storedBrowserInstanceId !== browserInstanceId
     ) {
       return emptyLedger(spaceId, browserInstanceId);
     }
-    return validateLedger(parsed, spaceId, path);
+    const ledger = validateLedger(parsed, spaceId, path);
+    if (
+      browserInstanceId !== undefined &&
+      storedBrowserInstanceId === undefined
+    ) {
+      // Preserve ledgers created before instance ids existed. This one-time
+      // backfill avoids discarding live Page labels during an SDK upgrade.
+      ledger.browserInstanceId = browserInstanceId;
+      await this.#writeAtomic(spaceId, ledger);
+    }
+    return ledger;
   }
 
   async #currentBrowserInstanceId(): Promise<string | undefined> {

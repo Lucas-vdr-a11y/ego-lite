@@ -6,12 +6,12 @@ import { join } from "node:path";
 
 import { PageLedgerStore, runtimeInstanceId } from "../dist/src/page-ledger.js";
 
-test("runtimeInstanceId is stable for the current Ego Lite browser host", async () => {
-  const first = await runtimeInstanceId();
-  const second = await runtimeInstanceId();
+test("runtimeInstanceId is a pure browser-host identifier", () => {
+  const first = runtimeInstanceId(42);
+  const second = runtimeInstanceId(42);
 
   assert.equal(second, first);
-  assert.match(first, new RegExp(`^browser-host:${process.ppid}:[^:]+`));
+  assert.equal(first, "browser-host:42");
 });
 
 async function withTempLedger(fn) {
@@ -71,6 +71,41 @@ test("a reused space id starts conservatively in a new browser instance", async 
       await readFile(join(rootDir, "space-7.json"), "utf8"),
     );
     assert.equal(persisted.browserInstanceId, "browser-b");
+  });
+});
+
+test("a ledger from before instance ids is preserved and backfilled", async () => {
+  await withTempLedger(async (rootDir) => {
+    const path = join(rootDir, "space-7.json");
+    await writeFile(
+      path,
+      JSON.stringify({
+        spaceId: 7,
+        nextLabel: 2,
+        usedLabels: ["p1"],
+        releasedLabels: [],
+        initialized: true,
+        userControlPending: false,
+        unmanagedTargets: {},
+        pages: {
+          p1: { targetId: "target-live", openedBy: "agent" },
+        },
+      }),
+    );
+
+    const store = new PageLedgerStore({
+      rootDir,
+      browserInstanceId: "browser-current",
+    });
+    assert.deepEqual(await store.getPage(7, "p1"), {
+      label: "p1",
+      targetId: "target-live",
+      openedBy: "agent",
+    });
+    assert.equal(
+      JSON.parse(await readFile(path, "utf8")).browserInstanceId,
+      "browser-current",
+    );
   });
 });
 

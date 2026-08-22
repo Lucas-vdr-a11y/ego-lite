@@ -64,6 +64,9 @@ export class NativeOperationGate {
           ),
         );
       }
+      // Re-entry deliberately bypasses the FIFO because the outer operation
+      // owns the lease. Nested callers must await same-space work in order;
+      // Promise.all here would issue concurrent native requests by design.
       return Promise.resolve().then(() => operation({ spaceId }));
     }
 

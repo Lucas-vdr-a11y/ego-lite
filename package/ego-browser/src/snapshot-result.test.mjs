@@ -75,6 +75,112 @@ test("snapshot locator validation batches DOM queries and object cleanup", async
   );
 });
 
+test("DOM locator validation keeps healthy contexts when one count fails", async () => {
+  const cdp = {
+    async sendRaw(method, params, sessionId) {
+      if (sessionId === "session:detached") {
+        throw new Error("frame detached");
+      }
+      if (method === "Runtime.evaluate" && params.returnByValue) {
+        return { result: { value: [1] } };
+      }
+      if (method === "Runtime.evaluate") {
+        return { result: { objectId: "locator-batch" } };
+      }
+      if (method === "Runtime.getProperties") {
+        return {
+          result: [{ name: "0", value: { objectId: "node:10" } }],
+        };
+      }
+      if (method === "DOM.describeNode") {
+        return { node: { backendNodeId: 10 } };
+      }
+      if (method === "Runtime.releaseObjectGroup") return {};
+      throw new Error(`unexpected CDP method: ${method}`);
+    },
+  };
+
+  assert.equal(
+    await validateSnapshotLocator(
+      cdp,
+      "session:page",
+      new Map([["frame-detached", "session:detached"]]),
+      { backendNodeId: 10, loc: "css:#save" },
+    ),
+    true,
+  );
+});
+
+test("DOM locator validation keeps the Page when an iframe world disappears", async () => {
+  const cdp = {
+    async sendRaw(method, params) {
+      if (method === "Page.createIsolatedWorld") {
+        throw new Error("frame detached");
+      }
+      if (method === "Runtime.evaluate" && params.returnByValue) {
+        return { result: { value: [1] } };
+      }
+      if (method === "Runtime.evaluate") {
+        return { result: { objectId: "locator-batch" } };
+      }
+      if (method === "Runtime.getProperties") {
+        return {
+          result: [{ name: "0", value: { objectId: "node:10" } }],
+        };
+      }
+      if (method === "DOM.describeNode") {
+        return { node: { backendNodeId: 10 } };
+      }
+      if (method === "Runtime.releaseObjectGroup") return {};
+      throw new Error(`unexpected CDP method: ${method}`);
+    },
+  };
+
+  assert.equal(
+    await validateSnapshotLocator(
+      cdp,
+      "session:page",
+      new Map([["frame-detached", "session:page"]]),
+      { backendNodeId: 10, loc: "css:#save" },
+    ),
+    true,
+  );
+});
+
+test("role locator validation keeps healthy trees when one frame detaches", async () => {
+  const cdp = {
+    async sendRaw(method, _params, sessionId) {
+      assert.equal(method, "Accessibility.getFullAXTree");
+      if (sessionId === "session:detached") {
+        throw new Error("frame detached");
+      }
+      return {
+        nodes: [
+          {
+            backendDOMNodeId: 10,
+            ignored: false,
+            role: { value: "button" },
+            name: { value: "Save" },
+          },
+        ],
+      };
+    },
+  };
+
+  assert.equal(
+    await validateSnapshotLocator(
+      cdp,
+      "session:page",
+      new Map([["frame-detached", "session:detached"]]),
+      {
+        backendNodeId: 10,
+        loc: 'role:button[name="Save"]',
+      },
+    ),
+    true,
+  );
+});
+
 test("invalid native snapshot locators are hidden without removing their refs", async () => {
   const result = {
     content: [
