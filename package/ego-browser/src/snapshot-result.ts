@@ -1,5 +1,4 @@
-import { resolveElementObjectId } from "./element-resolver.js";
-import { RefMap } from "./ref-map.js";
+import { validateLocatorBackendNodes } from "./element-resolver.js";
 
 type SnapshotRef = {
   backendNodeId?: number;
@@ -83,48 +82,15 @@ export async function validateSnapshotLocator(
   iframeSessions: Map<string, string>,
   ref: SnapshotRef,
 ): Promise<boolean> {
-  if (
-    !Number.isInteger(ref.backendNodeId) ||
-    typeof ref.loc !== "string" ||
-    ref.loc.length === 0 ||
-    ref.loc === "unstable" ||
-    ref.loc === "ambiguous"
-  ) {
-    return false;
-  }
-
-  let resolved:
-    | { objectId: string; sessionId: string; frameId?: string }
-    | undefined;
-  try {
-    resolved = await resolveElementObjectId(
-      cdp,
-      pageSessionId,
-      new RefMap(),
-      ref.loc.startsWith("loc=") ? ref.loc : `loc=${ref.loc}`,
-      iframeSessions,
-      { strict: true, strictGlobal: true },
-    );
-    const described = await cdp.sendRaw(
-      "DOM.describeNode",
-      { objectId: resolved.objectId, depth: 0 },
-      resolved.sessionId,
-    );
-    return described?.node?.backendNodeId === ref.backendNodeId;
-  } catch {
-    // Invalid, missing, and ambiguous native locators are all unsafe to expose.
-    return false;
-  } finally {
-    if (resolved?.objectId) {
-      await cdp
-        .sendRaw(
-          "Runtime.releaseObject",
-          { objectId: resolved.objectId },
-          resolved.sessionId,
-        )
-        .catch(() => {});
-    }
-  }
+  const candidates = snapshotLocatorCandidates([ref]);
+  if (candidates.length === 0) return false;
+  const valid = await validateLocatorBackendNodes(
+    cdp,
+    pageSessionId,
+    iframeSessions,
+    candidates,
+  );
+  return valid.has(0);
 }
 
 /** Replace invalid native stable locators while retaining their short-lived refs. */
@@ -174,7 +140,35 @@ export async function preparePageSnapshotResult(
     sendRaw: (method, params = {}, sessionId) =>
       services.cdp(method, params, sessionId),
   };
-  return sanitizeSnapshotLocators(result, (ref) =>
-    validateSnapshotLocator(adapter, pageSessionId, iframeSessions, ref),
+  const refs = result?.refs || [];
+  const validIndexes = await validateLocatorBackendNodes(
+    adapter,
+    pageSessionId,
+    iframeSessions,
+    snapshotLocatorCandidates(refs),
   );
+  const validRefs = new Set(refs.filter((_, index) => validIndexes.has(index)));
+  return sanitizeSnapshotLocators(result, async (ref) => validRefs.has(ref));
+}
+
+function snapshotLocatorCandidates(refs: SnapshotRef[]) {
+  return refs.flatMap((ref, index) => {
+    if (
+      !Number.isInteger(ref.backendNodeId) ||
+      typeof ref.loc !== "string" ||
+      ref.loc.length === 0 ||
+      ref.loc === "unstable" ||
+      ref.loc === "ambiguous"
+    ) {
+      return [];
+    }
+    return [
+      {
+        index,
+        locator: ref.loc.startsWith("loc=") ? ref.loc : `loc=${ref.loc}`,
+        backendNodeId: ref.backendNodeId!,
+        ...(ref.frameId ? { frameId: ref.frameId } : {}),
+      },
+    ];
+  });
 }

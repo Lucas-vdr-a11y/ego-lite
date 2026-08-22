@@ -1,3 +1,5 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+
 import { browserEgo, ensureSession } from "./browser-runtime.js";
 import { invokeEgo } from "./ego-errors.js";
 
@@ -20,6 +22,10 @@ type PageTarget = {
   targetId: string;
 };
 
+type GateOwnership = SpaceScope & {
+  active: boolean;
+};
+
 /**
  * Serializes native operations that rely on Ego Lite's process-wide selected
  * task space. The queue covers the entire async operation, so another caller
@@ -27,6 +33,7 @@ type PageTarget = {
  */
 export class NativeOperationGate {
   readonly #services: NativeGateServices;
+  readonly #ownership = new AsyncLocalStorage<GateOwnership>();
   #tail: Promise<void> = Promise.resolve();
 
   constructor(services: NativeGateServices) {
@@ -48,13 +55,36 @@ export class NativeOperationGate {
       throw new TypeError("withSpace requires an operation function");
     }
 
+    const ownership = this.#ownership.getStore();
+    if (ownership?.active) {
+      if (ownership.spaceId !== spaceId) {
+        return Promise.reject(
+          new Error(
+            `cannot select space ${spaceId} while space ${ownership.spaceId} is active`,
+          ),
+        );
+      }
+      return Promise.resolve().then(() => operation({ spaceId }));
+    }
+
     const run = async () => {
       await this.#services.selectSpace(spaceId);
-      return operation({ spaceId });
+      const acquired: GateOwnership = { spaceId, active: true };
+      return this.#ownership.run(acquired, async () => {
+        try {
+          return await operation({ spaceId });
+        } finally {
+          // AsyncLocalStorage also flows into detached child tasks. Mark this
+          // lease inactive when its awaited operation ends so late work queues
+          // normally instead of bypassing a released gate.
+          acquired.active = false;
+        }
+      });
     };
     const result = this.#tail.then(run);
-    // A failed operation must reject its own caller without poisoning the FIFO
-    // queue for every operation submitted after it.
+    // The queue is intentionally unbounded and covers long waits: changing the
+    // selected space during any in-flight native operation would misroute it.
+    // A failure rejects its caller without poisoning later FIFO entries.
     this.#tail = result.then(
       () => undefined,
       () => undefined,

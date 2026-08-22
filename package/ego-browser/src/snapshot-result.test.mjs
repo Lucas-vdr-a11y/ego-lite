@@ -3,9 +3,77 @@ import assert from "node:assert/strict";
 
 import {
   enrichSnapshotRefFrames,
+  preparePageSnapshotResult,
   sanitizeSnapshotLocators,
   validateSnapshotLocator,
 } from "../dist/src/snapshot-result.js";
+
+test("snapshot locator validation batches DOM queries and object cleanup", async () => {
+  const calls = [];
+  const services = {
+    async cdp(method, params, sessionId) {
+      calls.push([method, params, sessionId]);
+      if (method === "Runtime.evaluate" && params.returnByValue) {
+        return { result: { value: [1, 1] } };
+      }
+      if (method === "Runtime.evaluate") {
+        return { result: { objectId: "locator-batch" } };
+      }
+      if (method === "Runtime.getProperties") {
+        return {
+          result: [
+            { name: "0", value: { objectId: "node:10" } },
+            { name: "1", value: { objectId: "node:11" } },
+          ],
+        };
+      }
+      if (method === "DOM.describeNode") {
+        return {
+          node: {
+            backendNodeId: Number(params.objectId.slice("node:".length)),
+          },
+        };
+      }
+      if (method === "Runtime.releaseObjectGroup") return {};
+      throw new Error(`unexpected CDP method: ${method}`);
+    },
+  };
+  const result = {
+    content: [
+      "button A [ref=10, loc=css:#a]",
+      "button B [ref=11, loc=css:#b]",
+    ].join("\n"),
+    refs: [
+      { backendNodeId: 10, loc: "css:#a" },
+      { backendNodeId: 11, loc: "css:#b" },
+    ],
+  };
+
+  await preparePageSnapshotResult(services, "session:page", new Map(), result);
+
+  assert.equal(result.refs[0].loc, "css:#a");
+  assert.equal(result.refs[1].loc, "css:#b");
+  assert.equal(
+    calls.filter(([method]) => method === "Runtime.evaluate").length,
+    2,
+  );
+  assert.equal(
+    calls.filter(([method]) => method === "Runtime.getProperties").length,
+    1,
+  );
+  assert.equal(
+    calls.filter(([method]) => method === "DOM.describeNode").length,
+    2,
+  );
+  assert.equal(
+    calls.filter(([method]) => method === "Runtime.releaseObjectGroup").length,
+    1,
+  );
+  assert.equal(
+    calls.some(([method]) => method === "Runtime.releaseObject"),
+    false,
+  );
+});
 
 test("invalid native snapshot locators are hidden without removing their refs", async () => {
   const result = {
@@ -57,13 +125,16 @@ test("stable locator validation requires one match for the original backend node
         );
         const response = responses.get(key);
         if (params.returnByValue) {
-          return { result: { value: response.count } };
+          return { result: { value: [response.count] } };
         }
         return {
-          result:
-            response.count === 1
-              ? { objectId: `node:${response.resolvedBackendNodeId}` }
-              : {},
+          result: { objectId: `batch:${response.resolvedBackendNodeId}` },
+        };
+      }
+      if (method === "Runtime.getProperties") {
+        const backendNodeId = params.objectId.slice("batch:".length);
+        return {
+          result: [{ name: "0", value: { objectId: `node:${backendNodeId}` } }],
         };
       }
       if (method === "DOM.describeNode") {
@@ -73,6 +144,7 @@ test("stable locator validation requires one match for the original backend node
           },
         };
       }
+      if (method === "Runtime.releaseObjectGroup") return {};
       return {};
     },
   };

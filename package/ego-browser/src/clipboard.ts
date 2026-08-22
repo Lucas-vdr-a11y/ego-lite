@@ -288,6 +288,27 @@ ObjC.import("AppKit");
 ObjC.import("Foundation");
 
 const pasteboard = $.NSPasteboard.generalPasteboard;
+const transactionLock = $.NSDistributedLock.alloc.initWithPath(
+  $(ObjC.unwrap($.NSTemporaryDirectory()) + "ego-browser-clipboard.lock")
+);
+
+function acquireTransactionLock() {
+  const deadline = Date.now() + 5000;
+  while (!transactionLock.tryLock) {
+    const lockDate = transactionLock.lockDate;
+    const lockAge = lockDate
+      ? Date.now() - Number(lockDate.timeIntervalSince1970) * 1000
+      : 0;
+    if (lockAge > 30000) {
+      transactionLock.breakLock;
+      continue;
+    }
+    if (Date.now() >= deadline) {
+      throw new Error("another ego-browser process is using the clipboard");
+    }
+    $.NSThread.sleepForTimeInterval(0.02);
+  }
+}
 
 function emit(message) {
   const line = $(JSON.stringify(message) + "\n").dataUsingEncoding($.NSUTF8StringEncoding);
@@ -331,6 +352,7 @@ const serialized = ObjC.unwrap(
 );
 const parsed = JSON.parse(serialized);
 const content = typeof parsed === "string" ? { text: parsed } : parsed;
+acquireTransactionLock();
 const saved = snapshotPasteboard();
 
 try {
@@ -347,6 +369,7 @@ try {
 } catch (error) {
   try { restorePasteboard(saved); } catch (_) {}
   emit({ state: "error", message: String(error.message || error) });
+  transactionLock.unlock;
   throw error;
 }
 
@@ -357,14 +380,18 @@ const restoreSignal = $.NSFileHandle.alloc.initWithFileDescriptorCloseOnDealloc(
 restoreSignal.readDataOfLength(1);
 
 try {
-  if (Number(pasteboard.changeCount) !== temporaryChangeCount) {
-    emit({ state: "changed" });
-  } else {
-    restorePasteboard(saved);
-    emit({ state: "restored" });
+  try {
+    if (Number(pasteboard.changeCount) !== temporaryChangeCount) {
+      emit({ state: "changed" });
+    } else {
+      restorePasteboard(saved);
+      emit({ state: "restored" });
+    }
+  } catch (error) {
+    emit({ state: "error", message: String(error.message || error) });
+    throw error;
   }
-} catch (error) {
-  emit({ state: "error", message: String(error.message || error) });
-  throw error;
+} finally {
+  transactionLock.unlock;
 }
 `;

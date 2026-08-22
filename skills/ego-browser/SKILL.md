@@ -195,9 +195,10 @@ keyboard names and `+`-separated chords follow Playwright syntax. Use
 `mouse.wheel()` sends the event at the current mouse position. In each heredoc,
 move or click over the intended scrollable area before using it.
 
-`keyboard.paste()` sends the native paste shortcut and then restores the user's
-clipboard. Pass `{ text, html }` when a rich editor needs structured clipboard
-content; `text` is the plain-text fallback.
+On macOS, `keyboard.paste()` sends the native paste shortcut and then restores
+the user's clipboard. Pass `{ text, html }` when a rich editor needs structured
+clipboard content; `text` is the plain-text fallback. On other platforms, use
+`keyboard.insertText()` for plain text.
 
 ```js
 await page.keyboard.paste({

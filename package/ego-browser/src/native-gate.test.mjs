@@ -127,3 +127,45 @@ test("NativeOperationGate resolves an explicit page session inside the space loc
   });
   assert.deepEqual(log, ["select:7", "attach:target-a", "run:session-a"]);
 });
+
+test("NativeOperationGate reuses same-space ownership for nested operations", async () => {
+  const log = [];
+  const gate = new NativeOperationGate({
+    async selectSpace(spaceId) {
+      log.push(`select:${spaceId}`);
+    },
+    async ensureSession(targetId) {
+      log.push(`attach:${targetId}`);
+      return `session:${targetId}`;
+    },
+  });
+
+  const result = await gate.withSpace(7, () =>
+    gate.withPage({ spaceId: 7, targetId: "target-a" }, ({ sessionId }) => {
+      log.push(`run:${sessionId}`);
+      return "nested";
+    }),
+  );
+
+  assert.equal(result, "nested");
+  assert.deepEqual(log, [
+    "select:7",
+    "attach:target-a",
+    "run:session:target-a",
+  ]);
+});
+
+test("NativeOperationGate rejects nested selection of another space", async () => {
+  const gate = new NativeOperationGate({
+    async selectSpace() {},
+    async ensureSession() {
+      throw new Error("not used");
+    },
+  });
+
+  await assert.rejects(
+    () => gate.withSpace(7, () => gate.withSpace(8, async () => undefined)),
+    /cannot select space 8 while space 7 is active/,
+  );
+  assert.equal(await gate.withSpace(9, async () => "recovered"), "recovered");
+});

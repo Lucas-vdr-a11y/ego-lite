@@ -171,6 +171,39 @@ export function isEgoUserControlError(err: unknown): boolean {
 }
 
 /**
+ * Probe control without turning the expected user-control response into a hard
+ * stop. Ego bindings can report failures either by rejecting or by resolving an
+ * `{ error, error_code }` object, so both paths must be inspected here.
+ */
+export async function probeAgentControl(
+  invokeSnapshot: () => unknown | Promise<unknown>,
+): Promise<boolean> {
+  let result: unknown;
+  try {
+    result = await invokeSnapshot();
+  } catch (error) {
+    if (isEgoUserControlError(error)) return false;
+    throw error;
+  }
+  if (isResolvedEgoError(result)) {
+    if (isEgoUserControlError(result)) return false;
+    throw buildEgoError(result);
+  }
+  return true;
+}
+
+function isResolvedEgoError(
+  value: unknown,
+): value is { error: unknown; error_code?: unknown } {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    "error" in value &&
+    (value as { error?: unknown }).error != null
+  );
+}
+
+/**
  * Codes that halt the whole agent task rather than mark a routable obstacle: a task
  * space the user has taken back, or one that is inactive / not assigned to this agent.
  * Both require the user to explicitly hand control back before work can resume.

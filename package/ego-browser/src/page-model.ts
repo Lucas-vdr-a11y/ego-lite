@@ -69,7 +69,7 @@ import {
   type PageWaitForURLOptions,
 } from "./driver/page-waits.js";
 import { ElementResolutionError } from "./element-resolver.js";
-import { invokeEgo, isEgoUserControlError } from "./ego-errors.js";
+import { invokeEgo, probeAgentControl } from "./ego-errors.js";
 import {
   withPage as defaultWithPage,
   withSpace as defaultWithSpace,
@@ -77,6 +77,7 @@ import {
 } from "./native-gate.js";
 import {
   PageLedgerStore,
+  runtimeInstanceId,
   type ManagedPage,
   type PageLedger,
   type PageOrigin,
@@ -557,15 +558,11 @@ const baseDefaultServices: Omit<PageModelServices, "ledger" | "pageBudget"> = {
     return result?.tabs || result?.targetInfos || [];
   },
   async probeAgentControl() {
-    try {
-      // Use the native probe directly. snapshotRaw turns user control into a
-      // hard-stop output signal, while waiting for that state is intentional.
-      await browserEgo().snapshot({ maxResultLength: 1 });
-      return true;
-    } catch (error) {
-      if (isEgoUserControlError(error)) return false;
-      throw error;
-    }
+    // Do not route this through invokeEgo: observing user control is the
+    // expected waiting state, not a hard-stop signal.
+    return probeAgentControl(() =>
+      browserEgo().snapshot({ maxResultLength: 1 }),
+    );
   },
   async handOffTaskSpace() {
     const ego = browserEgo();
@@ -636,7 +633,9 @@ export function createTaskSpaceHandle(
   // Ego Lite imports the SDK before it evaluates the submitted script. Resolve
   // environment-backed settings lazily so SDK callers can configure a round
   // before their first taskSpace() call.
-  defaultLedger ||= new PageLedgerStore();
+  defaultLedger ||= new PageLedgerStore({
+    browserInstanceId: runtimeInstanceId,
+  });
   const services = {
     ...baseDefaultServices,
     ledger: defaultLedger,
@@ -1360,10 +1359,13 @@ class Page {
           ),
         );
       }, timeoutMs);
+      for (const notice of peekUnhandledPageNotices()) onNotice(notice);
 
       // Resolve the source after arming the listener. A stale Page should fail
       // the waiter, but no popup may be lost while that validation is pending.
-      void this.#resolve().catch((error) => finish(() => reject(error)));
+      if (!settled) {
+        void this.#resolve().catch((error) => finish(() => reject(error)));
+      }
     });
   }
 
@@ -2287,40 +2289,23 @@ async function evaluateInSession<T>(
   }
 
   const source = expression.toString();
-  const owner = await services.cdp(
+  const response = await services.cdp(
     "Runtime.evaluate",
     {
-      expression: "globalThis",
-      returnByValue: false,
+      expression: `(async function __egoPageEvaluate() {
+        return await ${pageFunctionCallExpression(
+          source,
+          hasArgument,
+          serializedArgument,
+        )};
+      })()`,
+      returnByValue: true,
+      awaitPromise: true,
     },
     sessionId,
     timeoutMs,
   );
-  const objectId = owner?.result?.objectId;
-  if (typeof objectId !== "string" || objectId.length === 0) {
-    throw new Error("page.evaluate could not resolve the page global object");
-  }
-  try {
-    const response = await services.cdp(
-      "Runtime.callFunctionOn",
-      {
-        objectId,
-        functionDeclaration: hasArgument
-          ? `function(argument) { return (${source})(argument); }`
-          : `function() { return (${source})(); }`,
-        arguments: hasArgument ? [{ value: serializedArgument }] : [],
-        returnByValue: true,
-        awaitPromise: true,
-      },
-      sessionId,
-      timeoutMs,
-    );
-    return runtimeValue(response, source) as T;
-  } finally {
-    await services
-      .cdp("Runtime.releaseObject", { objectId }, sessionId)
-      .catch(() => {});
-  }
+  return runtimeValue(response, source) as T;
 }
 
 function validateEvaluateInput(
@@ -2365,8 +2350,21 @@ function waitForFunctionExpression(
     return `(async function __egoWaitForFunction() { return { matched: Boolean(await (${expression})), url: location.href, title: document.title }; })()`;
   }
   const source = expression.toString();
-  const argument = hasArgument ? JSON.stringify(serializedArgument) : "";
-  return `(async function __egoWaitForFunction() { return { matched: Boolean(await (${source})(${argument})), url: location.href, title: document.title }; })()`;
+  return `(async function __egoWaitForFunction() { return { matched: Boolean(await ${pageFunctionCallExpression(
+    source,
+    hasArgument,
+    serializedArgument,
+  )}), url: location.href, title: document.title }; })()`;
+}
+
+function pageFunctionCallExpression(
+  source: string,
+  hasArgument: boolean,
+  serializedArgument: unknown,
+): string {
+  if (!hasArgument) return `(${source})()`;
+  const json = JSON.stringify(serializedArgument);
+  return `(${source})(JSON.parse(${JSON.stringify(json)}))`;
 }
 
 function isWaitForFunctionState(
@@ -2434,9 +2432,6 @@ function serializeJsonValue(value: unknown, message: string): unknown {
   try {
     const json = JSON.stringify(value, (_key, item) => {
       if (
-        typeof item === "undefined" ||
-        typeof item === "function" ||
-        typeof item === "symbol" ||
         typeof item === "bigint" ||
         (typeof item === "number" && !Number.isFinite(item))
       ) {

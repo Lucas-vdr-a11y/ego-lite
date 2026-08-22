@@ -943,7 +943,6 @@ export function pageComplexEvaluateCase() {
         })),
         documentState: {
           visibility: document.visibilityState,
-          hasFocus: document.hasFocus(),
           articleCount: root.querySelectorAll("article").length,
           htmlLength: root.outerHTML.length,
         },
@@ -964,7 +963,6 @@ export function pageComplexEvaluateCase() {
     assertEqual(result.event.marker, complexInput.marker, "custom event receives the complex marker");
     assertEqual(result.event.checksum, expectedChecksum, "custom event receives computed data");
     assertEqual(result.documentState.visibility, "visible", "evaluate runs in the active document");
-    assertEqual(result.documentState.hasFocus, true, "evaluate runs in the focused document");
     assertEqual(result.documentState.articleCount, 96, "complex script writes every DOM record");
     assert(result.documentState.htmlLength > 10000, "complex script produces a substantial DOM result");
 

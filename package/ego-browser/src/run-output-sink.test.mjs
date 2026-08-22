@@ -100,7 +100,7 @@ test("round console methods share the buffered output channel", async () => {
   assert.equal(result.exitCode, 0);
   assert.equal(
     result.stdout,
-    'plain {"value":1}\ninfo\n[warn] careful\n[error] broken\nlegacy\n',
+    "plain { value: 1 }\ninfo\n[warn] careful\n[error] broken\nlegacy\n",
   );
 });
 

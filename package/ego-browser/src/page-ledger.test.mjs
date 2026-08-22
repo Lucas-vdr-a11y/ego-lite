@@ -1,10 +1,18 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { PageLedgerStore } from "../dist/src/page-ledger.js";
+import { PageLedgerStore, runtimeInstanceId } from "../dist/src/page-ledger.js";
+
+test("runtimeInstanceId is stable for the current Ego Lite browser host", async () => {
+  const first = await runtimeInstanceId();
+  const second = await runtimeInstanceId();
+
+  assert.equal(second, first);
+  assert.match(first, new RegExp(`^browser-host:${process.ppid}:[^:]+`));
+});
 
 async function withTempLedger(fn) {
   const rootDir = await mkdtemp(join(tmpdir(), "ego-page-ledger-test-"));
@@ -34,6 +42,68 @@ test("page labels survive a new process and are never reused", async () => {
 
     const next = await secondRound.addPage(7, "target-b");
     assert.equal(next.label, "p2");
+  });
+});
+
+test("a reused space id starts conservatively in a new browser instance", async () => {
+  await withTempLedger(async (rootDir) => {
+    const firstBrowser = new PageLedgerStore({
+      rootDir,
+      browserInstanceId: "browser-a",
+    });
+    await firstBrowser.addPage(7, "target-from-browser-a");
+
+    const secondBrowser = new PageLedgerStore({
+      rootDir,
+      browserInstanceId: "browser-b",
+    });
+    const fresh = await secondBrowser.read(7);
+    assert.equal(fresh.initialized, false);
+    assert.deepEqual(fresh.pages, {});
+
+    const baseline = await secondBrowser.reconcile(7, ["target-existing"], {
+      autoAdoptNew: true,
+    });
+    assert.deepEqual(baseline.pages, {});
+    assert.equal(baseline.unmanagedTargets["target-existing"], "unknown");
+
+    const persisted = JSON.parse(
+      await readFile(join(rootDir, "space-7.json"), "utf8"),
+    );
+    assert.equal(persisted.browserInstanceId, "browser-b");
+  });
+});
+
+test("expired ledgers from other browser instances are removed", async () => {
+  await withTempLedger(async (rootDir) => {
+    const stalePath = join(rootDir, "space-99.json");
+    await writeFile(
+      stalePath,
+      JSON.stringify({
+        browserInstanceId: "browser-a",
+        spaceId: 99,
+        nextLabel: 1,
+        usedLabels: [],
+        releasedLabels: [],
+        initialized: true,
+        userControlPending: false,
+        unmanagedTargets: {},
+        pages: {},
+      }),
+    );
+    await utimes(stalePath, new Date(0), new Date(0));
+
+    const secondBrowser = new PageLedgerStore({
+      rootDir,
+      browserInstanceId: "browser-b",
+      staleAfterMs: 1_000,
+      now: () => 10_000,
+    });
+    await secondBrowser.read(7);
+
+    await assert.rejects(() => readFile(stalePath, "utf8"), {
+      code: "ENOENT",
+    });
   });
 });
 

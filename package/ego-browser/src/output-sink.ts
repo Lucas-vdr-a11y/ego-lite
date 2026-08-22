@@ -1,3 +1,5 @@
+import { writeSync } from "node:fs";
+
 import { formatCliLogValue } from "./format.js";
 import {
   consumeUnhandledPageNotices,
@@ -12,7 +14,10 @@ import {
  * round-local; reset functions exist only for in-process tests.
  */
 
-type WritableLike = { write(chunk: string): unknown };
+type WritableLike = { write(chunk: string): unknown; fd?: number };
+type LifecycleLike = {
+  on(event: "beforeExit" | "exit", listener: () => void): unknown;
+};
 
 export type RoundConsole = Pick<Console, "log" | "info" | "warn" | "error">;
 
@@ -115,9 +120,21 @@ function oneLine(value: string): string {
  * stays silent and lets the propagating Error surface the message). The stream still
  * accepts writes in both events, so the same `stream` serves both. Registered once.
  */
-export function installLifecycleFlush(stream: WritableLike): void {
+export function installLifecycleFlush(
+  stream: WritableLike,
+  lifecycle: LifecycleLike = process,
+): void {
   if (lifecycleHooked) return;
   lifecycleHooked = true;
-  process.on("beforeExit", () => flushSink(stream, false));
-  process.on("exit", () => flushSink(stream, true));
+  const writer = Number.isInteger(stream.fd)
+    ? {
+        write(chunk: string) {
+          // `exit` cannot wait for a piped Writable to drain. A synchronous fd
+          // write preserves the final buffered lines on both lifecycle paths.
+          writeSync(stream.fd!, chunk);
+        },
+      }
+    : stream;
+  lifecycle.on("beforeExit", () => flushSink(writer, false));
+  lifecycle.on("exit", () => flushSink(writer, true));
 }

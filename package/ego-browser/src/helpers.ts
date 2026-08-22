@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { setOverrides, state } from "./state.js";
-import { invokeEgo, isEgoUserControlError } from "./ego-errors.js";
+import { invokeEgo, probeAgentControl } from "./ego-errors.js";
 import { help as helpRuntime, formatHelp } from "./help-runtime.js";
 import { validatePublicApiOptions } from "./public-api-schema.js";
 import { createStaleEgoBrowserGuard } from "./skill-migration.js";
@@ -432,16 +432,10 @@ export async function takeOverTaskSpace(nameOrId?: string | number) {
  * (task not found, internal errors) propagate so the caller fails fast instead
  * of busy-looping until timeout.
  */
-async function probeAgentControl() {
+async function probeCurrentAgentControl() {
   const ego = globalThis.ego;
   if (!ego || typeof ego.snapshot !== "function") return false;
-  try {
-    await ego.snapshot({ maxResultLength: 1 });
-    return true;
-  } catch (err) {
-    if (isEgoUserControlError(err)) return false;
-    throw err;
-  }
+  return probeAgentControl(() => ego.snapshot({ maxResultLength: 1 }));
 }
 
 /**
@@ -471,7 +465,7 @@ export async function waitForAgentControl(
   const timeout = typeof options.timeout === "number" ? options.timeout : 600;
   const deadline = Date.now() + timeout * 1000;
   while (true) {
-    if (await probeAgentControl()) return;
+    if (await probeCurrentAgentControl()) return;
     if (Date.now() >= deadline) {
       throw new Error(`waitForAgentControl timed out after ${timeout}s`);
     }

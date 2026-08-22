@@ -1096,6 +1096,33 @@ test("waitForAgentControl retries while snapshot reports user control", async ()
   assert.equal(calls, 3);
 });
 
+test("waitForAgentControl retries when snapshot resolves a user-control error", async () => {
+  const restore = helperExports.__testing.setOverrides({
+    sleep: () => Promise.resolve(),
+  });
+  let calls = 0;
+  try {
+    await withEgo(
+      taskSpaceEgo(async () => {
+        calls += 1;
+        if (calls < 3) {
+          return {
+            error: "manual_takeover",
+            error_code: "EGO_TASK_SPACE_USER_IN_CONTROL",
+          };
+        }
+        return { content: "" };
+      }),
+      async () => {
+        await waitForAgentControl("t", { interval: 0, timeout: 5 });
+      },
+    );
+  } finally {
+    restore();
+  }
+  assert.equal(calls, 3);
+});
+
 test("waitForAgentControl propagates non-user-control snapshot errors", async () => {
   await withEgo(
     taskSpaceEgo(async () => {

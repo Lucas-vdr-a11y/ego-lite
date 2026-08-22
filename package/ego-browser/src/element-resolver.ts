@@ -8,6 +8,15 @@ type PageRuntimeContext = {
   contextId?: number;
 };
 
+export type LocatorBackendCandidate = {
+  index: number;
+  locator: string;
+  backendNodeId: number;
+  frameId?: string;
+};
+
+let snapshotLocatorBatchSequence = 0;
+
 export class ElementResolutionError extends Error {
   kind: "transient" | "permanent";
   constructor(message: string, kind: "transient" | "permanent") {
@@ -238,6 +247,273 @@ export async function resolveElementObjectId(
   throw new ElementResolutionError(
     `Element not found: ${selectorOrRef}`,
     "transient",
+  );
+}
+
+/**
+ * Validate many native snapshot locators together. DOM locator counts are
+ * queried once per execution context, matching nodes are described in
+ * parallel, and one object group releases every temporary handle.
+ */
+export async function validateLocatorBackendNodes(
+  cdp,
+  sessionId: string,
+  iframeSessions: Map<string, string>,
+  candidates: LocatorBackendCandidate[],
+): Promise<Set<number>> {
+  const parsed = candidates
+    .map((candidate) => ({
+      candidate,
+      locator: parseLocator(candidate.locator),
+    }))
+    .filter((entry) => entry.locator);
+  const roleCandidates = parsed.filter(
+    (entry) => entry.locator.kind === "role",
+  );
+  const domCandidates = parsed.filter((entry) => entry.locator.kind !== "role");
+
+  const [roleMatches, domMatches] = await Promise.all([
+    validateRoleLocatorBackendNodes(
+      cdp,
+      sessionId,
+      iframeSessions,
+      roleCandidates,
+    ),
+    validateDomLocatorBackendNodes(
+      cdp,
+      sessionId,
+      iframeSessions,
+      domCandidates,
+    ),
+  ]);
+  return new Set([...roleMatches, ...domMatches]);
+}
+
+async function validateRoleLocatorBackendNodes(
+  cdp,
+  sessionId,
+  iframeSessions,
+  entries,
+): Promise<Set<number>> {
+  const valid = new Set<number>();
+  if (entries.length === 0) return valid;
+  const contexts = pageContexts(sessionId, iframeSessions);
+  let trees;
+  try {
+    trees = await Promise.all(
+      contexts.map((context) =>
+        send(
+          cdp,
+          "Accessibility.getFullAXTree",
+          context.frameId ? { frameId: context.frameId } : {},
+          context.sessionId,
+        ),
+      ),
+    );
+  } catch {
+    return valid;
+  }
+
+  for (const entry of entries) {
+    const matchesIn = (contextIndex: number) => {
+      const context = contexts[contextIndex];
+      return (trees[contextIndex]?.nodes || [])
+        .filter(
+          (node) =>
+            !node.ignored &&
+            normalizeRole(extractAxString(node.role)) === entry.locator.role &&
+            extractAxString(node.name) === entry.locator.name &&
+            Number.isInteger(node.backendDOMNodeId),
+        )
+        .map((node) => ({
+          backendNodeId: node.backendDOMNodeId,
+          frameId: context.frameId,
+          sessionId: context.sessionId,
+        }));
+    };
+    const rawMain = matchesIn(0);
+    const frameMatches = contexts
+      .slice(1)
+      .flatMap((_, offset) => matchesIn(offset + 1));
+    const framedNodeKeys = new Set(
+      frameMatches
+        .filter((match) => match.frameId)
+        .map((match) => `${match.sessionId}\u0000${match.backendNodeId}`),
+    );
+    const matches = [
+      ...rawMain.filter(
+        (match) =>
+          !framedNodeKeys.has(`${match.sessionId}\u0000${match.backendNodeId}`),
+      ),
+      ...frameMatches,
+    ];
+    if (
+      matches.length === 1 &&
+      matches[0].backendNodeId === entry.candidate.backendNodeId &&
+      locatorContextMatchesCandidate(
+        matches[0],
+        entry.candidate,
+        sessionId,
+        iframeSessions,
+      )
+    ) {
+      valid.add(entry.candidate.index);
+    }
+  }
+  return valid;
+}
+
+async function validateDomLocatorBackendNodes(
+  cdp,
+  sessionId,
+  iframeSessions,
+  entries,
+): Promise<Set<number>> {
+  const valid = new Set<number>();
+  if (entries.length === 0) return valid;
+
+  let contexts: PageRuntimeContext[];
+  let countsByContext: number[][];
+  try {
+    contexts = await runtimePageContexts(cdp, sessionId, iframeSessions);
+    countsByContext = await Promise.all(
+      contexts.map(async (context) => {
+        const result = await evaluateInContext(
+          cdp,
+          context,
+          buildBatchLocatorCountJs(entries.map((entry) => entry.locator)),
+          true,
+        );
+        const counts = result.result?.value;
+        if (
+          result.exceptionDetails ||
+          !Array.isArray(counts) ||
+          counts.length !== entries.length ||
+          counts.some((count) => !Number.isInteger(count) || count < -1)
+        ) {
+          throw new Error("invalid batched locator count result");
+        }
+        return counts;
+      }),
+    );
+  } catch {
+    return valid;
+  }
+
+  const contextForEntry = entries.map((_, entryIndex) => {
+    let total = 0;
+    let matchedContext = -1;
+    for (let contextIndex = 0; contextIndex < contexts.length; contextIndex++) {
+      const count = countsByContext[contextIndex][entryIndex];
+      if (count < 0) return -1;
+      total += count;
+      if (count === 1) matchedContext = contextIndex;
+    }
+    return total === 1 ? matchedContext : -1;
+  });
+  const objectGroup = `ego-browser-snapshot-locators-${++snapshotLocatorBatchSequence}`;
+  const usedSessions = new Set<string>();
+
+  try {
+    const resolved = (
+      await Promise.all(
+        contexts.map(async (context, contextIndex) => {
+          const localEntries = entries
+            .map((entry, entryIndex) => ({ entry, entryIndex }))
+            .filter(
+              ({ entryIndex }) => contextForEntry[entryIndex] === contextIndex,
+            );
+          if (localEntries.length === 0) return [];
+          usedSessions.add(context.sessionId);
+          try {
+            const evaluated = await evaluateInContext(
+              cdp,
+              context,
+              buildBatchLocatorObjectsJs(
+                localEntries.map(({ entry }) => entry.locator),
+              ),
+              false,
+              objectGroup,
+            );
+            const batchObjectId = evaluated.result?.objectId;
+            if (!batchObjectId || evaluated.exceptionDetails) return [];
+            const properties = await send(
+              cdp,
+              "Runtime.getProperties",
+              { objectId: batchObjectId, ownProperties: true },
+              context.sessionId,
+            );
+            return localEntries.flatMap(({ entry }, localIndex) => {
+              const property = (properties.result || []).find(
+                (candidate) => candidate.name === String(localIndex),
+              );
+              const objectId = property?.value?.objectId;
+              return objectId ? [{ entry, context, objectId }] : [];
+            });
+          } catch {
+            return [];
+          }
+        }),
+      )
+    ).flat();
+
+    await Promise.all(
+      resolved.map(async ({ entry, context, objectId }) => {
+        try {
+          const described = await send(
+            cdp,
+            "DOM.describeNode",
+            { objectId, depth: 0 },
+            context.sessionId,
+          );
+          if (
+            described?.node?.backendNodeId === entry.candidate.backendNodeId &&
+            locatorContextMatchesCandidate(
+              context,
+              entry.candidate,
+              sessionId,
+              iframeSessions,
+            )
+          ) {
+            valid.add(entry.candidate.index);
+          }
+        } catch {
+          // A stale node is unsafe to advertise as a stable locator.
+        }
+      }),
+    );
+  } finally {
+    await Promise.all(
+      [...usedSessions].map((candidateSessionId) =>
+        send(
+          cdp,
+          "Runtime.releaseObjectGroup",
+          { objectGroup },
+          candidateSessionId,
+        ).catch(() => {}),
+      ),
+    );
+  }
+  return valid;
+}
+
+function locatorContextMatchesCandidate(
+  context,
+  candidate,
+  pageSessionId,
+  iframeSessions,
+): boolean {
+  if (!candidate.frameId) return true;
+  const expectedSessionId = resolveFrameSession(
+    candidate.frameId,
+    pageSessionId,
+    iframeSessions,
+  );
+  const expectedFrameId =
+    expectedSessionId === pageSessionId ? candidate.frameId : undefined;
+  return (
+    context.sessionId === expectedSessionId &&
+    context.frameId === expectedFrameId
   );
 }
 
@@ -1328,6 +1604,31 @@ function buildLocatorCountJs(locator) {
     return `(() => ${textElementsJs(locator)}.length)()`;
   }
   return `(() => ${hrefElementsJs(locator.href)}.length)()`;
+}
+
+function buildBatchLocatorCountJs(locators) {
+  const queries = locators
+    .map(
+      (locator) =>
+        `() => Array.from(${buildLocatorElementsJs(locator)} || []).length`,
+    )
+    .join(",\n");
+  return `(() => {
+            const queries = [${queries}];
+            return queries.map((query) => {
+              try {
+                return query();
+              } catch {
+                return -1;
+              }
+            });
+          })()`;
+}
+
+function buildBatchLocatorObjectsJs(locators) {
+  return `(() => [${locators
+    .map((locator) => buildLocatorFindJs(locator))
+    .join(",\n")}])()`;
 }
 
 function buildLocatorElementsJs(locator) {

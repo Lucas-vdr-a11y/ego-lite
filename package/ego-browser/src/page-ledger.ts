@@ -1,5 +1,14 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import {
+  mkdir,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -15,6 +24,7 @@ export type ManagedPage = PageLedgerEntry & {
 };
 
 export type PageLedger = {
+  browserInstanceId?: string;
   spaceId: number;
   nextLabel: number;
   usedLabels: string[];
@@ -27,7 +37,48 @@ export type PageLedger = {
 
 type PageLedgerStoreOptions = {
   rootDir?: string;
+  browserInstanceId?: string | (() => string | Promise<string>);
+  staleAfterMs?: number;
+  now?: () => number;
 };
+
+const DEFAULT_STALE_AFTER_MS = 30 * 24 * 60 * 60 * 1000;
+let runtimeInstanceIdPromise: Promise<string> | undefined;
+
+/** Stable across Agent rounds and Node-service restarts in one Ego Lite run. */
+export function runtimeInstanceId(): Promise<string> {
+  runtimeInstanceIdPromise ||= browserHostInstanceId();
+  return runtimeInstanceIdPromise;
+}
+
+async function browserHostInstanceId(): Promise<string> {
+  const parentPid = process.ppid;
+  const startedAt = await processStartToken(parentPid);
+  return `browser-host:${parentPid}:${startedAt || "unknown"}`;
+}
+
+async function processStartToken(pid: number): Promise<string | undefined> {
+  if (process.platform === "win32") return undefined;
+  return new Promise((resolve) => {
+    execFile(
+      "ps",
+      ["-o", "lstart=", "-p", String(pid)],
+      {
+        encoding: "utf8",
+        env: { ...process.env, LC_ALL: "C" },
+        timeout: 1_000,
+      },
+      (error, stdout) => {
+        if (error) {
+          resolve(undefined);
+          return;
+        }
+        const token = stdout.trim().replace(/\s+/g, "_");
+        resolve(token || undefined);
+      },
+    );
+  });
+}
 
 type AddPageOptions = {
   as?: string;
@@ -47,13 +98,27 @@ type ReconcileOptions = {
 export class PageLedgerStore {
   readonly rootDir: string;
   readonly #writeToken = randomUUID();
+  readonly #browserInstanceId?: string | (() => string | Promise<string>);
+  readonly #staleAfterMs: number;
+  readonly #now: () => number;
   #temporarySequence = 0;
+  #resolvedBrowserInstanceId?: Promise<string | undefined>;
+  #cleanup?: Promise<void>;
 
   constructor(options: PageLedgerStoreOptions = {}) {
     this.rootDir =
       options.rootDir ||
       process.env.EGO_BROWSER_STATE_DIR ||
       join(homedir(), ".ego-browser", "state");
+    this.#browserInstanceId = options.browserInstanceId;
+    this.#staleAfterMs =
+      options.staleAfterMs === undefined
+        ? DEFAULT_STALE_AFTER_MS
+        : options.staleAfterMs;
+    this.#now = options.now || Date.now;
+    if (!Number.isFinite(this.#staleAfterMs) || this.#staleAfterMs < 0) {
+      throw new TypeError("staleAfterMs must be a non-negative number");
+    }
   }
 
   async read(spaceId: number): Promise<PageLedger> {
@@ -292,12 +357,16 @@ export class PageLedgerStore {
   }
 
   async #readCurrent(spaceId: number): Promise<PageLedger> {
+    const browserInstanceId = await this.#currentBrowserInstanceId();
+    await this.#cleanupExpiredLedgers(browserInstanceId);
     const path = this.#path(spaceId);
     let raw: string;
     try {
       raw = await readFile(path, "utf8");
     } catch (error) {
-      if (error?.code === "ENOENT") return emptyLedger(spaceId);
+      if (error?.code === "ENOENT") {
+        return emptyLedger(spaceId, browserInstanceId);
+      }
       throw error;
     }
     let parsed: unknown;
@@ -306,7 +375,71 @@ export class PageLedgerStore {
     } catch (error) {
       throw new Error(`invalid page ledger ${path}: ${error.message}`);
     }
+    if (
+      browserInstanceId !== undefined &&
+      ledgerBrowserInstanceId(parsed) !== browserInstanceId
+    ) {
+      return emptyLedger(spaceId, browserInstanceId);
+    }
     return validateLedger(parsed, spaceId, path);
+  }
+
+  async #currentBrowserInstanceId(): Promise<string | undefined> {
+    this.#resolvedBrowserInstanceId ||= Promise.resolve(
+      typeof this.#browserInstanceId === "function"
+        ? this.#browserInstanceId()
+        : this.#browserInstanceId,
+    ).then((value) => {
+      if (value === undefined) return undefined;
+      if (typeof value !== "string" || value.length === 0) {
+        throw new TypeError("browserInstanceId must be a non-empty string");
+      }
+      return value;
+    });
+    return this.#resolvedBrowserInstanceId;
+  }
+
+  async #cleanupExpiredLedgers(
+    browserInstanceId: string | undefined,
+  ): Promise<void> {
+    if (browserInstanceId === undefined) return;
+    this.#cleanup ||= this.#removeExpiredLedgers(browserInstanceId);
+    await this.#cleanup;
+  }
+
+  async #removeExpiredLedgers(browserInstanceId: string): Promise<void> {
+    let names: string[];
+    try {
+      names = await readdir(this.rootDir);
+    } catch (error) {
+      if (error?.code === "ENOENT") return;
+      throw error;
+    }
+    await Promise.all(
+      names
+        .filter((name) => /^space-\d+\.json$/.test(name))
+        .map(async (name) => {
+          const path = join(this.rootDir, name);
+          const metadata = await stat(path).catch(() => undefined);
+          if (
+            !metadata ||
+            this.#now() - metadata.mtimeMs < this.#staleAfterMs
+          ) {
+            return;
+          }
+          let storedInstanceId: string | undefined;
+          try {
+            storedInstanceId = ledgerBrowserInstanceId(
+              JSON.parse(await readFile(path, "utf8")),
+            );
+          } catch {
+            // An expired unreadable ledger cannot belong to the active browser.
+          }
+          if (storedInstanceId !== browserInstanceId) {
+            await rm(path, { force: true });
+          }
+        }),
+    );
   }
 
   async #writeAtomic(spaceId: number, ledger: PageLedger): Promise<void> {
@@ -329,8 +462,9 @@ export class PageLedgerStore {
   }
 }
 
-function emptyLedger(spaceId: number): PageLedger {
+function emptyLedger(spaceId: number, browserInstanceId?: string): PageLedger {
   return {
+    ...(browserInstanceId ? { browserInstanceId } : {}),
     spaceId,
     nextLabel: 1,
     usedLabels: [],
@@ -340,6 +474,17 @@ function emptyLedger(spaceId: number): PageLedger {
     unmanagedTargets: {},
     pages: {},
   };
+}
+
+function ledgerBrowserInstanceId(value: unknown): string | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const browserInstanceId = (value as { browserInstanceId?: unknown })
+    .browserInstanceId;
+  return typeof browserInstanceId === "string" && browserInstanceId.length > 0
+    ? browserInstanceId
+    : undefined;
 }
 
 function nextAutomaticLabel(ledger: PageLedger, used: Set<string>): string {
@@ -373,6 +518,9 @@ function validateLedger(
     (legacyHandoffBaseline !== undefined && legacyHandoffBaseline !== null);
   const unmanagedTargets = stored.unmanagedTargets ?? {};
   if (
+    (stored.browserInstanceId !== undefined &&
+      (typeof stored.browserInstanceId !== "string" ||
+        stored.browserInstanceId.length === 0)) ||
     stored.spaceId !== expectedSpaceId ||
     !Number.isInteger(stored.nextLabel) ||
     stored.nextLabel < 1 ||
@@ -434,6 +582,9 @@ function validateLedger(
     ]),
   );
   return {
+    ...(stored.browserInstanceId
+      ? { browserInstanceId: stored.browserInstanceId }
+      : {}),
     spaceId: stored.spaceId,
     nextLabel: stored.nextLabel,
     usedLabels: [...stored.usedLabels],

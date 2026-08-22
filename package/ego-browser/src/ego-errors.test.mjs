@@ -6,8 +6,38 @@ import {
   invokeEgo,
   isEgoErrorCode,
   isEgoUserControlError,
+  probeAgentControl,
   resolveEgoError,
 } from "../dist/src/ego-errors.js";
+
+test("probeAgentControl treats both native user-control shapes as waiting", async () => {
+  assert.equal(
+    await probeAgentControl(async () => ({
+      error: "manual_takeover",
+      error_code: "EGO_TASK_SPACE_USER_IN_CONTROL",
+    })),
+    false,
+  );
+  assert.equal(
+    await probeAgentControl(async () => {
+      throw Object.assign(new Error("manual_takeover"), {
+        error_code: "EGO_TASK_SPACE_USER_IN_CONTROL",
+      });
+    }),
+    false,
+  );
+});
+
+test("probeAgentControl propagates non-user-control native errors", async () => {
+  await assert.rejects(
+    () =>
+      probeAgentControl(async () => ({
+        error: "renderer failed",
+        error_code: "EGO_SNAPSHOT_FAILED",
+      })),
+    /renderer failed/,
+  );
+});
 
 test("invokeEgo recognizes a permission reason from a resolved native error", async () => {
   await assert.rejects(

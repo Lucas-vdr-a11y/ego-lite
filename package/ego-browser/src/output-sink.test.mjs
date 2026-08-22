@@ -1,9 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
+import { mkdtemp, open, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
   bufferOutput,
   flushSink,
+  installLifecycleFlush,
   markHardStop,
   resetSink,
 } from "../dist/src/output-sink.js";
@@ -11,6 +16,33 @@ import {
   markPageObserved,
   recordUnhandledPage,
 } from "../dist/src/page-discovery.js";
+
+test("lifecycle flush writes synchronously when stdout exposes an fd", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "ego-output-sink-test-"));
+  const path = join(directory, "stdout.txt");
+  const file = await open(path, "w");
+  const lifecycle = new EventEmitter();
+  try {
+    resetSink();
+    bufferOutput("tail output\n");
+    installLifecycleFlush(
+      {
+        fd: file.fd,
+        write() {
+          throw new Error("asynchronous write should not be used");
+        },
+      },
+      lifecycle,
+    );
+
+    lifecycle.emit("exit");
+    await file.sync();
+    assert.equal(await readFile(path, "utf8"), "tail output\n");
+  } finally {
+    await file.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 function fakeStream() {
   const chunks = [];

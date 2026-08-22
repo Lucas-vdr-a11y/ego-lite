@@ -1,12 +1,12 @@
+import { inspect } from "node:util";
+
 export function formatCliLogValue(value: unknown) {
   if (typeof value === "string") {
     return value;
   }
-  if (typeof value === "bigint") {
-    return `${value}n`;
-  }
-  if (value === undefined) {
-    return "undefined";
-  }
-  return JSON.stringify(value);
+  return inspect(value, {
+    depth: 6,
+    breakLength: Infinity,
+    compact: true,
+  });
 }

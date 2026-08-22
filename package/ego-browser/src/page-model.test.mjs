@@ -125,6 +125,67 @@ function createFixture(rootDir) {
       if (method === "Runtime.evaluate") {
         const targetId = targetForSession(sessionId);
         const tab = tabs.get(targetId);
+        if (params.expression.includes("__egoPageEvaluate")) {
+          if (params.expression.includes("missingClosureForE2E")) {
+            return {
+              result: {
+                type: "object",
+                subtype: "error",
+                description:
+                  "ReferenceError: missingClosureForE2E is not defined",
+              },
+              exceptionDetails: {
+                text: "Uncaught",
+                lineNumber: 0,
+                columnNumber: 0,
+              },
+            };
+          }
+          const match = /JSON\.parse\(("(?:\\.|[^"\\])*")\)/.exec(
+            params.expression,
+          );
+          const argument = match ? JSON.parse(JSON.parse(match[1])) : undefined;
+          if (params.expression.includes("window.fetch")) {
+            if (fetchFailure) {
+              const message = fetchFailure;
+              fetchFailure = null;
+              return {
+                result: {
+                  type: "object",
+                  value: { fetchError: message },
+                },
+              };
+            }
+            const binary = argument?.responseType === "base64";
+            return {
+              result: {
+                type: "object",
+                value: {
+                  ok: false,
+                  status: 418,
+                  statusText: "I'm a Teapot",
+                  url: "https://example.test/api/teapot",
+                  headers: {
+                    "content-type": "text/plain",
+                    "x-fixture": "page-fetch",
+                  },
+                  ...(binary
+                    ? {
+                        bodyBase64:
+                          Buffer.from("\x89PNG\r\n\x1a\n").toString("base64"),
+                      }
+                    : { body: "short and stout" }),
+                },
+              },
+            };
+          }
+          return {
+            result: {
+              type: "object",
+              value: argument ?? null,
+            },
+          };
+        }
         if (params.expression.includes("__egoActionableMatches")) {
           return params.returnByValue === false
             ? {
@@ -952,7 +1013,7 @@ test("Page.waitForFunction polls one Page with one JSON argument", async () => {
         sessionId === "session:target-1",
     );
     assert.equal(probes.length, 3);
-    assert.match(probes[0][2].expression, /"selector":"#ready"/);
+    assert.match(probes[0][2].expression, /selector.*#ready/);
     assert(
       fixture.calls.some(
         ([kind, method, params]) =>
@@ -1464,13 +1525,21 @@ test("metadata reads stay target-scoped while evaluate and screenshot activate t
     assert(
       pageCalls.every(([, , , sessionId]) => sessionId === "session:target-1"),
     );
-    const callFunction = pageCalls.find(
-      ([kind, method]) => kind === "cdp" && method === "Runtime.callFunctionOn",
+    const pageEvaluation = pageCalls.find(
+      ([kind, method, params]) =>
+        kind === "cdp" &&
+        method === "Runtime.evaluate" &&
+        params.expression.includes("__egoPageEvaluate"),
     );
-    assert.deepEqual(callFunction[2].arguments, [
-      { value: { source: "first" } },
-    ]);
-    assert.match(callFunction[2].functionDeclaration, /value.*=> value/);
+    assert.match(pageEvaluation[2].expression, /value.*=> value/);
+    assert.match(pageEvaluation[2].expression, /source/);
+    assert.equal(
+      pageCalls.some(
+        ([kind, method]) =>
+          kind === "cdp" && method === "Runtime.callFunctionOn",
+      ),
+      false,
+    );
   });
 });
 
@@ -1493,6 +1562,32 @@ test("Page evaluate rejects ambiguous or non-serializable arguments", async () =
       () => page.evaluate(42),
       /expects a function or string expression/,
     );
+  });
+});
+
+test("Page evaluate follows JSON omission rules in one CDP request", async () => {
+  await withFixture(async (fixture) => {
+    const task = taskForRound(fixture, "round-a");
+    const page = await openTestPage(task, "https://example.test/evaluate");
+    fixture.calls.length = 0;
+
+    const result = await page.evaluate((value) => value, {
+      kept: 1,
+      omitted: undefined,
+      list: [undefined, "ready"],
+    });
+
+    assert.deepEqual(result, { kept: 1, list: [null, "ready"] });
+    const evaluationCalls = fixture.calls.filter(
+      ([kind, method]) =>
+        kind === "cdp" &&
+        (method === "Runtime.evaluate" ||
+          method === "Runtime.callFunctionOn" ||
+          method === "Runtime.releaseObject"),
+    );
+    assert.equal(evaluationCalls.length, 1);
+    assert.equal(evaluationCalls[0][1], "Runtime.evaluate");
+    assert.match(evaluationCalls[0][2].expression, /__egoPageEvaluate/);
   });
 });
 
@@ -1554,23 +1649,23 @@ test("Page fetch activates its target and returns a structured non-2xx response"
     const fetchCall = fixture.calls.find(
       ([kind, method, params]) =>
         kind === "cdp" &&
-        method === "Runtime.callFunctionOn" &&
-        params.functionDeclaration.includes("window.fetch"),
+        method === "Runtime.evaluate" &&
+        params.expression.includes("__egoPageEvaluate") &&
+        params.expression.includes("window.fetch"),
     );
-    assert.deepEqual(fetchCall[2].arguments, [
-      {
-        value: {
-          url: "/api/teapot",
-          options: {
-            method: "POST",
-            headers: { "x-request": "page-fetch" },
-            body: "payload",
-          },
-          timeoutMs: 250,
-          responseType: "text",
-        },
+    const argumentMatch = /JSON\.parse\(("(?:\\.|[^"\\])*")\)/.exec(
+      fetchCall[2].expression,
+    );
+    assert.deepEqual(JSON.parse(JSON.parse(argumentMatch[1])), {
+      url: "/api/teapot",
+      options: {
+        method: "POST",
+        headers: { "x-request": "page-fetch" },
+        body: "payload",
       },
-    ]);
+      timeoutMs: 250,
+      responseType: "text",
+    });
     assert.equal(fetchCall[3], "session:target-1");
     assert.equal(fetchCall[4], 1_250);
   });
@@ -2981,6 +3076,22 @@ test("Page.waitForEvent arms before a click and resolves the opened popup", asyn
     const popupPromise = source.waitForEvent("popup", { timeout: 1_000 });
     const receipt = await source.click("#open-popup");
     const popup = await popupPromise;
+
+    assert.equal(popup.label, receipt.popups[0].label);
+    assert.equal(await popup.url(), "https://example.test/popup");
+    assert.deepEqual(consumeUnhandledPageNotices(), []);
+  });
+});
+
+test("Page.waitForEvent replays a popup reported by the preceding action", async () => {
+  await withFixture(async (fixture) => {
+    resetPageNotices();
+    const task = taskForRound(fixture, "round-a");
+    const source = await openTestPage(task, "https://example.test/source");
+    fixture.openPopupOnNextClick("https://example.test/popup");
+
+    const receipt = await source.click("#open-popup");
+    const popup = await source.waitForEvent("popup", { timeout: 1_000 });
 
     assert.equal(popup.label, receipt.popups[0].label);
     assert.equal(await popup.url(), "https://example.test/popup");
