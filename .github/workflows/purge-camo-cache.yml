@@ -5,13 +5,17 @@ on:
     - cron: '0 0 * * *'
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   purge:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
+      # Safety net. The star-history workflow purges as soon as it publishes a
+      # new chart; this catches anything that missed (a skipped purge step, a
+      # camo entry repopulated by traffic in between).
       - name: Purge star-history camo cache from README
-        run: |
-          curl -sL "https://github.com/citrolabs/ego-lite/blob/main/README.md" \
-            | grep -Eo 'https://camo\.githubusercontent\.com/[a-zA-Z0-9/]+' \
-            | sort -u \
-            | xargs -I {} sh -c 'echo "Purging: {}" && curl -s -X PURGE "{}"'
+        run: bash .github/star-history/purge-camo.sh "$GITHUB_REPOSITORY" main
