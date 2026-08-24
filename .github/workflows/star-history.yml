@@ -5,6 +5,14 @@ on:
     # Daily at 04:17 UTC. Off the hour to avoid the top-of-hour Actions rush.
     - cron: '17 4 * * *'
   workflow_dispatch:
+    inputs:
+      force:
+        # The publish is normally gated on the star data moving, so a change to
+        # the SVG post-processing alone would not reach the branch until the
+        # next new star. This republishes from the restored chart on demand.
+        description: 'Republish even if the star data has not changed'
+        type: boolean
+        default: false
 
 # The stargazers API needs metadata:read + contents:write since GitHub's
 # 2026-06-30 restriction. The built-in token with contents:write covers both,
@@ -62,25 +70,26 @@ jobs:
           output-dir: ${{ env.CHART_DIR }}
           type: Date
           themes: light,dark
-          # Only reaches the PNG; the SVGs get their font from embed-font.py
+          # Only reaches the PNG; the SVGs get their font from postprocess-svg.py
           # below. Set so the two do not drift apart.
           font-family: Patrick Hand
           update-readme: false
           commit: false
 
-      # The action strips the @font-face, believing GitHub blocks it. It does
-      # not — see the note in embed-font.py. Without this the chart renders in
-      # the browser's fallback sans-serif instead of the star-history look.
-      - name: Embed chart font
-        if: steps.chart.outputs.changed == 'true'
-        run: python3 .github/star-history/embed-font.py "$CHART_DIR"
+      # Drops the repo-avatar <image> the renderer adds beside the title, which
+      # raw.githubusercontent.com's 'default-src none' CSP refuses to load at
+      # all — it rendered as a broken-image icon — and re-embeds the @font-face
+      # the renderer strips. See postprocess-svg.py for both.
+      - name: Post-process chart SVGs
+        if: steps.chart.outputs.changed == 'true' || inputs.force
+        run: python3 .github/star-history/postprocess-svg.py "$CHART_DIR"
 
       # A fresh orphan commit force-pushed over CHART_BRANCH: the branch stays
       # one commit deep, so a daily 130 KB of regenerated binaries never turns
       # into a growing history. No rule guards a non-default branch, so this
       # needs no review and cannot be declined the way the old push to main was.
       - name: Publish chart to CHART_BRANCH
-        if: steps.chart.outputs.changed == 'true'
+        if: steps.chart.outputs.changed == 'true' || inputs.force
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
