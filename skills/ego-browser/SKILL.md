@@ -191,6 +191,12 @@ These workflows can be combined. A task may take multiple heredoc rounds when th
 
 ## Stealth / anti-detection
 
+In this repo harness `stealth` and `captcha` are global helpers. When driving the**native ego-browser skill** (where they may not be pre-merged), load them explicitly at the top of the heredoc instead:
+
+```js
+const { stealth, captcha } = await import('/Users/lucasvanderunstraat/.pi/agent/skills/ego-browser/agent_helpers.js')
+```
+
 When a site blocks automation with captchas, reCAPTCHA/hCaptcha, Cloudflare, or
 other bot defenses, enable the stealth layer before navigating:
 

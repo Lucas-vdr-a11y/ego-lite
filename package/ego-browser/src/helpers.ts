@@ -34,9 +34,10 @@ import {
   warmup,
   naturalScroll,
   safeClick,
-  preRead,
-  typeHumanized,
 } from "./captcha/index.js";
+// Import these directly from the defining module so dependency resolution is
+// unambiguous for every checker (they are also re-exported by the barrel).
+import { preRead, typeHumanized } from "./captcha/humanize.js";
 import {
   loadBrowserToolSource,
   loadLearnedContext,

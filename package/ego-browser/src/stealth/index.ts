@@ -5,11 +5,7 @@ import {
   subscribeBrowserEvent,
 } from "../browser-runtime.js";
 import { buildStealthScript } from "./script.js";
-import {
-  type Persona,
-  listPersonaSummaries,
-  pickPersona,
-} from "./personas.js";
+import { type Persona, listPersonaSummaries, pickPersona } from "./personas.js";
 
 export type EnableStealthOptions = {
   /** Persona id, substring, or numeric index. Omit for a random pick. */
