@@ -17,6 +17,24 @@ import * as downloads from "./driver/downloads.js";
 import * as screencast from "./driver/screencast.js";
 import { browserFetch, serverFetch } from "./http.js";
 import {
+  enableStealth,
+  disableStealth,
+  applyStealthToAllTabs,
+  currentPersona,
+  listPersonas,
+} from "./stealth/index.js";
+import {
+  detectChallenge,
+  solveCaptcha,
+  solveTurnstile,
+  getCfClearance,
+  clickTurnstile,
+  solveRecaptcha,
+  warmup,
+  naturalScroll,
+  safeClick,
+} from "./captcha/index.js";
+import {
   loadBrowserToolSource,
   loadLearnedContext,
   runNodeSiteTool,
@@ -640,7 +658,7 @@ function textSelector(prefix, text, options: any = {}) {
 
 function roleSelector(role, options: any = {}) {
   const name =
-    options && Object.prototype.hasOwnProperty.call(options, "name")
+    options && Object.hasOwn(options, "name")
       ? `[name=${JSON.stringify(roleNameMatcher(options.name))}]`
       : "";
   return `loc=role:${role}${name}`;
@@ -652,10 +670,10 @@ function testIdSelector(testId) {
 
 function filterSelector(base, options: any = {}) {
   const data: any = { base };
-  if (Object.prototype.hasOwnProperty.call(options, "hasText")) {
+  if (Object.hasOwn(options, "hasText")) {
     data.hasText = textMatcher(options.hasText);
   }
-  if (Object.prototype.hasOwnProperty.call(options, "hasNotText")) {
+  if (Object.hasOwn(options, "hasNotText")) {
     data.hasNotText = textMatcher(options.hasNotText);
   }
   if (options.has !== undefined) {
@@ -817,6 +835,10 @@ const FACADE_HELP: Record<string, string> = {
   site: "site: learned site-skill facade. Use site.skills(url), site.skillsForUrl(url), site.runTool(siteId, toolName, args), site.runBrowserTool(siteId, toolName, args), and site.learnContext(url).",
   fetch:
     "fetch: network facade. Use fetch.server(url, options) for Node-side fetch and fetch.browser(url, options) for browser-origin fetch.",
+  stealth:
+    "stealth: anti-detection facade. Use stealth.enable({ persona?, random?, currentTabOnly? }) to apply a consistent fingerprint persona (User-Agent + Client Hints, timezone, locale) and inject the spoofing payload into every current/future page; stealth.personas() lists available personas; stealth.persona() returns the active one; stealth.applyToAllTabs() re-applies to already-open tabs; stealth.disable() restores defaults. Pairs with launch-stealth-chromium for a matching launch profile.",
+  captcha:
+    "captcha: challenge-solving facade. Use captcha.detect() to identify the active challenge (cloudflare-turnstile / cloudflare-iuam / recaptcha-v3 / recaptcha-enterprise); captcha.solve({ sitekey, kind, url }) to auto-detect and solve; captcha.cloudflare({ sitekey, autoClick }) for Turnstile; captcha.recaptcha({ sitekey, action, enterprise, url }) for reCAPTCHA v3; captcha.clearance() to read the cf_clearance cookie; captcha.warmup() to build a short browsing history first. Free, no API keys.",
 };
 
 export function helperContext(extra: any = {}) {
@@ -829,6 +851,8 @@ export function helperContext(extra: any = {}) {
       server: serverFetch,
       browser: browserFetch,
     },
+    stealth: createStealthFacade(),
+    captcha: createCaptchaFacade(),
     cdp,
     ...extra,
   };
@@ -862,6 +886,30 @@ export async function loadAgentHelpers() {
     }
   }
   return out;
+}
+
+function createStealthFacade() {
+  return {
+    enable: (options: any = {}) => enableStealth(options),
+    disable: () => disableStealth(),
+    applyToAllTabs: () => applyStealthToAllTabs(),
+    persona: () => currentPersona(),
+    personas: () => listPersonas(),
+  };
+}
+
+function createCaptchaFacade() {
+  return {
+    detect: () => detectChallenge(),
+    solve: (options: any = {}) => solveCaptcha(options),
+    cloudflare: (options: any = {}) => solveTurnstile(options),
+    recaptcha: (options: any = {}) => solveRecaptcha(options),
+    clearance: () => getCfClearance(),
+    clickTurnstile: () => clickTurnstile(),
+    warmup: () => warmup(),
+    scroll: (direction: any = 1, opts: any = {}) => naturalScroll(direction, opts),
+    safeClick: () => safeClick(),
+  };
 }
 
 export const __testing = { setOverrides, decodeUnserializableJsValue };

@@ -34,6 +34,8 @@ type InstallEgoSdkOptions = {
 };
 
 export * from "./helpers.js";
+export * as stealth from "./stealth/index.js";
+export * as captcha from "./captcha/index.js";
 export { runMain } from "./run.js";
 
 const SYNC_HELPERS = new Set(["help"]);
@@ -150,7 +152,7 @@ export function installEgoSdk(
   }
   const context = options.context || helpers.helperContext();
   for (const name of LEGACY_GLOBAL_HELPERS) {
-    if (Object.prototype.hasOwnProperty.call(target, name)) {
+    if (Object.hasOwn(target, name)) {
       delete target[name];
     }
   }

@@ -39,6 +39,8 @@ type MouseEventOptions = Record<string, unknown>;
 
 const INPUT_EVENT_DELAY_MS = 25;
 const INPUT_DISPATCH_TIMEOUT_MS = 1000;
+// Set EGO_BROWSER_NO_HUMANIZE=1 to fall back to the old straight-line dispatch.
+const HUMANIZE = process.env.EGO_BROWSER_NO_HUMANIZE !== "1";
 let currentMousePoint: Point = { x: 0, y: 0, sessionId: undefined };
 
 /**
@@ -62,7 +64,6 @@ let currentMousePoint: Point = { x: 0, y: 0, sessionId: undefined };
  */
 export async function click(target: MouseTarget, options: ClickOptions = {}) {
   const point = await resolveMouseTarget(target, options.timeout);
-  rememberMousePoint(point);
   const button = options.button || "left";
   const buttons = pressedButtons(button);
   const clickCount = options.clickCount ?? 1;
@@ -70,10 +71,8 @@ export async function click(target: MouseTarget, options: ClickOptions = {}) {
   const probeId = await installClickProbe(point);
   let dispatchError: unknown = null;
   try {
-    await dispatchMouse(point, "mouseMoved", {
-      button: "none",
-      buttons: 0,
-    });
+    await humanMove(currentMousePoint, point);
+    rememberMousePoint(point);
     await inputEventDelay();
     await dispatchMouse(point, "mousePressed", {
       button,
@@ -115,12 +114,12 @@ export async function dblclick(
  */
 export async function hover(target: MouseTarget, options: HoverOptions = {}) {
   const point = await resolveMouseTarget(target, options.timeout);
-  rememberMousePoint(point);
   maybeHighlight(point, options.label);
   const probeId = await installHoverProbe(point);
   let dispatchError: unknown = null;
   try {
-    await dispatchMouse(point, "mouseMoved", { buttons: 0 });
+    await humanMove(currentMousePoint, point);
+    rememberMousePoint(point);
   } catch (error) {
     if (!isInputDispatchTimeout(error)) throw error;
     dispatchError = error;
@@ -161,15 +160,7 @@ export async function drag(points: MouseTarget[], options: DragOptions = {}) {
     });
     await inputEventDelay();
     for (let i = 1; i < resolved.length; i += 1) {
-      const point = resolved[i];
-      await dispatchMouse(
-        { ...point, sessionId: point.sessionId ?? first.sessionId },
-        "mouseMoved",
-        {
-          button,
-          buttons,
-        },
-      );
+      await humanMove(resolved[i - 1], resolved[i], { buttons });
       await inputEventDelay(options.delay > 0 ? options.delay : undefined);
     }
     await dispatchMouse(
@@ -219,6 +210,57 @@ export async function up(options: ClickOptions = {}) {
 
 function inputEventDelay(ms = INPUT_EVENT_DELAY_MS) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Move the mouse from `from` to `to` along a cubic bezier with randomized
+ * control points and per-step jitter. Real human motion is never a straight
+ * line; detectors that model pointer trajectories (and some bot defenses do)
+ * key off the perfectly linear path a CDP `mouseMoved` produces. We dispatch
+ * many small, slightly-noisy steps with variable delays to mimic that.
+ * `buttons` lets a drag keep the pressed button asserted across the path.
+ */
+async function humanMove(
+  from: Point,
+  to: Point,
+  opts: { buttons?: number; steps?: number } = {},
+) {
+  if (!HUMANIZE) {
+    await dispatchMouse(to, "mouseMoved", {
+      button: "none",
+      buttons: opts.buttons ?? 0,
+    });
+    currentMousePoint = { ...to };
+    return;
+  }
+  const steps = opts.steps ?? 16 + Math.floor(Math.random() * 12);
+  const jitter = 3 + Math.random() * 4;
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  const cp1x = from.x + dx * 0.25 + (Math.random() - 0.5) * jitter * 2;
+  const cp1y = from.y + dy * 0.25 + (Math.random() - 0.5) * jitter * 2;
+  const cp2x = from.x + dx * 0.75 + (Math.random() - 0.5) * jitter * 2;
+  const cp2y = from.y + dy * 0.75 + (Math.random() - 0.5) * jitter * 2;
+  for (let i = 1; i <= steps; i += 1) {
+    const t = i / steps;
+    const mt = 1 - t;
+    const x =
+      mt * mt * mt * from.x +
+      3 * mt * mt * t * cp1x +
+      3 * mt * t * t * cp2x +
+      t * t * t * to.x;
+    const y =
+      mt * mt * mt * from.y +
+      3 * mt * mt * t * cp1y +
+      3 * mt * t * t * cp2y +
+      t * t * t * to.y;
+    await dispatchMouse({ x, y, sessionId: to.sessionId }, "mouseMoved", {
+      button: "none",
+      buttons: opts.buttons ?? 0,
+    });
+    await inputEventDelay(3 + Math.random() * 7);
+  }
+  currentMousePoint = { ...to };
 }
 
 async function installClickProbe(point: Point) {

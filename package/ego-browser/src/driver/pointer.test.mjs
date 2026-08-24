@@ -71,20 +71,36 @@ test("click resolves selector offsets without the public elementEval helper", as
   const mouseEvents = calls.filter(
     (call) => call.method === "Input.dispatchMouseEvent",
   );
-  assert.deepEqual(
-    mouseEvents.map((call) => ({
-      type: call.params.type,
-      x: call.params.x,
-      y: call.params.y,
-      button: call.params.button,
-      buttons: call.params.buttons,
-    })),
-    [
-      { type: "mouseMoved", x: 112, y: 208, button: "none", buttons: 0 },
-      { type: "mousePressed", x: 112, y: 208, button: "left", buttons: 1 },
-      { type: "mouseReleased", x: 112, y: 208, button: "left", buttons: 0 },
-    ],
+  const shape = (call) => ({
+    type: call.params.type,
+    x: call.params.x,
+    y: call.params.y,
+    button: call.params.button,
+    buttons: call.params.buttons,
+  });
+  const moved112 = mouseEvents.filter((c) => c.params.type === "mouseMoved");
+  const pressed112 = mouseEvents.filter(
+    (c) => c.params.type === "mousePressed",
   );
+  const released112 = mouseEvents.filter(
+    (c) => c.params.type === "mouseReleased",
+  );
+  // Movement is now humanized (bezier + jitter), so assert the landing point
+  // and the press/release pair rather than an exact move count.
+  assert.ok(moved112.length >= 1, "dispatches at least one mouseMoved");
+  assert.deepEqual(shape(moved112.at(-1)), {
+    type: "mouseMoved",
+    x: 112,
+    y: 208,
+    button: "none",
+    buttons: 0,
+  });
+  assert.deepEqual(pressed112.map(shape), [
+    { type: "mousePressed", x: 112, y: 208, button: "left", buttons: 1 },
+  ]);
+  assert.deepEqual(released112.map(shape), [
+    { type: "mouseReleased", x: 112, y: 208, button: "left", buttons: 0 },
+  ]);
 });
 
 test("click scrolls a selector into view before resolving its click point", async () => {
@@ -177,20 +193,32 @@ test("down and up use the current mouse position", async () => {
   const mouseEvents = calls.filter(
     (call) => call.method === "Input.dispatchMouseEvent",
   );
-  assert.deepEqual(
-    mouseEvents.map((call) => ({
-      type: call.params.type,
-      x: call.params.x,
-      y: call.params.y,
-      button: call.params.button,
-      buttons: call.params.buttons,
-    })),
-    [
-      { type: "mouseMoved", x: 23, y: 45, button: undefined, buttons: 0 },
-      { type: "mousePressed", x: 23, y: 45, button: "left", buttons: 1 },
-      { type: "mouseReleased", x: 23, y: 45, button: "left", buttons: 0 },
-    ],
+  const shape = (call) => ({
+    type: call.params.type,
+    x: call.params.x,
+    y: call.params.y,
+    button: call.params.button,
+    buttons: call.params.buttons,
+  });
+  const moved23 = mouseEvents.filter((c) => c.params.type === "mouseMoved");
+  const pressed23 = mouseEvents.filter((c) => c.params.type === "mousePressed");
+  const released23 = mouseEvents.filter(
+    (c) => c.params.type === "mouseReleased",
   );
+  assert.ok(moved23.length >= 1, "dispatches at least one mouseMoved");
+  assert.deepEqual(shape(moved23.at(-1)), {
+    type: "mouseMoved",
+    x: 23,
+    y: 45,
+    button: "none",
+    buttons: 0,
+  });
+  assert.deepEqual(pressed23.map(shape), [
+    { type: "mousePressed", x: 23, y: 45, button: "left", buttons: 1 },
+  ]);
+  assert.deepEqual(released23.map(shape), [
+    { type: "mouseReleased", x: 23, y: 45, button: "left", buttons: 0 },
+  ]);
 });
 
 test("wheel forwards deltaX/deltaY and the viewport point to CDP", async () => {

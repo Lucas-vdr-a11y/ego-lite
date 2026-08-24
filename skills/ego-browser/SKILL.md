@@ -14,7 +14,6 @@ For setup, install, or connection problems, read `references/install.md`.
 
 Use the `Bash` tool to run all browser operations via `ego-browser nodejs <<'EOF' ... EOF` heredoc. Do not write code to a `.js` file first.
 
-
 ## Quick start
 
 ```bash
@@ -45,6 +44,7 @@ The heredoc body runs as a Node.js script that controls the selected ego-browser
 - Output: `cliLog`, `help`
 
 Notes:
+
 - `cliLog(value)` — prints to the terminal; it is the only output mechanism inside a heredoc, and all final results must go through it.
 - `await pageInfo()` — normally resolves to `{ url, title, w, h, sx, sy, pw, ph }`; if a native browser dialog is open, resolves to `{ dialog: ... }` instead because page JavaScript is blocked.
 - If `await pageInfo()` resolves to `{ dialog: ... }`, handle the dialog with `await cdp('Page.handleJavaScriptDialog', { accept: true })` or `accept: false` before running page JavaScript.
@@ -54,7 +54,6 @@ Notes:
 - `await serverFetch(url, options)` — issues a request from Node and returns the response body.
 - `await browserFetch(url, options)` — issues a request from the current browser page context and returns the response body.
 - `help(name)` — prints usage for a given helper, e.g. `cliLog(help('click'))`.
-
 
 ### Task spaces
 
@@ -75,7 +74,7 @@ After explicit user confirmation, to continue work from an existing user-owned, 
 **Ownership policy** — every task space has `ownership: 'agent' | 'agentDelegatedToUser' | 'user'`; the helpers treat user-owned spaces differently:
 
 | Helper | When the target space is user-owned |
-|---|---|
+| --- | --- |
 | `switchTaskSpace` | throws — agent-owned spaces only |
 | `claimTaskSpace` | claims it (ownership transfers to the agent), then selects it |
 | `handOffTaskSpace` | skipped — resolves `{ done: false, skipped: 'user-owned' }` |
@@ -93,7 +92,6 @@ When passing a string that may create a new task space, the string should reflec
 
 **If the task space needs to be preserved after the task ends, keep only the tabs that need to be shown to the user.** Keep loose awareness of how many tabs are open — a quick `(await listTabs()).length` is enough; there's no need to spend a dedicated round just to check. When scratch tabs (search-result pages, cross-check pages, and other one-off pages) pile up, close them as you go rather than letting them all accumulate for the end. When finishing with `{ keep: true }` to leave pages for the user, clear out the remaining scratch tabs so only the pages worth showing stay open. Close a single tab with `await closeTab(targetId)` (`targetId` comes from `listTabs()` or an `openOrReuseTab` return value).
 
-
 ### Control handoff
 
 Only one side — agent or user — holds control of a task space at any time. While the user holds control, any browser operation by the agent fails with a "user is controlling" message — do not retry it; follow the steps below to resume.
@@ -109,7 +107,6 @@ An "inactive", "not assigned to an agent", or similar task-space error is also a
 **Unexpected takeover**: The user can take over at any time via the browser GUI — the same effect as the agent calling `handOffTaskSpace`. Do not retry the failed operation and do not auto-takeover; surface the Ask above (Continue / Finish) and resume only when the user picks Continue.
 
 `await waitForAgentControl(nameOrId)` is a read-only blocking poll (it never takes control); use it only to wait inside the current heredoc for a handoff you initiated.
-
 
 ### Scroll / mouse
 
@@ -167,7 +164,6 @@ const data = await js(String.raw`(() => {
 })()`)
 ```
 
-
 ## Recommended workflow
 
 ego-browser has three main workflows. Pick the workflow that fits the page and task before acting.
@@ -193,6 +189,58 @@ Before writing substantial content into a rich editor, perform a tiny write prob
 
 These workflows can be combined. A task may take multiple heredoc rounds when the next step depends on fresh page state or user handoff. In each round, write a coherent script that advances the task: observe, act or extract, verify, and report with `cliLog(...)`. Avoid tiny probe scripts, but don't force the whole task into one oversized script.
 
+## Stealth / anti-detection
+
+When a site blocks automation with captchas, reCAPTCHA/hCaptcha, Cloudflare, or
+other bot defenses, enable the stealth layer before navigating:
+
+```js
+await stealth.enable({ persona: "win11-chrome126" });
+await openOrReuseTab("https://example.com", { wait: true });
+// page now sees a consistent Windows/Chrome fingerprint; mouse moves are humanized
+```
+
+- `stealth.enable({ persona, random, currentTabOnly })` applies a consistent
+  persona (User-Agent + Client Hints, timezone, locale) and injects a
+  fingerprint-spoofing payload into every current and future `http(s)` page.
+  `persona` accepts an id, substring, or index; omit it (or `random: true`) to
+  pick at random. `EGO_STEALTH_PERSONA` sets a default.
+- `stealth.disable()` removes the payload and restores the default UA/timezone.
+- `stealth.applyToAllTabs()` re-injects into already-open tabs.
+- `stealth.personas()` lists personas; `stealth.persona()` shows the active one.
+- The spoof covers `navigator.webdriver`, `platform`, `userAgentData`,
+  `hardwareConcurrency`, `deviceMemory`, `connection`, `permissions`, `plugins`,
+  `mimeTypes`, `window.chrome`, screen geometry, canvas/WebGL/audio noise.
+- Pointer movement is humanized (bezier + jitter) by default; set
+  `EGO_BROWSER_NO_HUMANIZE=1` to disable.
+- Pair with `node scripts/launch-stealth-chromium.mjs --persona ... --proxy ...`
+  to launch a matching Chromium (kills `AutomationControlled` at the flag level)
+  and route all traffic through a residential/ISP proxy. See `STEALTH.md`.
+
+## Captcha solving (free, no API keys)
+
+When a site throws a captcha or Cloudflare challenge, pair the stealth layer
+with the built-in solvers instead of abandoning the task:
+
+```js
+await stealth.enable({ persona: "win11-chrome126" });
+const kind = await captcha.detect();             // what is blocking us?
+const result = await captcha.solve({ url: "https://example.com" });
+console.log(result.token);                        // turnstile / recaptcha token
+```
+
+- `captcha.detect()` returns `cloudflare-turnstile`, `cloudflare-iuam`,
+  `recaptcha-v3`, `recaptcha-enterprise`, or `unknown`.
+- `captcha.cloudflare({ sitekey, autoClick })` solves a Cloudflare Turnstile
+  widget: humanized click on the checkbox, then polls `ts-response` /
+  `__tsTokenPromise` for the token.
+- `captcha.recaptcha({ sitekey, action, enterprise, url, warmup, humanize })`
+  harvests a reCAPTCHA v3/Enterprise token: warmup history, humanized cursor +
+  scroll + safe real click for transient activation, then `grecaptcha.execute`.
+- `captcha.clearance()` reads the `cf_clearance` cookie (httpOnly, via CDP).
+- `captcha.warmup()`, `captcha.scroll(direction)`, `captcha.safeClick()` are
+  the individual humanization primitives.
+- All free, no API keys — drove directly in the real browser. See `CAPTCHA.md`.
 
 ## Caveats
 

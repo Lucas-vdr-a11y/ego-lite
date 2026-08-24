@@ -50,6 +50,7 @@ Helpers are pre-imported and the browser connection is prepared automatically.
 Commands:
   ego-browser --doctor         inspect browser and connection state
   ego-browser --reload         reset the browser connection on next call
+  ego-browser --stealth        enable anti-detection before running the script
 `;
 
 export const USAGE = `Usage:
@@ -86,15 +87,19 @@ export async function runMain(options: RunMainOptions = {}) {
     env.EGO_BROWSER_DEBUG_CLICKS = "1";
     argv.shift();
   }
+  if (argv[0] === "--stealth") {
+    env.EGO_BROWSER_AUTO_STEALTH = "1";
+    argv.shift();
+  }
   if (argv.length > 0) {
     write(stderr, USAGE);
     return 2;
   }
 
   const code =
-    options.stdinText !== undefined
-      ? options.stdinText
-      : await readAll(options.stdin || processStdin);
+    options.stdinText === undefined
+      ? await readAll(options.stdin || processStdin)
+      : options.stdinText;
   if (!code.trim()) {
     write(stderr, USAGE);
     return 2;
@@ -107,9 +112,21 @@ export async function runMain(options: RunMainOptions = {}) {
 
 async function execute(code: string, stdout: WritableLike) {
   resetSink();
+  if (process.env.EGO_BROWSER_AUTO_STEALTH === "1") {
+    const { enableStealth } = await import("./stealth/index.js");
+    try {
+      await enableStealth({});
+    } catch (error) {
+      // Stealth is best-effort at startup: if the runtime is not ready yet,
+      // surface a warning and let the script itself call stealth.enable().
+      console.error(
+        `[ego-browser] stealth enable failed (script can still call stealth.enable()): ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
   const context = await executionContext();
   Object.assign(globalThis, context);
-  const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+  const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
   const names = Object.keys(context);
   const values = Object.values(context);
   const fn = new AsyncFunction(...names, `"use strict";\n${code}`);
