@@ -129,9 +129,11 @@ Tutorials, the full tool reference, and integration guides live at [lite.ego.app
 
 <a href="https://github.com/citrolabs/ego-lite/stargazers">
 <!-- star-history:start -->
+<!-- Generated daily by .github/workflows/star-history.yml and published to the
+     'star-history' branch, because main's ruleset will not take a bot commit. -->
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/star-history/star-history-dark.svg">
-  <img alt="Star history" src="assets/star-history/star-history-light.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/citrolabs/ego-lite/star-history/star-history-dark.svg">
+  <img alt="Star history" src="https://raw.githubusercontent.com/citrolabs/ego-lite/star-history/star-history-light.svg">
 </picture>
 <!-- star-history:end -->
 </a>
