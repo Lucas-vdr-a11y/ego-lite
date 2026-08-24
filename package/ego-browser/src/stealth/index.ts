@@ -7,7 +7,6 @@ import {
 import { buildStealthScript } from "./script.js";
 import {
   type Persona,
-  PERSONAS,
   listPersonaSummaries,
   pickPersona,
 } from "./personas.js";
@@ -90,6 +89,19 @@ export async function enableStealth(
   }
   installAutoApply();
   return persona;
+}
+
+/**
+ * Rotate to a fresh identity: tear down the active persona (UA/timezone/
+ * injected payload) and enable a new random one. Use on challenge failure — a
+ * fresh proxy+persona tuple beats retrying the same fingerprint against the
+ * same detector that already flagged it.
+ */
+export async function rotate(
+  options: { random?: boolean } = {},
+): Promise<Persona | null> {
+  await disableStealth();
+  return enableStealth({ random: options.random ?? true });
 }
 
 /**

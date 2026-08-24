@@ -32,6 +32,8 @@ this fork (personas + injected fingerprint + humanized pointer) to maximize the
 | `captcha.clickTurnstile()` | Click the Turnstile checkbox (humanized entry). |
 | `captcha.warmup()` | Visit a short, plausible browsing history before the target. |
 | `captcha.scroll(direction)` / `captcha.safeClick()` | Humanized scroll / safe transient-activation click. |
+| `captcha.read()` | Dwell + scroll "read" the page before acting — a solve is never instant. |
+| `captcha.type(text, { field })` | Humanized per-keystroke typing (variable latency, pauses). |
 
 ## Cloudflare Turnstile (from cloudflare-solver)
 
@@ -100,5 +102,11 @@ const result = await captcha.solve({ url: "https://example.com" });
   strategy is *maximise the real-user signal*: pair with `stealth.enable()` and
   a clean residential/ISP proxy (timezone/profile aligned to the proxy geo) for
   the best pass rate.
+- **Read before you solve.** `captcha.recaptcha()` already dwells 2–6s on the
+  page; for manual targets call `captcha.read()` first. A solve fired the
+  instant a page loads is a bot cadence.
+- **Rotate, don't retry.** When a challenge beats you, call `stealth.rotate()`
+  to drop the flagged fingerprint and pick a fresh proxy+persona tuple —
+  retrying the same identity against the same detector just loses twice.
 - These solve human-verifiable widgets by *driving the real widget in a real
   browser*, not by outsourcing to a paid captcha farm.

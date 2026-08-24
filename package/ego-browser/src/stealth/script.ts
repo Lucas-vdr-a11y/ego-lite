@@ -99,8 +99,36 @@ const STEALTH_TEMPLATE = `
   };
   var pluginArrayInst = new PluginArray();
   for (var pj = 0; pj < pluginsData.length; pj++) { pluginArrayInst[pj] = pluginsData[pj]; }
+  try {
+    pluginArrayInst[Symbol.iterator] = function(){ var i = 0; return { next: function(){ return { done: i >= pluginsData.length, value: i < pluginsData.length ? pluginsData[i++] : undefined }; } }; };
+  } catch(e){}
   def(Navigator.prototype, 'plugins', function(){ return pluginArrayInst; });
   def(Navigator.prototype, 'mimeTypes', function(){ return new MimeArray(); });
+
+  // Extra consistency for detectors that read these (Chrome-desktop values).
+  def(Navigator.prototype, 'maxTouchPoints', function(){ return 0; });
+  def(Navigator.prototype, 'doNotTrack', function(){ return null; });
+  def(Navigator.prototype, 'onLine', function(){ return true; });
+  try {
+    if (screen.orientation){
+      Object.defineProperty(screen.orientation, 'type', { get: function(){ return 'landscape-primary'; }, configurable: true });
+      Object.defineProperty(screen.orientation, 'angle', { get: function(){ return 0; }, configurable: true });
+    }
+  } catch(e){}
+  try {
+    if (navigator.storage && navigator.storage.estimate){
+      navigator.storage.estimate = function(){ return Promise.resolve({ usage: 5e7 + Math.floor(Math.random()*2e8) % 200000000, quota: 1073741824, usageDetails: {} }); };
+    }
+  } catch(e){}
+  try {
+    if (navigator.mediaDevices && navigator.mediaDevices.enumerateDevices){
+      navigator.mediaDevices.enumerateDevices = function(){ return Promise.resolve([
+        { deviceId: 'default', kind: 'audioinput', label: '', groupId: 'default' },
+        { deviceId: 'default', kind: 'audiooutput', label: '', groupId: 'default' },
+        { deviceId: 'default', kind: 'videoinput', label: '', groupId: 'default' }
+      ]); };
+    }
+  } catch(e){}
 
   var chromeObj = {
     app: { isInstalled: false,

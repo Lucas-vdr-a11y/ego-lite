@@ -1,4 +1,4 @@
-import { evaluate } from "../cdp-eval.js";
+import { cdp, evaluate } from "../cdp-eval.js";
 import { click, hover, wheel } from "../driver/pointer.js";
 
 /**
@@ -110,4 +110,60 @@ export async function cursorEntry(): Promise<void> {
   const entryY = Math.floor(size.h / 4 + rand(0, size.h / 4));
   await hover([entryX, entryY]);
   await sleep(randInt(100, 250));
+}
+
+/**
+ * "Read the page" before acting. This is the single biggest behavioral tell we
+ * can remove on a reCAPTCHA v3 solve: turning up and solving 3-6s after `goto`
+ * is a textbook bot cadence. Humans dwell, scroll a little, correct, and only
+ * then interact. Randomizes total dwell so no two solves match.
+ */
+export async function preRead(
+  opts: { minMs?: number; maxMs?: number } = {},
+): Promise<void> {
+  if ((globalThis as any).ego?.sendCDPMessage === undefined) return;
+  await sleep(randInt(opts.minMs ?? 2000, opts.maxMs ?? 6000));
+  await naturalScroll(1, { min: 240, max: 480 });
+  await sleep(randInt(350, 900));
+  if (Math.random() < 0.5) {
+    await naturalScroll(-1, { min: 60, max: 180 });
+  }
+  await sleep(randInt(200, 500));
+}
+
+/**
+ * Type like a person (not `insertText`): per-keystroke CDP key events with
+ * variable latency and occasional mid-typing pauses. A real user's typing has
+ * a distribution; bots spraying full strings at once are fingerprintable.
+ * Optionally clicks a field (select/retext) before typing.
+ */
+export async function typeHumanized(
+  text: string,
+  opts: { field?: string; delayMin?: number; delayMax?: number } = {},
+): Promise<void> {
+  if ((globalThis as any).ego?.sendCDPMessage === undefined) return;
+  if (opts.field) {
+    await click(opts.field);
+    await sleep(randInt(80, 250));
+  }
+  const chars = Array.from(String(text));
+  for (let i = 0; i < chars.length; i += 1) {
+    const c = chars[i];
+    if (i > 0 && Math.random() < 0.04) {
+      await sleep(randInt(250, 900)); // human pause mid-sentence
+    }
+    const isEnter = c === "\n";
+    const key = isEnter ? "Enter" : c;
+    await cdp("Input.dispatchKeyEvent", {
+      type: "keyDown",
+      key,
+      text: isEnter ? undefined : c,
+    });
+    await cdp("Input.dispatchKeyEvent", {
+      type: "keyUp",
+      key,
+      text: isEnter ? undefined : c,
+    });
+    await sleep(randInt(opts.delayMin ?? 25, opts.delayMax ?? 90));
+  }
 }

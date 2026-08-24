@@ -43,6 +43,7 @@ random (or `EGO_STEALTH_PERSONA`-selected) persona before the script runs.
 | `stealth.applyToAllTabs()` | Re-inject the active persona into every already-open `http(s)` page target. |
 | `stealth.persona()` | Returns the currently active persona object (or `null`). |
 | `stealth.personas()` | Lists available persona `{ id, label }` summaries. |
+| `stealth.rotate()` | Tear down the active persona and enable a fresh random one — use when a challenge beat your previous fingerprint. |
 
 `persona` accepts an id (`"win11-chrome126"`), a substring match
 (`"mac"`, `"ubuntu"`), or a numeric index. Omit it (or pass `random: true`)
@@ -78,7 +79,9 @@ scripts:
 - `navigator.hardwareConcurrency` / `deviceMemory`
 - `navigator.connection` → stable, plausible 4g/wifi (no `saveData`)
 - `navigator.permissions.query` → never throws / never rejects
-- `navigator.plugins` / `mimeTypes` → non-empty, consistent fake set
+- `navigator.plugins` / `mimeTypes` → non-empty, consistent, **iterable** fake set
+- `navigator.maxTouchPoints` / `doNotTrack` / `onLine` → desktop-Chrome values
+- `screen.orientation` / `storage.estimate` / `mediaDevices.enumerateDevices` → aligned to the persona (these are themselves fingerprint surface)
 - `window.chrome` → full `runtime` / `app` / `loadTimes` / `csi` object
 - `screen.*` / `devicePixelRatio` / `outerWidth` / `outerHeight`
 - **Canvas 2D** → deterministic LSB noise on `getImageData` / `toDataURL` / `toBlob`
@@ -115,6 +118,10 @@ Key flags it sets:
   "controlled by automation" and first-run noise.
 - `--proxy-server=...` + `--proxy-bypass-list=<-loopback>` — route all traffic
   (including WebRTC) through the proxy so the local IP never leaks.
+- `--webrtc-ip-handling-policy=disable_non_proxied_udp` (+ `--force-...`) —
+  no ICE candidate can use a non-proxied path; `RTCPeerConnection` stays native.
+- `--host-resolver-rules=MAP * ~NOTFOUND,EXCLUDE localhost` — force DNS through
+  the proxy so the real resolver/IP never leaks via system DNS.
 
 ## Proxy + geo consistency
 

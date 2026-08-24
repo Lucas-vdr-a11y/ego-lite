@@ -1,15 +1,10 @@
 import { evaluate } from "../cdp-eval.js";
-import { solveTurnstile, getCfClearance, clickTurnstile } from "./cloudflare.js";
 import {
-  solveRecaptcha,
-  warmup,
-  injectGrecaptcha,
-  executeGrecaptcha,
-  WARMUP_SEQUENCES,
-} from "./recaptcha.js";
-import type { TurnstileOptions } from "./cloudflare.js";
-import type { RecaptchaOptions } from "./recaptcha.js";
-import { naturalScroll, safeClick, cursorEntry, humanizePage } from "./humanize.js";
+  solveTurnstile,
+  getCfClearance,
+  clickTurnstile,
+} from "./cloudflare.js";
+import { solveRecaptcha } from "./recaptcha.js";
 
 export type CaptchaKind =
   | "cloudflare-turnstile"
@@ -122,7 +117,9 @@ export async function solveCaptcha(options: CaptchaOptions = {}): Promise<{
       return { kind, token };
     }
     default:
-      throw new Error(`solveCaptcha: no supported challenge detected (${kind})`);
+      throw new Error(
+        `solveCaptcha: no supported challenge detected (${kind})`,
+      );
   }
 }
 
@@ -141,5 +138,16 @@ export {
   WARMUP_SEQUENCES,
 } from "./recaptcha.js";
 export type { RecaptchaOptions } from "./recaptcha.js";
-export { naturalScroll, safeClick, cursorEntry, humanizePage } from "./humanize.js";
-export { parseTurnstileTokens, extractReloadToken, isReloadUrl } from "./parse.js";
+export {
+  naturalScroll,
+  safeClick,
+  cursorEntry,
+  humanizePage,
+  preRead,
+  typeHumanized,
+} from "./humanize.js";
+export {
+  parseTurnstileTokens,
+  extractReloadToken,
+  isReloadUrl,
+} from "./parse.js";

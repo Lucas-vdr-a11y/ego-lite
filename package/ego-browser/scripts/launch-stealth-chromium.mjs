@@ -131,14 +131,19 @@ const launchArgs = [
   `--lang=${persona.lang}`,
   "--password-store=basic",
   "--use-gl=swiftshader",
+  // Never let WebRTC use a non-proxied path: no ICE candidate may expose the
+  // real IP behind the proxy. RTCPeerConnection stays present and native.
+  "--webrtc-ip-handling-policy=disable_non_proxied_udp",
+  "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
   url,
 ];
 
 if (proxy) {
   launchArgs.push(`--proxy-server=${proxy}`);
-  // Treat proxy as a "system" proxy so Chrome routes all traffic through it
-  // and does not leak the local IP via WebRTC/direct connections.
   launchArgs.push("--proxy-bypass-list=<-loopback>");
+  // Force all DNS resolution through the proxy so the real resolver/IP never
+  // leaks via system DNS lookups.
+  launchArgs.push("--host-resolver-rules=MAP * ~NOTFOUND,EXCLUDE localhost");
 }
 
 console.error(`[stealth] persona   : ${personaId}`);
@@ -152,6 +157,18 @@ console.error(
   `[stealth] attach with: EGO_BROWSER_CDP=http://127.0.0.1:${port}  (or point ego-browser at this browser)`,
 );
 console.error(`[stealth] DevTools  : http://127.0.0.1:${port}/json/version`);
+console.error(
+  "[stealth] NOTE       : a long-lived, real-use profile (real cookies/history)",
+);
+console.error(
+  "[stealth] NOTE       : outranks a fresh profile for anti-bot scoring. Point --user-data-dir",
+);
+console.error(
+  "[stealth] NOTE       : at a profile you actually browse with, and keep Chrome's version in",
+);
+console.error(
+  "[stealth] NOTE       : sync with the persona UA (TLS/JA3 comes from the real binary).",
+);
 
 const child = spawn(chrome, launchArgs, { stdio: "inherit", env: process.env });
 child.on("exit", (code) => process.exit(code ?? 0));

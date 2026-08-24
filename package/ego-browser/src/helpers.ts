@@ -22,6 +22,7 @@ import {
   applyStealthToAllTabs,
   currentPersona,
   listPersonas,
+  rotate as rotateStealth,
 } from "./stealth/index.js";
 import {
   detectChallenge,
@@ -33,6 +34,8 @@ import {
   warmup,
   naturalScroll,
   safeClick,
+  preRead,
+  typeHumanized,
 } from "./captcha/index.js";
 import {
   loadBrowserToolSource,
@@ -892,6 +895,7 @@ function createStealthFacade() {
   return {
     enable: (options: any = {}) => enableStealth(options),
     disable: () => disableStealth(),
+    rotate: () => rotateStealth(),
     applyToAllTabs: () => applyStealthToAllTabs(),
     persona: () => currentPersona(),
     personas: () => listPersonas(),
@@ -907,8 +911,11 @@ function createCaptchaFacade() {
     clearance: () => getCfClearance(),
     clickTurnstile: () => clickTurnstile(),
     warmup: () => warmup(),
-    scroll: (direction: any = 1, opts: any = {}) => naturalScroll(direction, opts),
+    scroll: (direction: any = 1, opts: any = {}) =>
+      naturalScroll(direction, opts),
     safeClick: () => safeClick(),
+    read: (opts: any = {}) => preRead(opts),
+    type: (text: string, opts: any = {}) => typeHumanized(text, opts),
   };
 }
 

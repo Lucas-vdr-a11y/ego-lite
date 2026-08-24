@@ -6,6 +6,7 @@ import {
   cursorEntry,
   humanizePage,
   naturalScroll,
+  preRead,
   safeClick,
 } from "./humanize.js";
 
@@ -113,7 +114,7 @@ export async function executeGrecaptcha(
 ): Promise<string> {
   const api = apiOf(enterprise);
   const script = `new Promise((resolve, reject) => {
-    const g = ${enterprise ? "window.grecaptcha.enterprise" : "window.grecaptcha"};
+    const g = ${`window.${api}`};
     if (!g) { reject(new Error('grecaptcha not loaded')); return; }
     g.ready(() => {
       g.execute(${JSON.stringify(sitekey)}, { action: ${JSON.stringify(action)} })
@@ -187,8 +188,7 @@ export async function solveRecaptcha(
             { requestId },
             event.sessionId,
           );
-          const text =
-            body?.body ?? (body as any)?.result?.body ?? "";
+          const text = body?.body ?? (body as any)?.result?.body ?? "";
           const token = extractReloadToken(text);
           if (token) captured = token;
         } catch {
@@ -199,13 +199,16 @@ export async function solveRecaptcha(
   }
 
   try {
-    // Humanized entry movement, then a safe click for a real user gesture.
+    // Humanized entry movement, a genuine "read the page" dwell, then a safe
+    // click for a real user gesture. The dwell matters: an instant solve is a
+    // bot cadence; preRead randomizes 2-6s of scroll/pause first.
     if (humanize) {
+      await preRead();
       await cursorEntry();
       await humanizePage();
-      await sleep(randInt(200, 500));
+      await sleep(randInt(300, 700));
       await safeClick();
-      await sleep(randInt(200, 400));
+      await sleep(randInt(300, 600));
     }
 
     await injectGrecaptcha(sitekey, enterprise);
